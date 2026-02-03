@@ -341,4 +341,223 @@ export const getHealthStatus = async () => {
   return data
 }
 
+// ==================== TRADING ====================
+
+export interface TradingStatus {
+  enabled: boolean
+  initialized: boolean
+  wallet_address: string | null
+  stats: {
+    total_trades: number
+    winning_trades: number
+    losing_trades: number
+    total_volume: number
+    total_pnl: number
+    daily_volume: number
+    daily_pnl: number
+    open_positions: number
+    last_trade_at: string | null
+  }
+  limits: {
+    max_trade_size_usd: number
+    max_daily_volume: number
+    max_open_positions: number
+    min_order_size_usd: number
+    max_slippage_percent: number
+  }
+}
+
+export interface Order {
+  id: string
+  token_id: string
+  side: string
+  price: number
+  size: number
+  order_type: string
+  status: string
+  filled_size: number
+  clob_order_id: string | null
+  error_message: string | null
+  market_question: string | null
+  created_at: string
+}
+
+export const getTradingStatus = async (): Promise<TradingStatus> => {
+  const { data } = await api.get('/trading/status')
+  return data
+}
+
+export const initializeTrading = async () => {
+  const { data } = await api.post('/trading/initialize')
+  return data
+}
+
+export const placeOrder = async (params: {
+  token_id: string
+  side: string
+  price: number
+  size: number
+  order_type?: string
+  market_question?: string
+}) => {
+  const { data } = await api.post('/trading/orders', params)
+  return data
+}
+
+export const getOrders = async (limit = 100, status?: string): Promise<Order[]> => {
+  const { data } = await api.get('/trading/orders', { params: { limit, status } })
+  return data
+}
+
+export const getOpenOrders = async (): Promise<Order[]> => {
+  const { data } = await api.get('/trading/orders/open')
+  return data
+}
+
+export const cancelOrder = async (orderId: string) => {
+  const { data } = await api.delete(`/trading/orders/${orderId}`)
+  return data
+}
+
+export const cancelAllOrders = async () => {
+  const { data } = await api.delete('/trading/orders')
+  return data
+}
+
+export const getTradingPositions = async () => {
+  const { data } = await api.get('/trading/positions')
+  return data
+}
+
+export const getTradingBalance = async () => {
+  const { data } = await api.get('/trading/balance')
+  return data
+}
+
+export const executeOpportunityLive = async (params: {
+  opportunity_id: string
+  positions: any[]
+  size_usd: number
+}) => {
+  const { data } = await api.post('/trading/execute-opportunity', params)
+  return data
+}
+
+export const emergencyStopTrading = async () => {
+  const { data } = await api.post('/trading/emergency-stop')
+  return data
+}
+
+// ==================== AUTO TRADER ====================
+
+export interface AutoTraderStatus {
+  mode: string
+  running: boolean
+  config: {
+    mode: string
+    enabled_strategies: string[]
+    min_roi_percent: number
+    max_risk_score: number
+    min_liquidity_usd: number
+    base_position_size_usd: number
+    max_position_size_usd: number
+    max_daily_trades: number
+    max_daily_loss_usd: number
+    circuit_breaker_losses: number
+    require_confirmation: boolean
+  }
+  stats: {
+    total_trades: number
+    winning_trades: number
+    losing_trades: number
+    win_rate: number
+    total_profit: number
+    total_invested: number
+    roi_percent: number
+    daily_trades: number
+    daily_profit: number
+    consecutive_losses: number
+    circuit_breaker_active: boolean
+    last_trade_at: string | null
+    opportunities_seen: number
+    opportunities_executed: number
+    opportunities_skipped: number
+  }
+}
+
+export interface AutoTraderTrade {
+  id: string
+  opportunity_id: string
+  strategy: string
+  executed_at: string
+  total_cost: number
+  expected_profit: number
+  actual_profit: number | null
+  status: string
+  mode: string
+}
+
+export const getAutoTraderStatus = async (): Promise<AutoTraderStatus> => {
+  const { data } = await api.get('/auto-trader/status')
+  return data
+}
+
+export const startAutoTrader = async (mode?: string) => {
+  const { data } = await api.post('/auto-trader/start', null, { params: { mode } })
+  return data
+}
+
+export const stopAutoTrader = async () => {
+  const { data } = await api.post('/auto-trader/stop')
+  return data
+}
+
+export const updateAutoTraderConfig = async (config: Partial<{
+  mode: string
+  enabled_strategies: string[]
+  min_roi_percent: number
+  max_risk_score: number
+  min_liquidity_usd: number
+  base_position_size_usd: number
+  max_position_size_usd: number
+  max_daily_trades: number
+  max_daily_loss_usd: number
+  require_confirmation: boolean
+}>) => {
+  const { data } = await api.put('/auto-trader/config', config)
+  return data
+}
+
+export const getAutoTraderTrades = async (limit = 100, status?: string): Promise<AutoTraderTrade[]> => {
+  const { data } = await api.get('/auto-trader/trades', { params: { limit, status } })
+  return data
+}
+
+export const getAutoTraderStats = async () => {
+  const { data } = await api.get('/auto-trader/stats')
+  return data
+}
+
+export const resetAutoTraderStats = async () => {
+  const { data } = await api.post('/auto-trader/reset-stats')
+  return data
+}
+
+export const resetCircuitBreaker = async () => {
+  const { data } = await api.post('/auto-trader/reset-circuit-breaker')
+  return data
+}
+
+export const enableLiveTrading = async (maxDailyLoss = 100) => {
+  const { data } = await api.post('/auto-trader/enable-live-trading', null, {
+    params: { confirm: true, max_daily_loss: maxDailyLoss }
+  })
+  return data
+}
+
+export const emergencyStopAutoTrader = async () => {
+  const { data } = await api.post('/auto-trader/emergency-stop')
+  return data
+}
+
 export default api

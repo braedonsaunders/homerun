@@ -13,10 +13,14 @@ from api import router, handle_websocket
 from api.routes_simulation import simulation_router
 from api.routes_copy_trading import copy_trading_router
 from api.routes_anomaly import anomaly_router
+from api.routes_trading import router as trading_router
+from api.routes_auto_trader import router as auto_trader_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.simulation import simulation_service
 from services.copy_trader import copy_trader
 from services.anomaly_detector import anomaly_detector
+from services.trading import trading_service
+from services.auto_trader import auto_trader
 from models.database import init_database
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
@@ -56,6 +60,14 @@ async def lifespan(app: FastAPI):
         # Start copy trading service
         await copy_trader.start()
 
+        # Initialize trading service if configured
+        if settings.TRADING_ENABLED:
+            trading_initialized = await trading_service.initialize()
+            if trading_initialized:
+                logger.info("Trading service initialized")
+            else:
+                logger.warning("Trading service initialization failed - check credentials")
+
         logger.info("All services started successfully")
 
         yield
@@ -71,6 +83,7 @@ async def lifespan(app: FastAPI):
         scanner.stop()
         wallet_tracker.stop()
         copy_trader.stop()
+        auto_trader.stop()
 
         for task in tasks:
             task.cancel()
@@ -122,6 +135,8 @@ app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
 app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
+app.include_router(trading_router, prefix="/api", tags=["Trading"])
+app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
 
 
 # WebSocket endpoint
@@ -179,6 +194,16 @@ async def detailed_health_check():
             "copy_trader": {
                 "running": copy_trader._running,
                 "active_configs": len(copy_trader._active_configs)
+            },
+            "trading": {
+                "enabled": settings.TRADING_ENABLED,
+                "initialized": trading_service.is_ready(),
+                "stats": trading_service.get_stats().__dict__ if trading_service.is_ready() else None
+            },
+            "auto_trader": {
+                "running": auto_trader._running,
+                "mode": auto_trader.config.mode.value,
+                "stats": auto_trader.get_stats()
             }
         },
         "rate_limits": rate_limiter.get_status(),
@@ -211,6 +236,22 @@ polymarket_tracked_wallets {len(wallet_tracker.get_all_wallets())}
 # HELP polymarket_copy_configs Active copy trading configurations
 # TYPE polymarket_copy_configs gauge
 polymarket_copy_configs {len(copy_trader._active_configs)}
+
+# HELP polymarket_trading_enabled Trading enabled status
+# TYPE polymarket_trading_enabled gauge
+polymarket_trading_enabled {1 if settings.TRADING_ENABLED else 0}
+
+# HELP polymarket_auto_trader_running Auto trader running status
+# TYPE polymarket_auto_trader_running gauge
+polymarket_auto_trader_running {1 if auto_trader._running else 0}
+
+# HELP polymarket_auto_trader_trades Total auto trades executed
+# TYPE polymarket_auto_trader_trades counter
+polymarket_auto_trader_trades {auto_trader.stats.total_trades}
+
+# HELP polymarket_auto_trader_profit Total auto trader profit
+# TYPE polymarket_auto_trader_profit gauge
+polymarket_auto_trader_profit {auto_trader.stats.total_profit}
 """
 
     return JSONResponse(

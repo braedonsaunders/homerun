@@ -12,7 +12,8 @@ import {
   Activity,
   PlayCircle,
   Copy,
-  Shield
+  Shield,
+  Bot
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -28,8 +29,9 @@ import OpportunityCard from './components/OpportunityCard'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
 import AnomalyPanel from './components/AnomalyPanel'
+import TradingPanel from './components/TradingPanel'
 
-type Tab = 'opportunities' | 'wallets' | 'simulation' | 'anomaly'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'anomaly'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
@@ -179,6 +181,12 @@ function App() {
               label="Opportunities"
             />
             <TabButton
+              active={activeTab === 'trading'}
+              onClick={() => setActiveTab('trading')}
+              icon={<Bot className="w-4 h-4" />}
+              label="Auto Trading"
+            />
+            <TabButton
               active={activeTab === 'simulation'}
               onClick={() => setActiveTab('simulation')}
               icon={<PlayCircle className="w-4 h-4" />}
@@ -255,6 +263,7 @@ function App() {
           </div>
         )}
 
+        {activeTab === 'trading' && <TradingPanel />}
         {activeTab === 'simulation' && <SimulationPanel />}
         {activeTab === 'wallets' && <WalletTracker />}
         {activeTab === 'anomaly' && <AnomalyPanel />}

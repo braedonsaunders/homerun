@@ -1,0 +1,510 @@
+"""
+Trading Service - Real order execution on Polymarket
+
+This service handles real trading on Polymarket using the CLOB API.
+It integrates with py-clob-client for order placement and management.
+
+IMPORTANT: Real trading involves real money. Use with caution.
+
+Setup:
+1. Get API credentials from https://polymarket.com/settings/api-keys
+2. Set environment variables:
+   - POLYMARKET_PRIVATE_KEY
+   - POLYMARKET_API_KEY
+   - POLYMARKET_API_SECRET
+   - POLYMARKET_API_PASSPHRASE
+3. Set TRADING_ENABLED=true to enable real trading
+"""
+
+import asyncio
+from datetime import datetime, timedelta
+from decimal import Decimal
+from enum import Enum
+from typing import Optional
+from dataclasses import dataclass, field
+import uuid
+
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class OrderSide(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(str, Enum):
+    GTC = "GTC"  # Good Till Cancel
+    FOK = "FOK"  # Fill Or Kill
+    GTD = "GTD"  # Good Till Date
+
+
+class OrderStatus(str, Enum):
+    PENDING = "pending"
+    OPEN = "open"
+    FILLED = "filled"
+    PARTIALLY_FILLED = "partially_filled"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+@dataclass
+class Order:
+    """Represents a trading order"""
+    id: str
+    token_id: str
+    side: OrderSide
+    price: float
+    size: float  # In shares
+    order_type: OrderType = OrderType.GTC
+    status: OrderStatus = OrderStatus.PENDING
+    filled_size: float = 0.0
+    average_fill_price: float = 0.0
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    clob_order_id: Optional[str] = None
+    error_message: Optional[str] = None
+    market_question: Optional[str] = None
+    opportunity_id: Optional[str] = None
+
+
+@dataclass
+class Position:
+    """Represents an open position"""
+    token_id: str
+    market_id: str
+    market_question: str
+    outcome: str  # YES or NO
+    size: float  # Number of shares
+    average_cost: float  # Average price paid
+    current_price: float = 0.0
+    unrealized_pnl: float = 0.0
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class TradingStats:
+    """Trading statistics"""
+    total_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    total_volume: float = 0.0
+    total_pnl: float = 0.0
+    daily_volume: float = 0.0
+    daily_pnl: float = 0.0
+    open_positions: int = 0
+    last_trade_at: Optional[datetime] = None
+
+
+class TradingService:
+    """
+    Service for executing real trades on Polymarket.
+
+    Uses the py-clob-client library for order placement.
+    Implements safety limits and tracking.
+    """
+
+    def __init__(self):
+        self._initialized = False
+        self._client = None
+        self._orders: dict[str, Order] = {}
+        self._positions: dict[str, Position] = {}
+        self._stats = TradingStats()
+        self._daily_volume_reset = datetime.utcnow().date()
+
+    async def initialize(self) -> bool:
+        """
+        Initialize the trading client with API credentials.
+
+        Returns True if successfully initialized, False otherwise.
+        """
+        if not settings.TRADING_ENABLED:
+            logger.warning("Trading is disabled. Set TRADING_ENABLED=true to enable.")
+            return False
+
+        if not all([
+            settings.POLYMARKET_PRIVATE_KEY,
+            settings.POLYMARKET_API_KEY,
+            settings.POLYMARKET_API_SECRET,
+            settings.POLYMARKET_API_PASSPHRASE
+        ]):
+            logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
+            return False
+
+        try:
+            # Import py-clob-client
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds
+
+            # Create API credentials
+            creds = ApiCreds(
+                api_key=settings.POLYMARKET_API_KEY,
+                api_secret=settings.POLYMARKET_API_SECRET,
+                api_passphrase=settings.POLYMARKET_API_PASSPHRASE
+            )
+
+            # Initialize client
+            self._client = ClobClient(
+                host=settings.CLOB_API_URL,
+                key=settings.POLYMARKET_PRIVATE_KEY,
+                chain_id=settings.CHAIN_ID,
+                creds=creds
+            )
+
+            self._initialized = True
+            logger.info("Trading service initialized successfully")
+            return True
+
+        except ImportError:
+            logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to initialize trading client: {e}")
+            return False
+
+    def is_ready(self) -> bool:
+        """Check if trading service is ready"""
+        return self._initialized and self._client is not None
+
+    def _check_daily_reset(self):
+        """Reset daily counters if it's a new day"""
+        today = datetime.utcnow().date()
+        if today != self._daily_volume_reset:
+            self._stats.daily_volume = 0.0
+            self._stats.daily_pnl = 0.0
+            self._daily_volume_reset = today
+
+    def _validate_order(self, size_usd: float) -> tuple[bool, str]:
+        """
+        Validate order against safety limits.
+
+        Returns (is_valid, error_message)
+        """
+        self._check_daily_reset()
+
+        if not self.is_ready():
+            return False, "Trading service not initialized"
+
+        if not settings.TRADING_ENABLED:
+            return False, "Trading is disabled"
+
+        if size_usd < settings.MIN_ORDER_SIZE_USD:
+            return False, f"Order size ${size_usd:.2f} below minimum ${settings.MIN_ORDER_SIZE_USD:.2f}"
+
+        if size_usd > settings.MAX_TRADE_SIZE_USD:
+            return False, f"Order size ${size_usd:.2f} exceeds maximum ${settings.MAX_TRADE_SIZE_USD:.2f}"
+
+        projected_daily_volume = self._stats.daily_volume + size_usd
+        if projected_daily_volume > settings.MAX_DAILY_TRADE_VOLUME:
+            return False, f"Would exceed daily volume limit (${projected_daily_volume:.2f} > ${settings.MAX_DAILY_TRADE_VOLUME:.2f})"
+
+        if len(self._positions) >= settings.MAX_OPEN_POSITIONS:
+            return False, f"Maximum open positions ({settings.MAX_OPEN_POSITIONS}) reached"
+
+        return True, ""
+
+    async def place_order(
+        self,
+        token_id: str,
+        side: OrderSide,
+        price: float,
+        size: float,
+        order_type: OrderType = OrderType.GTC,
+        market_question: Optional[str] = None,
+        opportunity_id: Optional[str] = None
+    ) -> Order:
+        """
+        Place an order on Polymarket.
+
+        Args:
+            token_id: The CLOB token ID (YES or NO token)
+            side: BUY or SELL
+            price: Price per share (0-1)
+            size: Number of shares
+            order_type: GTC, FOK, or GTD
+            market_question: Optional market question for reference
+            opportunity_id: Optional opportunity ID this trade is from
+
+        Returns:
+            Order object with status
+        """
+        order_id = str(uuid.uuid4())
+        order = Order(
+            id=order_id,
+            token_id=token_id,
+            side=side,
+            price=price,
+            size=size,
+            order_type=order_type,
+            market_question=market_question,
+            opportunity_id=opportunity_id
+        )
+
+        # Calculate USD value
+        size_usd = price * size
+
+        # Validate order
+        is_valid, error = self._validate_order(size_usd)
+        if not is_valid:
+            order.status = OrderStatus.FAILED
+            order.error_message = error
+            self._orders[order_id] = order
+            logger.warning(f"Order validation failed: {error}")
+            return order
+
+        try:
+            # Build and sign order using py-clob-client
+            from py_clob_client.clob_types import OrderArgs
+            from py_clob_client.order_builder.constants import BUY, SELL
+
+            order_args = OrderArgs(
+                price=price,
+                size=size,
+                side=BUY if side == OrderSide.BUY else SELL,
+                token_id=token_id
+            )
+
+            # Create and sign the order
+            signed_order = self._client.create_order(order_args)
+
+            # Post order to CLOB
+            response = self._client.post_order(signed_order, order_type.value)
+
+            if response.get("success"):
+                order.status = OrderStatus.OPEN
+                order.clob_order_id = response.get("orderID")
+                self._stats.total_trades += 1
+                self._stats.daily_volume += size_usd
+                self._stats.total_volume += size_usd
+                self._stats.last_trade_at = datetime.utcnow()
+                logger.info(f"Order placed successfully: {order.clob_order_id}")
+            else:
+                order.status = OrderStatus.FAILED
+                order.error_message = response.get("errorMsg", "Unknown error")
+                logger.error(f"Order failed: {order.error_message}")
+
+        except Exception as e:
+            order.status = OrderStatus.FAILED
+            order.error_message = str(e)
+            logger.error(f"Order execution error: {e}")
+
+        order.updated_at = datetime.utcnow()
+        self._orders[order_id] = order
+        return order
+
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel an open order"""
+        if order_id not in self._orders:
+            logger.warning(f"Order not found: {order_id}")
+            return False
+
+        order = self._orders[order_id]
+        if order.status not in [OrderStatus.OPEN, OrderStatus.PENDING]:
+            logger.warning(f"Cannot cancel order in status: {order.status}")
+            return False
+
+        if not order.clob_order_id:
+            order.status = OrderStatus.CANCELLED
+            order.updated_at = datetime.utcnow()
+            return True
+
+        try:
+            response = self._client.cancel(order.clob_order_id)
+            if response.get("canceled"):
+                order.status = OrderStatus.CANCELLED
+                order.updated_at = datetime.utcnow()
+                logger.info(f"Order cancelled: {order_id}")
+                return True
+            else:
+                logger.error(f"Failed to cancel order: {response}")
+                return False
+        except Exception as e:
+            logger.error(f"Cancel order error: {e}")
+            return False
+
+    async def cancel_all_orders(self) -> int:
+        """Cancel all open orders. Returns count of cancelled orders."""
+        cancelled = 0
+        try:
+            response = self._client.cancel_all()
+            cancelled = len(response.get("canceled", []))
+
+            # Update local order status
+            for order in self._orders.values():
+                if order.status in [OrderStatus.OPEN, OrderStatus.PENDING]:
+                    order.status = OrderStatus.CANCELLED
+                    order.updated_at = datetime.utcnow()
+
+            logger.info(f"Cancelled {cancelled} orders")
+        except Exception as e:
+            logger.error(f"Cancel all orders error: {e}")
+
+        return cancelled
+
+    async def get_open_orders(self) -> list[Order]:
+        """Get all open orders"""
+        if not self.is_ready():
+            return [o for o in self._orders.values() if o.status == OrderStatus.OPEN]
+
+        try:
+            response = self._client.get_orders()
+            # Update local orders with server state
+            for server_order in response:
+                clob_id = server_order.get("id")
+                for order in self._orders.values():
+                    if order.clob_order_id == clob_id:
+                        # Update fill status
+                        order.filled_size = float(server_order.get("size_matched", 0))
+                        if order.filled_size >= order.size:
+                            order.status = OrderStatus.FILLED
+                        elif order.filled_size > 0:
+                            order.status = OrderStatus.PARTIALLY_FILLED
+                        order.updated_at = datetime.utcnow()
+        except Exception as e:
+            logger.error(f"Get orders error: {e}")
+
+        return [o for o in self._orders.values() if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]]
+
+    async def sync_positions(self) -> list[Position]:
+        """Sync positions from Polymarket"""
+        if not self.is_ready():
+            return list(self._positions.values())
+
+        try:
+            # Get positions from the wallet
+            # Note: This uses the data API, not CLOB
+            from services.polymarket import polymarket_client
+
+            address = self._get_wallet_address()
+            if not address:
+                return list(self._positions.values())
+
+            positions_data = await polymarket_client.get_wallet_positions(address)
+
+            self._positions.clear()
+            for pos in positions_data:
+                token_id = pos.get("asset")
+                position = Position(
+                    token_id=token_id,
+                    market_id=pos.get("market", ""),
+                    market_question=pos.get("title", "Unknown"),
+                    outcome=pos.get("outcome", ""),
+                    size=float(pos.get("size", 0)),
+                    average_cost=float(pos.get("avgCost", 0)),
+                    current_price=float(pos.get("currentPrice", 0))
+                )
+                position.unrealized_pnl = (position.current_price - position.average_cost) * position.size
+                self._positions[token_id] = position
+
+            self._stats.open_positions = len(self._positions)
+
+        except Exception as e:
+            logger.error(f"Sync positions error: {e}")
+
+        return list(self._positions.values())
+
+    def _get_wallet_address(self) -> Optional[str]:
+        """Get wallet address from private key"""
+        if not settings.POLYMARKET_PRIVATE_KEY:
+            return None
+        try:
+            from eth_account import Account
+            account = Account.from_key(settings.POLYMARKET_PRIVATE_KEY)
+            return account.address
+        except Exception:
+            return None
+
+    async def execute_opportunity(
+        self,
+        opportunity_id: str,
+        positions: list[dict],
+        size_usd: float
+    ) -> list[Order]:
+        """
+        Execute an arbitrage opportunity.
+
+        Args:
+            opportunity_id: ID of the opportunity
+            positions: List of positions to take (from opportunity.positions_to_take)
+            size_usd: Total USD amount to invest
+
+        Returns:
+            List of orders placed
+        """
+        orders = []
+
+        for position in positions:
+            token_id = position.get("token_id")
+            if not token_id:
+                logger.warning(f"Position missing token_id: {position}")
+                continue
+
+            price = position.get("price", 0)
+            if price <= 0:
+                continue
+
+            # Calculate shares based on USD amount and position count
+            position_usd = size_usd / len(positions)
+            shares = position_usd / price
+
+            order = await self.place_order(
+                token_id=token_id,
+                side=OrderSide.BUY,
+                price=price,
+                size=shares,
+                market_question=position.get("market"),
+                opportunity_id=opportunity_id
+            )
+            orders.append(order)
+
+        return orders
+
+    def get_stats(self) -> TradingStats:
+        """Get trading statistics"""
+        self._check_daily_reset()
+        return self._stats
+
+    def get_order(self, order_id: str) -> Optional[Order]:
+        """Get order by ID"""
+        return self._orders.get(order_id)
+
+    def get_orders(self, limit: int = 100) -> list[Order]:
+        """Get recent orders"""
+        orders = sorted(
+            self._orders.values(),
+            key=lambda x: x.created_at,
+            reverse=True
+        )
+        return orders[:limit]
+
+    def get_positions(self) -> list[Position]:
+        """Get current positions"""
+        return list(self._positions.values())
+
+    async def get_balance(self) -> dict:
+        """Get wallet balance"""
+        if not self.is_ready():
+            return {"error": "Trading not initialized"}
+
+        try:
+            # Get USDC balance on Polygon
+            address = self._get_wallet_address()
+            if not address:
+                return {"error": "Could not derive wallet address"}
+
+            # This would need web3 integration to check actual balance
+            # For now, return placeholder
+            return {
+                "address": address,
+                "usdc_balance": 0.0,  # Would need web3 call
+                "positions_value": sum(p.size * p.current_price for p in self._positions.values())
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+
+# Singleton instance
+trading_service = TradingService()

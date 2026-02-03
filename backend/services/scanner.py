@@ -10,7 +10,8 @@ from services.strategies import (
     NegRiskStrategy,
     MutuallyExclusiveStrategy,
     ContradictionStrategy,
-    MustHappenStrategy
+    MustHappenStrategy,
+    MiracleStrategy
 )
 
 
@@ -24,7 +25,8 @@ class ArbitrageScanner:
             NegRiskStrategy(),          # Most profitable historically
             MutuallyExclusiveStrategy(),
             ContradictionStrategy(),
-            MustHappenStrategy()
+            MustHappenStrategy(),
+            MiracleStrategy()           # Swisstony's garbage collection strategy
         ]
         self._running = False
         self._last_scan: Optional[datetime] = None

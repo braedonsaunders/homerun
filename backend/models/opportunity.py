@@ -10,6 +10,7 @@ class StrategyType(str, Enum):
     CONTRADICTION = "contradiction"
     NEGRISK = "negrisk"
     MUST_HAPPEN = "must_happen"
+    MIRACLE = "miracle"  # Bet against impossible/absurd events
 
 
 class ArbitrageOpportunity(BaseModel):

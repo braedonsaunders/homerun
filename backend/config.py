@@ -54,6 +54,28 @@ class Settings(BaseSettings):
     MAX_RETRY_ATTEMPTS: int = 4
     RETRY_BASE_DELAY: float = 1.0
 
+    # Trading Configuration (Polymarket CLOB)
+    # Get these from: https://polymarket.com/settings/api-keys
+    POLYMARKET_PRIVATE_KEY: Optional[str] = None  # Wallet private key for signing
+    POLYMARKET_API_KEY: Optional[str] = None
+    POLYMARKET_API_SECRET: Optional[str] = None
+    POLYMARKET_API_PASSPHRASE: Optional[str] = None
+
+    # Trading Safety Limits
+    TRADING_ENABLED: bool = False  # Must be explicitly enabled
+    MAX_TRADE_SIZE_USD: float = 100.0  # Maximum single trade size
+    MAX_DAILY_TRADE_VOLUME: float = 1000.0  # Maximum daily trading volume
+    MAX_OPEN_POSITIONS: int = 10  # Maximum concurrent open positions
+    MIN_ORDER_SIZE_USD: float = 1.0  # Minimum order size
+
+    # Order Settings
+    DEFAULT_ORDER_TYPE: str = "GTC"  # GTC (Good Till Cancel) or FOK (Fill Or Kill)
+    MAX_SLIPPAGE_PERCENT: float = 2.0  # Maximum acceptable slippage
+
+    # Polygon Network (for on-chain operations)
+    POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+    CHAIN_ID: int = 137  # Polygon mainnet
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
