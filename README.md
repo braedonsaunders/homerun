@@ -50,30 +50,59 @@ This is not risk-free arbitrage, but the probability of loss is extremely low. E
 
 ## Quick Start
 
-### Backend
+### One-Command Setup (Recommended)
 
+```bash
+# Clone and run
+git clone <repo-url>
+cd homerun
+./setup.sh   # Install dependencies
+./run.sh     # Start the app
+```
+
+Open http://localhost:3000 to view the dashboard.
+
+### Using Docker
+
+```bash
+# Run with Docker Compose
+docker-compose up --build
+
+# Or use the unified container
+docker-compose --profile unified up --build
+```
+
+### Using Make
+
+```bash
+make setup   # Install dependencies
+make run     # Start the app
+make dev     # Development mode with hot reload
+```
+
+### Manual Setup
+
+**Backend:**
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Copy and configure environment
-cp .env.example .env
-
-# Run the server
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8000
 ```
 
-### Frontend
-
+**Frontend:**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:3000 to view the dashboard.
+### Requirements
+
+- Python 3.10+
+- Node.js 18+
+- (Optional) Docker & Docker Compose
 
 ## API Endpoints
 
