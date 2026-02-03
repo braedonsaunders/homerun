@@ -7,11 +7,3 @@ pydantic-settings==2.1.0
 python-dotenv==1.0.0
 sqlalchemy==2.0.25
 aiosqlite==0.19.0
-
-# Trading dependencies
-py-clob-client>=0.18.0
-eth-account>=0.10.0
-web3>=6.0.0
-
-# Additional utilities
-numpy>=1.24.0

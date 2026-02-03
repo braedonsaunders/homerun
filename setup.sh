@@ -9,16 +9,19 @@ echo ""
 # Check Python version
 if ! command -v python3 &> /dev/null; then
     echo "Error: Python 3 is required but not installed."
+    echo "On Mac: brew install python@3.11"
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
+PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
 echo "Found Python $PYTHON_VERSION"
 
 # Check Node.js
 if ! command -v node &> /dev/null; then
     echo "Error: Node.js is required but not installed."
-    echo "Install from: https://nodejs.org/"
+    echo "On Mac: brew install node"
     exit 1
 fi
 
@@ -47,7 +50,19 @@ echo "Activating virtual environment..."
 source venv/bin/activate
 
 echo "Installing Python dependencies..."
+pip install -q --upgrade pip
 pip install -q -r requirements.txt
+
+# Try to install trading dependencies (requires Python 3.10+)
+if [ "$PYTHON_MINOR" -ge 10 ]; then
+    echo "Installing trading dependencies..."
+    pip install -q -r requirements-trading.txt 2>/dev/null || echo "  (trading deps skipped - optional)"
+else
+    echo ""
+    echo "Note: Python 3.10+ required for live trading."
+    echo "      Paper trading and scanning will work fine."
+    echo "      Upgrade Python to enable live trading: brew install python@3.11"
+fi
 
 cd ..
 
@@ -57,7 +72,7 @@ echo "Setting up frontend..."
 cd frontend
 
 echo "Installing Node.js dependencies..."
-npm install --silent
+npm install --silent 2>/dev/null || npm install
 
 cd ..
 
