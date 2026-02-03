@@ -27,11 +27,11 @@ The strategy:
 """
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
-from .base import BaseStrategy
+from .base import BaseStrategy, utcnow, make_aware
 
 
 # Keywords indicating highly improbable events
@@ -170,7 +170,8 @@ class MiracleStrategy(BaseStrategy):
 
         # Time-based impossibility boost
         if end_date:
-            days_until = (end_date - datetime.utcnow()).days
+            end_date_aware = make_aware(end_date)
+            days_until = (end_date_aware - utcnow()).days
             if days_until <= 1:
                 score += 0.15
                 reasons.append("Resolves within 1 day (very short window)")
@@ -180,7 +181,7 @@ class MiracleStrategy(BaseStrategy):
 
         # Check for logical impossibilities (past events)
         if "2023" in question_lower or "2022" in question_lower:
-            if datetime.utcnow().year >= 2024:
+            if utcnow().year >= 2024:
                 score += 0.30
                 reasons.append("Question references past year")
 

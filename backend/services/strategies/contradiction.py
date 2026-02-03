@@ -106,7 +106,7 @@ class ContradictionStrategy(BaseStrategy):
         topic_index: dict[str, list[Market]]
     ) -> list[Market]:
         """Find markets that might contradict this one"""
-        candidates = set()
+        candidates = {}  # Use dict keyed by ID since Market isn't hashable
         question = market.question.lower()
 
         # Get markets sharing topic words
@@ -117,9 +117,9 @@ class ContradictionStrategy(BaseStrategy):
             if word in topic_index:
                 for m in topic_index[word]:
                     if m.id != market.id:
-                        candidates.add(m)
+                        candidates[m.id] = m
 
-        return list(candidates)
+        return list(candidates.values())
 
     def _are_contradictory(self, market_a: Market, market_b: Market) -> bool:
         """Check if two markets are contradictory"""

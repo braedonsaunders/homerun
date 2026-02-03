@@ -1,9 +1,23 @@
 from abc import ABC, abstractmethod
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime"""
+    return datetime.now(timezone.utc)
+
+
+def make_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Make a datetime timezone-aware (UTC) if it isn't already"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class BaseStrategy(ABC):
@@ -38,7 +52,8 @@ class BaseStrategy(ABC):
 
         # Time to resolution risk
         if resolution_date:
-            days_until = (resolution_date - datetime.utcnow()).days
+            resolution_aware = make_aware(resolution_date)
+            days_until = (resolution_aware - utcnow()).days
             if days_until < 2:
                 score += 0.4
                 factors.append("Very short time to resolution (<2 days)")
