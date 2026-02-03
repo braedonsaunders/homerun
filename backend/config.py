@@ -31,8 +31,32 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./arbitrage.db"
 
+    # Production Settings
+    LOG_LEVEL: str = "INFO"
+    CORS_ORIGINS: list[str] = ["*"]
+
+    # Simulation Defaults
+    DEFAULT_SIMULATION_CAPITAL: float = 10000.0
+    DEFAULT_MAX_POSITION_PCT: float = 10.0
+    DEFAULT_SLIPPAGE_BPS: float = 50.0
+
+    # Copy Trading
+    COPY_TRADING_POLL_INTERVAL: int = 30
+    DEFAULT_COPY_DELAY_SECONDS: int = 5
+
+    # Anomaly Detection
+    MIN_TRADES_FOR_ANALYSIS: int = 10
+    SUSPICIOUS_WIN_RATE_THRESHOLD: float = 0.95
+    MAX_ANOMALY_SCORE_FOR_COPY: float = 0.5
+
+    # API Settings
+    API_TIMEOUT_SECONDS: int = 30
+    MAX_RETRY_ATTEMPTS: int = 4
+    RETRY_BASE_DELAY: float = 1.0
+
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
 
 
 settings = Settings()

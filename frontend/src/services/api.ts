@@ -4,6 +4,8 @@ const api = axios.create({
   baseURL: '/api',
 })
 
+// ==================== TYPES ====================
+
 export interface Opportunity {
   id: string
   strategy: string
@@ -63,7 +65,81 @@ export interface Wallet {
   recent_trades: any[]
 }
 
-// Opportunities
+export interface SimulationAccount {
+  id: string
+  name: string
+  initial_capital: number
+  current_capital: number
+  total_pnl: number
+  roi_percent: number
+  total_trades: number
+  winning_trades: number
+  losing_trades: number
+  win_rate: number
+  open_positions: number
+}
+
+export interface SimulationTrade {
+  id: string
+  opportunity_id: string
+  strategy_type: string
+  total_cost: number
+  expected_profit: number
+  slippage: number
+  status: string
+  actual_payout?: number
+  actual_pnl?: number
+  fees_paid: number
+  executed_at: string
+  resolved_at?: string
+  copied_from?: string
+}
+
+export interface CopyConfig {
+  id: string
+  source_wallet: string
+  account_id: string
+  enabled: boolean
+  settings: {
+    min_roi_threshold: number
+    max_position_size: number
+    copy_delay_seconds: number
+    slippage_tolerance: number
+  }
+  stats: {
+    total_copied: number
+    successful_copies: number
+    failed_copies: number
+    total_pnl: number
+  }
+}
+
+export interface WalletAnalysis {
+  wallet: string
+  stats: {
+    total_trades: number
+    win_rate: number
+    total_pnl: number
+    avg_roi: number
+    max_roi: number
+  }
+  strategies_detected: string[]
+  anomaly_score: number
+  anomalies: Anomaly[]
+  is_profitable_pattern: boolean
+  recommendation: string
+}
+
+export interface Anomaly {
+  type: string
+  severity: string
+  score: number
+  description: string
+  evidence: Record<string, any>
+}
+
+// ==================== OPPORTUNITIES ====================
+
 export const getOpportunities = async (params?: {
   min_profit?: number
   max_risk?: number
@@ -80,7 +156,8 @@ export const triggerScan = async () => {
   return data
 }
 
-// Scanner
+// ==================== SCANNER ====================
+
 export const getScannerStatus = async (): Promise<ScannerStatus> => {
   const { data } = await api.get('/scanner/status')
   return data
@@ -91,7 +168,8 @@ export const getStrategies = async (): Promise<Strategy[]> => {
   return data
 }
 
-// Wallets
+// ==================== WALLETS ====================
+
 export const getWallets = async (): Promise<Wallet[]> => {
   const { data } = await api.get('/wallets')
   return data
@@ -121,7 +199,8 @@ export const getWalletTrades = async (address: string, limit = 100) => {
   return data
 }
 
-// Markets
+// ==================== MARKETS ====================
+
 export const getMarkets = async (params?: {
   active?: boolean
   limit?: number
@@ -137,6 +216,128 @@ export const getEvents = async (params?: {
   offset?: number
 }) => {
   const { data } = await api.get('/events', { params })
+  return data
+}
+
+// ==================== SIMULATION ====================
+
+export const createSimulationAccount = async (params: {
+  name: string
+  initial_capital?: number
+  max_position_pct?: number
+  max_positions?: number
+}) => {
+  const { data } = await api.post('/simulation/accounts', params)
+  return data
+}
+
+export const getSimulationAccounts = async (): Promise<SimulationAccount[]> => {
+  const { data } = await api.get('/simulation/accounts')
+  return data
+}
+
+export const getSimulationAccount = async (accountId: string): Promise<SimulationAccount> => {
+  const { data } = await api.get(`/simulation/accounts/${accountId}`)
+  return data
+}
+
+export const getAccountPositions = async (accountId: string) => {
+  const { data } = await api.get(`/simulation/accounts/${accountId}/positions`)
+  return data
+}
+
+export const getAccountTrades = async (accountId: string, limit = 50): Promise<SimulationTrade[]> => {
+  const { data } = await api.get(`/simulation/accounts/${accountId}/trades`, { params: { limit } })
+  return data
+}
+
+export const executeOpportunity = async (accountId: string, opportunityId: string, positionSize?: number) => {
+  const { data } = await api.post(`/simulation/accounts/${accountId}/execute`, {
+    opportunity_id: opportunityId,
+    position_size: positionSize
+  })
+  return data
+}
+
+export const getAccountPerformance = async (accountId: string) => {
+  const { data } = await api.get(`/simulation/accounts/${accountId}/performance`)
+  return data
+}
+
+// ==================== COPY TRADING ====================
+
+export const getCopyConfigs = async (accountId?: string): Promise<CopyConfig[]> => {
+  const { data } = await api.get('/copy-trading/configs', { params: { account_id: accountId } })
+  return data
+}
+
+export const createCopyConfig = async (params: {
+  source_wallet: string
+  account_id: string
+  min_roi_threshold?: number
+  max_position_size?: number
+  copy_delay_seconds?: number
+  slippage_tolerance?: number
+}) => {
+  const { data } = await api.post('/copy-trading/configs', params)
+  return data
+}
+
+export const deleteCopyConfig = async (configId: string) => {
+  const { data } = await api.delete(`/copy-trading/configs/${configId}`)
+  return data
+}
+
+export const enableCopyConfig = async (configId: string) => {
+  const { data } = await api.post(`/copy-trading/configs/${configId}/enable`)
+  return data
+}
+
+export const disableCopyConfig = async (configId: string) => {
+  const { data } = await api.post(`/copy-trading/configs/${configId}/disable`)
+  return data
+}
+
+export const getCopyTradingStatus = async () => {
+  const { data } = await api.get('/copy-trading/status')
+  return data
+}
+
+// ==================== ANOMALY DETECTION ====================
+
+export const analyzeWallet = async (address: string): Promise<WalletAnalysis> => {
+  const { data } = await api.get(`/anomaly/analyze/${address}`)
+  return data
+}
+
+export const findProfitableWallets = async (params?: {
+  min_trades?: number
+  min_win_rate?: number
+  min_pnl?: number
+  max_anomaly_score?: number
+}) => {
+  const { data } = await api.post('/anomaly/find-profitable', params || {})
+  return data
+}
+
+export const getAnomalies = async (params?: {
+  severity?: string
+  anomaly_type?: string
+  limit?: number
+}) => {
+  const { data } = await api.get('/anomaly/anomalies', { params })
+  return data
+}
+
+export const quickCheckWallet = async (address: string) => {
+  const { data } = await api.get(`/anomaly/check/${address}`)
+  return data
+}
+
+// ==================== HEALTH ====================
+
+export const getHealthStatus = async () => {
+  const { data } = await api.get('/health/detailed')
   return data
 }
 

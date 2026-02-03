@@ -5,12 +5,14 @@ import {
   RefreshCw,
   Wallet,
   AlertCircle,
-  CheckCircle,
   Clock,
   DollarSign,
   Target,
   Zap,
-  Activity
+  Activity,
+  PlayCircle,
+  Copy,
+  Shield
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -24,8 +26,10 @@ import {
 import { useWebSocket } from './hooks/useWebSocket'
 import OpportunityCard from './components/OpportunityCard'
 import WalletTracker from './components/WalletTracker'
+import SimulationPanel from './components/SimulationPanel'
+import AnomalyPanel from './components/AnomalyPanel'
 
-type Tab = 'opportunities' | 'wallets'
+type Tab = 'opportunities' | 'wallets' | 'simulation' | 'anomaly'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
@@ -175,10 +179,22 @@ function App() {
               label="Opportunities"
             />
             <TabButton
+              active={activeTab === 'simulation'}
+              onClick={() => setActiveTab('simulation')}
+              icon={<PlayCircle className="w-4 h-4" />}
+              label="Paper Trading"
+            />
+            <TabButton
               active={activeTab === 'wallets'}
               onClick={() => setActiveTab('wallets')}
               icon={<Wallet className="w-4 h-4" />}
               label="Wallet Tracker"
+            />
+            <TabButton
+              active={activeTab === 'anomaly'}
+              onClick={() => setActiveTab('anomaly')}
+              icon={<Shield className="w-4 h-4" />}
+              label="Anomaly Detection"
             />
           </div>
         </div>
@@ -239,7 +255,9 @@ function App() {
           </div>
         )}
 
+        {activeTab === 'simulation' && <SimulationPanel />}
         {activeTab === 'wallets' && <WalletTracker />}
+        {activeTab === 'anomaly' && <AnomalyPanel />}
       </main>
     </div>
   )
