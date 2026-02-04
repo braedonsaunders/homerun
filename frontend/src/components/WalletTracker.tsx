@@ -15,7 +15,10 @@ import {
   Activity,
   Filter,
   Trophy,
-  Target
+  Target,
+  X,
+  DollarSign,
+  FileText
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -27,9 +30,11 @@ import {
   discoverByWinRate,
   analyzeAndTrackWallet,
   getSimulationAccounts,
+  SimulationAccount,
   TimePeriod,
   OrderBy,
-  Category
+  Category,
+  DiscoveredTrader
 } from '../services/api'
 
 interface WalletTrackerProps {
@@ -49,6 +54,11 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
   const [category, setCategory] = useState<Category>('OVERALL')
   const [minWinRate, setMinWinRate] = useState(70)
   const [minTrades, setMinTrades] = useState(10)
+
+  // Copy trade modal state
+  const [showCopyModal, setShowCopyModal] = useState(false)
+  const [selectedTrader, setSelectedTrader] = useState<DiscoveredTrader | null>(null)
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('')
 
   const queryClient = useQueryClient()
 
@@ -121,7 +131,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
     }
   }
 
-  const handleTrackAndCopy = (address: string, autoCopy: boolean = false) => {
+  const handleTrackOnly = (address: string) => {
     const allTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
     const trader = allTraders.find(t => t.address === address)
     const winRateStr = trader?.win_rate ? ` | ${trader.win_rate.toFixed(1)}% WR` : ''
@@ -129,9 +139,47 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
     trackAndCopyMutation.mutate({
       address,
       label,
-      auto_copy: autoCopy,
-      simulation_account_id: autoCopy && simAccounts.length > 0 ? simAccounts[0].id : undefined
+      auto_copy: false,
     })
+  }
+
+  const handleOpenCopyModal = (address: string) => {
+    const allTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
+    const trader = allTraders.find(t => t.address === address)
+    if (trader) {
+      setSelectedTrader(trader)
+      setSelectedAccountId(simAccounts.length > 0 ? simAccounts[0].id : '')
+      setShowCopyModal(true)
+    }
+  }
+
+  const handleCopyTradeConfirm = async (usePaper: boolean) => {
+    if (!selectedTrader) return
+
+    const winRateStr = selectedTrader?.win_rate ? ` | ${selectedTrader.win_rate.toFixed(1)}% WR` : ''
+    const label = `Discovered Trader (${selectedTrader?.volume?.toFixed(0) || '?'} vol${winRateStr})`
+
+    if (usePaper && selectedAccountId) {
+      // Paper mode: track and copy to simulation account
+      trackAndCopyMutation.mutate({
+        address: selectedTrader.address,
+        label,
+        auto_copy: true,
+        simulation_account_id: selectedAccountId
+      })
+    } else if (!usePaper) {
+      // Live mode: just track for now (user can set up live copy trading separately)
+      // For now we track the wallet - live copy trading would require additional implementation
+      trackAndCopyMutation.mutate({
+        address: selectedTrader.address,
+        label,
+        auto_copy: false,
+      })
+      // TODO: Could integrate with live trading system in the future
+    }
+
+    setShowCopyModal(false)
+    setSelectedTrader(null)
   }
 
   const currentTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
@@ -392,7 +440,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                         Analyze
                       </button>
                       <button
-                        onClick={() => handleTrackAndCopy(trader.address, false)}
+                        onClick={() => handleTrackOnly(trader.address)}
                         disabled={trackAndCopyMutation.isPending}
                         className="flex items-center gap-1 px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs"
                       >
@@ -400,9 +448,9 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                         Track
                       </button>
                       <button
-                        onClick={() => handleTrackAndCopy(trader.address, true)}
-                        disabled={trackAndCopyMutation.isPending || simAccounts.length === 0}
-                        title={simAccounts.length === 0 ? "Create a simulation account first" : "Track and copy trades in paper mode"}
+                        onClick={() => handleOpenCopyModal(trader.address)}
+                        disabled={trackAndCopyMutation.isPending}
+                        title="Track and copy trades"
                         className="flex items-center gap-1 px-2 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded text-xs disabled:opacity-50"
                       >
                         <Copy className="w-3 h-3" />
@@ -490,6 +538,122 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
             )}
           </div>
         </>
+      )}
+
+      {/* Copy Trade Account Selection Modal */}
+      {showCopyModal && selectedTrader && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1a] border border-gray-700 rounded-xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <div>
+                <h3 className="text-lg font-semibold">Copy Trade</h3>
+                <p className="text-sm text-gray-400">
+                  {selectedTrader.username || `${selectedTrader.address.slice(0, 6)}...${selectedTrader.address.slice(-4)}`}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowCopyModal(false)
+                  setSelectedTrader(null)
+                }}
+                className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-gray-300">
+                Choose how you want to copy trades from this trader:
+              </p>
+
+              {/* Paper Trading Option */}
+              <div className="space-y-3">
+                <div
+                  className={clsx(
+                    "p-4 rounded-lg border-2 cursor-pointer transition-all",
+                    simAccounts.length > 0
+                      ? "border-blue-500/50 bg-blue-500/10 hover:bg-blue-500/20"
+                      : "border-gray-700 bg-gray-800/50 opacity-60 cursor-not-allowed"
+                  )}
+                  onClick={() => simAccounts.length > 0 && handleCopyTradeConfirm(true)}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center flex-shrink-0">
+                      <FileText className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-medium text-blue-400">Paper Trading</h4>
+                      <p className="text-sm text-gray-400 mt-1">
+                        Copy trades to a simulation account with virtual money. Safe for testing.
+                      </p>
+                      {simAccounts.length > 0 ? (
+                        <div className="mt-3">
+                          <label className="block text-xs text-gray-500 mb-1">Select Account</label>
+                          <select
+                            value={selectedAccountId}
+                            onChange={(e) => {
+                              e.stopPropagation()
+                              setSelectedAccountId(e.target.value)
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full bg-[#222] border border-gray-600 rounded px-3 py-2 text-sm"
+                          >
+                            {simAccounts.map((account: SimulationAccount) => (
+                              <option key={account.id} value={account.id}>
+                                {account.name} (${account.current_capital.toLocaleString()})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-yellow-500 mt-2">
+                          No paper accounts available. Create one in the Simulation panel first.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Live Trading Option */}
+                <div
+                  className="p-4 rounded-lg border-2 border-green-500/50 bg-green-500/10 hover:bg-green-500/20 cursor-pointer transition-all"
+                  onClick={() => handleCopyTradeConfirm(false)}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                      <DollarSign className="w-5 h-5 text-green-400" />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-medium text-green-400">Live Trading</h4>
+                      <p className="text-sm text-gray-400 mt-1">
+                        Track this trader and receive alerts for live copy trading. Uses real money.
+                      </p>
+                      <p className="text-xs text-yellow-500 mt-2">
+                        Configure live copy trading in the Trading panel after tracking.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-gray-700 bg-[#141414]">
+              <button
+                onClick={() => {
+                  setShowCopyModal(false)
+                  setSelectedTrader(null)
+                }}
+                className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
