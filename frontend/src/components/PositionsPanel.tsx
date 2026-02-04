@@ -34,17 +34,16 @@ interface SimulationPosition {
   status: string
 }
 
+// API response matches backend PositionResponse model
 interface TradingPosition {
-  market: string
-  market_slug: string
+  token_id: string
+  market_id: string
+  market_question: string
   outcome: string
   size: number
-  avgPrice: number
-  currentPrice: number
-  costBasis: number
-  currentValue: number
-  unrealizedPnl: number
-  roiPercent: number
+  average_cost: number
+  current_price: number
+  unrealized_pnl: number
 }
 
 type ViewMode = 'simulation' | 'live' | 'all'
@@ -95,9 +94,9 @@ export default function PositionsPanel() {
     sum + pos.unrealized_pnl, 0)
 
   const liveTotalValue = livePositions.reduce((sum: number, pos: TradingPosition) =>
-    sum + pos.currentValue, 0)
+    sum + (pos.size * pos.current_price), 0)
   const liveTotalUnrealizedPnl = livePositions.reduce((sum: number, pos: TradingPosition) =>
-    sum + pos.unrealizedPnl, 0)
+    sum + pos.unrealized_pnl, 0)
 
   const handleRefresh = () => {
     if (viewMode === 'simulation' || viewMode === 'all') refetchSimPositions()
@@ -395,7 +394,11 @@ function SimulationPositionCard({
 }
 
 function LivePositionCard({ position }: { position: TradingPosition }) {
-  const isProfitable = position.unrealizedPnl >= 0
+  // Calculate derived values from API response
+  const costBasis = position.size * position.average_cost
+  const currentValue = position.size * position.current_price
+  const roiPercent = costBasis > 0 ? (position.unrealized_pnl / costBasis) * 100 : 0
+  const isProfitable = position.unrealized_pnl >= 0
 
   return (
     <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
@@ -412,7 +415,7 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
               LIVE
             </span>
           </div>
-          <h4 className="font-medium text-sm mb-2">{position.market}</h4>
+          <h4 className="font-medium text-sm mb-2">{position.market_question}</h4>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
@@ -421,15 +424,15 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
             </div>
             <div>
               <p className="text-gray-500 text-xs">Avg Price</p>
-              <p className="font-mono">${position.avgPrice.toFixed(4)}</p>
+              <p className="font-mono">${position.average_cost.toFixed(4)}</p>
             </div>
             <div>
               <p className="text-gray-500 text-xs">Current Price</p>
-              <p className="font-mono">${position.currentPrice.toFixed(4)}</p>
+              <p className="font-mono">${position.current_price.toFixed(4)}</p>
             </div>
             <div>
               <p className="text-gray-500 text-xs">Cost Basis</p>
-              <p className="font-mono">${position.costBasis.toFixed(2)}</p>
+              <p className="font-mono">${costBasis.toFixed(2)}</p>
             </div>
           </div>
         </div>
@@ -437,7 +440,7 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
         <div className="text-right ml-4">
           <div className="mb-2">
             <p className="text-gray-500 text-xs">Current Value</p>
-            <p className="font-mono font-medium">${position.currentValue.toFixed(2)}</p>
+            <p className="font-mono font-medium">${currentValue.toFixed(2)}</p>
           </div>
           <div>
             <p className="text-gray-500 text-xs">Unrealized P&L</p>
@@ -445,17 +448,17 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
               "font-mono font-medium",
               isProfitable ? "text-green-400" : "text-red-400"
             )}>
-              {isProfitable ? '+' : ''}${position.unrealizedPnl.toFixed(2)}
-              <span className="text-xs ml-1">({isProfitable ? '+' : ''}{position.roiPercent.toFixed(1)}%)</span>
+              {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
+              <span className="text-xs ml-1">({isProfitable ? '+' : ''}{roiPercent.toFixed(1)}%)</span>
             </p>
           </div>
         </div>
       </div>
 
-      {position.market_slug && (
+      {position.market_id && (
         <div className="mt-3 pt-3 border-t border-gray-800">
           <a
-            href={`https://polymarket.com/event/${position.market_slug}`}
+            href={`https://polymarket.com/event/${position.market_id}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
