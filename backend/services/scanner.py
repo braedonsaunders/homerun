@@ -251,6 +251,10 @@ class ArbitrageScanner:
                 opps = [o for o in opps if o.strategy in filter.strategies]
             if filter.min_liquidity > 0:
                 opps = [o for o in opps if o.min_liquidity >= filter.min_liquidity]
+            if filter.category:
+                # Case-insensitive category matching
+                category_lower = filter.category.lower()
+                opps = [o for o in opps if o.category and o.category.lower() == category_lower]
 
         return opps
 

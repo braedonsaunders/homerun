@@ -17,6 +17,7 @@ async def get_opportunities(
     strategy: Optional[StrategyType] = Query(None, description="Filter by strategy type"),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
+    category: Optional[str] = Query(None, description="Filter by category (e.g., politics, sports, crypto)"),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip")
 ):
@@ -25,7 +26,8 @@ async def get_opportunities(
         min_profit=min_profit / 100,  # Convert from percentage
         max_risk=max_risk,
         strategies=[strategy] if strategy else [],
-        min_liquidity=min_liquidity
+        min_liquidity=min_liquidity,
+        category=category
     )
 
     opportunities = scanner.get_opportunities(filter)

@@ -22,6 +22,7 @@ export interface Opportunity {
   markets: Market[]
   event_id?: string
   event_title?: string
+  category?: string
   min_liquidity: number
   max_position_size: number
   detected_at: string
@@ -196,6 +197,7 @@ export const getOpportunities = async (params?: {
   strategy?: string
   min_liquidity?: number
   search?: string
+  category?: string
   limit?: number
   offset?: number
 }): Promise<OpportunitiesResponse> => {

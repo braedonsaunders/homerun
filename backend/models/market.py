@@ -91,6 +91,7 @@ class Event(BaseModel):
     slug: str
     title: str
     description: str = ""
+    category: Optional[str] = None
     markets: list[Market] = []
     neg_risk: bool = False
     active: bool = True
@@ -106,11 +107,24 @@ class Event(BaseModel):
             except Exception:
                 pass
 
+        # Extract category from tags or category field
+        category = None
+        if data.get("category"):
+            category = data.get("category")
+        elif data.get("tags"):
+            # Tags is usually a list, take the first one as category
+            tags = data.get("tags", [])
+            if isinstance(tags, list) and len(tags) > 0:
+                category = tags[0]
+            elif isinstance(tags, str):
+                category = tags
+
         return cls(
             id=str(data.get("id", "")),
             slug=data.get("slug", ""),
             title=data.get("title", ""),
             description=data.get("description", ""),
+            category=category,
             markets=markets,
             neg_risk=data.get("negRisk", False),
             active=data.get("active", True),
