@@ -30,6 +30,7 @@ class AutoTraderConfigRequest(BaseModel):
     max_daily_trades: Optional[int] = Field(None, ge=1)
     max_daily_loss_usd: Optional[float] = Field(None, ge=0)
     require_confirmation: Optional[bool] = None
+    paper_account_capital: Optional[float] = Field(None, ge=100, description="Starting capital for paper trading")
 
 
 class AutoTraderStatusResponse(BaseModel):
@@ -145,6 +146,9 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
 
     if config.require_confirmation is not None:
         updates["require_confirmation"] = config.require_confirmation
+
+    if config.paper_account_capital is not None:
+        updates["paper_account_capital"] = config.paper_account_capital
 
     auto_trader.configure(**updates)
 

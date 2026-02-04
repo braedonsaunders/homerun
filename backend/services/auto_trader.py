@@ -62,6 +62,7 @@ class AutoTraderConfig:
     base_position_size_usd: float = 10.0  # Base position size
     max_position_size_usd: float = 100.0  # Maximum per trade
     position_size_method: str = "fixed"   # fixed, kelly, volatility_adjusted
+    paper_account_capital: float = 10000.0  # Starting capital for paper trading
 
     # Risk management
     max_daily_trades: int = 50            # Maximum trades per day
@@ -324,15 +325,21 @@ class AutoTrader:
             # Simulation mode
             from services.simulation import simulation_service
 
-            # Get or create a simulation account
+            # Get or create a simulation account for auto trading
             accounts = await simulation_service.get_all_accounts()
-            if not accounts:
-                account = await simulation_service.create_account(
+            auto_trader_account = None
+            for acc in accounts:
+                if acc.name == "Auto Trader":
+                    auto_trader_account = acc
+                    break
+
+            if not auto_trader_account:
+                auto_trader_account = await simulation_service.create_account(
                     name="Auto Trader",
-                    initial_capital=10000.0
+                    initial_capital=self.config.paper_account_capital
                 )
-            else:
-                account = accounts[0]
+
+            account = auto_trader_account
 
             # Execute in simulation
             sim_trade = await simulation_service.execute_opportunity(
@@ -499,7 +506,8 @@ class AutoTrader:
             "max_daily_trades": self.config.max_daily_trades,
             "max_daily_loss_usd": self.config.max_daily_loss_usd,
             "circuit_breaker_losses": self.config.circuit_breaker_losses,
-            "require_confirmation": self.config.require_confirmation
+            "require_confirmation": self.config.require_confirmation,
+            "paper_account_capital": self.config.paper_account_capital
         }
 
     def get_trades(self, limit: int = 100) -> list[dict]:

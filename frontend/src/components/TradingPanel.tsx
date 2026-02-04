@@ -35,7 +35,8 @@ export default function TradingPanel() {
     base_position_size_usd: 10,
     max_position_size_usd: 100,
     max_daily_trades: 50,
-    max_daily_loss_usd: 100
+    max_daily_loss_usd: 100,
+    paper_account_capital: 10000
   })
   const queryClient = useQueryClient()
 
@@ -317,6 +318,17 @@ export default function TradingPanel() {
                 className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2"
               />
             </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Paper Account Capital ($)</label>
+              <input
+                type="number"
+                value={configForm.paper_account_capital}
+                onChange={(e) => setConfigForm({ ...configForm, paper_account_capital: parseFloat(e.target.value) })}
+                min={100}
+                className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2"
+              />
+              <p className="text-xs text-gray-600 mt-1">Starting capital for paper trading simulation</p>
+            </div>
           </div>
           <div className="flex gap-3 mt-4">
             <button
@@ -364,6 +376,10 @@ export default function TradingPanel() {
             <div>
               <p className="text-gray-500">Circuit Breaker</p>
               <p className="font-mono">{config.circuit_breaker_losses} losses</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Paper Capital</p>
+              <p className="font-mono">${config.paper_account_capital?.toLocaleString() || '10,000'}</p>
             </div>
           </div>
         </div>
