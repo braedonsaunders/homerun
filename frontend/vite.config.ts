@@ -13,6 +13,16 @@ export default defineConfig({
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            // Suppress EPIPE and ECONNRESET errors which occur when
+            // WebSocket connections close - these are expected behavior
+            if (err.message.includes('EPIPE') || err.message.includes('ECONNRESET')) {
+              return
+            }
+            console.error('WebSocket proxy error:', err.message)
+          })
+        },
       },
     },
   },
