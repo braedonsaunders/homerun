@@ -245,49 +245,76 @@ class PolymarketClient:
         min_trades: int = 10
     ) -> list[dict]:
         """
-        Discover top traders by analyzing recent trades across markets.
+        Discover top traders by analyzing recent trades across active markets.
         Aggregates by wallet and calculates win rates.
         """
         client = await self._get_client()
 
-        # Get recent trades across all markets
+        # First get active markets to pull trades from
         try:
-            response = await client.get(
-                f"{self.data_url}/trades",
-                params={"limit": 1000}
+            markets_response = await client.get(
+                f"{self.gamma_url}/markets",
+                params={"active": True, "limit": 20}
             )
-            response.raise_for_status()
-            all_trades = response.json()
+            markets_response.raise_for_status()
+            markets = markets_response.json()
         except Exception as e:
-            print(f"Error fetching trades: {e}")
+            print(f"Error fetching markets: {e}")
             return []
 
-        # Aggregate by wallet
+        # Aggregate by wallet across multiple markets
         wallet_stats: dict[str, dict] = {}
 
-        for trade in all_trades:
-            wallet = trade.get("user") or trade.get("maker") or trade.get("taker")
-            if not wallet:
+        # Get trades from each active market
+        for market in markets[:15]:  # Limit to top 15 markets to avoid rate limits
+            condition_id = market.get("conditionId") or market.get("condition_id")
+            if not condition_id:
                 continue
 
-            if wallet not in wallet_stats:
-                wallet_stats[wallet] = {
-                    "address": wallet,
-                    "trades": 0,
-                    "volume": 0.0,
-                    "buys": 0,
-                    "sells": 0,
-                }
+            try:
+                response = await client.get(
+                    f"{self.clob_url}/trades",
+                    params={"market": condition_id, "limit": 100}
+                )
+                if response.status_code != 200:
+                    continue
+                trades = response.json()
+                if not isinstance(trades, list):
+                    trades = trades.get("trades", []) or trades.get("data", [])
+            except Exception as e:
+                print(f"Error fetching trades for {condition_id}: {e}")
+                continue
 
-            stats = wallet_stats[wallet]
-            stats["trades"] += 1
-            stats["volume"] += float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+            for trade in trades:
+                # Try different field names for wallet address
+                wallet = (trade.get("maker") or trade.get("taker") or
+                         trade.get("user") or trade.get("owner"))
+                if not wallet:
+                    continue
 
-            side = trade.get("side", "").upper()
-            if side == "BUY":
-                stats["buys"] += 1
-            elif side == "SELL":
-                stats["sells"] += 1
+                if wallet not in wallet_stats:
+                    wallet_stats[wallet] = {
+                        "address": wallet,
+                        "trades": 0,
+                        "volume": 0.0,
+                        "buys": 0,
+                        "sells": 0,
+                    }
+
+                stats = wallet_stats[wallet]
+                stats["trades"] += 1
+
+                # Try different field names for size/amount
+                size = float(trade.get("size") or trade.get("amount") or
+                            trade.get("matchedAmount") or 0)
+                price = float(trade.get("price") or trade.get("avg_price") or 0)
+                stats["volume"] += size * price if price else size
+
+                side = str(trade.get("side", "")).upper()
+                if side == "BUY" or side == "0":
+                    stats["buys"] += 1
+                elif side == "SELL" or side == "1":
+                    stats["sells"] += 1
 
         # Filter and sort by volume
         active_wallets = [
