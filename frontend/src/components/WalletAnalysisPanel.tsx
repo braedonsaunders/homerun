@@ -29,12 +29,13 @@ import {
   getWalletSummary,
   getWalletWinRate,
   analyzeWalletPnL,
-  getLeaderboard,
+  getWalletProfile,
   WalletTrade,
   WalletPosition,
   WalletSummary,
   WalletWinRate,
-  WalletPnL
+  WalletPnL,
+  WalletProfile
 } from '../services/api'
 
 interface WalletAnalysisPanelProps {
@@ -197,19 +198,15 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
     enabled: !!activeWallet,
   })
 
-  // Try to get username from leaderboard
-  const leaderboardQuery = useQuery({
-    queryKey: ['leaderboard-lookup'],
-    queryFn: () => getLeaderboard({ limit: 100 }),
-    staleTime: 60000,
+  // Fetch user profile (username) directly from Polymarket
+  const profileQuery = useQuery({
+    queryKey: ['wallet-profile', activeWallet],
+    queryFn: () => getWalletProfile(activeWallet!),
+    enabled: !!activeWallet,
+    staleTime: 300000, // Cache for 5 minutes
   })
 
-  const username = useMemo(() => {
-    if (!activeWallet || !leaderboardQuery.data) return null
-    const traders = leaderboardQuery.data as Array<{ address: string; username?: string }>
-    const found = traders.find(t => t.address?.toLowerCase() === activeWallet.toLowerCase())
-    return found?.username || null
-  }, [activeWallet, leaderboardQuery.data])
+  const username = profileQuery.data?.username || null
 
   const handleAnalyze = () => {
     if (searchAddress.trim()) {

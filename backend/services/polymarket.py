@@ -191,6 +191,97 @@ class PolymarketClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_wallet_positions_with_prices(self, address: str) -> list[dict]:
+        """Get open positions for a wallet with current market prices from CLOB API"""
+        positions = await self.get_wallet_positions(address)
+
+        if not positions:
+            return []
+
+        # Extract all token IDs that need price lookups
+        token_ids = []
+        for pos in positions:
+            asset = pos.get("asset", "")
+            if asset:
+                token_ids.append(asset)
+
+        # Fetch all prices in parallel
+        if token_ids:
+            prices = await self.get_prices_batch(list(set(token_ids)))
+        else:
+            prices = {}
+
+        # Enrich positions with current prices
+        enriched = []
+        for pos in positions:
+            asset = pos.get("asset", "")
+            current_price = 0.0
+            if asset and asset in prices:
+                current_price = prices[asset].get("mid", 0) or 0
+
+            enriched_pos = {
+                **pos,
+                "currentPrice": current_price,
+            }
+            enriched.append(enriched_pos)
+
+        return enriched
+
+    async def get_user_profile(self, address: str) -> dict:
+        """
+        Get user profile info from Polymarket.
+        Tries the data API profile endpoint first, then falls back to scraping.
+        """
+        client = await self._get_client()
+
+        # Try the data API first (undocumented but may exist)
+        try:
+            response = await client.get(
+                f"{self.data_url}/profile",
+                params={"address": address}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    return data
+        except Exception:
+            pass
+
+        # Try fetching from the Polymarket website profile page
+        try:
+            response = await client.get(
+                f"https://polymarket.com/profile/{address}",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                },
+                follow_redirects=True
+            )
+            if response.status_code == 200:
+                html = response.text
+                # Try to extract username from the page
+                # Look for patterns like <title>Username | Polymarket</title>
+                # or meta tags with the username
+                import re
+
+                # Try title tag
+                title_match = re.search(r'<title>([^|<]+)\s*\|?\s*Polymarket', html)
+                if title_match:
+                    username = title_match.group(1).strip()
+                    if username and username.lower() != address.lower()[:10]:
+                        return {"username": username, "address": address}
+
+                # Try meta og:title
+                og_match = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html)
+                if og_match:
+                    username = og_match.group(1).strip()
+                    if username and "polymarket" not in username.lower():
+                        return {"username": username, "address": address}
+
+        except Exception as e:
+            print(f"Error fetching profile for {address}: {e}")
+
+        return {"username": None, "address": address}
+
     async def get_wallet_trades(
         self,
         address: str,
@@ -298,16 +389,21 @@ class PolymarketClient:
 
     async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500) -> dict:
         """
-        Calculate win rate for a wallet by analyzing trade history.
-        Groups trades by market and calculates wins vs losses.
+        Calculate win rate for a wallet by analyzing trade history and open positions.
+
+        Considers:
+        - Closed positions: sells > cost basis = win
+        - Open positions: current value > cost basis = win (unrealized)
 
         Returns:
             dict with win_rate, wins, losses, total_markets, trade_count
         """
         try:
+            # Fetch both trades and positions with current prices
             trades = await self.get_wallet_trades(address, limit=max_trades)
+            positions = await self.get_wallet_positions_with_prices(address)
 
-            if not trades:
+            if not trades and not positions:
                 return {
                     "address": address,
                     "win_rate": 0.0,
@@ -322,7 +418,11 @@ class PolymarketClient:
             for trade in trades:
                 market_id = trade.get("market") or trade.get("condition_id") or trade.get("assetId", "unknown")
                 if market_id not in markets:
-                    markets[market_id] = {"buys": 0.0, "sells": 0.0, "buy_count": 0, "sell_count": 0}
+                    markets[market_id] = {
+                        "buys": 0.0, "sells": 0.0,
+                        "buy_count": 0, "sell_count": 0,
+                        "buy_size": 0.0, "sell_size": 0.0
+                    }
 
                 size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
                 price = float(trade.get("price", 0) or 0)
@@ -331,31 +431,61 @@ class PolymarketClient:
                 if side == "BUY":
                     markets[market_id]["buys"] += size * price
                     markets[market_id]["buy_count"] += 1
+                    markets[market_id]["buy_size"] += size
                 elif side == "SELL":
                     markets[market_id]["sells"] += size * price
                     markets[market_id]["sell_count"] += 1
+                    markets[market_id]["sell_size"] += size
 
-            # Calculate wins/losses (a market is a win if sells > buys)
-            wins = 0
-            losses = 0
+            # Process open positions to determine unrealized wins/losses
+            position_wins = 0
+            position_losses = 0
+            for pos in positions:
+                size = float(pos.get("size", 0) or 0)
+                avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+                current_price = float(pos.get("currentPrice", 0) or 0)
+
+                if size > 0 and avg_price > 0:
+                    cost_basis = size * avg_price
+                    current_value = size * current_price
+
+                    # If current value > cost basis, it's a winning position
+                    if current_value > cost_basis:
+                        position_wins += 1
+                    elif current_value < cost_basis:
+                        position_losses += 1
+
+            # Calculate wins/losses from closed positions (positions with sells)
+            closed_wins = 0
+            closed_losses = 0
             for market_id, data in markets.items():
-                # Only count markets with both buys and sells (closed positions)
-                if data["buy_count"] > 0 and data["sell_count"] > 0:
+                # Only count markets with sells (at least partially closed)
+                if data["sell_count"] > 0:
+                    # If they sold for more than they bought = win
                     if data["sells"] > data["buys"]:
-                        wins += 1
-                    else:
-                        losses += 1
+                        closed_wins += 1
+                    elif data["sells"] < data["buys"]:
+                        closed_losses += 1
 
-            total_closed = wins + losses
-            win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+            # Combine closed and open position results
+            total_wins = closed_wins + position_wins
+            total_losses = closed_losses + position_losses
+            total_positions = total_wins + total_losses
+
+            win_rate = (total_wins / total_positions * 100) if total_positions > 0 else 0.0
 
             return {
                 "address": address,
                 "win_rate": win_rate,
-                "wins": wins,
-                "losses": losses,
+                "wins": total_wins,
+                "losses": total_losses,
                 "total_markets": len(markets),
-                "trade_count": len(trades)
+                "trade_count": len(trades),
+                "open_positions": len(positions),
+                "closed_wins": closed_wins,
+                "closed_losses": closed_losses,
+                "unrealized_wins": position_wins,
+                "unrealized_losses": position_losses
             }
         except Exception as e:
             print(f"Error calculating win rate for {address}: {e}")
@@ -439,9 +569,11 @@ class PolymarketClient:
     async def get_wallet_pnl(self, address: str) -> dict:
         """
         Calculate PnL for a wallet by analyzing their positions and trades.
+        Uses enriched positions with real-time prices from CLOB API.
         """
         try:
-            positions = await self.get_wallet_positions(address)
+            # Use enriched positions with current market prices
+            positions = await self.get_wallet_positions_with_prices(address)
             trades = await self.get_wallet_trades(address, limit=500)
 
             total_invested = 0.0

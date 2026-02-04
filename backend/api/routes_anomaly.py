@@ -249,14 +249,15 @@ async def get_wallet_trades(
 @anomaly_router.get("/wallet/{wallet_address}/positions")
 async def get_wallet_positions(wallet_address: str):
     """
-    Get current open positions for a wallet.
+    Get current open positions for a wallet with real-time market prices.
     """
     try:
         address = validate_eth_address(wallet_address)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    positions = await polymarket_client.get_wallet_positions(address)
+    # Use enriched positions with current market prices from CLOB API
+    positions = await polymarket_client.get_wallet_positions_with_prices(address)
 
     # Enrich positions with calculated fields
     enriched_positions = []
@@ -308,9 +309,9 @@ async def get_wallet_summary(wallet_address: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Fetch all data in parallel
+    # Fetch all data in parallel - use enriched positions with current prices
     trades = await polymarket_client.get_wallet_trades(address, limit=500)
-    positions = await polymarket_client.get_wallet_positions(address)
+    positions = await polymarket_client.get_wallet_positions_with_prices(address)
 
     # Calculate summary stats
     total_invested = 0.0
