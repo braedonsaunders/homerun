@@ -16,7 +16,9 @@ async def get_opportunities(
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     strategy: Optional[StrategyType] = Query(None, description="Filter by strategy type"),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
-    limit: int = Query(50, description="Maximum results to return")
+    search: Optional[str] = Query(None, description="Search query for market titles"),
+    limit: int = Query(50, description="Maximum results to return"),
+    offset: int = Query(0, description="Number of results to skip")
 ):
     """Get current arbitrage opportunities"""
     filter = OpportunityFilter(
@@ -27,7 +29,22 @@ async def get_opportunities(
     )
 
     opportunities = scanner.get_opportunities(filter)
-    return opportunities[:limit]
+
+    # Apply search filter if provided
+    if search:
+        search_lower = search.lower()
+        opportunities = [
+            opp for opp in opportunities
+            if search_lower in opp.title.lower()
+            or (opp.event_title and search_lower in opp.event_title.lower())
+            or any(search_lower in m.get("question", "").lower() for m in opp.markets)
+        ]
+
+    # Apply pagination
+    total = len(opportunities)
+    opportunities = opportunities[offset:offset + limit]
+
+    return opportunities
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)

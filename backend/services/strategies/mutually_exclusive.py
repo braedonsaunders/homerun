@@ -67,13 +67,18 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         opportunities = []
         active_markets = [m for m in event.markets if m.active and not m.closed]
 
-        # Compare each pair of markets
-        for i, market_a in enumerate(active_markets):
-            for market_b in active_markets[i+1:]:
-                if self._are_mutually_exclusive(market_a, market_b):
-                    opp = self._check_pair(market_a, market_b, prices, event)
-                    if opp:
-                        opportunities.append(opp)
+        # IMPORTANT: Only apply to events with EXACTLY 2 markets
+        # If there are more than 2, it's a multi-outcome scenario (use must_happen/negrisk instead)
+        # Two random candidates from a multi-candidate race are NOT mutually exclusive
+        # because a third candidate could win
+        if len(active_markets) != 2:
+            return opportunities
+
+        market_a, market_b = active_markets
+        if self._are_mutually_exclusive(market_a, market_b):
+            opp = self._check_pair(market_a, market_b, prices, event)
+            if opp:
+                opportunities.append(opp)
 
         return opportunities
 
@@ -148,6 +153,12 @@ class MutuallyExclusiveStrategy(BaseStrategy):
                 yes_b = prices[token].get("mid", yes_b)
 
         total_cost = yes_a + yes_b
+
+        # If total is way below 1.0, these probably aren't exhaustive options
+        # (there might be other candidates/outcomes)
+        # Only consider if total is at least 0.85 (suggesting these are the main options)
+        if total_cost < 0.85:
+            return None
 
         if total_cost >= 1.0:
             return None

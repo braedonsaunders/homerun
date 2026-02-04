@@ -145,7 +145,9 @@ export const getOpportunities = async (params?: {
   max_risk?: number
   strategy?: string
   min_liquidity?: number
+  search?: string
   limit?: number
+  offset?: number
 }): Promise<Opportunity[]> => {
   const { data } = await api.get('/opportunities', { params })
   return data

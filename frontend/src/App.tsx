@@ -13,7 +13,10 @@ import {
   PlayCircle,
   Copy,
   Shield,
-  Bot
+  Bot,
+  Search,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -33,10 +36,15 @@ import TradingPanel from './components/TradingPanel'
 
 type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'anomaly'
 
+const ITEMS_PER_PAGE = 20
+
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
+  const [maxRisk, setMaxRisk] = useState(1.0)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [currentPage, setCurrentPage] = useState(0)
   const queryClient = useQueryClient()
 
   // WebSocket for real-time updates
@@ -49,13 +57,21 @@ function App() {
     }
   }, [lastMessage, queryClient])
 
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(0)
+  }, [selectedStrategy, minProfit, maxRisk, searchQuery])
+
   // Queries
   const { data: opportunities = [], isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, minProfit],
+    queryKey: ['opportunities', selectedStrategy, minProfit, maxRisk, searchQuery, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
       min_profit: minProfit,
-      limit: 50
+      max_risk: maxRisk,
+      search: searchQuery || undefined,
+      limit: ITEMS_PER_PAGE,
+      offset: currentPage * ITEMS_PER_PAGE
     }),
     refetchInterval: 30000,
   })
@@ -212,6 +228,20 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {activeTab === 'opportunities' && (
           <div>
+            {/* Search */}
+            <div className="mb-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <input
+                  type="text"
+                  placeholder="Search opportunities by market, event, or keyword..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
             {/* Filters */}
             <div className="flex gap-4 mb-6">
               <div className="flex-1">
@@ -227,7 +257,7 @@ function App() {
                   ))}
                 </select>
               </div>
-              <div className="w-48">
+              <div className="w-40">
                 <label className="block text-xs text-gray-500 mb-1">Min Profit %</label>
                 <input
                   type="number"
@@ -236,6 +266,18 @@ function App() {
                   step="0.5"
                   min="0"
                   className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="w-48">
+                <label className="block text-xs text-gray-500 mb-1">Max Risk Score: {maxRisk.toFixed(1)}</label>
+                <input
+                  type="range"
+                  value={maxRisk}
+                  onChange={(e) => setMaxRisk(parseFloat(e.target.value))}
+                  step="0.1"
+                  min="0"
+                  max="1"
+                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer mt-2"
                 />
               </div>
             </div>
@@ -254,11 +296,52 @@ function App() {
                 </p>
               </div>
             ) : (
-              <div className="space-y-4">
-                {opportunities.map((opp) => (
-                  <OpportunityCard key={opp.id} opportunity={opp} />
-                ))}
-              </div>
+              <>
+                <div className="space-y-4">
+                  {opportunities.map((opp) => (
+                    <OpportunityCard key={opp.id} opportunity={opp} />
+                  ))}
+                </div>
+
+                {/* Pagination */}
+                <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-800">
+                  <div className="text-sm text-gray-500">
+                    Showing {currentPage * ITEMS_PER_PAGE + 1} - {currentPage * ITEMS_PER_PAGE + opportunities.length}
+                    {searchQuery && ` (filtered by "${searchQuery}")`}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                      disabled={currentPage === 0}
+                      className={clsx(
+                        "flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm",
+                        currentPage === 0
+                          ? "bg-gray-800 text-gray-600 cursor-not-allowed"
+                          : "bg-[#1a1a1a] text-gray-300 hover:bg-gray-700"
+                      )}
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      Previous
+                    </button>
+                    <span className="px-3 py-1.5 bg-[#1a1a1a] rounded-lg text-sm">
+                      Page {currentPage + 1}
+                    </span>
+                    <button
+                      onClick={() => setCurrentPage(p => p + 1)}
+                      disabled={opportunities.length < ITEMS_PER_PAGE}
+                      className={clsx(
+                        "flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm",
+                        opportunities.length < ITEMS_PER_PAGE
+                          ? "bg-gray-800 text-gray-600 cursor-not-allowed"
+                          : "bg-[#1a1a1a] text-gray-300 hover:bg-gray-700"
+                      )}
+                    >
+                      Next
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         )}
