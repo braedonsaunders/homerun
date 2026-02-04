@@ -15,12 +15,14 @@ from api.routes_copy_trading import copy_trading_router
 from api.routes_anomaly import anomaly_router
 from api.routes_trading import router as trading_router
 from api.routes_auto_trader import router as auto_trader_router
+from api.routes_maintenance import router as maintenance_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.simulation import simulation_service
 from services.copy_trader import copy_trader
 from services.anomaly_detector import anomaly_detector
 from services.trading import trading_service
 from services.auto_trader import auto_trader
+from services.maintenance import maintenance_service
 from models.database import init_database
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
@@ -68,6 +70,23 @@ async def lifespan(app: FastAPI):
             else:
                 logger.warning("Trading service initialization failed - check credentials")
 
+        # Start background cleanup if enabled
+        if settings.AUTO_CLEANUP_ENABLED:
+            cleanup_config = {
+                "resolved_trade_days": settings.CLEANUP_RESOLVED_TRADE_DAYS,
+                "open_trade_expiry_days": settings.CLEANUP_OPEN_TRADE_EXPIRY_DAYS,
+                "wallet_trade_days": settings.CLEANUP_WALLET_TRADE_DAYS,
+                "anomaly_days": settings.CLEANUP_ANOMALY_DAYS
+            }
+            cleanup_task = asyncio.create_task(
+                maintenance_service.start_background_cleanup(
+                    interval_hours=settings.CLEANUP_INTERVAL_HOURS,
+                    cleanup_config=cleanup_config
+                )
+            )
+            tasks.append(cleanup_task)
+            logger.info("Background database cleanup enabled")
+
         logger.info("All services started successfully")
 
         yield
@@ -84,6 +103,7 @@ async def lifespan(app: FastAPI):
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()
+        maintenance_service.stop()
 
         for task in tasks:
             task.cancel()
@@ -138,6 +158,7 @@ app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy 
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
+app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 
 
 # WebSocket endpoint
@@ -205,6 +226,10 @@ async def detailed_health_check():
                 "running": auto_trader._running,
                 "mode": auto_trader.config.mode.value,
                 "stats": auto_trader.get_stats()
+            },
+            "maintenance": {
+                "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
+                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS if settings.AUTO_CLEANUP_ENABLED else None
             }
         },
         "rate_limits": rate_limiter.get_status(),

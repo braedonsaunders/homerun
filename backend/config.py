@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
     CHAIN_ID: int = 137  # Polygon mainnet
 
+    # Database Maintenance
+    AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
+    CLEANUP_INTERVAL_HOURS: int = 24  # Run cleanup every X hours
+    CLEANUP_RESOLVED_TRADE_DAYS: int = 30  # Delete resolved trades older than X days
+    CLEANUP_OPEN_TRADE_EXPIRY_DAYS: int = 90  # Expire open trades after X days
+    CLEANUP_WALLET_TRADE_DAYS: int = 60  # Delete wallet trades older than X days
+    CLEANUP_ANOMALY_DAYS: int = 30  # Delete resolved anomalies older than X days
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

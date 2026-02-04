@@ -114,6 +114,53 @@ async def set_scanner_interval(interval_seconds: int = Query(..., ge=10, le=3600
     return {"status": "updated", **scanner.get_status()}
 
 
+# ==================== OPPORTUNITIES CLEANUP ====================
+
+@router.delete("/opportunities")
+async def clear_opportunities():
+    """
+    Clear all opportunities from memory.
+
+    This removes all detected arbitrage opportunities.
+    They will be repopulated on the next scan.
+    """
+    count = scanner.clear_opportunities()
+    return {
+        "status": "success",
+        "cleared_count": count,
+        "message": f"Cleared {count} opportunities. Next scan will repopulate."
+    }
+
+
+@router.post("/opportunities/cleanup")
+async def cleanup_opportunities(
+    remove_expired: bool = Query(True, description="Remove opportunities past resolution date"),
+    max_age_minutes: Optional[int] = Query(None, ge=1, le=1440, description="Remove opportunities older than X minutes")
+):
+    """
+    Clean up stale opportunities.
+
+    - remove_expired: Remove opportunities whose resolution date has passed
+    - max_age_minutes: Remove opportunities detected more than X minutes ago
+    """
+    results = {}
+
+    if remove_expired:
+        expired_count = scanner.remove_expired_opportunities()
+        results["expired_removed"] = expired_count
+
+    if max_age_minutes:
+        old_count = scanner.remove_old_opportunities(max_age_minutes)
+        results["old_removed"] = old_count
+
+    results["remaining_count"] = len(scanner.get_opportunities())
+
+    return {
+        "status": "success",
+        **results
+    }
+
+
 # ==================== WALLETS ====================
 
 @router.get("/wallets")
