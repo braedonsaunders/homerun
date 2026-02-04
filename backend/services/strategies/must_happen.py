@@ -9,23 +9,43 @@ class MustHappenStrategy(BaseStrategy):
     Buy YES on ALL possible outcomes when total < $1.00
     One outcome MUST happen, guaranteeing a $1 payout.
 
+    WARNING: This strategy has SIGNIFICANT RISKS!
+
+    The strategy uses keyword heuristics ("winner", "who will", etc.) to guess
+    that outcomes are exhaustive, but CANNOT VERIFY this is actually true.
+
+    KNOWN ISSUES:
+    1. Hidden candidates: "Who wins the election?" may show 3 candidates but
+       there could be others not displayed in the markets
+    2. "None of the above": Some events allow outcomes not listed
+    3. Cancellation/postponement: Events can be cancelled, voiding all bets
+    4. Rule changes: Resolution criteria may change
+
+    ONLY trust this strategy when:
+    - The event is explicitly flagged as NegRisk by Polymarket (use NegRisk strategy instead)
+    - You have MANUALLY verified the outcomes cover ALL possibilities
+    - The event rules explicitly state one outcome must win
+
+    Example of FAILURE:
+    - "Who wins the 2024 primary?" with markets for A, B, C
+    - Candidate D enters the race and wins
+    - All your YES positions resolve to $0
+
     Example (Multi-candidate election):
     - Candidate A YES: $0.30
     - Candidate B YES: $0.35
     - Candidate C YES: $0.32
     - Total: $0.97
-    - One MUST win = $1.00
-    - Profit: $0.03
-
-    This is similar to NegRisk but focuses on events where
-    the outcomes are explicitly exhaustive (one must happen).
+    - ASSUMED one must win = $1.00
+    - Profit: $0.03 (IF assumptions hold)
     """
 
     strategy_type = StrategyType.MUST_HAPPEN
     name = "Must-Happen"
-    description = "Buy YES on all outcomes when total < $1, one must win"
+    description = "Buy YES on all outcomes - REQUIRES MANUAL VERIFICATION of exhaustiveness"
 
-    # Keywords indicating exhaustive outcome sets
+    # Keywords indicating POTENTIALLY exhaustive outcome sets
+    # WARNING: These are HEURISTICS, not guarantees!
     EXHAUSTIVE_KEYWORDS = [
         "winner", "who will", "which", "what will",
         "champion", "elected", "nominee", "president",
@@ -134,11 +154,24 @@ class MustHappenStrategy(BaseStrategy):
         if total_yes >= 1.0:
             return None
 
-        return self.create_opportunity(
-            title=f"Must-Happen: {event.title[:45]}...",
-            description=f"Exhaustive outcomes. Buy all {len(active_markets)} YES for ${total_yes:.3f}, winner pays $1",
+        # Additional sanity check: if total is way below 1.0,
+        # these probably aren't exhaustive options (missing candidates)
+        if total_yes < 0.80:
+            return None
+
+        opp = self.create_opportunity(
+            title=f"⚠️ Must-Happen: {event.title[:40]}...",
+            description=f"VERIFY MANUALLY: Ensure all outcomes are listed. Buy all {len(active_markets)} YES for ${total_yes:.3f}",
             total_cost=total_yes,
             markets=active_markets,
             positions=positions,
             event=event
         )
+
+        # Add extra risk factor for must-happen strategy
+        if opp:
+            opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may have hidden outcomes")
+            if total_yes < 0.90:
+                opp.risk_factors.insert(1, f"Low total ({total_yes:.0%}) suggests possible missing outcomes")
+
+        return opp
