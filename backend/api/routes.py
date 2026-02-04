@@ -46,7 +46,8 @@ async def get_opportunities(
 
     # Return as response with total count header
     from fastapi.responses import JSONResponse
-    response = JSONResponse(content=[o.model_dump() for o in paginated])
+    # Use mode='json' to properly serialize datetime objects
+    response = JSONResponse(content=[o.model_dump(mode='json') for o in paginated])
     response.headers["X-Total-Count"] = str(total)
     return response
 
