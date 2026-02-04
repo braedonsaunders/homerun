@@ -30,8 +30,7 @@ import {
   triggerScan,
   getStrategies,
   startScanner,
-  pauseScanner,
-  setScannerInterval
+  pauseScanner
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import OpportunityCard from './components/OpportunityCard'
@@ -57,8 +56,6 @@ function App() {
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
-  const [showScannerSettings, setShowScannerSettings] = useState(false)
-  const [intervalInput, setIntervalInput] = useState(300)
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
   const queryClient = useQueryClient()
@@ -117,13 +114,6 @@ function App() {
     queryFn: getStrategies,
   })
 
-  // Sync interval input with status
-  useEffect(() => {
-    if (status?.interval_seconds) {
-      setIntervalInput(status.interval_seconds)
-    }
-  }, [status?.interval_seconds])
-
   // Mutations
   const scanMutation = useMutation({
     mutationFn: triggerScan,
@@ -142,13 +132,6 @@ function App() {
 
   const pauseMutation = useMutation({
     mutationFn: pauseScanner,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
-    },
-  })
-
-  const intervalMutation = useMutation({
-    mutationFn: setScannerInterval,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
     },
@@ -215,13 +198,6 @@ function App() {
                     </>
                   )}
                 </button>
-
-                <button
-                  onClick={() => setShowScannerSettings(!showScannerSettings)}
-                  className="p-1.5 rounded-lg bg-[#1a1a1a] text-gray-400 hover:text-white transition-colors"
-                >
-                  <Settings className="w-4 h-4" />
-                </button>
               </div>
 
               {/* Scan Button */}
@@ -240,42 +216,6 @@ function App() {
             </div>
           </div>
 
-          {/* Scanner Settings Dropdown */}
-          {showScannerSettings && (
-            <div className="mt-4 p-4 bg-[#141414] rounded-lg border border-gray-800">
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <label className="block text-xs text-gray-500 mb-1">Scan Interval (seconds)</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={intervalInput}
-                      onChange={(e) => setIntervalInput(parseInt(e.target.value) || 60)}
-                      min={10}
-                      max={3600}
-                      className="w-24 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
-                    />
-                    <button
-                      onClick={() => intervalMutation.mutate(intervalInput)}
-                      disabled={intervalMutation.isPending || intervalInput === status?.interval_seconds}
-                      className={clsx(
-                        "px-3 py-1 rounded text-xs font-medium transition-colors",
-                        intervalInput === status?.interval_seconds
-                          ? "bg-gray-700 text-gray-500 cursor-not-allowed"
-                          : "bg-blue-500 text-white hover:bg-blue-600"
-                      )}
-                    >
-                      Apply
-                    </button>
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  <div>Status: <span className={status?.enabled ? "text-green-400" : "text-yellow-400"}>{status?.enabled ? 'Running' : 'Paused'}</span></div>
-                  <div>Interval: {status?.interval_seconds}s</div>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </header>
 
