@@ -97,8 +97,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Polymarket Arbitrage Scanner",
-    description="Production-ready arbitrage detection, simulation, and copy trading for Polymarket",
+    title="Homerun",
+    description="Polymarket arbitrage detection, paper trading, and autonomous trading",
     version="2.0.0",
     lifespan=lifespan
 )
@@ -127,6 +127,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 

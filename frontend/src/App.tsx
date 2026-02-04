@@ -11,12 +11,15 @@ import {
   Zap,
   Activity,
   PlayCircle,
-  Copy,
   Shield,
   Bot,
   Search,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Pause,
+  Play,
+  Settings,
+  Terminal
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -24,7 +27,9 @@ import {
   getScannerStatus,
   triggerScan,
   getStrategies,
-  Opportunity,
+  startScanner,
+  pauseScanner,
+  setScannerInterval,
   Strategy
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -38,6 +43,14 @@ type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'anomaly'
 
 const ITEMS_PER_PAGE = 20
 
+const ASCII_ART = `
+ _   _  ___  __  __ _____ ____  _   _ _   _
+| | | |/ _ \\|  \\/  | ____|  _ \\| | | | \\ | |
+| |_| | | | | |\\/| |  _| | |_) | | | |  \\| |
+|  _  | |_| | |  | | |___|  _ <| |_| | |\\  |
+|_| |_|\\___/|_|  |_|_____|_| \\_\\\\___/|_| \\_|
+`
+
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -45,15 +58,21 @@ function App() {
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
+  const [showScannerSettings, setShowScannerSettings] = useState(false)
+  const [intervalInput, setIntervalInput] = useState(300)
   const queryClient = useQueryClient()
 
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
 
-  // Update opportunities when WebSocket message received
+  // Update data when WebSocket message received
   useEffect(() => {
     if (lastMessage?.type === 'opportunities_update') {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+    }
+    if (lastMessage?.type === 'scanner_status') {
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
     }
   }, [lastMessage, queryClient])
 
@@ -63,7 +82,7 @@ function App() {
   }, [selectedStrategy, minProfit, maxRisk, searchQuery])
 
   // Queries
-  const { data: opportunities = [], isLoading: oppsLoading } = useQuery({
+  const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
     queryKey: ['opportunities', selectedStrategy, minProfit, maxRisk, searchQuery, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
@@ -76,16 +95,26 @@ function App() {
     refetchInterval: 30000,
   })
 
+  const opportunities = opportunitiesData?.opportunities || []
+  const totalOpportunities = opportunitiesData?.total || 0
+
   const { data: status } = useQuery({
     queryKey: ['scanner-status'],
     queryFn: getScannerStatus,
-    refetchInterval: 10000,
+    refetchInterval: 5000,
   })
 
   const { data: strategies = [] } = useQuery({
     queryKey: ['strategies'],
     queryFn: getStrategies,
   })
+
+  // Sync interval input with status
+  useEffect(() => {
+    if (status?.interval_seconds) {
+      setIntervalInput(status.interval_seconds)
+    }
+  }, [status?.interval_seconds])
 
   // Mutations
   const scanMutation = useMutation({
@@ -96,11 +125,34 @@ function App() {
     },
   })
 
+  const startMutation = useMutation({
+    mutationFn: startScanner,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+    },
+  })
+
+  const pauseMutation = useMutation({
+    mutationFn: pauseScanner,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+    },
+  })
+
+  const intervalMutation = useMutation({
+    mutationFn: setScannerInterval,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+    },
+  })
+
   // Stats
   const totalProfit = opportunities.reduce((sum, o) => sum + o.net_profit, 0)
   const avgROI = opportunities.length > 0
     ? opportunities.reduce((sum, o) => sum + o.roi_percent, 0) / opportunities.length
     : 0
+
+  const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
 
   return (
     <div className="min-h-screen bg-[#0a0a0a]">
@@ -110,11 +162,11 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
-                <DollarSign className="w-6 h-6 text-green-500" />
+                <Terminal className="w-6 h-6 text-green-500" />
               </div>
               <div>
-                <h1 className="text-xl font-bold">Polymarket Arbitrage</h1>
-                <p className="text-xs text-gray-500">Buy dollars for 94 cents</p>
+                <h1 className="text-xl font-bold text-green-400">HOMERUN</h1>
+                <p className="text-xs text-gray-500">Polymarket Arbitrage Scanner</p>
               </div>
             </div>
 
@@ -131,10 +183,37 @@ function App() {
                 {isConnected ? 'Live' : 'Disconnected'}
               </div>
 
-              {/* Scanner Status */}
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <Activity className="w-4 h-4" />
-                {status?.running ? 'Scanning' : 'Idle'}
+              {/* Scanner Status & Controls */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => status?.enabled ? pauseMutation.mutate() : startMutation.mutate()}
+                  disabled={pauseMutation.isPending || startMutation.isPending}
+                  className={clsx(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                    status?.enabled
+                      ? "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20"
+                      : "bg-green-500/10 text-green-500 hover:bg-green-500/20"
+                  )}
+                >
+                  {status?.enabled ? (
+                    <>
+                      <Pause className="w-3.5 h-3.5" />
+                      Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5" />
+                      Start
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => setShowScannerSettings(!showScannerSettings)}
+                  className="p-1.5 rounded-lg bg-[#1a1a1a] text-gray-400 hover:text-white transition-colors"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
               </div>
 
               {/* Scan Button */}
@@ -152,16 +231,67 @@ function App() {
               </button>
             </div>
           </div>
+
+          {/* Scanner Settings Dropdown */}
+          {showScannerSettings && (
+            <div className="mt-4 p-4 bg-[#141414] rounded-lg border border-gray-800">
+              <div className="flex items-center gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs text-gray-500 mb-1">Scan Interval (seconds)</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={intervalInput}
+                      onChange={(e) => setIntervalInput(parseInt(e.target.value) || 60)}
+                      min={10}
+                      max={3600}
+                      className="w-24 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
+                    />
+                    <button
+                      onClick={() => intervalMutation.mutate(intervalInput)}
+                      disabled={intervalMutation.isPending || intervalInput === status?.interval_seconds}
+                      className={clsx(
+                        "px-3 py-1 rounded text-xs font-medium transition-colors",
+                        intervalInput === status?.interval_seconds
+                          ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                          : "bg-blue-500 text-white hover:bg-blue-600"
+                      )}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  <div>Status: <span className={status?.enabled ? "text-green-400" : "text-yellow-400"}>{status?.enabled ? 'Running' : 'Paused'}</span></div>
+                  <div>Interval: {status?.interval_seconds}s</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </header>
+
+      {/* ASCII Art Banner - Shows in terminal style */}
+      <div className="border-b border-gray-800 bg-[#0a0a0a] overflow-hidden">
+        <div className="max-w-7xl mx-auto px-4">
+          <pre className="text-green-500 text-xs font-mono leading-tight py-2 whitespace-pre">
+            {ASCII_ART}
+          </pre>
+        </div>
+      </div>
 
       {/* Stats Bar */}
       <div className="border-b border-gray-800 bg-[#0a0a0a]">
         <div className="max-w-7xl mx-auto px-4 py-4">
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-5 gap-4">
             <StatCard
               icon={<Target className="w-5 h-5 text-blue-500" />}
-              label="Opportunities"
+              label="Total Opportunities"
+              value={totalOpportunities.toString()}
+            />
+            <StatCard
+              icon={<Activity className="w-5 h-5 text-cyan-500" />}
+              label="Showing"
               value={opportunities.length.toString()}
             />
             <StatCard
@@ -237,7 +367,7 @@ function App() {
                   placeholder="Search opportunities by market, event, or keyword..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-green-500"
                 />
               </div>
             </div>
@@ -306,7 +436,7 @@ function App() {
                 {/* Pagination */}
                 <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-800">
                   <div className="text-sm text-gray-500">
-                    Showing {currentPage * ITEMS_PER_PAGE + 1} - {currentPage * ITEMS_PER_PAGE + opportunities.length}
+                    Showing {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities)} of {totalOpportunities}
                     {searchQuery && ` (filtered by "${searchQuery}")`}
                   </div>
                   <div className="flex items-center gap-2">
@@ -324,14 +454,14 @@ function App() {
                       Previous
                     </button>
                     <span className="px-3 py-1.5 bg-[#1a1a1a] rounded-lg text-sm">
-                      Page {currentPage + 1}
+                      Page {currentPage + 1} of {totalPages || 1}
                     </span>
                     <button
                       onClick={() => setCurrentPage(p => p + 1)}
-                      disabled={opportunities.length < ITEMS_PER_PAGE}
+                      disabled={currentPage >= totalPages - 1}
                       className={clsx(
                         "flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm",
-                        opportunities.length < ITEMS_PER_PAGE
+                        currentPage >= totalPages - 1
                           ? "bg-gray-800 text-gray-600 cursor-not-allowed"
                           : "bg-[#1a1a1a] text-gray-300 hover:bg-gray-700"
                       )}
@@ -386,7 +516,7 @@ function TabButton({
       className={clsx(
         "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors",
         active
-          ? "border-blue-500 text-white"
+          ? "border-green-500 text-white"
           : "border-transparent text-gray-500 hover:text-gray-300"
       )}
     >

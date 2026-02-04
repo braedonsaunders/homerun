@@ -281,6 +281,18 @@ class DetectedAnomaly(Base):
     )
 
 
+# ==================== SCANNER SETTINGS ====================
+
+class ScannerSettings(Base):
+    """Persisted scanner configuration"""
+    __tablename__ = "scanner_settings"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=True)
+    scan_interval_seconds = Column(Integer, default=300)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ==================== DATABASE SETUP ====================
 
 async_engine = create_async_engine(settings.DATABASE_URL, echo=False)

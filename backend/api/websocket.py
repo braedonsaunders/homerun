@@ -120,6 +120,15 @@ async def broadcast_wallet_trade(trade):
     })
 
 
+async def broadcast_scanner_status(status):
+    """Callback to broadcast scanner status changes"""
+    await manager.broadcast({
+        "type": "scanner_status",
+        "data": status
+    })
+
+
 # Register callbacks
 scanner.add_callback(broadcast_opportunities)
+scanner.add_status_callback(broadcast_scanner_status)
 wallet_tracker.add_callback(broadcast_wallet_trade)

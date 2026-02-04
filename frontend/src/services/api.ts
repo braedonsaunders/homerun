@@ -47,6 +47,8 @@ export interface Position {
 
 export interface ScannerStatus {
   running: boolean
+  enabled: boolean
+  interval_seconds: number
   last_scan: string | null
   opportunities_count: number
   strategies: Strategy[]
@@ -140,6 +142,11 @@ export interface Anomaly {
 
 // ==================== OPPORTUNITIES ====================
 
+export interface OpportunitiesResponse {
+  opportunities: Opportunity[]
+  total: number
+}
+
 export const getOpportunities = async (params?: {
   min_profit?: number
   max_risk?: number
@@ -148,9 +155,13 @@ export const getOpportunities = async (params?: {
   search?: string
   limit?: number
   offset?: number
-}): Promise<Opportunity[]> => {
-  const { data } = await api.get('/opportunities', { params })
-  return data
+}): Promise<OpportunitiesResponse> => {
+  const response = await api.get('/opportunities', { params })
+  const total = parseInt(response.headers['x-total-count'] || '0', 10)
+  return {
+    opportunities: response.data,
+    total
+  }
 }
 
 export const triggerScan = async () => {
@@ -162,6 +173,23 @@ export const triggerScan = async () => {
 
 export const getScannerStatus = async (): Promise<ScannerStatus> => {
   const { data } = await api.get('/scanner/status')
+  return data
+}
+
+export const startScanner = async (): Promise<ScannerStatus> => {
+  const { data } = await api.post('/scanner/start')
+  return data
+}
+
+export const pauseScanner = async (): Promise<ScannerStatus> => {
+  const { data } = await api.post('/scanner/pause')
+  return data
+}
+
+export const setScannerInterval = async (intervalSeconds: number): Promise<ScannerStatus> => {
+  const { data } = await api.post('/scanner/interval', null, {
+    params: { interval_seconds: intervalSeconds }
+  })
   return data
 }
 

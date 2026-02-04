@@ -42,9 +42,13 @@ async def get_opportunities(
 
     # Apply pagination
     total = len(opportunities)
-    opportunities = opportunities[offset:offset + limit]
+    paginated = opportunities[offset:offset + limit]
 
-    return opportunities
+    # Return as response with total count header
+    from fastapi.responses import JSONResponse
+    response = JSONResponse(content=[o.model_dump() for o in paginated])
+    response.headers["X-Total-Count"] = str(total)
+    return response
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
@@ -85,15 +89,28 @@ async def trigger_scan():
 @router.get("/scanner/status")
 async def get_scanner_status():
     """Get scanner status"""
-    return {
-        "running": scanner.is_running,
-        "last_scan": scanner.last_scan.isoformat() if scanner.last_scan else None,
-        "opportunities_count": len(scanner.get_opportunities()),
-        "strategies": [
-            {"name": s.name, "type": s.strategy_type.value}
-            for s in scanner.strategies
-        ]
-    }
+    return scanner.get_status()
+
+
+@router.post("/scanner/start")
+async def start_scanner():
+    """Start/resume the scanner"""
+    await scanner.start()
+    return {"status": "started", **scanner.get_status()}
+
+
+@router.post("/scanner/pause")
+async def pause_scanner():
+    """Pause the scanner (keeps loop running but doesn't scan)"""
+    await scanner.pause()
+    return {"status": "paused", **scanner.get_status()}
+
+
+@router.post("/scanner/interval")
+async def set_scanner_interval(interval_seconds: int = Query(..., ge=10, le=3600)):
+    """Set the scan interval (10-3600 seconds)"""
+    await scanner.set_interval(interval_seconds)
+    return {"status": "updated", **scanner.get_status()}
 
 
 # ==================== WALLETS ====================
