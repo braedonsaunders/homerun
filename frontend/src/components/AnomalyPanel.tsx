@@ -5,17 +5,15 @@ import {
   AlertTriangle,
   CheckCircle,
   XCircle,
-  TrendingUp,
-  Eye,
   RefreshCw,
-  Shield
+  Shield,
+  AlertOctagon,
+  Info
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
   analyzeWallet,
-  findProfitableWallets,
   getAnomalies,
-  quickCheckWallet,
   WalletAnalysis
 } from '../services/api'
 
@@ -23,24 +21,17 @@ export default function AnomalyPanel() {
   const [searchAddress, setSearchAddress] = useState('')
   const [analysisResult, setAnalysisResult] = useState<WalletAnalysis | null>(null)
 
-  const { data: anomalies = [] } = useQuery({
+  const { data: anomalies = { anomalies: [], count: 0 }, refetch: refetchAnomalies } = useQuery({
     queryKey: ['anomalies'],
     queryFn: () => getAnomalies({ limit: 50 }),
   })
 
-  const { data: profitableWallets } = useQuery({
-    queryKey: ['profitable-wallets'],
-    queryFn: () => findProfitableWallets({
-      min_trades: 30,
-      min_win_rate: 0.6,
-      min_pnl: 500,
-      max_anomaly_score: 0.5
-    }),
-  })
-
   const analyzeMutation = useMutation({
     mutationFn: analyzeWallet,
-    onSuccess: (data) => setAnalysisResult(data)
+    onSuccess: (data) => {
+      setAnalysisResult(data)
+      refetchAnomalies()
+    }
   })
 
   const handleAnalyze = () => {
@@ -49,26 +40,36 @@ export default function AnomalyPanel() {
     }
   }
 
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleAnalyze()
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-bold">Wallet Analysis & Anomaly Detection</h2>
+        <h2 className="text-xl font-bold">Anomaly Detection</h2>
         <p className="text-sm text-gray-500">
-          Find profitable wallets to copy and detect suspicious trading patterns
+          Detect suspicious trading patterns and identify potential manipulation
         </p>
       </div>
 
       {/* Search */}
       <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-        <h3 className="font-medium mb-3">Analyze a Wallet</h3>
+        <h3 className="font-medium mb-3 flex items-center gap-2">
+          <Shield className="w-4 h-4" />
+          Check Wallet for Anomalies
+        </h3>
         <div className="flex gap-3">
           <input
             type="text"
             value={searchAddress}
             onChange={(e) => setSearchAddress(e.target.value)}
+            onKeyPress={handleKeyPress}
             placeholder="Enter wallet address (0x...)"
-            className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2"
+            className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 font-mono text-sm"
           />
           <button
             onClick={handleAnalyze}
@@ -80,144 +81,171 @@ export default function AnomalyPanel() {
             ) : (
               <Search className="w-4 h-4" />
             )}
-            Analyze
+            Scan
           </button>
         </div>
       </div>
 
       {/* Analysis Result */}
       {analysisResult && (
-        <AnalysisResultCard analysis={analysisResult} />
+        <AnomalyResultCard analysis={analysisResult} />
       )}
-
-      {/* Profitable Wallets */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-medium">Discovered Profitable Wallets</h3>
-          <span className="text-xs text-gray-500">
-            {profitableWallets?.count || 0} found
-          </span>
-        </div>
-
-        {!profitableWallets?.wallets?.length ? (
-          <p className="text-gray-500 text-center py-8">
-            No profitable wallets discovered yet. Wallets are analyzed as you track them.
-          </p>
-        ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {profitableWallets.wallets.map((wallet: any) => (
-              <div
-                key={wallet.address}
-                className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3"
-              >
-                <div>
-                  <p className="text-sm font-mono">{wallet.address.slice(0, 10)}...{wallet.address.slice(-8)}</p>
-                  <p className="text-xs text-gray-500">
-                    Win: {(wallet.win_rate * 100).toFixed(1)}% |
-                    ROI: {wallet.avg_roi.toFixed(1)}% |
-                    PnL: ${wallet.total_pnl.toFixed(0)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={clsx(
-                    "px-2 py-0.5 rounded text-xs",
-                    wallet.anomaly_score < 0.3 ? "bg-green-500/20 text-green-400" :
-                    wallet.anomaly_score < 0.6 ? "bg-yellow-500/20 text-yellow-400" :
-                    "bg-red-500/20 text-red-400"
-                  )}>
-                    Risk: {(wallet.anomaly_score * 100).toFixed(0)}%
-                  </span>
-                  <button
-                    onClick={() => {
-                      setSearchAddress(wallet.address)
-                      analyzeMutation.mutate(wallet.address)
-                    }}
-                    className="p-1 hover:bg-gray-700 rounded"
-                  >
-                    <Eye className="w-4 h-4 text-gray-400" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* Recent Anomalies */}
       <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-        <h3 className="font-medium mb-4">Recent Anomalies Detected</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-medium flex items-center gap-2">
+            <AlertOctagon className="w-4 h-4" />
+            Recent Anomalies Detected
+          </h3>
+          <span className="text-xs text-gray-500">
+            {anomalies.count || 0} found
+          </span>
+        </div>
 
-        {anomalies.anomalies?.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">No anomalies detected</p>
+        {!anomalies.anomalies?.length ? (
+          <div className="text-center py-8">
+            <Shield className="w-12 h-12 text-gray-600 mx-auto mb-3" />
+            <p className="text-gray-500">No anomalies detected</p>
+            <p className="text-xs text-gray-600 mt-1">
+              Analyze wallets to detect suspicious patterns
+            </p>
+          </div>
         ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {anomalies.anomalies?.slice(0, 10).map((anomaly: any) => (
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {anomalies.anomalies?.slice(0, 20).map((anomaly: any) => (
               <AnomalyRow key={anomaly.id} anomaly={anomaly} />
             ))}
           </div>
         )}
       </div>
+
+      {/* Anomaly Types Info */}
+      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+        <h3 className="font-medium mb-4 flex items-center gap-2">
+          <Info className="w-4 h-4" />
+          What We Detect
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <AnomalyTypeCard
+            title="Statistical Anomalies"
+            items={[
+              "Impossible win rates (>95%)",
+              "Unusually high ROI (>20% avg)",
+              "Zero losses over many trades",
+              "Perfect timing patterns"
+            ]}
+            severity="critical"
+          />
+          <AnomalyTypeCard
+            title="Pattern Anomalies"
+            items={[
+              "Wash trading (rapid buy/sell)",
+              "Front-running behavior",
+              "Coordinated trading",
+              "Arbitrage-only patterns"
+            ]}
+            severity="high"
+          />
+        </div>
+      </div>
     </div>
   )
 }
 
-function AnalysisResultCard({ analysis }: { analysis: WalletAnalysis }) {
-  const isProfitable = analysis.is_profitable_pattern
+function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
   const isRisky = analysis.anomaly_score > 0.5
+  const isSafe = analysis.anomaly_score < 0.3
+  const hasAnomalies = analysis.anomalies.length > 0
+
+  const getVerdict = () => {
+    if (analysis.anomaly_score >= 0.7) return { text: 'HIGH RISK', color: 'red', icon: XCircle }
+    if (analysis.anomaly_score >= 0.5) return { text: 'SUSPICIOUS', color: 'orange', icon: AlertTriangle }
+    if (analysis.anomaly_score >= 0.3) return { text: 'CAUTION', color: 'yellow', icon: AlertTriangle }
+    return { text: 'LOW RISK', color: 'green', icon: CheckCircle }
+  }
+
+  const verdict = getVerdict()
+  const VerdictIcon = verdict.icon
 
   return (
     <div className={clsx(
       "border rounded-lg p-4",
-      isProfitable && !isRisky ? "bg-green-500/5 border-green-500/30" :
-      isRisky ? "bg-red-500/5 border-red-500/30" :
-      "bg-[#141414] border-gray-800"
+      verdict.color === 'red' && "bg-red-500/5 border-red-500/30",
+      verdict.color === 'orange' && "bg-orange-500/5 border-orange-500/30",
+      verdict.color === 'yellow' && "bg-yellow-500/5 border-yellow-500/30",
+      verdict.color === 'green' && "bg-green-500/5 border-green-500/30"
     )}>
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div>
-          <p className="font-mono text-sm">{analysis.wallet}</p>
-          <div className="flex items-center gap-2 mt-1">
-            {isProfitable && !isRisky ? (
-              <span className="flex items-center gap-1 text-green-400 text-xs">
-                <CheckCircle className="w-3 h-3" /> Profitable Pattern
-              </span>
-            ) : isRisky ? (
-              <span className="flex items-center gap-1 text-red-400 text-xs">
-                <XCircle className="w-3 h-3" /> Suspicious
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-gray-400 text-xs">
-                <Shield className="w-3 h-3" /> Neutral
-              </span>
-            )}
-          </div>
+          <p className="font-mono text-sm text-gray-400">Wallet Scanned</p>
+          <p className="font-mono font-medium">{analysis.wallet}</p>
         </div>
         <div className={clsx(
-          "px-3 py-1 rounded-lg text-sm font-medium",
-          analysis.anomaly_score < 0.3 ? "bg-green-500/20 text-green-400" :
-          analysis.anomaly_score < 0.6 ? "bg-yellow-500/20 text-yellow-400" :
-          "bg-red-500/20 text-red-400"
+          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium",
+          verdict.color === 'red' && "bg-red-500/20 text-red-400",
+          verdict.color === 'orange' && "bg-orange-500/20 text-orange-400",
+          verdict.color === 'yellow' && "bg-yellow-500/20 text-yellow-400",
+          verdict.color === 'green' && "bg-green-500/20 text-green-400"
         )}>
-          Risk Score: {(analysis.anomaly_score * 100).toFixed(0)}%
+          <VerdictIcon className="w-4 h-4" />
+          {verdict.text}
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-5 gap-4 mb-4">
-        <StatBox label="Trades" value={analysis.stats.total_trades.toString()} />
-        <StatBox label="Win Rate" value={`${(analysis.stats.win_rate * 100).toFixed(1)}%`} />
-        <StatBox label="Total PnL" value={`$${analysis.stats.total_pnl.toFixed(0)}`} />
-        <StatBox label="Avg ROI" value={`${analysis.stats.avg_roi.toFixed(1)}%`} />
-        <StatBox label="Max ROI" value={`${analysis.stats.max_roi.toFixed(1)}%`} />
+      {/* Risk Score */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-gray-500">Anomaly Score</span>
+          <span className="font-mono font-medium">{(analysis.anomaly_score * 100).toFixed(0)}%</span>
+        </div>
+        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+          <div
+            className={clsx(
+              "h-full transition-all",
+              analysis.anomaly_score >= 0.7 && "bg-red-500",
+              analysis.anomaly_score >= 0.5 && analysis.anomaly_score < 0.7 && "bg-orange-500",
+              analysis.anomaly_score >= 0.3 && analysis.anomaly_score < 0.5 && "bg-yellow-500",
+              analysis.anomaly_score < 0.3 && "bg-green-500"
+            )}
+            style={{ width: `${analysis.anomaly_score * 100}%` }}
+          />
+        </div>
       </div>
 
-      {/* Strategies */}
+      {/* Quick Stats */}
+      <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-[#1a1a1a] rounded-lg">
+        <div className="text-center">
+          <p className="text-xs text-gray-500">Trades</p>
+          <p className="font-mono font-medium">{analysis.stats.total_trades}</p>
+        </div>
+        <div className="text-center">
+          <p className="text-xs text-gray-500">Win Rate</p>
+          <p className="font-mono font-medium">{(analysis.stats.win_rate * 100).toFixed(1)}%</p>
+        </div>
+        <div className="text-center">
+          <p className="text-xs text-gray-500">Total PnL</p>
+          <p className={clsx(
+            "font-mono font-medium",
+            analysis.stats.total_pnl >= 0 ? "text-green-400" : "text-red-400"
+          )}>
+            ${analysis.stats.total_pnl.toFixed(0)}
+          </p>
+        </div>
+        <div className="text-center">
+          <p className="text-xs text-gray-500">Avg ROI</p>
+          <p className="font-mono font-medium">{analysis.stats.avg_roi.toFixed(1)}%</p>
+        </div>
+      </div>
+
+      {/* Detected Strategies */}
       {analysis.strategies_detected.length > 0 && (
         <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Strategies Detected</p>
+          <p className="text-xs text-gray-500 mb-2">Trading Strategies Detected</p>
           <div className="flex flex-wrap gap-2">
             {analysis.strategies_detected.map((strategy) => (
-              <span key={strategy} className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs">
+              <span key={strategy} className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
                 {strategy.replace(/_/g, ' ')}
               </span>
             ))}
@@ -226,20 +254,31 @@ function AnalysisResultCard({ analysis }: { analysis: WalletAnalysis }) {
       )}
 
       {/* Anomalies */}
-      {analysis.anomalies.length > 0 && (
+      {hasAnomalies && (
         <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Anomalies Detected</p>
-          <div className="space-y-1">
+          <p className="text-xs text-gray-500 mb-2">Anomalies Detected ({analysis.anomalies.length})</p>
+          <div className="space-y-2">
             {analysis.anomalies.map((anomaly, idx) => (
-              <div key={idx} className="flex items-center gap-2 text-sm">
+              <div key={idx} className="flex items-start gap-2 p-2 bg-[#1a1a1a] rounded">
                 <AlertTriangle className={clsx(
-                  "w-3 h-3",
+                  "w-4 h-4 mt-0.5 flex-shrink-0",
                   anomaly.severity === 'critical' ? 'text-red-500' :
                   anomaly.severity === 'high' ? 'text-orange-500' :
                   anomaly.severity === 'medium' ? 'text-yellow-500' :
                   'text-gray-500'
                 )} />
-                <span className="text-gray-300">{anomaly.description}</span>
+                <div>
+                  <p className="text-sm text-gray-300">{anomaly.description}</p>
+                  <span className={clsx(
+                    "text-xs px-1.5 py-0.5 rounded mt-1 inline-block",
+                    anomaly.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                    anomaly.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                    anomaly.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-gray-500/20 text-gray-400'
+                  )}>
+                    {anomaly.severity}
+                  </span>
+                </div>
               </div>
             ))}
           </div>
@@ -249,9 +288,9 @@ function AnalysisResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Recommendation */}
       <div className={clsx(
         "p-3 rounded-lg",
-        isProfitable && !isRisky ? "bg-green-500/10" :
         isRisky ? "bg-red-500/10" :
-        "bg-gray-800"
+        isSafe ? "bg-green-500/10" :
+        "bg-yellow-500/10"
       )}>
         <p className="text-sm font-medium">{analysis.recommendation}</p>
       </div>
@@ -259,42 +298,57 @@ function AnalysisResultCard({ analysis }: { analysis: WalletAnalysis }) {
   )
 }
 
-function StatBox({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="text-center">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className="font-mono font-medium">{value}</p>
-    </div>
-  )
-}
-
 function AnomalyRow({ anomaly }: { anomaly: any }) {
-  const severityColors: Record<string, string> = {
-    critical: 'bg-red-500/20 text-red-400',
-    high: 'bg-orange-500/20 text-orange-400',
-    medium: 'bg-yellow-500/20 text-yellow-400',
-    low: 'bg-gray-500/20 text-gray-400'
+  const severityConfig: Record<string, { bg: string; text: string; icon: string }> = {
+    critical: { bg: 'bg-red-500/20', text: 'text-red-400', icon: 'text-red-500' },
+    high: { bg: 'bg-orange-500/20', text: 'text-orange-400', icon: 'text-orange-500' },
+    medium: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', icon: 'text-yellow-500' },
+    low: { bg: 'bg-gray-500/20', text: 'text-gray-400', icon: 'text-gray-500' }
   }
+
+  const config = severityConfig[anomaly.severity] || severityConfig.low
 
   return (
     <div className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
       <div className="flex items-center gap-3">
-        <AlertTriangle className={clsx(
-          "w-4 h-4",
-          anomaly.severity === 'critical' ? 'text-red-500' :
-          anomaly.severity === 'high' ? 'text-orange-500' :
-          'text-yellow-500'
-        )} />
+        <AlertTriangle className={clsx("w-4 h-4", config.icon)} />
         <div>
-          <p className="text-sm">{anomaly.type.replace(/_/g, ' ')}</p>
-          <p className="text-xs text-gray-500">
-            {anomaly.wallet?.slice(0, 10)}...
+          <p className="text-sm font-medium">{anomaly.type.replace(/_/g, ' ')}</p>
+          <p className="text-xs text-gray-500 font-mono">
+            {anomaly.wallet?.slice(0, 10)}...{anomaly.wallet?.slice(-6)}
           </p>
         </div>
       </div>
-      <span className={clsx("px-2 py-0.5 rounded text-xs", severityColors[anomaly.severity])}>
-        {anomaly.severity}
-      </span>
+      <div className="flex items-center gap-2">
+        <span className={clsx("px-2 py-0.5 rounded text-xs", config.bg, config.text)}>
+          {anomaly.severity}
+        </span>
+        <span className="text-xs text-gray-500">
+          {new Date(anomaly.detected_at).toLocaleDateString()}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function AnomalyTypeCard({ title, items, severity }: { title: string; items: string[]; severity: 'critical' | 'high' | 'medium' }) {
+  const colors = {
+    critical: 'border-red-500/30 bg-red-500/5',
+    high: 'border-orange-500/30 bg-orange-500/5',
+    medium: 'border-yellow-500/30 bg-yellow-500/5'
+  }
+
+  return (
+    <div className={clsx("border rounded-lg p-3", colors[severity])}>
+      <h4 className="font-medium text-sm mb-2">{title}</h4>
+      <ul className="space-y-1">
+        {items.map((item, idx) => (
+          <li key={idx} className="text-xs text-gray-400 flex items-center gap-2">
+            <span className="w-1 h-1 rounded-full bg-gray-500" />
+            {item}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

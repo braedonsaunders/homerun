@@ -140,6 +140,49 @@ export interface Anomaly {
   evidence: Record<string, any>
 }
 
+export interface WalletTrade {
+  id: string
+  market: string
+  market_slug: string
+  outcome: string
+  side: string
+  size: number
+  price: number
+  cost: number
+  timestamp: string
+  transaction_hash: string
+}
+
+export interface WalletPosition {
+  market: string
+  market_slug: string
+  outcome: string
+  size: number
+  avg_price: number
+  current_price: number
+  cost_basis: number
+  current_value: number
+  unrealized_pnl: number
+  roi_percent: number
+}
+
+export interface WalletSummary {
+  wallet: string
+  summary: {
+    total_trades: number
+    buys: number
+    sells: number
+    open_positions: number
+    total_invested: number
+    total_returned: number
+    position_value: number
+    realized_pnl: number
+    unrealized_pnl: number
+    total_pnl: number
+    roi_percent: number
+  }
+}
+
 // ==================== OPPORTUNITIES ====================
 
 export interface OpportunitiesResponse {
@@ -361,6 +404,21 @@ export const getAnomalies = async (params?: {
 
 export const quickCheckWallet = async (address: string) => {
   const { data } = await api.get(`/anomaly/check/${address}`)
+  return data
+}
+
+export const getWalletTradesAnalysis = async (address: string, limit = 100): Promise<{ wallet: string; total: number; trades: WalletTrade[] }> => {
+  const { data } = await api.get(`/anomaly/wallet/${address}/trades`, { params: { limit } })
+  return data
+}
+
+export const getWalletPositionsAnalysis = async (address: string): Promise<{ wallet: string; total_positions: number; total_value: number; total_unrealized_pnl: number; positions: WalletPosition[] }> => {
+  const { data } = await api.get(`/anomaly/wallet/${address}/positions`)
+  return data
+}
+
+export const getWalletSummary = async (address: string): Promise<WalletSummary> => {
+  const { data } = await api.get(`/anomaly/wallet/${address}/summary`)
   return data
 }
 
