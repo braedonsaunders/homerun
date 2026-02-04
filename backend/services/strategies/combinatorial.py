@@ -93,32 +93,10 @@ class CombinatorialStrategy(BaseStrategy):
 
         opportunities = []
 
-        # Group markets by event for potential dependencies
-        event_markets: dict[str, list[Market]] = {}
-        for market in markets:
-            if market.closed or not market.active:
-                continue
-            event_id = market.event_id or "unknown"
-            if event_id not in event_markets:
-                event_markets[event_id] = []
-            event_markets[event_id].append(market)
-
-        # Also look for cross-event dependencies
+        # Filter active markets
         all_active = [m for m in markets if not m.closed and m.active]
 
-        # Check pairs within same event (higher likelihood of dependency)
-        for event_id, event_mkts in event_markets.items():
-            if len(event_mkts) < 2:
-                continue
-
-            for i, market_a in enumerate(event_mkts):
-                for market_b in event_mkts[i+1:]:
-                    opp = self._check_pair(market_a, market_b, prices)
-                    if opp:
-                        opportunities.append(opp)
-
-        # Check high-potential cross-event pairs (limited to avoid explosion)
-        # Focus on markets with similar keywords
+        # Check high-potential pairs based on keyword similarity
         checked = set()
         for market_a in all_active[:100]:  # Limit for performance
             candidates = self._find_related_markets(market_a, all_active)
