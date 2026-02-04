@@ -110,12 +110,22 @@ class Event(BaseModel):
         # Extract category from tags or category field
         category = None
         if data.get("category"):
-            category = data.get("category")
+            cat = data.get("category")
+            # Handle category as dict (API returns {id, label, ...}) or string
+            if isinstance(cat, dict):
+                category = cat.get("label", cat.get("name", ""))
+            else:
+                category = cat
         elif data.get("tags"):
             # Tags is usually a list, take the first one as category
             tags = data.get("tags", [])
             if isinstance(tags, list) and len(tags) > 0:
-                category = tags[0]
+                first_tag = tags[0]
+                # Handle tag as dict or string
+                if isinstance(first_tag, dict):
+                    category = first_tag.get("label", first_tag.get("name", ""))
+                else:
+                    category = first_tag
             elif isinstance(tags, str):
                 category = tags
 
