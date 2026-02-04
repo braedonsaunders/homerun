@@ -33,10 +33,11 @@ export default function SimulationPanel() {
     queryFn: getSimulationAccounts,
   })
 
-  const { data: opportunities = [] } = useQuery({
+  const { data: opportunitiesData } = useQuery({
     queryKey: ['opportunities'],
     queryFn: () => getOpportunities({ limit: 20 }),
   })
+  const opportunities = opportunitiesData?.opportunities ?? []
 
   const { data: trades = [] } = useQuery({
     queryKey: ['account-trades', selectedAccount],
