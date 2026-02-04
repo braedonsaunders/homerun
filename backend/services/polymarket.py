@@ -460,15 +460,18 @@ class PolymarketClient:
                 elif side == "SELL":
                     total_returned += size * price
 
-            # Calculate current position value
+            # Calculate current position value AND cost basis
             position_value = 0.0
+            position_cost_basis = 0.0
             for pos in positions:
                 size = float(pos.get("size", 0) or 0)
-                current_price = float(pos.get("currentPrice", 0) or pos.get("price", 0) or 0)
+                avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+                current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
                 position_value += size * current_price
+                position_cost_basis += size * avg_price
 
             realized_pnl = total_returned - total_invested
-            unrealized_pnl = position_value
+            unrealized_pnl = position_value - position_cost_basis
             total_pnl = realized_pnl + unrealized_pnl
 
             return {

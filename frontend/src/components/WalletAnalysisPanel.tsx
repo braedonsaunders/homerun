@@ -19,7 +19,8 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
-  Sparkles
+  Sparkles,
+  User
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -27,10 +28,13 @@ import {
   getWalletPositionsAnalysis,
   getWalletSummary,
   getWalletWinRate,
+  analyzeWalletPnL,
+  getLeaderboard,
   WalletTrade,
   WalletPosition,
   WalletSummary,
-  WalletWinRate
+  WalletWinRate,
+  WalletPnL
 } from '../services/api'
 
 interface WalletAnalysisPanelProps {
@@ -38,49 +42,63 @@ interface WalletAnalysisPanelProps {
   onWalletAnalyzed?: () => void
 }
 
-// Mini Sparkline Component
-function Sparkline({ data, color = '#22c55e', height = 40 }: { data: number[]; color?: string; height?: number }) {
+// Large Sparkline Component for hero section
+function LargeSparkline({ data, color = '#22c55e', height = 80 }: { data: number[]; color?: string; height?: number }) {
   if (!data || data.length < 2) return null
 
   const min = Math.min(...data)
   const max = Math.max(...data)
   const range = max - min || 1
 
-  const width = 120
-  const padding = 2
+  const width = 100 // percentage
+  const padding = 4
+  const viewBoxWidth = 400
+  const viewBoxHeight = height
+
   const points = data.map((value, index) => {
-    const x = padding + (index / (data.length - 1)) * (width - padding * 2)
-    const y = height - padding - ((value - min) / range) * (height - padding * 2)
+    const x = padding + (index / (data.length - 1)) * (viewBoxWidth - padding * 2)
+    const y = viewBoxHeight - padding - ((value - min) / range) * (viewBoxHeight - padding * 2)
     return `${x},${y}`
   }).join(' ')
 
-  const areaPath = `M ${padding},${height - padding} L ${points} L ${width - padding},${height - padding} Z`
+  const areaPath = `M ${padding},${viewBoxHeight - padding} L ${points} L ${viewBoxWidth - padding},${viewBoxHeight - padding} Z`
+
+  const lastY = viewBoxHeight - padding - ((data[data.length - 1] - min) / range) * (viewBoxHeight - padding * 2)
 
   return (
-    <svg width={width} height={height} className="overflow-visible">
+    <svg
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
+      preserveAspectRatio="none"
+      className="overflow-visible"
+    >
       <defs>
-        <linearGradient id={`sparkline-gradient-${color.replace('#', '')}`} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        <linearGradient id={`large-sparkline-gradient-${color.replace('#', '')}`} x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={color} stopOpacity="0.4" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.05" />
         </linearGradient>
       </defs>
       <path
         d={areaPath}
-        fill={`url(#sparkline-gradient-${color.replace('#', '')})`}
+        fill={`url(#large-sparkline-gradient-${color.replace('#', '')})`}
       />
       <polyline
         points={points}
         fill="none"
         stroke={color}
-        strokeWidth="2"
+        strokeWidth="3"
         strokeLinecap="round"
         strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
       />
       <circle
-        cx={width - padding}
-        cy={height - padding - ((data[data.length - 1] - min) / range) * (height - padding * 2)}
-        r="3"
+        cx={viewBoxWidth - padding}
+        cy={lastY}
+        r="6"
         fill={color}
+        stroke="#0a0a0a"
+        strokeWidth="2"
       />
     </svg>
   )
@@ -137,7 +155,7 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
 
   // Auto-analyze when initialWallet changes
   useEffect(() => {
-    if (initialWallet) {
+    if (initialWallet && initialWallet !== activeWallet) {
       setSearchAddress(initialWallet)
       setActiveWallet(initialWallet.toLowerCase())
       setActiveTab('summary')
@@ -145,8 +163,16 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
         onWalletAnalyzed()
       }
     }
-  }, [initialWallet, onWalletAnalyzed])
+  }, [initialWallet, onWalletAnalyzed, activeWallet])
 
+  // Use the discover API for PnL data (same as wallet tracker)
+  const pnlQuery = useQuery({
+    queryKey: ['wallet-pnl-discover', activeWallet],
+    queryFn: () => analyzeWalletPnL(activeWallet!),
+    enabled: !!activeWallet,
+  })
+
+  // Also get summary for additional details
   const summaryQuery = useQuery({
     queryKey: ['wallet-summary', activeWallet],
     queryFn: () => getWalletSummary(activeWallet!),
@@ -168,8 +194,22 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
   const positionsQuery = useQuery({
     queryKey: ['wallet-positions', activeWallet],
     queryFn: () => getWalletPositionsAnalysis(activeWallet!),
-    enabled: !!activeWallet && activeTab === 'positions',
+    enabled: !!activeWallet,
   })
+
+  // Try to get username from leaderboard
+  const leaderboardQuery = useQuery({
+    queryKey: ['leaderboard-lookup'],
+    queryFn: () => getLeaderboard({ limit: 100 }),
+    staleTime: 60000,
+  })
+
+  const username = useMemo(() => {
+    if (!activeWallet || !leaderboardQuery.data) return null
+    const traders = leaderboardQuery.data as Array<{ address: string; username?: string }>
+    const found = traders.find(t => t.address?.toLowerCase() === activeWallet.toLowerCase())
+    return found?.username || null
+  }, [activeWallet, leaderboardQuery.data])
 
   const handleAnalyze = () => {
     if (searchAddress.trim()) {
@@ -184,7 +224,7 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
     }
   }
 
-  const isLoading = summaryQuery.isLoading || winRateQuery.isLoading
+  const isLoading = pnlQuery.isLoading || summaryQuery.isLoading || winRateQuery.isLoading
 
   return (
     <div className="space-y-6">
@@ -243,14 +283,18 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
           {/* Hero Profile Card */}
           <WalletHeroCard
             address={activeWallet}
+            username={username}
+            pnlData={pnlQuery.data}
             summary={summaryQuery.data}
             winRate={winRateQuery.data}
             trades={tradesQuery.data?.trades || []}
             isLoading={isLoading}
             onRefresh={() => {
+              pnlQuery.refetch()
               summaryQuery.refetch()
               winRateQuery.refetch()
               tradesQuery.refetch()
+              positionsQuery.refetch()
             }}
           />
 
@@ -282,7 +326,8 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
             <div className="p-6">
               {activeTab === 'summary' && (
                 <SummaryTab
-                  data={summaryQuery.data}
+                  pnlData={pnlQuery.data}
+                  summary={summaryQuery.data}
                   winRate={winRateQuery.data}
                   trades={tradesQuery.data?.trades || []}
                   isLoading={summaryQuery.isLoading}
@@ -317,6 +362,8 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
 
 function WalletHeroCard({
   address,
+  username,
+  pnlData,
   summary,
   winRate,
   trades,
@@ -324,17 +371,18 @@ function WalletHeroCard({
   onRefresh
 }: {
   address: string
+  username: string | null
+  pnlData?: WalletPnL
   summary?: WalletSummary
   winRate?: WalletWinRate
   trades: WalletTrade[]
   isLoading: boolean
   onRefresh: () => void
 }) {
-  // Generate sparkline data from trades
+  // Generate sparkline data from trades (cumulative value over time)
   const sparklineData = useMemo(() => {
     if (!trades || trades.length === 0) return []
 
-    // Calculate cumulative PnL over time
     const sortedTrades = [...trades].sort((a, b) =>
       new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     )
@@ -342,8 +390,7 @@ function WalletHeroCard({
     let cumulative = 0
     const pnlData: number[] = []
 
-    sortedTrades.slice(-20).forEach(trade => {
-      // Approximate PnL: sells add value, buys subtract
+    sortedTrades.forEach(trade => {
       if (trade.side === 'SELL') {
         cumulative += trade.cost
       } else {
@@ -352,12 +399,26 @@ function WalletHeroCard({
       pnlData.push(cumulative)
     })
 
+    // Normalize to show trend
     return pnlData.length > 1 ? pnlData : []
   }, [trades])
 
-  const isProfitable = summary ? summary.summary.total_pnl >= 0 : true
+  // Use pnlData (from discover API) as primary source, fallback to summary
+  const totalPnl = pnlData?.total_pnl ?? summary?.summary.total_pnl ?? 0
+  const roiPercent = pnlData?.roi_percent ?? summary?.summary.roi_percent ?? 0
+  const totalInvested = pnlData?.total_invested ?? summary?.summary.total_invested ?? 0
+  const totalReturned = pnlData?.total_returned ?? summary?.summary.total_returned ?? 0
+  const totalTrades = pnlData?.total_trades ?? summary?.summary.total_trades ?? 0
+  const openPositions = pnlData?.open_positions ?? summary?.summary.open_positions ?? 0
+  const positionValue = pnlData?.position_value ?? summary?.summary.position_value ?? 0
+
+  const isProfitable = totalPnl >= 0
   const winRateValue = winRate?.win_rate ?? 0
   const winRateColor = winRateValue >= 70 ? '#22c55e' : winRateValue >= 50 ? '#eab308' : '#ef4444'
+  const pnlColor = isProfitable ? '#22c55e' : '#ef4444'
+
+  // Calculate volume
+  const volume = totalInvested + totalReturned
 
   if (isLoading) {
     return (
@@ -376,14 +437,18 @@ function WalletHeroCard({
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-blue-500/10 via-transparent to-transparent" />
       <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-purple-500/50 to-transparent" />
 
-      <div className="relative p-8">
+      <div className="relative p-6 md:p-8">
         {/* Header Row */}
-        <div className="flex items-start justify-between mb-8">
+        <div className="flex items-start justify-between mb-6">
           <div className="flex items-center gap-4">
             {/* Avatar */}
             <div className="relative">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center shadow-xl shadow-purple-500/20">
-                <Wallet className="w-8 h-8 text-white" />
+                {username ? (
+                  <User className="w-8 h-8 text-white" />
+                ) : (
+                  <Wallet className="w-8 h-8 text-white" />
+                )}
               </div>
               {isProfitable && (
                 <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center border-2 border-[#1a1a2e]">
@@ -394,21 +459,41 @@ function WalletHeroCard({
 
             {/* Identity */}
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <h2 className="text-xl font-bold text-white">
-                  {`${address.slice(0, 6)}...${address.slice(-4)}`}
-                </h2>
-                <a
-                  href={`https://polymarket.com/profile/${address}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                  title="View on Polymarket"
-                >
-                  <ExternalLink className="w-4 h-4 text-gray-400" />
-                </a>
-              </div>
-              <p className="text-sm text-gray-400 font-mono">{address}</p>
+              {username ? (
+                <>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h2 className="text-2xl font-bold text-white">{username}</h2>
+                    <a
+                      href={`https://polymarket.com/profile/${address}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                      title="View on Polymarket"
+                    >
+                      <ExternalLink className="w-4 h-4 text-gray-400" />
+                    </a>
+                  </div>
+                  <p className="text-sm text-gray-400 font-mono">{`${address.slice(0, 6)}...${address.slice(-4)}`}</p>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h2 className="text-xl font-bold text-white">
+                      {`${address.slice(0, 6)}...${address.slice(-4)}`}
+                    </h2>
+                    <a
+                      href={`https://polymarket.com/profile/${address}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                      title="View on Polymarket"
+                    >
+                      <ExternalLink className="w-4 h-4 text-gray-400" />
+                    </a>
+                  </div>
+                  <p className="text-xs text-gray-500 font-mono truncate max-w-[300px]">{address}</p>
+                </>
+              )}
             </div>
           </div>
 
@@ -422,8 +507,49 @@ function WalletHeroCard({
           </button>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Key Metrics Row */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          {/* Total P&L - Primary metric */}
+          <div className="col-span-2 bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total P&L</p>
+                <p className={clsx(
+                  "text-3xl font-bold",
+                  isProfitable ? "text-green-400" : "text-red-400"
+                )}>
+                  {isProfitable ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+                <p className="text-sm text-gray-500 mt-1">
+                  ROI: <span className={isProfitable ? "text-green-400" : "text-red-400"}>
+                    {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}%
+                  </span>
+                </p>
+              </div>
+              <div className={clsx(
+                "w-14 h-14 rounded-xl flex items-center justify-center",
+                isProfitable ? "bg-green-500/20" : "bg-red-500/20"
+              )}>
+                {isProfitable ? (
+                  <TrendingUp className="w-7 h-7 text-green-400" />
+                ) : (
+                  <TrendingDown className="w-7 h-7 text-red-400" />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Volume */}
+          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Volume</p>
+            <p className="text-2xl font-bold text-white">
+              ${volume.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              {totalTrades} trades
+            </p>
+          </div>
+
           {/* Win Rate */}
           <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
             <div className="flex items-center justify-between">
@@ -442,94 +568,46 @@ function WalletHeroCard({
               </div>
               <CircularProgress
                 percentage={winRateValue}
-                size={56}
+                size={48}
                 strokeWidth={4}
                 color={winRateColor}
               />
             </div>
           </div>
-
-          {/* Total PnL */}
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total P&L</p>
-                <p className={clsx(
-                  "text-2xl font-bold",
-                  summary && summary.summary.total_pnl >= 0 ? "text-green-400" : "text-red-400"
-                )}>
-                  {summary ? (summary.summary.total_pnl >= 0 ? '+' : '') + '$' + summary.summary.total_pnl.toFixed(2) : '$0.00'}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  ROI: {summary ? (summary.summary.roi_percent >= 0 ? '+' : '') + summary.summary.roi_percent.toFixed(1) + '%' : '0%'}
-                </p>
-              </div>
-              {sparklineData.length > 1 && (
-                <Sparkline
-                  data={sparklineData}
-                  color={summary && summary.summary.total_pnl >= 0 ? '#22c55e' : '#ef4444'}
-                  height={40}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Volume */}
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Volume</p>
-            <p className="text-2xl font-bold text-white">
-              ${summary ? (summary.summary.total_invested + summary.summary.total_returned).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '0'}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              {summary?.summary.total_trades || 0} total trades
-            </p>
-          </div>
-
-          {/* Open Positions */}
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Open Positions</p>
-            <p className="text-2xl font-bold text-blue-400">
-              {summary?.summary.open_positions || 0}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              ${summary?.summary.position_value.toFixed(2) || '0.00'} value
-            </p>
-          </div>
         </div>
+
+        {/* Sparkline Section - Full Width */}
+        {sparklineData.length > 1 && (
+          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm text-gray-400">Performance Trend</p>
+              <p className="text-xs text-gray-500">Last {sparklineData.length} trades</p>
+            </div>
+            <LargeSparkline
+              data={sparklineData}
+              color={pnlColor}
+              height={100}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
 function SummaryTab({
-  data,
+  pnlData,
+  summary,
   winRate,
   trades,
   isLoading
 }: {
-  data?: WalletSummary
+  pnlData?: WalletPnL
+  summary?: WalletSummary
   winRate?: WalletWinRate
   trades: WalletTrade[]
   isLoading: boolean
 }) {
-  // Generate trade activity sparkline
-  const activityData = useMemo(() => {
-    if (!trades || trades.length === 0) return []
-
-    // Group trades by day and count
-    const sortedTrades = [...trades].sort((a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    )
-
-    const dailyCounts: { [key: string]: number } = {}
-    sortedTrades.forEach(trade => {
-      const day = new Date(trade.timestamp).toISOString().split('T')[0]
-      dailyCounts[day] = (dailyCounts[day] || 0) + 1
-    })
-
-    return Object.values(dailyCounts).slice(-14) // Last 14 days
-  }, [trades])
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -541,7 +619,20 @@ function SummaryTab({
     )
   }
 
-  if (!data) {
+  // Use pnlData as primary, fallback to summary
+  const data = summary?.summary
+  const realizedPnl = pnlData?.realized_pnl ?? data?.realized_pnl ?? 0
+  const unrealizedPnl = pnlData?.unrealized_pnl ?? data?.unrealized_pnl ?? 0
+  const totalPnl = pnlData?.total_pnl ?? data?.total_pnl ?? 0
+  const roiPercent = pnlData?.roi_percent ?? data?.roi_percent ?? 0
+  const totalInvested = pnlData?.total_invested ?? data?.total_invested ?? 0
+  const totalReturned = pnlData?.total_returned ?? data?.total_returned ?? 0
+  const positionValue = pnlData?.position_value ?? data?.position_value ?? 0
+  const buys = data?.buys ?? 0
+  const sells = data?.sells ?? 0
+  const totalTrades = pnlData?.total_trades ?? data?.total_trades ?? 0
+
+  if (!data && !pnlData) {
     return (
       <div className="text-center py-16">
         <Activity className="w-12 h-12 text-gray-600 mx-auto mb-4" />
@@ -550,8 +641,7 @@ function SummaryTab({
     )
   }
 
-  const { summary } = data
-  const isProfitable = summary.total_pnl >= 0
+  const isProfitable = totalPnl >= 0
 
   return (
     <div className="space-y-6">
@@ -569,9 +659,9 @@ function SummaryTab({
               </div>
               <p className={clsx(
                 "text-2xl font-bold",
-                summary.realized_pnl >= 0 ? "text-green-400" : "text-red-400"
+                realizedPnl >= 0 ? "text-green-400" : "text-red-400"
               )}>
-                {summary.realized_pnl >= 0 ? '+' : ''}${summary.realized_pnl.toFixed(2)}
+                {realizedPnl >= 0 ? '+' : ''}${realizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
               <p className="text-xs text-gray-500 mt-1">From closed positions</p>
             </div>
@@ -587,9 +677,9 @@ function SummaryTab({
               </div>
               <p className={clsx(
                 "text-2xl font-bold",
-                summary.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
+                unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
               )}>
-                {summary.unrealized_pnl >= 0 ? '+' : ''}${summary.unrealized_pnl.toFixed(2)}
+                {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
               <p className="text-xs text-gray-500 mt-1">From open positions</p>
             </div>
@@ -607,10 +697,10 @@ function SummaryTab({
                 "text-2xl font-bold",
                 isProfitable ? "text-green-400" : "text-red-400"
               )}>
-                {isProfitable ? '+' : ''}${summary.total_pnl.toFixed(2)}
+                {isProfitable ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                {summary.roi_percent >= 0 ? '+' : ''}{summary.roi_percent.toFixed(1)}% ROI
+                {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}% ROI
               </p>
             </div>
           </div>
@@ -633,30 +723,36 @@ function SummaryTab({
                 <div className="w-2 h-2 rounded-full bg-red-400" />
                 <span className="text-sm text-gray-400">Total Invested</span>
               </div>
-              <span className="font-mono font-medium text-white">${summary.total_invested.toFixed(2)}</span>
+              <span className="font-mono font-medium text-white">
+                ${totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-green-400" />
                 <span className="text-sm text-gray-400">Total Returned</span>
               </div>
-              <span className="font-mono font-medium text-white">${summary.total_returned.toFixed(2)}</span>
+              <span className="font-mono font-medium text-white">
+                ${totalReturned.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-blue-400" />
                 <span className="text-sm text-gray-400">Position Value</span>
               </div>
-              <span className="font-mono font-medium text-white">${summary.position_value.toFixed(2)}</span>
+              <span className="font-mono font-medium text-white">
+                ${positionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
             </div>
             <div className="pt-3 mt-3 border-t border-gray-800">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-300">Net Flow</span>
                 <span className={clsx(
                   "font-mono font-bold text-lg",
-                  summary.total_pnl >= 0 ? "text-green-400" : "text-red-400"
+                  totalPnl >= 0 ? "text-green-400" : "text-red-400"
                 )}>
-                  {summary.total_pnl >= 0 ? '+' : ''}${summary.total_pnl.toFixed(2)}
+                  {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
             </div>
@@ -665,30 +761,25 @@ function SummaryTab({
 
         {/* Trading Activity */}
         <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                <Activity className="w-4 h-4 text-purple-400" />
-              </div>
-              <h4 className="font-semibold text-white">Trading Activity</h4>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+              <Activity className="w-4 h-4 text-purple-400" />
             </div>
-            {activityData.length > 1 && (
-              <Sparkline data={activityData} color="#a855f7" height={30} />
-            )}
+            <h4 className="font-semibold text-white">Trading Activity</h4>
           </div>
 
           {/* Trade Counts */}
           <div className="grid grid-cols-3 gap-4 mb-4">
             <div className="text-center p-3 rounded-lg bg-green-500/10 border border-green-500/20">
-              <p className="text-2xl font-bold text-green-400">{summary.buys}</p>
+              <p className="text-2xl font-bold text-green-400">{buys}</p>
               <p className="text-xs text-gray-500">Buys</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-              <p className="text-2xl font-bold text-red-400">{summary.sells}</p>
+              <p className="text-2xl font-bold text-red-400">{sells}</p>
               <p className="text-xs text-gray-500">Sells</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-gray-500/10 border border-gray-500/20">
-              <p className="text-2xl font-bold text-gray-300">{summary.total_trades}</p>
+              <p className="text-2xl font-bold text-gray-300">{totalTrades}</p>
               <p className="text-xs text-gray-500">Total</p>
             </div>
           </div>
@@ -848,7 +939,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
             <div className="bg-black/20 rounded-lg p-3">
               <p className="text-xs text-gray-500 mb-1">Market</p>
               <p className="font-mono text-xs text-gray-300 truncate" title={trade.market}>
-                {trade.market.slice(0, 30)}...
+                {trade.market.length > 30 ? trade.market.slice(0, 30) + '...' : trade.market}
               </p>
             </div>
             <div className="bg-black/20 rounded-lg p-3">
@@ -909,7 +1000,7 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
           <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Position Value</p>
-            <p className="text-2xl font-bold text-white">${data.total_value.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-white">${data.total_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             <p className="text-xs text-gray-500 mt-1">{data.total_positions} open positions</p>
           </div>
         </div>
@@ -921,7 +1012,7 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
               "text-2xl font-bold",
               data.total_unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
             )}>
-              {data.total_unrealized_pnl >= 0 ? '+' : ''}${data.total_unrealized_pnl.toFixed(2)}
+              {data.total_unrealized_pnl >= 0 ? '+' : ''}${data.total_unrealized_pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </p>
           </div>
         </div>
@@ -949,7 +1040,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
         <div className="flex-1 min-w-0">
           <p className="font-medium text-white truncate">{position.outcome || 'Unknown'}</p>
           <p className="text-xs text-gray-500 font-mono truncate mt-1" title={position.market}>
-            {position.market.slice(0, 40)}...
+            {position.market.length > 40 ? position.market.slice(0, 40) + '...' : position.market}
           </p>
         </div>
         <div className={clsx(

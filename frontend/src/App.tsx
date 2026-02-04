@@ -533,16 +533,25 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'trading' && <TradingPanel />}
-        {activeTab === 'simulation' && <SimulationPanel />}
-        {activeTab === 'wallets' && <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />}
-        {activeTab === 'analysis' && (
+        {/* Keep components mounted but hidden to preserve state */}
+        <div className={activeTab === 'trading' ? '' : 'hidden'}>
+          <TradingPanel />
+        </div>
+        <div className={activeTab === 'simulation' ? '' : 'hidden'}>
+          <SimulationPanel />
+        </div>
+        <div className={activeTab === 'wallets' ? '' : 'hidden'}>
+          <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />
+        </div>
+        <div className={activeTab === 'analysis' ? '' : 'hidden'}>
           <WalletAnalysisPanel
             initialWallet={walletToAnalyze}
             onWalletAnalyzed={() => setWalletToAnalyze(null)}
           />
-        )}
-        {activeTab === 'anomaly' && <AnomalyPanel />}
+        </div>
+        <div className={activeTab === 'anomaly' ? '' : 'hidden'}>
+          <AnomalyPanel />
+        </div>
       </main>
     </div>
   )
