@@ -45,12 +45,16 @@ import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
 import SettingsPanel from './components/SettingsPanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly' | 'positions' | 'performance' | 'settings'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'settings'
+type TradingSubTab = 'auto' | 'paper'
+type WalletsSubTab = 'tracker' | 'analysis' | 'anomaly'
 
 const ITEMS_PER_PAGE = 20
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
+  const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
+  const [walletsSubTab, setWalletsSubTab] = useState<WalletsSubTab>('tracker')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
@@ -66,7 +70,8 @@ function App() {
   // Callback for navigating to wallet analysis from WalletTracker
   const handleAnalyzeWallet = (address: string) => {
     setWalletToAnalyze(address)
-    setActiveTab('analysis')
+    setActiveTab('wallets')
+    setWalletsSubTab('analysis')
   }
 
   // WebSocket for real-time updates
@@ -329,31 +334,13 @@ function App() {
               active={activeTab === 'trading'}
               onClick={() => setActiveTab('trading')}
               icon={<Bot className="w-4 h-4" />}
-              label="Auto Trading"
-            />
-            <TabButton
-              active={activeTab === 'simulation'}
-              onClick={() => setActiveTab('simulation')}
-              icon={<PlayCircle className="w-4 h-4" />}
-              label="Paper Trading"
+              label="Trading"
             />
             <TabButton
               active={activeTab === 'wallets'}
               onClick={() => setActiveTab('wallets')}
               icon={<Wallet className="w-4 h-4" />}
-              label="Wallet Tracker"
-            />
-            <TabButton
-              active={activeTab === 'analysis'}
-              onClick={() => setActiveTab('analysis')}
-              icon={<Search className="w-4 h-4" />}
-              label="Wallet Analysis"
-            />
-            <TabButton
-              active={activeTab === 'anomaly'}
-              onClick={() => setActiveTab('anomaly')}
-              icon={<Shield className="w-4 h-4" />}
-              label="Anomaly Detection"
+              label="Wallets"
             />
             <TabButton
               active={activeTab === 'positions'}
@@ -413,7 +400,8 @@ function App() {
               <RecentTradesPanel
                 onNavigateToWallet={(address) => {
                   setWalletToAnalyze(address)
-                  setActiveTab('analysis')
+                  setActiveTab('wallets')
+                  setWalletsSubTab('analysis')
                 }}
               />
             ) : (
@@ -556,25 +544,100 @@ function App() {
           </div>
         )}
 
-        {/* Keep components mounted but hidden to preserve state */}
+        {/* Trading Tab with Subtabs */}
         <div className={activeTab === 'trading' ? '' : 'hidden'}>
-          <TradingPanel />
+          {/* Trading Subtabs Navigation */}
+          <div className="flex items-center gap-2 mb-6">
+            <button
+              onClick={() => setTradingSubTab('auto')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                tradingSubTab === 'auto'
+                  ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Bot className="w-4 h-4" />
+              Auto Trading
+            </button>
+            <button
+              onClick={() => setTradingSubTab('paper')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                tradingSubTab === 'paper'
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <PlayCircle className="w-4 h-4" />
+              Paper Trading
+            </button>
+          </div>
+          {/* Trading Subtab Content */}
+          <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
+            <TradingPanel />
+          </div>
+          <div className={tradingSubTab === 'paper' ? '' : 'hidden'}>
+            <SimulationPanel />
+          </div>
         </div>
-        <div className={activeTab === 'simulation' ? '' : 'hidden'}>
-          <SimulationPanel />
-        </div>
+
+        {/* Wallets Tab with Subtabs */}
         <div className={activeTab === 'wallets' ? '' : 'hidden'}>
-          <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />
+          {/* Wallets Subtabs Navigation */}
+          <div className="flex items-center gap-2 mb-6">
+            <button
+              onClick={() => setWalletsSubTab('tracker')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'tracker'
+                  ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Wallet className="w-4 h-4" />
+              Wallet Tracker
+            </button>
+            <button
+              onClick={() => setWalletsSubTab('analysis')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'analysis'
+                  ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Search className="w-4 h-4" />
+              Wallet Analysis
+            </button>
+            <button
+              onClick={() => setWalletsSubTab('anomaly')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'anomaly'
+                  ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Shield className="w-4 h-4" />
+              Anomaly Detection
+            </button>
+          </div>
+          {/* Wallets Subtab Content */}
+          <div className={walletsSubTab === 'tracker' ? '' : 'hidden'}>
+            <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />
+          </div>
+          <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
+            <WalletAnalysisPanel
+              initialWallet={walletToAnalyze}
+              onWalletAnalyzed={() => setWalletToAnalyze(null)}
+            />
+          </div>
+          <div className={walletsSubTab === 'anomaly' ? '' : 'hidden'}>
+            <AnomalyPanel />
+          </div>
         </div>
-        <div className={activeTab === 'analysis' ? '' : 'hidden'}>
-          <WalletAnalysisPanel
-            initialWallet={walletToAnalyze}
-            onWalletAnalyzed={() => setWalletToAnalyze(null)}
-          />
-        </div>
-        <div className={activeTab === 'anomaly' ? '' : 'hidden'}>
-          <AnomalyPanel />
-        </div>
+
         <div className={activeTab === 'positions' ? '' : 'hidden'}>
           <PositionsPanel />
         </div>
