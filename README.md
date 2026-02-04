@@ -5,12 +5,7 @@
 <h1 align="center">Homerun</h1>
 
 <p align="center">
-  <strong>The $40M+ strategy. Now open source.</strong>
-</p>
-
-<p align="center">
-  Autonomous arbitrage scanner and trading bot for Polymarket prediction markets.<br/>
-  Find mathematical pricing inefficiencies. Execute automatically. Profit.
+  Autonomous arbitrage scanner and trading bot for Polymarket prediction markets.
 </p>
 
 <p align="center">
@@ -25,9 +20,7 @@
 
 ## Why Homerun?
 
-Prediction markets have pricing bugs. When the same event trades at different prices, or when mutually exclusive outcomes sum to more than 100%, there's free money on the table.
-
-Documented arbitrageurs have extracted **$40M+** from Polymarket using these mathematical strategies. One trader turned **$5 into $3.7M** by betting against impossible events.
+Prediction markets have pricing inefficiencies. When the same event trades at different prices, or when mutually exclusive outcomes sum to more than 100%, there's an arbitrage opportunity.
 
 Homerun finds these opportunities in real-time and can execute trades automatically.
 
@@ -44,24 +37,17 @@ Two events where only one can happen (Democrat vs Republican wins). Buy YES on b
 ### 3. Contradiction Arbitrage
 Markets saying opposite things. Buy YES in one, NO in the other when prices contradict.
 
-### 4. NegRisk Arbitrage ⭐ Most Profitable
+### 4. NegRisk Arbitrage
 Same event with multiple date cutoffs. Buy NO on all dates when total < $1.00.
-
-> *This is the "$1M in 7 days" strategy. Historical data shows $28.99M extracted from 662 markets.*
 
 ### 5. Must-Happen Arbitrage
 Exhaustive outcomes where one must win. Buy YES on all when total < $1.00.
 
-### 6. Miracle Scanner 🎯 The Sleeper
+### 6. Miracle Scanner
 Bet NO on events that will almost certainly never happen:
 - Aliens landing on Earth
 - WW3 starting by Friday
 - Bitcoin hitting $1M this week
-
-> *"He does not predict the future. He bets against miracles."*
-> *— How one trader turned $5 → $3.7M*
-
-Execute thousands of these at 1-6% returns for consistent profit.
 
 ---
 
@@ -304,8 +290,3 @@ PRs welcome. Please:
 
 MIT
 
----
-
-<p align="center">
-  <strong>If this makes you money, star the repo.</strong> ⭐
-</p>
