@@ -325,7 +325,7 @@ class AutoTrader:
             from services.simulation import simulation_service
 
             # Get or create a simulation account
-            accounts = await simulation_service.get_accounts()
+            accounts = await simulation_service.get_all_accounts()
             if not accounts:
                 account = await simulation_service.create_account(
                     name="Auto Trader",
