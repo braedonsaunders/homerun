@@ -268,6 +268,44 @@ class ArbitrageScanner:
     def interval_seconds(self) -> int:
         return self._interval_seconds
 
+    def clear_opportunities(self) -> int:
+        """Clear all opportunities from memory. Returns count of cleared opportunities."""
+        count = len(self._opportunities)
+        self._opportunities = []
+        print(f"Cleared {count} opportunities from memory")
+        return count
+
+    def remove_expired_opportunities(self) -> int:
+        """Remove opportunities whose resolution date has passed. Returns count removed."""
+        now = datetime.utcnow()
+        before_count = len(self._opportunities)
+
+        self._opportunities = [
+            opp for opp in self._opportunities
+            if opp.resolution_date is None or opp.resolution_date > now
+        ]
+
+        removed = before_count - len(self._opportunities)
+        if removed > 0:
+            print(f"Removed {removed} expired opportunities")
+        return removed
+
+    def remove_old_opportunities(self, max_age_minutes: int = 60) -> int:
+        """Remove opportunities older than max_age_minutes. Returns count removed."""
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        before_count = len(self._opportunities)
+
+        self._opportunities = [
+            opp for opp in self._opportunities
+            if opp.detected_at >= cutoff
+        ]
+
+        removed = before_count - len(self._opportunities)
+        if removed > 0:
+            print(f"Removed {removed} opportunities older than {max_age_minutes} minutes")
+        return removed
+
 
 # Singleton instance
 scanner = ArbitrageScanner()
