@@ -16,6 +16,7 @@ from api.routes_anomaly import anomaly_router
 from api.routes_trading import router as trading_router
 from api.routes_auto_trader import router as auto_trader_router
 from api.routes_maintenance import router as maintenance_router
+from api.routes_settings import router as settings_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.simulation import simulation_service
 from services.copy_trader import copy_trader
@@ -159,6 +160,7 @@ app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detecti
 app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
+app.include_router(settings_router, prefix="/api", tags=["Settings"])
 
 
 # WebSocket endpoint
