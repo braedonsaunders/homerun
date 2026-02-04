@@ -228,9 +228,9 @@ class PolymarketClient:
         """
         client = await self._get_client()
         try:
-            # Polymarket leaderboard endpoint
+            # Polymarket data API leaderboard endpoint
             response = await client.get(
-                f"{self.gamma_url}/leaderboard",
+                f"{self.data_url}/v1/leaderboard",
                 params={"limit": limit}
             )
             response.raise_for_status()
@@ -245,85 +245,27 @@ class PolymarketClient:
         min_trades: int = 10
     ) -> list[dict]:
         """
-        Discover top traders by analyzing recent trades across active markets.
-        Aggregates by wallet and calculates win rates.
+        Get top traders from Polymarket leaderboard.
+        Uses the official leaderboard API.
         """
-        client = await self._get_client()
+        # Just use the leaderboard API - it has exactly what we need
+        leaderboard = await self.get_leaderboard(limit=limit)
 
-        # First get active markets to pull trades from
-        try:
-            markets_response = await client.get(
-                f"{self.gamma_url}/markets",
-                params={"active": True, "limit": 20}
-            )
-            markets_response.raise_for_status()
-            markets = markets_response.json()
-        except Exception as e:
-            print(f"Error fetching markets: {e}")
-            return []
+        # Transform to our expected format
+        traders = []
+        for entry in leaderboard:
+            traders.append({
+                "address": entry.get("proxyWallet", ""),
+                "username": entry.get("userName", ""),
+                "trades": 0,  # Not provided by leaderboard
+                "volume": float(entry.get("vol", 0)),
+                "pnl": float(entry.get("pnl", 0)),
+                "rank": entry.get("rank", 0),
+                "buys": 0,
+                "sells": 0,
+            })
 
-        # Aggregate by wallet across multiple markets
-        wallet_stats: dict[str, dict] = {}
-
-        # Get trades from each active market
-        for market in markets[:15]:  # Limit to top 15 markets to avoid rate limits
-            condition_id = market.get("conditionId") or market.get("condition_id")
-            if not condition_id:
-                continue
-
-            try:
-                response = await client.get(
-                    f"{self.clob_url}/trades",
-                    params={"market": condition_id, "limit": 100}
-                )
-                if response.status_code != 200:
-                    continue
-                trades = response.json()
-                if not isinstance(trades, list):
-                    trades = trades.get("trades", []) or trades.get("data", [])
-            except Exception as e:
-                print(f"Error fetching trades for {condition_id}: {e}")
-                continue
-
-            for trade in trades:
-                # Try different field names for wallet address
-                wallet = (trade.get("maker") or trade.get("taker") or
-                         trade.get("user") or trade.get("owner"))
-                if not wallet:
-                    continue
-
-                if wallet not in wallet_stats:
-                    wallet_stats[wallet] = {
-                        "address": wallet,
-                        "trades": 0,
-                        "volume": 0.0,
-                        "buys": 0,
-                        "sells": 0,
-                    }
-
-                stats = wallet_stats[wallet]
-                stats["trades"] += 1
-
-                # Try different field names for size/amount
-                size = float(trade.get("size") or trade.get("amount") or
-                            trade.get("matchedAmount") or 0)
-                price = float(trade.get("price") or trade.get("avg_price") or 0)
-                stats["volume"] += size * price if price else size
-
-                side = str(trade.get("side", "")).upper()
-                if side == "BUY" or side == "0":
-                    stats["buys"] += 1
-                elif side == "SELL" or side == "1":
-                    stats["sells"] += 1
-
-        # Filter and sort by volume
-        active_wallets = [
-            w for w in wallet_stats.values()
-            if w["trades"] >= min_trades
-        ]
-        active_wallets.sort(key=lambda x: x["volume"], reverse=True)
-
-        return active_wallets[:limit]
+        return traders[:limit]
 
     async def get_wallet_pnl(self, address: str) -> dict:
         """

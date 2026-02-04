@@ -375,8 +375,11 @@ export const getHealthStatus = async () => {
 
 export interface DiscoveredTrader {
   address: string
+  username?: string
   trades: number
   volume: number
+  pnl?: number
+  rank?: number
   buys: number
   sells: number
 }

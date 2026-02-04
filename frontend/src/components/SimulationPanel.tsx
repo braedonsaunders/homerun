@@ -225,29 +225,29 @@ function AccountCard({
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
           <p className="text-gray-500">Capital</p>
-          <p className="font-mono">${account.current_capital.toFixed(2)}</p>
+          <p className="font-mono">${(account.current_capital ?? 0).toFixed(2)}</p>
         </div>
         <div>
           <p className="text-gray-500">PnL</p>
           <p className={clsx("font-mono", pnlColor)}>
-            {account.total_pnl >= 0 ? '+' : ''}${account.total_pnl.toFixed(2)}
+            {(account.total_pnl ?? 0) >= 0 ? '+' : ''}${(account.total_pnl ?? 0).toFixed(2)}
           </p>
         </div>
         <div>
           <p className="text-gray-500">ROI</p>
           <p className={clsx("font-mono", roiColor)}>
-            {account.roi_percent >= 0 ? '+' : ''}{account.roi_percent.toFixed(2)}%
+            {(account.roi_percent ?? 0) >= 0 ? '+' : ''}{(account.roi_percent ?? 0).toFixed(2)}%
           </p>
         </div>
         <div>
           <p className="text-gray-500">Win Rate</p>
-          <p className="font-mono">{account.win_rate.toFixed(1)}%</p>
+          <p className="font-mono">{(account.win_rate ?? 0).toFixed(1)}%</p>
         </div>
       </div>
 
       <div className="mt-3 pt-3 border-t border-gray-800 flex justify-between text-xs text-gray-500">
-        <span>{account.total_trades} trades</span>
-        <span>{account.open_positions} open</span>
+        <span>{account.total_trades ?? 0} trades</span>
+        <span>{account.open_positions ?? 0} open</span>
       </div>
     </div>
   )

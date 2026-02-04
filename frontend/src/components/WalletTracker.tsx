@@ -180,14 +180,19 @@ export default function WalletTracker() {
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-xs font-bold">
-                        #{idx + 1}
+                        #{trader.rank || idx + 1}
                       </div>
                       <div>
-                        <p className="font-mono text-sm">
-                          {trader.address.slice(0, 6)}...{trader.address.slice(-4)}
+                        <p className="font-medium text-sm">
+                          {trader.username || `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}`}
                         </p>
                         <p className="text-xs text-gray-500">
-                          {trader.trades} trades | ${trader.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })} volume
+                          ${trader.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })} vol
+                          {trader.pnl !== undefined && (
+                            <span className={trader.pnl >= 0 ? 'text-green-400 ml-2' : 'text-red-400 ml-2'}>
+                              {trader.pnl >= 0 ? '+' : ''}${trader.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })} P/L
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>
