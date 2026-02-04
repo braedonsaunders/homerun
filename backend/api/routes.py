@@ -400,9 +400,12 @@ async def discover_top_traders(
 async def discover_by_win_rate(
     min_win_rate: float = Query(70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"),
     min_trades: int = Query(10, ge=1, description="Minimum number of trades"),
-    limit: int = Query(20, ge=1, le=50, description="Max results to return"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
     time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
-    category: str = Query("OVERALL", description="Market category filter")
+    category: str = Query("OVERALL", description="Market category filter"),
+    min_volume: float = Query(0, ge=0, description="Minimum trading volume (0 = no minimum)"),
+    max_volume: float = Query(0, ge=0, description="Maximum trading volume (0 = no maximum)"),
+    scan_count: int = Query(100, ge=10, le=500, description="Number of traders to scan from leaderboard")
 ):
     """
     Discover traders with high win rates.
@@ -410,8 +413,13 @@ async def discover_by_win_rate(
     This endpoint fetches traders from the leaderboard, calculates their actual
     win rate by analyzing trade history, and returns only those meeting the threshold.
 
-    Note: This is slower than the regular leaderboard as it analyzes each trader's history.
-    For very high win rates (99%+), start with a lower threshold and browse results.
+    Filters:
+    - min_win_rate: Filter by minimum win rate (e.g., 99 for 99%+ win rate)
+    - min_trades: Minimum closed trades to qualify
+    - min_volume/max_volume: Filter by trading volume
+    - scan_count: How many traders to analyze (more = slower but finds more results)
+
+    Note: Higher scan_count values will take longer but may find more high win-rate traders.
     """
     try:
         traders = await polymarket_client.discover_by_win_rate(
@@ -419,7 +427,10 @@ async def discover_by_win_rate(
             min_trades=min_trades,
             limit=limit,
             time_period=time_period,
-            category=category
+            category=category,
+            min_volume=min_volume,
+            max_volume=max_volume,
+            scan_count=scan_count
         )
         return traders
     except Exception as e:

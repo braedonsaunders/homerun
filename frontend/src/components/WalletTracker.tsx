@@ -54,6 +54,10 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
   const [category, setCategory] = useState<Category>('OVERALL')
   const [minWinRate, setMinWinRate] = useState(70)
   const [minTrades, setMinTrades] = useState(10)
+  const [minVolume, setMinVolume] = useState(0)
+  const [maxVolume, setMaxVolume] = useState(0)
+  const [scanCount, setScanCount] = useState(100)
+  const [resultLimit, setResultLimit] = useState(50)
 
   // Copy trade modal state
   const [showCopyModal, setShowCopyModal] = useState(false)
@@ -78,13 +82,16 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
 
   // Win rate discovery query
   const { data: winRateTraders = [], isLoading: loadingWinRate, refetch: refreshWinRate } = useQuery({
-    queryKey: ['win-rate-traders', minWinRate, minTrades, timePeriod, category],
+    queryKey: ['win-rate-traders', minWinRate, minTrades, timePeriod, category, minVolume, maxVolume, scanCount, resultLimit],
     queryFn: () => discoverByWinRate({
       min_win_rate: minWinRate,
       min_trades: minTrades,
-      limit: 30,
+      limit: resultLimit,
       time_period: timePeriod,
-      category
+      category,
+      min_volume: minVolume > 0 ? minVolume : undefined,
+      max_volume: maxVolume > 0 ? maxVolume : undefined,
+      scan_count: scanCount
     }),
     refetchInterval: 120000,
     enabled: discoverMode === 'winrate',
@@ -265,7 +272,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                 </h3>
                 <p className="text-sm text-gray-500">
                   {discoverMode === 'winrate'
-                    ? `Traders with ${minWinRate}%+ win rate (analyzing trade history...)`
+                    ? `Scanning ${scanCount} traders for ${minWinRate}%+ win rate${minVolume > 0 ? `, $${minVolume.toLocaleString()}+ volume` : ''}`
                     : 'Discovered from Polymarket leaderboard'}
                 </p>
               </div>
@@ -294,6 +301,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
             {/* Filters Panel */}
             {showFilters && (
               <div className="mb-4 p-3 bg-[#1a1a1a] rounded-lg space-y-3">
+                {/* Row 1: Basic filters */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">Time Period</label>
@@ -353,6 +361,9 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                           <option value={80}>80%+</option>
                           <option value={90}>90%+</option>
                           <option value={95}>95%+</option>
+                          <option value={97}>97%+</option>
+                          <option value={98}>98%+</option>
+                          <option value={99}>99%+</option>
                         </select>
                       </div>
                       <div>
@@ -362,34 +373,140 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                           onChange={(e) => setMinTrades(Number(e.target.value))}
                           className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
                         >
+                          <option value={3}>3+ trades</option>
                           <option value={5}>5+ trades</option>
                           <option value={10}>10+ trades</option>
                           <option value={20}>20+ trades</option>
                           <option value={50}>50+ trades</option>
                           <option value={100}>100+ trades</option>
+                          <option value={200}>200+ trades</option>
+                          <option value={500}>500+ trades</option>
+                          <option value={1000}>1000+ trades</option>
                         </select>
                       </div>
                     </>
                   )}
                 </div>
+
+                {/* Row 2: Advanced win rate filters */}
+                {discoverMode === 'winrate' && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-gray-700">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Min Volume ($)</label>
+                      <select
+                        value={minVolume}
+                        onChange={(e) => setMinVolume(Number(e.target.value))}
+                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      >
+                        <option value={0}>No minimum</option>
+                        <option value={1000}>$1,000+</option>
+                        <option value={5000}>$5,000+</option>
+                        <option value={10000}>$10,000+</option>
+                        <option value={25000}>$25,000+</option>
+                        <option value={50000}>$50,000+</option>
+                        <option value={100000}>$100,000+</option>
+                        <option value={500000}>$500,000+</option>
+                        <option value={1000000}>$1,000,000+</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Max Volume ($)</label>
+                      <select
+                        value={maxVolume}
+                        onChange={(e) => setMaxVolume(Number(e.target.value))}
+                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      >
+                        <option value={0}>No maximum</option>
+                        <option value={10000}>$10,000</option>
+                        <option value={50000}>$50,000</option>
+                        <option value={100000}>$100,000</option>
+                        <option value={500000}>$500,000</option>
+                        <option value={1000000}>$1,000,000</option>
+                        <option value={5000000}>$5,000,000</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Scan Count</label>
+                      <select
+                        value={scanCount}
+                        onChange={(e) => setScanCount(Number(e.target.value))}
+                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      >
+                        <option value={50}>50 traders</option>
+                        <option value={100}>100 traders</option>
+                        <option value={150}>150 traders</option>
+                        <option value={200}>200 traders</option>
+                        <option value={300}>300 traders</option>
+                        <option value={500}>500 traders</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Show Results</label>
+                      <select
+                        value={resultLimit}
+                        onChange={(e) => setResultLimit(Number(e.target.value))}
+                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      >
+                        <option value={10}>10 results</option>
+                        <option value={25}>25 results</option>
+                        <option value={50}>50 results</option>
+                        <option value={100}>100 results</option>
+                        <option value={200}>200 results</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tip for high win rate searches */}
+                {discoverMode === 'winrate' && minWinRate >= 95 && (
+                  <div className="text-xs text-yellow-500/80 flex items-center gap-1 pt-1">
+                    <span>Tip: For 95%+ win rates, increase Scan Count to find more traders. Higher scans take longer.</span>
+                  </div>
+                )}
               </div>
             )}
 
             {isLoadingTraders ? (
-              <div className="flex items-center justify-center py-8">
+              <div className="flex flex-col items-center justify-center py-8">
                 <RefreshCw className="w-6 h-6 animate-spin text-gray-500" />
-                <span className="ml-2 text-gray-500">
-                  {discoverMode === 'winrate' ? 'Analyzing win rates...' : 'Scanning Polymarket trades...'}
+                <span className="mt-2 text-gray-500">
+                  {discoverMode === 'winrate'
+                    ? `Analyzing ${scanCount} traders for ${minWinRate}%+ win rate...`
+                    : 'Scanning Polymarket trades...'}
                 </span>
+                {discoverMode === 'winrate' && scanCount > 100 && (
+                  <span className="text-xs text-gray-600 mt-1">
+                    This may take a moment for larger scan counts
+                  </span>
+                )}
               </div>
             ) : currentTraders.length === 0 ? (
-              <p className="text-center text-gray-500 py-8">
-                {discoverMode === 'winrate'
-                  ? `No traders found with ${minWinRate}%+ win rate. Try lowering the threshold.`
-                  : 'No traders discovered yet'}
-              </p>
+              <div className="text-center py-8">
+                <p className="text-gray-500">
+                  {discoverMode === 'winrate'
+                    ? `No traders found with ${minWinRate}%+ win rate.`
+                    : 'No traders discovered yet'}
+                </p>
+                {discoverMode === 'winrate' && (
+                  <p className="text-xs text-gray-600 mt-2">
+                    Try: Lower the win rate threshold, increase scan count, or reduce min trades/volume filters
+                  </p>
+                )}
+              </div>
             ) : (
-              <div className="space-y-2 max-h-96 overflow-y-auto">
+              <>
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-sm text-gray-400">
+                    Found {currentTraders.length} trader{currentTraders.length !== 1 ? 's' : ''}
+                    {discoverMode === 'winrate' && ` with ${minWinRate}%+ win rate`}
+                  </span>
+                  {discoverMode === 'winrate' && currentTraders.length > 0 && (
+                    <span className="text-xs text-gray-500">
+                      Avg: {(currentTraders.reduce((sum, t) => sum + (t.win_rate || 0), 0) / currentTraders.length).toFixed(1)}% WR
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-2 max-h-[600px] overflow-y-auto">
                 {currentTraders.map((trader, idx) => (
                   <div
                     key={trader.address}
@@ -469,6 +586,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                   </div>
                 ))}
               </div>
+              </>
             )}
           </div>
         </>
