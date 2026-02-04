@@ -19,7 +19,9 @@ import {
   Pause,
   Play,
   Settings,
-  Terminal
+  Terminal,
+  Briefcase,
+  BarChart3
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -38,8 +40,10 @@ import SimulationPanel from './components/SimulationPanel'
 import AnomalyPanel from './components/AnomalyPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
+import PositionsPanel from './components/PositionsPanel'
+import PerformancePanel from './components/PerformancePanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly' | 'positions' | 'performance'
 
 const ITEMS_PER_PAGE = 20
 
@@ -348,6 +352,18 @@ function App() {
               icon={<Shield className="w-4 h-4" />}
               label="Anomaly Detection"
             />
+            <TabButton
+              active={activeTab === 'positions'}
+              onClick={() => setActiveTab('positions')}
+              icon={<Briefcase className="w-4 h-4" />}
+              label="Positions"
+            />
+            <TabButton
+              active={activeTab === 'performance'}
+              onClick={() => setActiveTab('performance')}
+              icon={<BarChart3 className="w-4 h-4" />}
+              label="Performance"
+            />
           </div>
         </div>
       </div>
@@ -502,6 +518,8 @@ function App() {
           />
         )}
         {activeTab === 'anomaly' && <AnomalyPanel />}
+        {activeTab === 'positions' && <PositionsPanel />}
+        {activeTab === 'performance' && <PerformancePanel />}
       </main>
     </div>
   )
