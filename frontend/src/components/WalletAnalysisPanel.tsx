@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   Search,
@@ -25,10 +25,27 @@ import {
   WalletSummary
 } from '../services/api'
 
-export default function WalletAnalysisPanel() {
+interface WalletAnalysisPanelProps {
+  initialWallet?: string | null
+  onWalletAnalyzed?: () => void
+}
+
+export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }: WalletAnalysisPanelProps) {
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions'>('summary')
+
+  // Auto-analyze when initialWallet changes
+  useEffect(() => {
+    if (initialWallet) {
+      setSearchAddress(initialWallet)
+      setActiveWallet(initialWallet.toLowerCase())
+      setActiveTab('summary')
+      if (onWalletAnalyzed) {
+        onWalletAnalyzed()
+      }
+    }
+  }, [initialWallet, onWalletAnalyzed])
 
   const summaryQuery = useQuery({
     queryKey: ['wallet-summary', activeWallet],

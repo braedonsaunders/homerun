@@ -12,7 +12,6 @@ import {
   Star,
   Copy,
   UserPlus,
-  DollarSign,
   Activity
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -22,20 +21,18 @@ import {
   removeWallet,
   Wallet as WalletType,
   discoverTopTraders,
-  analyzeWalletPnL,
   analyzeAndTrackWallet,
-  DiscoveredTrader,
-  WalletPnL,
   getSimulationAccounts
 } from '../services/api'
 
-export default function WalletTracker() {
+interface WalletTrackerProps {
+  onAnalyzeWallet?: (address: string) => void
+}
+
+export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
-  const [selectedWallet, setSelectedWallet] = useState<string | null>(null)
-  const [walletAnalysis, setWalletAnalysis] = useState<WalletPnL | null>(null)
-  const [analyzing, setAnalyzing] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: wallets = [], isLoading } = useQuery({
@@ -85,16 +82,10 @@ export default function WalletTracker() {
     addMutation.mutate({ address: newAddress.trim(), label: newLabel.trim() || undefined })
   }
 
-  const handleAnalyze = async (address: string) => {
-    setSelectedWallet(address)
-    setAnalyzing(true)
-    try {
-      const analysis = await analyzeWalletPnL(address)
-      setWalletAnalysis(analysis)
-    } catch (e) {
-      console.error('Analysis failed:', e)
+  const handleAnalyze = (address: string) => {
+    if (onAnalyzeWallet) {
+      onAnalyzeWallet(address)
     }
-    setAnalyzing(false)
   }
 
   const handleTrackAndCopy = (address: string, autoCopy: boolean = false) => {
@@ -173,10 +164,7 @@ export default function WalletTracker() {
                 {discoveredTraders.map((trader, idx) => (
                   <div
                     key={trader.address}
-                    className={clsx(
-                      "flex items-center justify-between p-3 rounded-lg transition-colors",
-                      selectedWallet === trader.address ? "bg-green-500/10 border border-green-500/30" : "bg-[#1a1a1a] hover:bg-[#222]"
-                    )}
+                    className="flex items-center justify-between p-3 rounded-lg transition-colors bg-[#1a1a1a] hover:bg-[#222]"
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-xs font-bold">
@@ -199,20 +187,10 @@ export default function WalletTracker() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleAnalyze(trader.address)}
-                        disabled={analyzing && selectedWallet === trader.address}
-                        className={clsx(
-                          "flex items-center gap-1 px-2 py-1 rounded text-xs",
-                          selectedWallet === trader.address && walletAnalysis
-                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                            : "bg-gray-700 hover:bg-gray-600"
-                        )}
+                        className="flex items-center gap-1 px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded text-xs"
                       >
-                        {analyzing && selectedWallet === trader.address ? (
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <Activity className="w-3 h-3" />
-                        )}
-                        {analyzing && selectedWallet === trader.address ? 'Analyzing...' : 'Analyze'}
+                        <Activity className="w-3 h-3" />
+                        Analyze
                       </button>
                       <button
                         onClick={() => handleTrackAndCopy(trader.address, false)}
@@ -246,64 +224,6 @@ export default function WalletTracker() {
               </div>
             )}
           </div>
-
-          {/* Wallet Analysis Panel */}
-          {selectedWallet && walletAnalysis && (
-            <div className="bg-[#141414] border border-green-500/30 rounded-lg p-4">
-              <h3 className="font-medium mb-3 flex items-center gap-2">
-                <DollarSign className="w-5 h-5 text-green-500" />
-                Wallet Analysis: {selectedWallet.slice(0, 8)}...
-              </h3>
-              {walletAnalysis.error ? (
-                <p className="text-red-400">{walletAnalysis.error}</p>
-              ) : (
-                <div className="grid grid-cols-4 gap-4 text-sm">
-                  <div>
-                    <p className="text-gray-500">Total Trades</p>
-                    <p className="text-lg font-mono">{walletAnalysis.total_trades}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Open Positions</p>
-                    <p className="text-lg font-mono">{walletAnalysis.open_positions}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Total Invested</p>
-                    <p className="text-lg font-mono">${walletAnalysis.total_invested.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Total P/L</p>
-                    <p className={clsx(
-                      "text-lg font-mono",
-                      walletAnalysis.total_pnl >= 0 ? "text-green-400" : "text-red-400"
-                    )}>
-                      {walletAnalysis.total_pnl >= 0 ? '+' : ''}${walletAnalysis.total_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">ROI</p>
-                    <p className={clsx(
-                      "text-lg font-mono",
-                      walletAnalysis.roi_percent >= 0 ? "text-green-400" : "text-red-400"
-                    )}>
-                      {walletAnalysis.roi_percent >= 0 ? '+' : ''}{walletAnalysis.roi_percent.toFixed(2)}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Realized P/L</p>
-                    <p className="font-mono">${walletAnalysis.realized_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Unrealized P/L</p>
-                    <p className="font-mono">${walletAnalysis.unrealized_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Position Value</p>
-                    <p className="font-mono">${walletAnalysis.position_value.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </>
       )}
 
