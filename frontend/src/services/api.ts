@@ -440,6 +440,40 @@ export interface DiscoveredTrader {
   rank?: number
   buys: number
   sells: number
+  win_rate?: number
+  wins?: number
+  losses?: number
+  total_markets?: number
+  trade_count?: number
+}
+
+export type TimePeriod = 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
+export type OrderBy = 'PNL' | 'VOL'
+export type Category = 'OVERALL' | 'POLITICS' | 'SPORTS' | 'CRYPTO' | 'CULTURE' | 'WEATHER' | 'ECONOMICS' | 'TECH' | 'FINANCE'
+
+export interface LeaderboardFilters {
+  limit?: number
+  time_period?: TimePeriod
+  order_by?: OrderBy
+  category?: Category
+}
+
+export interface WinRateFilters {
+  min_win_rate?: number
+  min_trades?: number
+  limit?: number
+  time_period?: TimePeriod
+  category?: Category
+}
+
+export interface WalletWinRate {
+  address: string
+  win_rate: number
+  wins: number
+  losses: number
+  total_markets: number
+  trade_count: number
+  error?: string
 }
 
 export interface WalletPnL {
@@ -456,15 +490,33 @@ export interface WalletPnL {
   error?: string
 }
 
-export const getLeaderboard = async (limit = 50) => {
-  const { data } = await api.get('/discover/leaderboard', { params: { limit } })
+export const getLeaderboard = async (filters?: LeaderboardFilters) => {
+  const { data } = await api.get('/discover/leaderboard', { params: filters })
   return data
 }
 
-export const discoverTopTraders = async (limit = 50, minTrades = 10): Promise<DiscoveredTrader[]> => {
+export const discoverTopTraders = async (
+  limit = 50,
+  minTrades = 10,
+  filters?: Omit<LeaderboardFilters, 'limit'>
+): Promise<DiscoveredTrader[]> => {
   const { data } = await api.get('/discover/top-traders', {
-    params: { limit, min_trades: minTrades }
+    params: {
+      limit,
+      min_trades: minTrades,
+      ...filters
+    }
   })
+  return data
+}
+
+export const discoverByWinRate = async (filters?: WinRateFilters): Promise<DiscoveredTrader[]> => {
+  const { data } = await api.get('/discover/by-win-rate', { params: filters })
+  return data
+}
+
+export const getWalletWinRate = async (address: string): Promise<WalletWinRate> => {
+  const { data } = await api.get(`/discover/wallet/${address}/win-rate`)
   return data
 }
 
