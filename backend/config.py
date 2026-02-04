@@ -1,6 +1,11 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+from pathlib import Path
 import os
+
+# Get the directory where this config file is located (backend/)
+_BACKEND_DIR = Path(__file__).parent.resolve()
+_DEFAULT_DB_PATH = _BACKEND_DIR / "arbitrage.db"
 
 
 class Settings(BaseSettings):
@@ -28,8 +33,8 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[str] = None
 
-    # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./arbitrage.db"
+    # Database - use absolute path based on backend directory
+    DATABASE_URL: str = f"sqlite+aiosqlite:///{_DEFAULT_DB_PATH}"
 
     # Production Settings
     LOG_LEVEL: str = "INFO"
