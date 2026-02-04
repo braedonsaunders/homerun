@@ -293,6 +293,57 @@ class ScannerSettings(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# ==================== APP SETTINGS ====================
+
+class AppSettings(Base):
+    """Application-wide settings stored in database"""
+    __tablename__ = "app_settings"
+
+    id = Column(String, primary_key=True, default="default")
+
+    # Polymarket Account Settings
+    polymarket_api_key = Column(String, nullable=True)
+    polymarket_api_secret = Column(String, nullable=True)
+    polymarket_api_passphrase = Column(String, nullable=True)
+    polymarket_private_key = Column(String, nullable=True)
+
+    # LLM/AI Service Settings
+    openai_api_key = Column(String, nullable=True)
+    anthropic_api_key = Column(String, nullable=True)
+    llm_provider = Column(String, default="none")  # none, openai, anthropic
+    llm_model = Column(String, nullable=True)
+
+    # Notification Settings
+    telegram_bot_token = Column(String, nullable=True)
+    telegram_chat_id = Column(String, nullable=True)
+    notifications_enabled = Column(Boolean, default=False)
+    notify_on_opportunity = Column(Boolean, default=True)
+    notify_on_trade = Column(Boolean, default=True)
+    notify_min_roi = Column(Float, default=5.0)
+
+    # Scanner Settings
+    scan_interval_seconds = Column(Integer, default=60)
+    min_profit_threshold = Column(Float, default=2.5)
+    max_markets_to_scan = Column(Integer, default=500)
+    min_liquidity = Column(Float, default=1000.0)
+
+    # Trading Safety Settings
+    trading_enabled = Column(Boolean, default=False)
+    max_trade_size_usd = Column(Float, default=100.0)
+    max_daily_trade_volume = Column(Float, default=1000.0)
+    max_open_positions = Column(Integer, default=10)
+    max_slippage_percent = Column(Float, default=2.0)
+
+    # Database Maintenance
+    auto_cleanup_enabled = Column(Boolean, default=False)
+    cleanup_interval_hours = Column(Integer, default=24)
+    cleanup_resolved_trade_days = Column(Integer, default=30)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ==================== DATABASE SETUP ====================
 
 async_engine = create_async_engine(settings.DATABASE_URL, echo=False)

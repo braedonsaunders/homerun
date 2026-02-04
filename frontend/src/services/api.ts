@@ -804,4 +804,119 @@ export const emergencyStopAutoTrader = async () => {
   return data
 }
 
+// ==================== SETTINGS ====================
+
+export interface PolymarketSettings {
+  api_key: string | null
+  api_secret: string | null
+  api_passphrase: string | null
+  private_key: string | null
+}
+
+export interface LLMSettings {
+  provider: string
+  openai_api_key: string | null
+  anthropic_api_key: string | null
+  model: string | null
+}
+
+export interface NotificationSettings {
+  enabled: boolean
+  telegram_bot_token: string | null
+  telegram_chat_id: string | null
+  notify_on_opportunity: boolean
+  notify_on_trade: boolean
+  notify_min_roi: number
+}
+
+export interface ScannerSettings {
+  scan_interval_seconds: number
+  min_profit_threshold: number
+  max_markets_to_scan: number
+  min_liquidity: number
+}
+
+export interface TradingSettingsConfig {
+  trading_enabled: boolean
+  max_trade_size_usd: number
+  max_daily_trade_volume: number
+  max_open_positions: number
+  max_slippage_percent: number
+}
+
+export interface MaintenanceSettings {
+  auto_cleanup_enabled: boolean
+  cleanup_interval_hours: number
+  cleanup_resolved_trade_days: number
+}
+
+export interface AllSettings {
+  polymarket: PolymarketSettings
+  llm: LLMSettings
+  notifications: NotificationSettings
+  scanner: ScannerSettings
+  trading: TradingSettingsConfig
+  maintenance: MaintenanceSettings
+  updated_at: string | null
+}
+
+export interface UpdateSettingsRequest {
+  polymarket?: Partial<PolymarketSettings>
+  llm?: Partial<LLMSettings>
+  notifications?: Partial<NotificationSettings>
+  scanner?: Partial<ScannerSettings>
+  trading?: Partial<TradingSettingsConfig>
+  maintenance?: Partial<MaintenanceSettings>
+}
+
+export const getSettings = async (): Promise<AllSettings> => {
+  const { data } = await api.get('/settings')
+  return data
+}
+
+export const updateSettings = async (settings: UpdateSettingsRequest): Promise<{ status: string; message: string; updated_at: string }> => {
+  const { data } = await api.put('/settings', settings)
+  return data
+}
+
+export const updatePolymarketSettings = async (settings: Partial<PolymarketSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/polymarket', settings)
+  return data
+}
+
+export const updateLLMSettings = async (settings: Partial<LLMSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/llm', settings)
+  return data
+}
+
+export const updateNotificationSettings = async (settings: Partial<NotificationSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/notifications', settings)
+  return data
+}
+
+export const updateScannerSettings = async (settings: Partial<ScannerSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/scanner', settings)
+  return data
+}
+
+export const updateTradingSettings = async (settings: Partial<TradingSettingsConfig>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/trading', settings)
+  return data
+}
+
+export const updateMaintenanceSettings = async (settings: Partial<MaintenanceSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/maintenance', settings)
+  return data
+}
+
+export const testPolymarketConnection = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/settings/test/polymarket')
+  return data
+}
+
+export const testTelegramConnection = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/settings/test/telegram')
+  return data
+}
+
 export default api

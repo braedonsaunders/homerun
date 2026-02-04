@@ -43,8 +43,9 @@ import TradingPanel from './components/TradingPanel'
 import PositionsPanel from './components/PositionsPanel'
 import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
+import SettingsPanel from './components/SettingsPanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly' | 'positions' | 'performance'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly' | 'positions' | 'performance' | 'settings'
 
 const ITEMS_PER_PAGE = 20
 
@@ -366,6 +367,12 @@ function App() {
               icon={<BarChart3 className="w-4 h-4" />}
               label="Performance"
             />
+            <TabButton
+              active={activeTab === 'settings'}
+              onClick={() => setActiveTab('settings')}
+              icon={<Settings className="w-4 h-4" />}
+              label="Settings"
+            />
           </div>
         </div>
       </div>
@@ -573,6 +580,9 @@ function App() {
         </div>
         <div className={activeTab === 'performance' ? '' : 'hidden'}>
           <PerformancePanel />
+        </div>
+        <div className={activeTab === 'settings' ? '' : 'hidden'}>
+          <SettingsPanel />
         </div>
       </main>
     </div>
