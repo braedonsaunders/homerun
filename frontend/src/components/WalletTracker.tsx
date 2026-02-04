@@ -200,10 +200,19 @@ export default function WalletTracker() {
                       <button
                         onClick={() => handleAnalyze(trader.address)}
                         disabled={analyzing && selectedWallet === trader.address}
-                        className="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                        className={clsx(
+                          "flex items-center gap-1 px-2 py-1 rounded text-xs",
+                          selectedWallet === trader.address && walletAnalysis
+                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                            : "bg-gray-700 hover:bg-gray-600"
+                        )}
                       >
-                        <Activity className="w-3 h-3" />
-                        Analyze
+                        {analyzing && selectedWallet === trader.address ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Activity className="w-3 h-3" />
+                        )}
+                        {analyzing && selectedWallet === trader.address ? 'Analyzing...' : 'Analyze'}
                       </button>
                       <button
                         onClick={() => handleTrackAndCopy(trader.address, false)}
@@ -223,10 +232,11 @@ export default function WalletTracker() {
                         Copy Trade
                       </button>
                       <a
-                        href={`https://polygonscan.com/address/${trader.address}`}
+                        href={`https://polymarket.com/profile/${trader.address}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="p-1 hover:bg-gray-700 rounded"
+                        title="View on Polymarket"
                       >
                         <ExternalLink className="w-3 h-3 text-gray-500" />
                       </a>

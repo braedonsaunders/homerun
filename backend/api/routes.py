@@ -119,7 +119,7 @@ async def set_scanner_interval(interval_seconds: int = Query(..., ge=10, le=3600
 @router.get("/wallets")
 async def get_tracked_wallets():
     """Get all tracked wallets"""
-    return wallet_tracker.get_all_wallets()
+    return await wallet_tracker.get_all_wallets()
 
 
 @router.post("/wallets")
@@ -132,14 +132,14 @@ async def add_wallet(address: str, label: Optional[str] = None):
 @router.delete("/wallets/{address}")
 async def remove_wallet(address: str):
     """Remove a tracked wallet"""
-    wallet_tracker.remove_wallet(address)
+    await wallet_tracker.remove_wallet(address)
     return {"status": "success", "address": address}
 
 
 @router.get("/wallets/{address}")
 async def get_wallet_info(address: str):
     """Get info for a specific wallet"""
-    info = wallet_tracker.get_wallet_info(address)
+    info = await wallet_tracker.get_wallet_info(address)
     if not info:
         raise HTTPException(status_code=404, detail="Wallet not found")
     return info
@@ -302,7 +302,7 @@ async def analyze_and_track_wallet(
             # Verify account exists
             account = await simulation_service.get_account(simulation_account_id)
             if account:
-                await copy_trader.add_config(
+                await copy_trader.add_copy_config(
                     source_wallet=address,
                     account_id=simulation_account_id,
                     min_roi_threshold=2.0,
