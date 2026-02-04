@@ -48,7 +48,7 @@ import SettingsPanel from './components/SettingsPanel'
 
 type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'settings'
 type TradingSubTab = 'auto' | 'paper'
-type WalletsSubTab = 'tracked' | 'leaderboard' | 'winrate' | 'analysis' | 'anomaly'
+type WalletsSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
 
 const ITEMS_PER_PAGE = 20
 
@@ -553,16 +553,16 @@ function App() {
               Leaderboard
             </button>
             <button
-              onClick={() => setWalletsSubTab('winrate')}
+              onClick={() => setWalletsSubTab('discover')}
               className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'winrate'
+                walletsSubTab === 'discover'
                   ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
             >
               <Target className="w-4 h-4" />
-              Win Rate
+              Discover
             </button>
             <button
               onClick={() => setWalletsSubTab('analysis')}
@@ -576,18 +576,6 @@ function App() {
               <Search className="w-4 h-4" />
               Analysis
             </button>
-            <button
-              onClick={() => setWalletsSubTab('anomaly')}
-              className={clsx(
-                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'anomaly'
-                  ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
-                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
-              )}
-            >
-              <Shield className="w-4 h-4" />
-              Anomaly
-            </button>
           </div>
           {/* Wallets Subtab Content */}
           <div className={walletsSubTab === 'tracked' ? '' : 'hidden'}>
@@ -596,17 +584,19 @@ function App() {
           <div className={walletsSubTab === 'leaderboard' ? '' : 'hidden'}>
             <WalletTracker section="discover" discoverMode="leaderboard" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
-          <div className={walletsSubTab === 'winrate' ? '' : 'hidden'}>
+          <div className={walletsSubTab === 'discover' ? '' : 'hidden'}>
             <WalletTracker section="discover" discoverMode="winrate" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
           <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
-            <WalletAnalysisPanel
-              initialWallet={walletToAnalyze}
-              onWalletAnalyzed={() => setWalletToAnalyze(null)}
-            />
-          </div>
-          <div className={walletsSubTab === 'anomaly' ? '' : 'hidden'}>
-            <AnomalyPanel />
+            <div className="space-y-6">
+              <WalletAnalysisPanel
+                initialWallet={walletToAnalyze}
+                onWalletAnalyzed={() => setWalletToAnalyze(null)}
+              />
+              <div className="border-t border-gray-800 pt-6">
+                <AnomalyPanel />
+              </div>
+            </div>
           </div>
         </div>
 
