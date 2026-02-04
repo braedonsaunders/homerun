@@ -53,7 +53,14 @@ function App() {
   const [currentPage, setCurrentPage] = useState(0)
   const [showScannerSettings, setShowScannerSettings] = useState(false)
   const [intervalInput, setIntervalInput] = useState(300)
+  const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const queryClient = useQueryClient()
+
+  // Callback for navigating to wallet analysis from WalletTracker
+  const handleAnalyzeWallet = (address: string) => {
+    setWalletToAnalyze(address)
+    setActiveTab('analysis')
+  }
 
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
@@ -468,8 +475,13 @@ function App() {
 
         {activeTab === 'trading' && <TradingPanel />}
         {activeTab === 'simulation' && <SimulationPanel />}
-        {activeTab === 'wallets' && <WalletTracker />}
-        {activeTab === 'analysis' && <WalletAnalysisPanel />}
+        {activeTab === 'wallets' && <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />}
+        {activeTab === 'analysis' && (
+          <WalletAnalysisPanel
+            initialWallet={walletToAnalyze}
+            onWalletAnalyzed={() => setWalletToAnalyze(null)}
+          />
+        )}
         {activeTab === 'anomaly' && <AnomalyPanel />}
       </main>
     </div>
