@@ -192,36 +192,50 @@ class PolymarketClient:
         return response.json()
 
     async def get_wallet_positions_with_prices(self, address: str) -> list[dict]:
-        """Get open positions for a wallet with current market prices from CLOB API"""
+        """
+        Get open positions for a wallet with enriched data.
+
+        The Data API already returns:
+        - curPrice: current market price
+        - cashPnl: realized P&L
+        - currentValue: current position value
+        - initialValue: cost basis
+        - avgPrice: average entry price
+        - percentPnl: ROI percentage
+        - title: market title
+        - outcome: Yes/No
+        """
         positions = await self.get_wallet_positions(address)
 
         if not positions:
             return []
 
-        # Extract all token IDs that need price lookups
-        token_ids = []
-        for pos in positions:
-            asset = pos.get("asset", "")
-            if asset:
-                token_ids.append(asset)
-
-        # Fetch all prices in parallel
-        if token_ids:
-            prices = await self.get_prices_batch(list(set(token_ids)))
-        else:
-            prices = {}
-
-        # Enrich positions with current prices
+        # Normalize field names and enrich with consistent naming
         enriched = []
         for pos in positions:
-            asset = pos.get("asset", "")
-            current_price = 0.0
-            if asset and asset in prices:
-                current_price = prices[asset].get("mid", 0) or 0
+            # The API returns curPrice, not currentPrice
+            current_price = float(pos.get("curPrice", 0) or 0)
+            avg_price = float(pos.get("avgPrice", 0) or 0)
+            size = float(pos.get("size", 0) or 0)
+
+            # API provides these directly
+            current_value = float(pos.get("currentValue", 0) or 0)
+            initial_value = float(pos.get("initialValue", 0) or 0)
+            cash_pnl = float(pos.get("cashPnl", 0) or 0)
+            percent_pnl = float(pos.get("percentPnl", 0) or 0)
 
             enriched_pos = {
                 **pos,
+                # Normalized field names for frontend
                 "currentPrice": current_price,
+                "avgPrice": avg_price,
+                "size": size,
+                "currentValue": current_value,
+                "initialValue": initial_value,
+                "cashPnl": cash_pnl,
+                "percentPnl": percent_pnl,
+                "title": pos.get("title", ""),
+                "outcome": pos.get("outcome", ""),
             }
             enriched.append(enriched_pos)
 
@@ -230,11 +244,30 @@ class PolymarketClient:
     async def get_user_profile(self, address: str) -> dict:
         """
         Get user profile info from Polymarket.
-        Tries the data API profile endpoint first, then falls back to scraping.
+        Tries multiple sources: leaderboard API, data API, and website scraping.
         """
         client = await self._get_client()
+        address_lower = address.lower()
 
-        # Try the data API first (undocumented but may exist)
+        # Try the leaderboard API first - it has username for top traders
+        try:
+            leaderboard = await self.get_leaderboard(limit=50)
+            for entry in leaderboard:
+                proxy_wallet = entry.get("proxyWallet", "").lower()
+                if proxy_wallet == address_lower:
+                    username = entry.get("userName", "")
+                    if username:
+                        return {
+                            "username": username,
+                            "address": address,
+                            "pnl": float(entry.get("pnl", 0)),
+                            "volume": float(entry.get("vol", 0)),
+                            "rank": entry.get("rank", 0)
+                        }
+        except Exception as e:
+            print(f"Leaderboard lookup failed: {e}")
+
+        # Try the data API profile endpoint
         try:
             response = await client.get(
                 f"{self.data_url}/profile",
@@ -242,8 +275,24 @@ class PolymarketClient:
             )
             if response.status_code == 200:
                 data = response.json()
-                if data:
-                    return data
+                if data and data.get("username"):
+                    return {"username": data.get("username"), "address": address, **data}
+        except Exception:
+            pass
+
+        # Try the users endpoint which may have username
+        try:
+            response = await client.get(
+                f"{self.data_url}/users",
+                params={"proxyAddress": address}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    user = data[0]
+                    username = user.get("name") or user.get("username") or user.get("userName")
+                    if username:
+                        return {"username": username, "address": address, **user}
         except Exception:
             pass
 
@@ -258,16 +307,13 @@ class PolymarketClient:
             )
             if response.status_code == 200:
                 html = response.text
-                # Try to extract username from the page
-                # Look for patterns like <title>Username | Polymarket</title>
-                # or meta tags with the username
                 import re
 
                 # Try title tag
                 title_match = re.search(r'<title>([^|<]+)\s*\|?\s*Polymarket', html)
                 if title_match:
                     username = title_match.group(1).strip()
-                    if username and username.lower() != address.lower()[:10]:
+                    if username and username.lower() != address_lower[:10]:
                         return {"username": username, "address": address}
 
                 # Try meta og:title
@@ -487,22 +533,23 @@ class PolymarketClient:
                     markets[market_id]["sell_size"] += size
 
             # Process open positions to determine unrealized wins/losses
+            # Use the API-provided currentValue and initialValue
             position_wins = 0
             position_losses = 0
             for pos in positions:
-                size = float(pos.get("size", 0) or 0)
-                avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-                current_price = float(pos.get("currentPrice", 0) or 0)
+                # API provides these directly
+                current_value = float(pos.get("currentValue", 0) or 0)
+                initial_value = float(pos.get("initialValue", 0) or 0)
+                cash_pnl = float(pos.get("cashPnl", 0) or 0)
 
-                if size > 0 and avg_price > 0:
-                    cost_basis = size * avg_price
-                    current_value = size * current_price
+                # A position is winning if current value + realized > initial value
+                # Or simply if the API's cashPnl + (currentValue - initialValue) > 0
+                total_position_pnl = cash_pnl + (current_value - initial_value)
 
-                    # If current value > cost basis, it's a winning position
-                    if current_value > cost_basis:
-                        position_wins += 1
-                    elif current_value < cost_basis:
-                        position_losses += 1
+                if total_position_pnl > 0:
+                    position_wins += 1
+                elif total_position_pnl < 0:
+                    position_losses += 1
 
             # Calculate wins/losses from closed positions (positions with sells)
             closed_wins = 0
@@ -643,55 +690,56 @@ class PolymarketClient:
 
     async def get_wallet_pnl(self, address: str) -> dict:
         """
-        Calculate PnL for a wallet by analyzing their positions and trades.
-        Uses enriched positions with real-time prices from CLOB API.
+        Calculate PnL for a wallet using the Data API's position data.
+
+        The Polymarket Data API returns positions with:
+        - cashPnl: realized P&L for the position
+        - currentValue: current market value
+        - initialValue: cost basis (what was invested)
+        - percentPnl: ROI percentage
         """
         try:
-            # Use enriched positions with current market prices
+            # Get positions with enriched data (already normalized)
             positions = await self.get_wallet_positions_with_prices(address)
             trades = await self.get_wallet_trades(address, limit=500)
 
-            total_invested = 0.0
-            total_returned = 0.0
-            winning_trades = 0
-            losing_trades = 0
+            # Sum up position values directly from API data
+            total_position_value = 0.0
+            total_initial_value = 0.0
+            total_cash_pnl = 0.0
 
-            for trade in trades:
-                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
-                price = float(trade.get("price", 0) or 0)
-                side = trade.get("side", "").upper()
-                outcome = trade.get("outcome", "")
-
-                if side == "BUY":
-                    total_invested += size * price
-                elif side == "SELL":
-                    total_returned += size * price
-
-            # Calculate current position value AND cost basis
-            position_value = 0.0
-            position_cost_basis = 0.0
             for pos in positions:
-                size = float(pos.get("size", 0) or 0)
-                avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-                current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
-                position_value += size * current_price
-                position_cost_basis += size * avg_price
+                # Use the API-provided values
+                current_value = float(pos.get("currentValue", 0) or 0)
+                initial_value = float(pos.get("initialValue", 0) or 0)
+                cash_pnl = float(pos.get("cashPnl", 0) or 0)
 
-            realized_pnl = total_returned - total_invested
-            unrealized_pnl = position_value - position_cost_basis
-            total_pnl = realized_pnl + unrealized_pnl
+                total_position_value += current_value
+                total_initial_value += initial_value
+                total_cash_pnl += cash_pnl
+
+            # Unrealized P&L = current value - cost basis
+            unrealized_pnl = total_position_value - total_initial_value
+
+            # Total P&L = realized (cash) + unrealized
+            total_pnl = total_cash_pnl + unrealized_pnl
+
+            # Calculate ROI based on initial investment
+            roi_percent = 0.0
+            if total_initial_value > 0:
+                roi_percent = (total_pnl / total_initial_value) * 100
 
             return {
                 "address": address,
                 "total_trades": len(trades),
                 "open_positions": len(positions),
-                "total_invested": total_invested,
-                "total_returned": total_returned,
-                "position_value": position_value,
-                "realized_pnl": realized_pnl,
+                "total_invested": total_initial_value,
+                "total_returned": total_cash_pnl + total_initial_value,  # For compatibility
+                "position_value": total_position_value,
+                "realized_pnl": total_cash_pnl,
                 "unrealized_pnl": unrealized_pnl,
                 "total_pnl": total_pnl,
-                "roi_percent": (total_pnl / total_invested * 100) if total_invested > 0 else 0
+                "roi_percent": roi_percent
             }
         except Exception as e:
             print(f"Error calculating PnL for {address}: {e}")

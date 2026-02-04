@@ -571,10 +571,21 @@ export const analyzeWalletPnL = async (address: string): Promise<WalletPnL> => {
 export interface WalletProfile {
   username: string | null
   address: string
+  pnl?: number
+  volume?: number
+  rank?: number
 }
 
 export const getWalletProfile = async (address: string): Promise<WalletProfile> => {
   const { data } = await api.get(`/wallets/${address}/profile`)
+  return data
+}
+
+// Add time-filtered wallet PnL (for future time filter support)
+export const analyzeWalletPnLWithFilter = async (address: string, timePeriod?: TimePeriod): Promise<WalletPnL> => {
+  const { data } = await api.get(`/discover/wallet/${address}`, {
+    params: timePeriod ? { time_period: timePeriod } : undefined
+  })
   return data
 }
 
