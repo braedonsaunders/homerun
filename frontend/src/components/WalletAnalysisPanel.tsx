@@ -35,7 +35,6 @@ import {
   WalletSummary,
   WalletWinRate,
   WalletPnL,
-  WalletProfile
 } from '../services/api'
 
 interface WalletAnalysisPanelProps {
@@ -51,7 +50,6 @@ function LargeSparkline({ data, color = '#22c55e', height = 80 }: { data: number
   const max = Math.max(...data)
   const range = max - min || 1
 
-  const width = 100 // percentage
   const padding = 4
   const viewBoxWidth = 400
   const viewBoxHeight = height
@@ -149,10 +147,20 @@ function CircularProgress({ percentage, size = 80, strokeWidth = 6, color = '#22
   )
 }
 
+type TimePeriod = 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
+
+const TIME_PERIOD_OPTIONS: { value: TimePeriod; label: string }[] = [
+  { value: 'DAY', label: '24H' },
+  { value: 'WEEK', label: '7D' },
+  { value: 'MONTH', label: '30D' },
+  { value: 'ALL', label: 'All Time' },
+]
+
 export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }: WalletAnalysisPanelProps) {
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions'>('summary')
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
 
   // Auto-analyze when initialWallet changes
   useEffect(() => {
@@ -251,25 +259,47 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
               <p className="text-xs text-gray-400">Enter any Polymarket wallet address</p>
             </div>
           </div>
-          <div className="flex gap-3">
-            <div className="flex-1 relative">
-              <input
-                type="text"
-                value={searchAddress}
-                onChange={(e) => setSearchAddress(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="0x..."
-                className="w-full bg-black/30 backdrop-blur border border-white/10 rounded-xl px-4 py-3 font-mono text-sm focus:outline-none focus:border-purple-500/50 focus:ring-2 focus:ring-purple-500/20 transition-all placeholder:text-gray-600"
-              />
+          <div className="flex flex-col gap-3">
+            <div className="flex gap-3">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={searchAddress}
+                  onChange={(e) => setSearchAddress(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="0x..."
+                  className="w-full bg-black/30 backdrop-blur border border-white/10 rounded-xl px-4 py-3 font-mono text-sm focus:outline-none focus:border-purple-500/50 focus:ring-2 focus:ring-purple-500/20 transition-all placeholder:text-gray-600"
+                />
+              </div>
+              <button
+                onClick={handleAnalyze}
+                disabled={!searchAddress.trim()}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-500/25"
+              >
+                <Search className="w-4 h-4" />
+                Analyze
+              </button>
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={!searchAddress.trim()}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-500/25"
-            >
-              <Search className="w-4 h-4" />
-              Analyze
-            </button>
+            {/* Time Period Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Time Period:</span>
+              <div className="flex gap-1 p-1 bg-black/30 rounded-lg">
+                {TIME_PERIOD_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => setTimePeriod(option.value)}
+                    className={clsx(
+                      "px-3 py-1.5 text-xs font-medium rounded-md transition-all",
+                      timePeriod === option.value
+                        ? "bg-purple-500/30 text-purple-300 border border-purple-500/30"
+                        : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -286,6 +316,7 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
             winRate={winRateQuery.data}
             trades={tradesQuery.data?.trades || []}
             isLoading={isLoading}
+            timePeriod={timePeriod}
             onRefresh={() => {
               pnlQuery.refetch()
               summaryQuery.refetch()
@@ -326,7 +357,6 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
                   pnlData={pnlQuery.data}
                   summary={summaryQuery.data}
                   winRate={winRateQuery.data}
-                  trades={tradesQuery.data?.trades || []}
                   isLoading={summaryQuery.isLoading}
                 />
               )}
@@ -365,6 +395,7 @@ function WalletHeroCard({
   winRate,
   trades,
   isLoading,
+  timePeriod,
   onRefresh
 }: {
   address: string
@@ -374,8 +405,10 @@ function WalletHeroCard({
   winRate?: WalletWinRate
   trades: WalletTrade[]
   isLoading: boolean
+  timePeriod: TimePeriod
   onRefresh: () => void
 }) {
+  const timePeriodLabel = TIME_PERIOD_OPTIONS.find(o => o.value === timePeriod)?.label || 'All Time'
   // Generate sparkline data from trades (cumulative value over time)
   const sparklineData = useMemo(() => {
     if (!trades || trades.length === 0) return []
@@ -406,8 +439,6 @@ function WalletHeroCard({
   const totalInvested = pnlData?.total_invested ?? summary?.summary.total_invested ?? 0
   const totalReturned = pnlData?.total_returned ?? summary?.summary.total_returned ?? 0
   const totalTrades = pnlData?.total_trades ?? summary?.summary.total_trades ?? 0
-  const openPositions = pnlData?.open_positions ?? summary?.summary.open_positions ?? 0
-  const positionValue = pnlData?.position_value ?? summary?.summary.position_value ?? 0
 
   const isProfitable = totalPnl >= 0
   const winRateValue = winRate?.win_rate ?? 0
@@ -494,14 +525,19 @@ function WalletHeroCard({
             </div>
           </div>
 
-          {/* Refresh */}
-          <button
-            onClick={onRefresh}
-            className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-            title="Refresh data"
-          >
-            <RefreshCw className="w-5 h-5 text-gray-400" />
-          </button>
+          {/* Time Period Badge & Refresh */}
+          <div className="flex items-center gap-2">
+            <span className="px-3 py-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 text-xs font-medium text-purple-300">
+              {timePeriodLabel}
+            </span>
+            <button
+              onClick={onRefresh}
+              className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+              title="Refresh data"
+            >
+              <RefreshCw className="w-5 h-5 text-gray-400" />
+            </button>
+          </div>
         </div>
 
         {/* Key Metrics Row */}
@@ -596,13 +632,11 @@ function SummaryTab({
   pnlData,
   summary,
   winRate,
-  trades,
   isLoading
 }: {
   pnlData?: WalletPnL
   summary?: WalletSummary
   winRate?: WalletWinRate
-  trades: WalletTrade[]
   isLoading: boolean
 }) {
   if (isLoading) {
