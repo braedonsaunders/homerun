@@ -21,7 +21,9 @@ import {
   Settings,
   Terminal,
   Briefcase,
-  BarChart3
+  BarChart3,
+  Trophy,
+  Users
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -46,14 +48,14 @@ import SettingsPanel from './components/SettingsPanel'
 
 type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'settings'
 type TradingSubTab = 'auto' | 'paper'
-type WalletsSubTab = 'tracker' | 'analysis' | 'anomaly'
+type WalletsSubTab = 'tracked' | 'leaderboard' | 'winrate' | 'analysis' | 'anomaly'
 
 const ITEMS_PER_PAGE = 20
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
-  const [walletsSubTab, setWalletsSubTab] = useState<WalletsSubTab>('tracker')
+  const [walletsSubTab, setWalletsSubTab] = useState<WalletsSubTab>('leaderboard')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
@@ -527,45 +529,75 @@ function App() {
           {/* Wallets Subtabs Navigation */}
           <div className="flex items-center gap-2 mb-6">
             <button
-              onClick={() => setWalletsSubTab('tracker')}
+              onClick={() => setWalletsSubTab('tracked')}
               className={clsx(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'tracker'
-                  ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'tracked'
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
             >
-              <Wallet className="w-4 h-4" />
-              Wallet Tracker
+              <Users className="w-4 h-4" />
+              Tracked
+            </button>
+            <button
+              onClick={() => setWalletsSubTab('leaderboard')}
+              className={clsx(
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'leaderboard'
+                  ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Trophy className="w-4 h-4" />
+              Leaderboard
+            </button>
+            <button
+              onClick={() => setWalletsSubTab('winrate')}
+              className={clsx(
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                walletsSubTab === 'winrate'
+                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <Target className="w-4 h-4" />
+              Win Rate
             </button>
             <button
               onClick={() => setWalletsSubTab('analysis')}
               className={clsx(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
                 walletsSubTab === 'analysis'
                   ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
             >
               <Search className="w-4 h-4" />
-              Wallet Analysis
+              Analysis
             </button>
             <button
               onClick={() => setWalletsSubTab('anomaly')}
               className={clsx(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
                 walletsSubTab === 'anomaly'
                   ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
             >
               <Shield className="w-4 h-4" />
-              Anomaly Detection
+              Anomaly
             </button>
           </div>
           {/* Wallets Subtab Content */}
-          <div className={walletsSubTab === 'tracker' ? '' : 'hidden'}>
-            <WalletTracker onAnalyzeWallet={handleAnalyzeWallet} />
+          <div className={walletsSubTab === 'tracked' ? '' : 'hidden'}>
+            <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
+          </div>
+          <div className={walletsSubTab === 'leaderboard' ? '' : 'hidden'}>
+            <WalletTracker section="discover" discoverMode="leaderboard" onAnalyzeWallet={handleAnalyzeWallet} />
+          </div>
+          <div className={walletsSubTab === 'winrate' ? '' : 'hidden'}>
+            <WalletTracker section="discover" discoverMode="winrate" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
           <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
             <WalletAnalysisPanel

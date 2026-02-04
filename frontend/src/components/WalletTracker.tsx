@@ -39,14 +39,20 @@ import {
 
 interface WalletTrackerProps {
   onAnalyzeWallet?: (address: string) => void
+  section?: 'tracked' | 'discover'
+  discoverMode?: 'leaderboard' | 'winrate'
 }
 
-export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
+export default function WalletTracker({ onAnalyzeWallet, section: propSection, discoverMode: propDiscoverMode }: WalletTrackerProps) {
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
-  const [discoverMode, setDiscoverMode] = useState<'leaderboard' | 'winrate'>('leaderboard')
+  const [discoverModeState, setDiscoverMode] = useState<'leaderboard' | 'winrate'>('leaderboard')
   const [showFilters, setShowFilters] = useState(false)
+
+  // Use props if provided, otherwise use internal state
+  const currentSection = propSection ?? activeSection
+  const currentDiscoverMode = propDiscoverMode ?? discoverModeState
 
   // Filter states
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
@@ -77,7 +83,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
     queryKey: ['discovered-traders', timePeriod, orderBy, category],
     queryFn: () => discoverTopTraders(50, 5, { time_period: timePeriod, order_by: orderBy, category }),
     refetchInterval: 60000,
-    enabled: discoverMode === 'leaderboard',
+    enabled: currentDiscoverMode === 'leaderboard',
   })
 
   // Win rate discovery query
@@ -94,7 +100,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
       scan_count: scanCount
     }),
     refetchInterval: 120000,
-    enabled: discoverMode === 'winrate',
+    enabled: currentDiscoverMode === 'winrate',
   })
 
   const { data: simAccounts = [] } = useQuery({
@@ -139,7 +145,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
   }
 
   const handleTrackOnly = (address: string) => {
-    const allTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
+    const allTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
     const trader = allTraders.find(t => t.address === address)
     const winRateStr = trader?.win_rate ? ` | ${trader.win_rate.toFixed(1)}% WR` : ''
     const label = `Discovered Trader (${trader?.volume?.toFixed(0) || '?'} vol${winRateStr})`
@@ -151,7 +157,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
   }
 
   const handleOpenCopyModal = (address: string) => {
-    const allTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
+    const allTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
     const trader = allTraders.find(t => t.address === address)
     if (trader) {
       setSelectedTrader(trader)
@@ -189,76 +195,83 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
     setSelectedTrader(null)
   }
 
-  const currentTraders = discoverMode === 'winrate' ? winRateTraders : discoveredTraders
-  const isLoadingTraders = discoverMode === 'winrate' ? loadingWinRate : discoveringTraders
-  const refreshCurrentTraders = discoverMode === 'winrate' ? refreshWinRate : refreshTraders
+  const currentTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
+  const isLoadingTraders = currentDiscoverMode === 'winrate' ? loadingWinRate : discoveringTraders
+  const refreshCurrentTraders = currentDiscoverMode === 'winrate' ? refreshWinRate : refreshTraders
+
+  // Check if navigation is controlled by parent
+  const isControlledByParent = propSection !== undefined
 
   return (
     <div className="space-y-6">
-      {/* Section Tabs */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setActiveSection('discover')}
-          className={clsx(
-            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-            activeSection === 'discover'
-              ? "bg-green-500/20 text-green-400 border border-green-500/50"
-              : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-          )}
-        >
-          <Search className="w-4 h-4" />
-          Discover Top Traders
-        </button>
-        <button
-          onClick={() => setActiveSection('tracked')}
-          className={clsx(
-            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-            activeSection === 'tracked'
-              ? "bg-blue-500/20 text-blue-400 border border-blue-500/50"
-              : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-          )}
-        >
-          <Wallet className="w-4 h-4" />
-          Tracked Wallets ({wallets.length})
-        </button>
-      </div>
+      {/* Section Tabs - only show if not controlled by parent */}
+      {!isControlledByParent && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => setActiveSection('discover')}
+            className={clsx(
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+              currentSection === 'discover'
+                ? "bg-green-500/20 text-green-400 border border-green-500/50"
+                : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+            )}
+          >
+            <Search className="w-4 h-4" />
+            Discover Top Traders
+          </button>
+          <button
+            onClick={() => setActiveSection('tracked')}
+            className={clsx(
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+              currentSection === 'tracked'
+                ? "bg-blue-500/20 text-blue-400 border border-blue-500/50"
+                : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+            )}
+          >
+            <Wallet className="w-4 h-4" />
+            Tracked Wallets ({wallets.length})
+          </button>
+        </div>
+      )}
 
-      {activeSection === 'discover' && (
+      {currentSection === 'discover' && (
         <>
-          {/* Discovery Mode Toggle */}
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setDiscoverMode('leaderboard')}
-              className={clsx(
-                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                discoverMode === 'leaderboard'
-                  ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/50"
-                  : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-              )}
-            >
-              <Trophy className="w-4 h-4" />
-              Leaderboard
-            </button>
-            <button
-              onClick={() => setDiscoverMode('winrate')}
-              className={clsx(
-                "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                discoverMode === 'winrate'
-                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/50"
-                  : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-              )}
-            >
-              <Target className="w-4 h-4" />
-              High Win Rate
-            </button>
-          </div>
+          {/* Discovery Mode Toggle - only show if not controlled by parent */}
+          {!isControlledByParent && (
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setDiscoverMode('leaderboard')}
+                className={clsx(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                  currentDiscoverMode === 'leaderboard'
+                    ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/50"
+                    : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+                )}
+              >
+                <Trophy className="w-4 h-4" />
+                Leaderboard
+              </button>
+              <button
+                onClick={() => setDiscoverMode('winrate')}
+                className={clsx(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                  currentDiscoverMode === 'winrate'
+                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/50"
+                    : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+                )}
+              >
+                <Target className="w-4 h-4" />
+                High Win Rate
+              </button>
+            </div>
+          )}
 
           {/* Discovery Header */}
           <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="text-lg font-medium flex items-center gap-2">
-                  {discoverMode === 'winrate' ? (
+                  {currentDiscoverMode === 'winrate' ? (
                     <>
                       <Target className="w-5 h-5 text-emerald-500" />
                       High Win Rate Traders
@@ -271,7 +284,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                   )}
                 </h3>
                 <p className="text-sm text-gray-500">
-                  {discoverMode === 'winrate'
+                  {currentDiscoverMode === 'winrate'
                     ? `Scanning ${scanCount} traders for ${minWinRate}%+ win rate${minVolume > 0 ? `, $${minVolume.toLocaleString()}+ volume` : ''}`
                     : 'Discovered from Polymarket leaderboard'}
                 </p>
@@ -333,7 +346,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                       <option value="FINANCE">Finance</option>
                     </select>
                   </div>
-                  {discoverMode === 'leaderboard' && (
+                  {currentDiscoverMode === 'leaderboard' && (
                     <div>
                       <label className="block text-xs text-gray-500 mb-1">Sort By</label>
                       <select
@@ -346,7 +359,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                       </select>
                     </div>
                   )}
-                  {discoverMode === 'winrate' && (
+                  {currentDiscoverMode === 'winrate' && (
                     <>
                       <div>
                         <label className="block text-xs text-gray-500 mb-1">Min Win Rate</label>
@@ -389,7 +402,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                 </div>
 
                 {/* Row 2: Advanced win rate filters */}
-                {discoverMode === 'winrate' && (
+                {currentDiscoverMode === 'winrate' && (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-gray-700">
                     <div>
                       <label className="block text-xs text-gray-500 mb-1">Min Volume ($)</label>
@@ -458,7 +471,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                 )}
 
                 {/* Tip for high win rate searches */}
-                {discoverMode === 'winrate' && minWinRate >= 95 && (
+                {currentDiscoverMode === 'winrate' && minWinRate >= 95 && (
                   <div className="text-xs text-yellow-500/80 flex items-center gap-1 pt-1">
                     <span>Tip: For 95%+ win rates, increase Scan Count to find more traders. Higher scans take longer.</span>
                   </div>
@@ -470,11 +483,11 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
               <div className="flex flex-col items-center justify-center py-8">
                 <RefreshCw className="w-6 h-6 animate-spin text-gray-500" />
                 <span className="mt-2 text-gray-500">
-                  {discoverMode === 'winrate'
+                  {currentDiscoverMode === 'winrate'
                     ? `Analyzing ${scanCount} traders for ${minWinRate}%+ win rate...`
                     : 'Scanning Polymarket trades...'}
                 </span>
-                {discoverMode === 'winrate' && scanCount > 100 && (
+                {currentDiscoverMode === 'winrate' && scanCount > 100 && (
                   <span className="text-xs text-gray-600 mt-1">
                     This may take a moment for larger scan counts
                   </span>
@@ -483,11 +496,11 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
             ) : currentTraders.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-gray-500">
-                  {discoverMode === 'winrate'
+                  {currentDiscoverMode === 'winrate'
                     ? `No traders found with ${minWinRate}%+ win rate.`
                     : 'No traders discovered yet'}
                 </p>
-                {discoverMode === 'winrate' && (
+                {currentDiscoverMode === 'winrate' && (
                   <p className="text-xs text-gray-600 mt-2">
                     Try: Lower the win rate threshold, increase scan count, or reduce min trades/volume filters
                   </p>
@@ -498,9 +511,9 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                 <div className="flex items-center justify-between mb-2 px-1">
                   <span className="text-sm text-gray-400">
                     Found {currentTraders.length} trader{currentTraders.length !== 1 ? 's' : ''}
-                    {discoverMode === 'winrate' && ` with ${minWinRate}%+ win rate`}
+                    {currentDiscoverMode === 'winrate' && ` with ${minWinRate}%+ win rate`}
                   </span>
-                  {discoverMode === 'winrate' && currentTraders.length > 0 && (
+                  {currentDiscoverMode === 'winrate' && currentTraders.length > 0 && (
                     <span className="text-xs text-gray-500">
                       Avg: {(currentTraders.reduce((sum, t) => sum + (t.win_rate || 0), 0) / currentTraders.length).toFixed(1)}% WR
                     </span>
@@ -515,7 +528,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
                     <div className="flex items-center gap-3">
                       <div className={clsx(
                         "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
-                        discoverMode === 'winrate' ? "bg-emerald-900" : "bg-gray-700"
+                        currentDiscoverMode === 'winrate' ? "bg-emerald-900" : "bg-gray-700"
                       )}>
                         #{trader.rank || idx + 1}
                       </div>
@@ -592,7 +605,7 @@ export default function WalletTracker({ onAnalyzeWallet }: WalletTrackerProps) {
         </>
       )}
 
-      {activeSection === 'tracked' && (
+      {currentSection === 'tracked' && (
         <>
           {/* Add Wallet Form */}
           <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
