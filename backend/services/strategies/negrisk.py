@@ -179,6 +179,27 @@ class NegRiskStrategy(BaseStrategy):
             event=event
         )
 
+    def _is_independent_betting_market(self, question: str) -> bool:
+        """
+        Check if a market is an independent betting type (spread, over/under, etc.)
+        These are NOT mutually exclusive with other markets in the same event.
+        """
+        question_lower = question.lower()
+
+        # Independent bet type keywords - these can all be true simultaneously
+        independent_keywords = [
+            "spread", "handicap", "-1.5", "+1.5", "-0.5", "+0.5", "-2.5", "+2.5",
+            "over/under", "o/u", "over ", "under ", "total goals", "total points",
+            "both teams", "btts", "both to score",
+            "first half", "second half", "1st half", "2nd half",
+            "corners", "cards", "yellow", "red card",
+            "clean sheet", "to nil",
+            "anytime scorer", "first scorer", "last scorer",
+            "odd/even", "odd goals", "even goals"
+        ]
+
+        return any(kw in question_lower for kw in independent_keywords)
+
     def _detect_multi_outcome(
         self,
         event: Event,
@@ -187,6 +208,13 @@ class NegRiskStrategy(BaseStrategy):
         """
         Detect multi-outcome arbitrage: exhaustive outcomes where one must win
         Buy YES on all outcomes when total < $1
+
+        IMPORTANT: Only works for mutually exclusive outcomes like:
+        - "Who wins the election?" with multiple candidates
+        - "Which team wins?" with Team A / Team B / Draw
+
+        Does NOT work for independent betting markets like:
+        - Spread bets, over/under, both teams to score (can all be true at once!)
         """
         # Skip if already handled as NegRisk
         if event.neg_risk:
@@ -196,11 +224,26 @@ class NegRiskStrategy(BaseStrategy):
         if len(active_markets) < 3:  # Need at least 3 outcomes
             return None
 
+        # CRITICAL: Filter out independent betting markets
+        # These are NOT mutually exclusive - spread, over/under, BTTS can all be true!
+        exclusive_markets = [
+            m for m in active_markets
+            if not self._is_independent_betting_market(m.question)
+        ]
+
+        # If most markets are independent bet types, skip this event
+        if len(exclusive_markets) < 3:
+            return None
+
+        # If there's a mix, the event likely has multiple bet types - skip
+        if len(exclusive_markets) != len(active_markets):
+            return None
+
         # Calculate total YES cost
         total_yes = 0.0
         positions = []
 
-        for market in active_markets:
+        for market in exclusive_markets:
             yes_price = market.yes_price
 
             if market.clob_token_ids:
@@ -220,11 +263,16 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes >= 1.0:
             return None
 
+        # Additional sanity check: if total is way below 1.0,
+        # these probably aren't exhaustive options
+        if total_yes < 0.7:
+            return None
+
         return self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
-            description=f"Buy YES on all {len(active_markets)} outcomes for ${total_yes:.3f}, one wins = $1",
+            description=f"Buy YES on all {len(exclusive_markets)} outcomes for ${total_yes:.3f}, one wins = $1",
             total_cost=total_yes,
-            markets=active_markets,
+            markets=exclusive_markets,
             positions=positions,
             event=event
         )
