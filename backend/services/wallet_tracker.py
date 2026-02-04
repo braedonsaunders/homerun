@@ -1,9 +1,11 @@
 import asyncio
 from datetime import datetime
 from typing import Optional
+from sqlalchemy import select
 
 from config import settings
 from services.polymarket import polymarket_client
+from models.database import TrackedWallet, AsyncSessionLocal
 
 
 class WalletTracker:
@@ -11,17 +13,54 @@ class WalletTracker:
 
     def __init__(self):
         self.client = polymarket_client
-        self.tracked_wallets: dict[str, dict] = {}
+        self.tracked_wallets: dict[str, dict] = {}  # In-memory cache with positions/trades
         self._running = False
         self._callbacks: list[callable] = []
+        self._initialized = False
 
     def add_callback(self, callback: callable):
         """Add callback for new trade notifications"""
         self._callbacks.append(callback)
 
+    async def _ensure_initialized(self):
+        """Load wallets from database on first access"""
+        if self._initialized:
+            return
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(TrackedWallet))
+            db_wallets = result.scalars().all()
+
+            for wallet in db_wallets:
+                self.tracked_wallets[wallet.address.lower()] = {
+                    "address": wallet.address,
+                    "label": wallet.label or wallet.address[:10] + "...",
+                    "last_trade_id": None,
+                    "positions": [],
+                    "recent_trades": [],
+                    "added_at": wallet.added_at.isoformat() if wallet.added_at else None
+                }
+
+        self._initialized = True
+
     async def add_wallet(self, address: str, label: str = None):
-        """Add a wallet to track"""
-        self.tracked_wallets[address.lower()] = {
+        """Add a wallet to track (persisted to database)"""
+        await self._ensure_initialized()
+        address_lower = address.lower()
+
+        # Add to database
+        async with AsyncSessionLocal() as session:
+            existing = await session.get(TrackedWallet, address_lower)
+            if not existing:
+                wallet = TrackedWallet(
+                    address=address_lower,
+                    label=label or address[:10] + "..."
+                )
+                session.add(wallet)
+                await session.commit()
+
+        # Add to in-memory cache
+        self.tracked_wallets[address_lower] = {
             "address": address,
             "label": label or address[:10] + "...",
             "last_trade_id": None,
@@ -32,9 +71,19 @@ class WalletTracker:
         # Fetch initial state
         await self._update_wallet(address)
 
-    def remove_wallet(self, address: str):
+    async def remove_wallet(self, address: str):
         """Remove a wallet from tracking"""
-        self.tracked_wallets.pop(address.lower(), None)
+        address_lower = address.lower()
+
+        # Remove from database
+        async with AsyncSessionLocal() as session:
+            wallet = await session.get(TrackedWallet, address_lower)
+            if wallet:
+                await session.delete(wallet)
+                await session.commit()
+
+        # Remove from in-memory cache
+        self.tracked_wallets.pop(address_lower, None)
 
     async def _update_wallet(self, address: str) -> list[dict]:
         """Update wallet state and return new trades"""
@@ -110,12 +159,19 @@ class WalletTracker:
         """Stop wallet monitoring"""
         self._running = False
 
-    def get_wallet_info(self, address: str) -> Optional[dict]:
+    async def get_wallet_info(self, address: str) -> Optional[dict]:
         """Get current info for a wallet"""
+        await self._ensure_initialized()
         return self.tracked_wallets.get(address.lower())
 
-    def get_all_wallets(self) -> list[dict]:
+    async def get_all_wallets(self) -> list[dict]:
         """Get all tracked wallets"""
+        await self._ensure_initialized()
+
+        # Refresh positions and trades for all wallets
+        for address in list(self.tracked_wallets.keys()):
+            await self._update_wallet(address)
+
         return list(self.tracked_wallets.values())
 
 
