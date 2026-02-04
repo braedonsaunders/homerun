@@ -221,17 +221,38 @@ class PolymarketClient:
 
     # ==================== LEADERBOARD / DISCOVERY ====================
 
-    async def get_leaderboard(self, limit: int = 100) -> list[dict]:
+    async def get_leaderboard(
+        self,
+        limit: int = 50,
+        time_period: str = "ALL",
+        order_by: str = "PNL",
+        category: str = "OVERALL"
+    ) -> list[dict]:
         """
         Fetch top traders from Polymarket leaderboard.
         Returns list of wallets with their profit stats.
+
+        Args:
+            limit: Max results (1-50)
+            time_period: DAY, WEEK, MONTH, or ALL
+            order_by: PNL (profit/loss) or VOL (volume)
+            category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE
         """
         client = await self._get_client()
         try:
             # Polymarket data API leaderboard endpoint
+            params = {
+                "limit": min(limit, 50),  # API max is 50
+                "timePeriod": time_period.upper(),
+                "orderBy": order_by.upper(),
+            }
+            # Only include category if not OVERALL
+            if category.upper() != "OVERALL":
+                params["category"] = category.upper()
+
             response = await client.get(
                 f"{self.data_url}/v1/leaderboard",
-                params={"limit": limit}
+                params=params
             )
             response.raise_for_status()
             return response.json()
@@ -242,14 +263,22 @@ class PolymarketClient:
     async def get_top_traders_from_trades(
         self,
         limit: int = 50,
-        min_trades: int = 10
+        min_trades: int = 10,
+        time_period: str = "ALL",
+        order_by: str = "PNL",
+        category: str = "OVERALL"
     ) -> list[dict]:
         """
         Get top traders from Polymarket leaderboard.
         Uses the official leaderboard API.
         """
         # Just use the leaderboard API - it has exactly what we need
-        leaderboard = await self.get_leaderboard(limit=limit)
+        leaderboard = await self.get_leaderboard(
+            limit=limit,
+            time_period=time_period,
+            order_by=order_by,
+            category=category
+        )
 
         # Transform to our expected format
         traders = []
@@ -266,6 +295,146 @@ class PolymarketClient:
             })
 
         return traders[:limit]
+
+    async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500) -> dict:
+        """
+        Calculate win rate for a wallet by analyzing trade history.
+        Groups trades by market and calculates wins vs losses.
+
+        Returns:
+            dict with win_rate, wins, losses, total_markets, trade_count
+        """
+        try:
+            trades = await self.get_wallet_trades(address, limit=max_trades)
+
+            if not trades:
+                return {
+                    "address": address,
+                    "win_rate": 0.0,
+                    "wins": 0,
+                    "losses": 0,
+                    "total_markets": 0,
+                    "trade_count": 0
+                }
+
+            # Group trades by market
+            markets: dict[str, dict] = {}
+            for trade in trades:
+                market_id = trade.get("market") or trade.get("condition_id") or trade.get("assetId", "unknown")
+                if market_id not in markets:
+                    markets[market_id] = {"buys": 0.0, "sells": 0.0, "buy_count": 0, "sell_count": 0}
+
+                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+                price = float(trade.get("price", 0) or 0)
+                side = trade.get("side", "").upper()
+
+                if side == "BUY":
+                    markets[market_id]["buys"] += size * price
+                    markets[market_id]["buy_count"] += 1
+                elif side == "SELL":
+                    markets[market_id]["sells"] += size * price
+                    markets[market_id]["sell_count"] += 1
+
+            # Calculate wins/losses (a market is a win if sells > buys)
+            wins = 0
+            losses = 0
+            for market_id, data in markets.items():
+                # Only count markets with both buys and sells (closed positions)
+                if data["buy_count"] > 0 and data["sell_count"] > 0:
+                    if data["sells"] > data["buys"]:
+                        wins += 1
+                    else:
+                        losses += 1
+
+            total_closed = wins + losses
+            win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
+
+            return {
+                "address": address,
+                "win_rate": win_rate,
+                "wins": wins,
+                "losses": losses,
+                "total_markets": len(markets),
+                "trade_count": len(trades)
+            }
+        except Exception as e:
+            print(f"Error calculating win rate for {address}: {e}")
+            return {
+                "address": address,
+                "win_rate": 0.0,
+                "wins": 0,
+                "losses": 0,
+                "total_markets": 0,
+                "trade_count": 0,
+                "error": str(e)
+            }
+
+    async def discover_by_win_rate(
+        self,
+        min_win_rate: float = 70.0,
+        min_trades: int = 10,
+        limit: int = 20,
+        time_period: str = "ALL",
+        category: str = "OVERALL"
+    ) -> list[dict]:
+        """
+        Discover traders with high win rates.
+        Fetches leaderboard, calculates win rates, and filters by threshold.
+
+        Args:
+            min_win_rate: Minimum win rate percentage (0-100)
+            min_trades: Minimum trades required
+            limit: Max results to return
+            time_period: DAY, WEEK, MONTH, or ALL
+            category: Market category filter
+        """
+        # Fetch more traders initially since we'll filter many out
+        leaderboard = await self.get_leaderboard(
+            limit=50,
+            time_period=time_period,
+            order_by="PNL",  # Start with profitable traders
+            category=category
+        )
+
+        results = []
+        semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+
+        async def analyze_trader(entry: dict):
+            async with semaphore:
+                address = entry.get("proxyWallet", "")
+                if not address:
+                    return None
+
+                win_rate_data = await self.calculate_wallet_win_rate(address)
+
+                # Apply filters
+                if win_rate_data.get("trade_count", 0) < min_trades:
+                    return None
+                if win_rate_data.get("win_rate", 0) < min_win_rate:
+                    return None
+
+                return {
+                    "address": address,
+                    "username": entry.get("userName", ""),
+                    "volume": float(entry.get("vol", 0)),
+                    "pnl": float(entry.get("pnl", 0)),
+                    "rank": entry.get("rank", 0),
+                    "win_rate": win_rate_data.get("win_rate", 0),
+                    "wins": win_rate_data.get("wins", 0),
+                    "losses": win_rate_data.get("losses", 0),
+                    "total_markets": win_rate_data.get("total_markets", 0),
+                    "trade_count": win_rate_data.get("trade_count", 0)
+                }
+
+        # Analyze all traders concurrently
+        tasks = [analyze_trader(entry) for entry in leaderboard]
+        analyzed = await asyncio.gather(*tasks)
+
+        # Filter out None results and sort by win rate
+        results = [r for r in analyzed if r is not None]
+        results.sort(key=lambda x: x["win_rate"], reverse=True)
+
+        return results[:limit]
 
     async def get_wallet_pnl(self, address: str) -> dict:
         """

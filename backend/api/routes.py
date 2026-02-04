@@ -221,12 +221,27 @@ async def get_strategies():
 # ==================== TRADER DISCOVERY ====================
 
 @router.get("/discover/leaderboard")
-async def get_leaderboard(limit: int = Query(50, ge=1, le=200)):
+async def get_leaderboard(
+    limit: int = Query(50, ge=1, le=50),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    order_by: str = Query("PNL", description="Sort by: PNL (profit) or VOL (volume)"),
+    category: str = Query("OVERALL", description="Category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE")
+):
     """
-    Get Polymarket leaderboard - top traders by profit.
+    Get Polymarket leaderboard - top traders by profit or volume.
+
+    Filters:
+    - time_period: DAY (24h), WEEK (7d), MONTH (30d), or ALL (all time)
+    - order_by: PNL (profit/loss) or VOL (trading volume)
+    - category: Filter by market category
     """
     try:
-        leaderboard = await polymarket_client.get_leaderboard(limit)
+        leaderboard = await polymarket_client.get_leaderboard(
+            limit=limit,
+            time_period=time_period,
+            order_by=order_by,
+            category=category
+        )
         return leaderboard
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -234,19 +249,68 @@ async def get_leaderboard(limit: int = Query(50, ge=1, le=200)):
 
 @router.get("/discover/top-traders")
 async def discover_top_traders(
-    limit: int = Query(50, ge=1, le=100),
-    min_trades: int = Query(10, ge=1)
+    limit: int = Query(50, ge=1, le=50),
+    min_trades: int = Query(10, ge=1),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    order_by: str = Query("PNL", description="Sort by: PNL or VOL"),
+    category: str = Query("OVERALL", description="Market category filter")
 ):
     """
     Discover top traders by analyzing recent trade activity.
-    Returns wallets sorted by trading volume.
+    Returns wallets sorted by trading volume or profit.
     """
     try:
         traders = await polymarket_client.get_top_traders_from_trades(
             limit=limit,
-            min_trades=min_trades
+            min_trades=min_trades,
+            time_period=time_period,
+            order_by=order_by,
+            category=category
         )
         return traders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discover/by-win-rate")
+async def discover_by_win_rate(
+    min_win_rate: float = Query(70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"),
+    min_trades: int = Query(10, ge=1, description="Minimum number of trades"),
+    limit: int = Query(20, ge=1, le=50, description="Max results to return"),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    category: str = Query("OVERALL", description="Market category filter")
+):
+    """
+    Discover traders with high win rates.
+
+    This endpoint fetches traders from the leaderboard, calculates their actual
+    win rate by analyzing trade history, and returns only those meeting the threshold.
+
+    Note: This is slower than the regular leaderboard as it analyzes each trader's history.
+    For very high win rates (99%+), start with a lower threshold and browse results.
+    """
+    try:
+        traders = await polymarket_client.discover_by_win_rate(
+            min_win_rate=min_win_rate,
+            min_trades=min_trades,
+            limit=limit,
+            time_period=time_period,
+            category=category
+        )
+        return traders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discover/wallet/{address}/win-rate")
+async def get_wallet_win_rate(address: str):
+    """
+    Calculate win rate for a specific wallet.
+    Analyzes trade history to determine wins vs losses.
+    """
+    try:
+        win_rate_data = await polymarket_client.calculate_wallet_win_rate(address)
+        return win_rate_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
