@@ -133,6 +133,7 @@ class BaseStrategy(ABC):
             } for m in markets],
             event_id=event.id if event else None,
             event_title=event.title if event else None,
+            category=event.category if event else None,
             min_liquidity=min_liquidity,
             max_position_size=max_position,
             resolution_date=resolution_date,

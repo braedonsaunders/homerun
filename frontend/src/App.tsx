@@ -29,8 +29,7 @@ import {
   getStrategies,
   startScanner,
   pauseScanner,
-  setScannerInterval,
-  Strategy
+  setScannerInterval
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import OpportunityCard from './components/OpportunityCard'
@@ -47,6 +46,7 @@ const ITEMS_PER_PAGE = 20
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
+  const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
@@ -79,13 +79,14 @@ function App() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(0)
-  }, [selectedStrategy, minProfit, maxRisk, searchQuery])
+  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery])
 
   // Queries
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, minProfit, maxRisk, searchQuery, currentPage],
+    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
+      category: selectedCategory || undefined,
       min_profit: minProfit,
       max_risk: maxRisk,
       search: searchQuery || undefined,
@@ -382,6 +383,24 @@ function App() {
                   {strategies.map((s) => (
                     <option key={s.type} value={s.type}>{s.name}</option>
                   ))}
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs text-gray-500 mb-1">Category</label>
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                >
+                  <option value="">All Categories</option>
+                  <option value="politics">Politics</option>
+                  <option value="sports">Sports</option>
+                  <option value="crypto">Crypto</option>
+                  <option value="culture">Culture</option>
+                  <option value="economics">Economics</option>
+                  <option value="tech">Tech</option>
+                  <option value="finance">Finance</option>
+                  <option value="weather">Weather</option>
                 </select>
               </div>
               <div className="w-40">

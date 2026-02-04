@@ -37,6 +37,7 @@ class ArbitrageOpportunity(BaseModel):
     markets: list[dict] = []  # List of markets involved
     event_id: Optional[str] = None
     event_title: Optional[str] = None
+    category: Optional[str] = None
 
     # Liquidity
     min_liquidity: float = 0.0
@@ -63,3 +64,4 @@ class OpportunityFilter(BaseModel):
     max_risk: float = 1.0
     strategies: list[StrategyType] = []
     min_liquidity: float = 0.0
+    category: Optional[str] = None
