@@ -424,7 +424,14 @@ class TradingService:
         size_usd: float
     ) -> list[Order]:
         """
-        Execute an arbitrage opportunity.
+        Execute an arbitrage opportunity with PARALLEL order submission.
+
+        Critical insight from research: CLOB execution is sequential, not atomic.
+        If you execute orders one-by-one, prices move between legs, eating profits.
+
+        This method submits ALL orders in parallel via asyncio.gather so they're
+        included in the same block (~2 seconds on Polygon), eliminating sequential
+        execution risk.
 
         Args:
             opportunity_id: ID of the opportunity
@@ -434,23 +441,33 @@ class TradingService:
         Returns:
             List of orders placed
         """
-        orders = []
+        import asyncio
 
+        # Pre-validate all positions before any execution
+        valid_positions = []
         for position in positions:
             token_id = position.get("token_id")
             if not token_id:
                 logger.warning(f"Position missing token_id: {position}")
                 continue
-
             price = position.get("price", 0)
             if price <= 0:
+                logger.warning(f"Invalid price {price} for {token_id}")
                 continue
+            valid_positions.append(position)
 
-            # Calculate shares based on USD amount and position count
-            position_usd = size_usd / len(positions)
+        if not valid_positions:
+            logger.error("No valid positions to execute")
+            return []
+
+        # Build order coroutines for parallel execution
+        async def place_single_order(position: dict) -> Order:
+            token_id = position.get("token_id")
+            price = position.get("price")
+            position_usd = size_usd / len(valid_positions)
             shares = position_usd / price
 
-            order = await self.place_order(
+            return await self.place_order(
                 token_id=token_id,
                 side=OrderSide.BUY,
                 price=price,
@@ -458,7 +475,34 @@ class TradingService:
                 market_question=position.get("market"),
                 opportunity_id=opportunity_id
             )
-            orders.append(order)
+
+        # Execute ALL orders in PARALLEL - this is the critical change
+        # asyncio.gather submits all coroutines before any await completes
+        tasks = [place_single_order(pos) for pos in valid_positions]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        orders = []
+        failed_count = 0
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Order failed with exception: {result}")
+                failed_count += 1
+            elif isinstance(result, Order):
+                orders.append(result)
+                if result.status == OrderStatus.FAILED:
+                    failed_count += 1
+            else:
+                logger.error(f"Unexpected result type: {type(result)}")
+                failed_count += 1
+
+        # Warn about partial execution (exposure risk)
+        if 0 < failed_count < len(valid_positions):
+            logger.warning(
+                f"PARTIAL EXECUTION: {len(orders) - failed_count}/{len(valid_positions)} legs filled. "
+                f"Position has EXPOSURE RISK!"
+            )
 
         return orders
 

@@ -71,7 +71,7 @@ class AutoTraderConfig:
     cooldown_after_loss_seconds: int = 60 # Wait after losing trade
 
     # Execution
-    execution_delay_seconds: float = 1.0  # Delay before executing
+    execution_delay_seconds: float = 0.0  # Delay before executing (0 for speed)
     require_confirmation: bool = False    # Require manual confirmation
     auto_retry_failed: bool = True        # Retry failed orders
 
@@ -249,24 +249,65 @@ class AutoTrader:
         return True, "Opportunity meets criteria"
 
     def _calculate_position_size(self, opp: ArbitrageOpportunity) -> float:
-        """Calculate position size for an opportunity"""
+        """
+        Calculate position size with execution risk adjustment.
+
+        Research paper insight: Modified Kelly accounting for execution risk:
+        f* = (b×p - q) / b × √p
+
+        Where p is EXECUTION probability, not win probability.
+        Arbitrage has ~100% win rate IF executed correctly, so the key
+        risk is partial execution / slippage.
+        """
         if self.config.position_size_method == "fixed":
             size = self.config.base_position_size_usd
+
         elif self.config.position_size_method == "kelly":
-            # Kelly criterion: f = (bp - q) / b
-            # where b = odds, p = win probability, q = 1-p
-            win_prob = 1 - opp.risk_score  # Approximate
+            # Estimate execution probability from liquidity
+            # Research: only count opportunities with >= $0.05 margin
+            if opp.min_liquidity < 1000:
+                exec_prob = 0.5
+            elif opp.min_liquidity < 5000:
+                exec_prob = 0.75
+            elif opp.min_liquidity < 20000:
+                exec_prob = 0.9
+            else:
+                exec_prob = 0.95
+
+            # Reduce exec_prob based on number of legs (more legs = more risk)
+            num_positions = len(opp.positions_to_take) if opp.positions_to_take else 1
+            if num_positions > 2:
+                exec_prob *= 0.95 ** (num_positions - 2)
+
             expected_return = opp.roi_percent / 100
-            kelly_fraction = (expected_return * win_prob - (1 - win_prob)) / expected_return
-            kelly_fraction = max(0, min(kelly_fraction, 0.25))  # Cap at 25%
+
+            if expected_return > 0:
+                # Modified Kelly with execution risk
+                # Standard: f = (bp - q) / b where q = 1 - p
+                # Modified: f = (bp - q) / b × √p (conservative adjustment)
+                q = 1 - exec_prob
+                standard_kelly = (expected_return * exec_prob - q) / expected_return
+
+                # Apply √p adjustment for execution uncertainty
+                adjusted_kelly = standard_kelly * (exec_prob ** 0.5)
+                kelly_fraction = max(0, min(adjusted_kelly, 0.25))
+            else:
+                kelly_fraction = 0
+
             size = self.config.max_position_size_usd * kelly_fraction
+
+            # Minimum viable: must exceed fees by enough to be worth it
+            min_viable = 0.02 * 10  # At least 10x the 2% fee
+            if size < min_viable and size > 0:
+                size = 0  # Not worth executing
+
         else:
             size = self.config.base_position_size_usd
 
         # Apply limits
-        size = max(size, settings.MIN_ORDER_SIZE_USD)
+        size = max(size, settings.MIN_ORDER_SIZE_USD) if size > 0 else 0
         size = min(size, self.config.max_position_size_usd)
-        size = min(size, opp.max_position_size)  # Don't exceed liquidity-based max
+        size = min(size, opp.max_position_size)  # Don't exceed 10% of liquidity
 
         return size
 
