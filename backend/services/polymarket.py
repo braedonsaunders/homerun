@@ -219,6 +219,139 @@ class PolymarketClient:
         response.raise_for_status()
         return response.json()
 
+    # ==================== LEADERBOARD / DISCOVERY ====================
+
+    async def get_leaderboard(self, limit: int = 100) -> list[dict]:
+        """
+        Fetch top traders from Polymarket leaderboard.
+        Returns list of wallets with their profit stats.
+        """
+        client = await self._get_client()
+        try:
+            # Polymarket leaderboard endpoint
+            response = await client.get(
+                f"{self.gamma_url}/leaderboard",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Leaderboard fetch error: {e}")
+            return []
+
+    async def get_top_traders_from_trades(
+        self,
+        limit: int = 50,
+        min_trades: int = 10
+    ) -> list[dict]:
+        """
+        Discover top traders by analyzing recent trades across markets.
+        Aggregates by wallet and calculates win rates.
+        """
+        client = await self._get_client()
+
+        # Get recent trades across all markets
+        try:
+            response = await client.get(
+                f"{self.data_url}/trades",
+                params={"limit": 1000}
+            )
+            response.raise_for_status()
+            all_trades = response.json()
+        except Exception as e:
+            print(f"Error fetching trades: {e}")
+            return []
+
+        # Aggregate by wallet
+        wallet_stats: dict[str, dict] = {}
+
+        for trade in all_trades:
+            wallet = trade.get("user") or trade.get("maker") or trade.get("taker")
+            if not wallet:
+                continue
+
+            if wallet not in wallet_stats:
+                wallet_stats[wallet] = {
+                    "address": wallet,
+                    "trades": 0,
+                    "volume": 0.0,
+                    "buys": 0,
+                    "sells": 0,
+                }
+
+            stats = wallet_stats[wallet]
+            stats["trades"] += 1
+            stats["volume"] += float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+
+            side = trade.get("side", "").upper()
+            if side == "BUY":
+                stats["buys"] += 1
+            elif side == "SELL":
+                stats["sells"] += 1
+
+        # Filter and sort by volume
+        active_wallets = [
+            w for w in wallet_stats.values()
+            if w["trades"] >= min_trades
+        ]
+        active_wallets.sort(key=lambda x: x["volume"], reverse=True)
+
+        return active_wallets[:limit]
+
+    async def get_wallet_pnl(self, address: str) -> dict:
+        """
+        Calculate PnL for a wallet by analyzing their positions and trades.
+        """
+        try:
+            positions = await self.get_wallet_positions(address)
+            trades = await self.get_wallet_trades(address, limit=500)
+
+            total_invested = 0.0
+            total_returned = 0.0
+            winning_trades = 0
+            losing_trades = 0
+
+            for trade in trades:
+                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+                price = float(trade.get("price", 0) or 0)
+                side = trade.get("side", "").upper()
+                outcome = trade.get("outcome", "")
+
+                if side == "BUY":
+                    total_invested += size * price
+                elif side == "SELL":
+                    total_returned += size * price
+
+            # Calculate current position value
+            position_value = 0.0
+            for pos in positions:
+                size = float(pos.get("size", 0) or 0)
+                current_price = float(pos.get("currentPrice", 0) or pos.get("price", 0) or 0)
+                position_value += size * current_price
+
+            realized_pnl = total_returned - total_invested
+            unrealized_pnl = position_value
+            total_pnl = realized_pnl + unrealized_pnl
+
+            return {
+                "address": address,
+                "total_trades": len(trades),
+                "open_positions": len(positions),
+                "total_invested": total_invested,
+                "total_returned": total_returned,
+                "position_value": position_value,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": unrealized_pnl,
+                "total_pnl": total_pnl,
+                "roi_percent": (total_pnl / total_invested * 100) if total_invested > 0 else 0
+            }
+        except Exception as e:
+            print(f"Error calculating PnL for {address}: {e}")
+            return {
+                "address": address,
+                "error": str(e)
+            }
+
 
 # Singleton instance
 polymarket_client = PolymarketClient()

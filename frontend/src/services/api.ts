@@ -371,6 +371,57 @@ export const getHealthStatus = async () => {
   return data
 }
 
+// ==================== TRADER DISCOVERY ====================
+
+export interface DiscoveredTrader {
+  address: string
+  trades: number
+  volume: number
+  buys: number
+  sells: number
+}
+
+export interface WalletPnL {
+  address: string
+  total_trades: number
+  open_positions: number
+  total_invested: number
+  total_returned: number
+  position_value: number
+  realized_pnl: number
+  unrealized_pnl: number
+  total_pnl: number
+  roi_percent: number
+  error?: string
+}
+
+export const getLeaderboard = async (limit = 50) => {
+  const { data } = await api.get('/discover/leaderboard', { params: { limit } })
+  return data
+}
+
+export const discoverTopTraders = async (limit = 50, minTrades = 10): Promise<DiscoveredTrader[]> => {
+  const { data } = await api.get('/discover/top-traders', {
+    params: { limit, min_trades: minTrades }
+  })
+  return data
+}
+
+export const analyzeWalletPnL = async (address: string): Promise<WalletPnL> => {
+  const { data } = await api.get(`/discover/wallet/${address}`)
+  return data
+}
+
+export const analyzeAndTrackWallet = async (params: {
+  address: string
+  label?: string
+  auto_copy?: boolean
+  simulation_account_id?: string
+}) => {
+  const { data } = await api.post('/discover/analyze-and-track', null, { params })
+  return data
+}
+
 // ==================== TRADING ====================
 
 export interface TradingStatus {

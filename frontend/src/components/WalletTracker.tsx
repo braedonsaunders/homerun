@@ -7,20 +7,52 @@ import {
   ExternalLink,
   RefreshCw,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  Search,
+  Star,
+  Copy,
+  UserPlus,
+  DollarSign,
+  Activity
 } from 'lucide-react'
 import clsx from 'clsx'
-import { getWallets, addWallet, removeWallet, Wallet as WalletType } from '../services/api'
+import {
+  getWallets,
+  addWallet,
+  removeWallet,
+  Wallet as WalletType,
+  discoverTopTraders,
+  analyzeWalletPnL,
+  analyzeAndTrackWallet,
+  DiscoveredTrader,
+  WalletPnL,
+  getSimulationAccounts
+} from '../services/api'
 
 export default function WalletTracker() {
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
+  const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
+  const [selectedWallet, setSelectedWallet] = useState<string | null>(null)
+  const [walletAnalysis, setWalletAnalysis] = useState<WalletPnL | null>(null)
+  const [analyzing, setAnalyzing] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: wallets = [], isLoading } = useQuery({
     queryKey: ['wallets'],
     queryFn: getWallets,
     refetchInterval: 30000,
+  })
+
+  const { data: discoveredTraders = [], isLoading: discoveringTraders, refetch: refreshTraders } = useQuery({
+    queryKey: ['discovered-traders'],
+    queryFn: () => discoverTopTraders(50, 5),
+    refetchInterval: 60000,
+  })
+
+  const { data: simAccounts = [] } = useQuery({
+    queryKey: ['simulation-accounts'],
+    queryFn: getSimulationAccounts,
   })
 
   const addMutation = useMutation({
@@ -40,106 +72,291 @@ export default function WalletTracker() {
     },
   })
 
+  const trackAndCopyMutation = useMutation({
+    mutationFn: (params: { address: string; label?: string; auto_copy?: boolean; simulation_account_id?: string }) =>
+      analyzeAndTrackWallet(params),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    },
+  })
+
   const handleAdd = () => {
     if (!newAddress.trim()) return
     addMutation.mutate({ address: newAddress.trim(), label: newLabel.trim() || undefined })
   }
 
-  // Known profitable wallets to suggest
-  const suggestedWallets = [
-    { address: '0x...', label: 'anoin123 (Iran Arb Trader)', note: '$1M in 7 days' },
-  ]
+  const handleAnalyze = async (address: string) => {
+    setSelectedWallet(address)
+    setAnalyzing(true)
+    try {
+      const analysis = await analyzeWalletPnL(address)
+      setWalletAnalysis(analysis)
+    } catch (e) {
+      console.error('Analysis failed:', e)
+    }
+    setAnalyzing(false)
+  }
+
+  const handleTrackAndCopy = (address: string, autoCopy: boolean = false) => {
+    const label = `Discovered Trader (${discoveredTraders.find(t => t.address === address)?.volume?.toFixed(0) || '?'} vol)`
+    trackAndCopyMutation.mutate({
+      address,
+      label,
+      auto_copy: autoCopy,
+      simulation_account_id: autoCopy && simAccounts.length > 0 ? simAccounts[0].id : undefined
+    })
+  }
 
   return (
     <div className="space-y-6">
-      {/* Add Wallet Form */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-        <h3 className="text-lg font-medium mb-4">Track a Wallet</h3>
-        <div className="flex gap-3">
-          <input
-            type="text"
-            value={newAddress}
-            onChange={(e) => setNewAddress(e.target.value)}
-            placeholder="Wallet address (0x...)"
-            className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="text"
-            value={newLabel}
-            onChange={(e) => setNewLabel(e.target.value)}
-            placeholder="Label (optional)"
-            className="w-48 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
-          />
-          <button
-            onClick={handleAdd}
-            disabled={addMutation.isPending || !newAddress.trim()}
-            className={clsx(
-              "flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm",
-              "bg-blue-500 hover:bg-blue-600 transition-colors",
-              (addMutation.isPending || !newAddress.trim()) && "opacity-50 cursor-not-allowed"
-            )}
-          >
-            <Plus className="w-4 h-4" />
-            Add
-          </button>
-        </div>
-        <p className="text-xs text-gray-500 mt-2">
-          Track wallets to monitor their positions and get alerts when they enter new trades.
-        </p>
+      {/* Section Tabs */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setActiveSection('discover')}
+          className={clsx(
+            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+            activeSection === 'discover'
+              ? "bg-green-500/20 text-green-400 border border-green-500/50"
+              : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+          )}
+        >
+          <Search className="w-4 h-4" />
+          Discover Top Traders
+        </button>
+        <button
+          onClick={() => setActiveSection('tracked')}
+          className={clsx(
+            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+            activeSection === 'tracked'
+              ? "bg-blue-500/20 text-blue-400 border border-blue-500/50"
+              : "bg-[#1a1a1a] text-gray-400 hover:text-white"
+          )}
+        >
+          <Wallet className="w-4 h-4" />
+          Tracked Wallets ({wallets.length})
+        </button>
       </div>
 
-      {/* Suggested Wallets */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-gray-400 mb-3">Suggested Profitable Wallets</h3>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
-            <div>
-              <p className="text-sm font-medium">anoin123</p>
-              <p className="text-xs text-gray-500">$1M profit in 7 days using Iran date sweep strategy</p>
+      {activeSection === 'discover' && (
+        <>
+          {/* Discovery Header */}
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-lg font-medium flex items-center gap-2">
+                  <Star className="w-5 h-5 text-yellow-500" />
+                  Top Active Traders
+                </h3>
+                <p className="text-sm text-gray-500">
+                  Discovered from recent Polymarket trading activity
+                </p>
+              </div>
+              <button
+                onClick={() => refreshTraders()}
+                disabled={discoveringTraders}
+                className="flex items-center gap-2 px-3 py-1.5 bg-[#1a1a1a] rounded-lg text-sm hover:bg-gray-700"
+              >
+                <RefreshCw className={clsx("w-4 h-4", discoveringTraders && "animate-spin")} />
+                Refresh
+              </button>
             </div>
-            <a
-              href="https://polymarket.com/@anoin123"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-blue-400 text-sm hover:underline"
-            >
-              View Profile <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-          <p className="text-xs text-gray-600">
-            Note: Find wallet addresses from Polymarket profiles or blockchain explorers
-          </p>
-        </div>
-      </div>
 
-      {/* Tracked Wallets */}
-      <div>
-        <h3 className="text-lg font-medium mb-4">Tracked Wallets</h3>
+            {discoveringTraders ? (
+              <div className="flex items-center justify-center py-8">
+                <RefreshCw className="w-6 h-6 animate-spin text-gray-500" />
+                <span className="ml-2 text-gray-500">Scanning Polymarket trades...</span>
+              </div>
+            ) : discoveredTraders.length === 0 ? (
+              <p className="text-center text-gray-500 py-8">No traders discovered yet</p>
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {discoveredTraders.map((trader, idx) => (
+                  <div
+                    key={trader.address}
+                    className={clsx(
+                      "flex items-center justify-between p-3 rounded-lg transition-colors",
+                      selectedWallet === trader.address ? "bg-green-500/10 border border-green-500/30" : "bg-[#1a1a1a] hover:bg-[#222]"
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-xs font-bold">
+                        #{idx + 1}
+                      </div>
+                      <div>
+                        <p className="font-mono text-sm">
+                          {trader.address.slice(0, 6)}...{trader.address.slice(-4)}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {trader.trades} trades | ${trader.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })} volume
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleAnalyze(trader.address)}
+                        disabled={analyzing && selectedWallet === trader.address}
+                        className="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                      >
+                        <Activity className="w-3 h-3" />
+                        Analyze
+                      </button>
+                      <button
+                        onClick={() => handleTrackAndCopy(trader.address, false)}
+                        disabled={trackAndCopyMutation.isPending}
+                        className="flex items-center gap-1 px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs"
+                      >
+                        <UserPlus className="w-3 h-3" />
+                        Track
+                      </button>
+                      <button
+                        onClick={() => handleTrackAndCopy(trader.address, true)}
+                        disabled={trackAndCopyMutation.isPending || simAccounts.length === 0}
+                        title={simAccounts.length === 0 ? "Create a simulation account first" : "Track and copy trades in paper mode"}
+                        className="flex items-center gap-1 px-2 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded text-xs disabled:opacity-50"
+                      >
+                        <Copy className="w-3 h-3" />
+                        Copy Trade
+                      </button>
+                      <a
+                        href={`https://polygonscan.com/address/${trader.address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 hover:bg-gray-700 rounded"
+                      >
+                        <ExternalLink className="w-3 h-3 text-gray-500" />
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-        {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
-          </div>
-        ) : wallets.length === 0 ? (
-          <div className="text-center py-12 bg-[#141414] border border-gray-800 rounded-lg">
-            <Wallet className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400">No wallets being tracked</p>
-            <p className="text-sm text-gray-600 mt-1">
-              Add a wallet address above to start tracking
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {wallets.map((wallet) => (
-              <WalletCard
-                key={wallet.address}
-                wallet={wallet}
-                onRemove={() => removeMutation.mutate(wallet.address)}
+          {/* Wallet Analysis Panel */}
+          {selectedWallet && walletAnalysis && (
+            <div className="bg-[#141414] border border-green-500/30 rounded-lg p-4">
+              <h3 className="font-medium mb-3 flex items-center gap-2">
+                <DollarSign className="w-5 h-5 text-green-500" />
+                Wallet Analysis: {selectedWallet.slice(0, 8)}...
+              </h3>
+              {walletAnalysis.error ? (
+                <p className="text-red-400">{walletAnalysis.error}</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-gray-500">Total Trades</p>
+                    <p className="text-lg font-mono">{walletAnalysis.total_trades}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Open Positions</p>
+                    <p className="text-lg font-mono">{walletAnalysis.open_positions}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Total Invested</p>
+                    <p className="text-lg font-mono">${walletAnalysis.total_invested.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Total P/L</p>
+                    <p className={clsx(
+                      "text-lg font-mono",
+                      walletAnalysis.total_pnl >= 0 ? "text-green-400" : "text-red-400"
+                    )}>
+                      {walletAnalysis.total_pnl >= 0 ? '+' : ''}${walletAnalysis.total_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">ROI</p>
+                    <p className={clsx(
+                      "text-lg font-mono",
+                      walletAnalysis.roi_percent >= 0 ? "text-green-400" : "text-red-400"
+                    )}>
+                      {walletAnalysis.roi_percent >= 0 ? '+' : ''}{walletAnalysis.roi_percent.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Realized P/L</p>
+                    <p className="font-mono">${walletAnalysis.realized_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Unrealized P/L</p>
+                    <p className="font-mono">${walletAnalysis.unrealized_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Position Value</p>
+                    <p className="font-mono">${walletAnalysis.position_value.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeSection === 'tracked' && (
+        <>
+          {/* Add Wallet Form */}
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+            <h3 className="text-lg font-medium mb-4">Track a Wallet</h3>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={newAddress}
+                onChange={(e) => setNewAddress(e.target.value)}
+                placeholder="Wallet address (0x...)"
+                className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
               />
-            ))}
+              <input
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="Label (optional)"
+                className="w-48 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onClick={handleAdd}
+                disabled={addMutation.isPending || !newAddress.trim()}
+                className={clsx(
+                  "flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm",
+                  "bg-blue-500 hover:bg-blue-600 transition-colors",
+                  (addMutation.isPending || !newAddress.trim()) && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                <Plus className="w-4 h-4" />
+                Add
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* Tracked Wallets */}
+          <div>
+            <h3 className="text-lg font-medium mb-4">Tracked Wallets</h3>
+
+            {isLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+              </div>
+            ) : wallets.length === 0 ? (
+              <div className="text-center py-12 bg-[#141414] border border-gray-800 rounded-lg">
+                <Wallet className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-400">No wallets being tracked</p>
+                <p className="text-sm text-gray-600 mt-1">
+                  Use the Discover tab to find top traders, or add a wallet manually
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {wallets.map((wallet) => (
+                  <WalletCard
+                    key={wallet.address}
+                    wallet={wallet}
+                    onRemove={() => removeMutation.mutate(wallet.address)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }

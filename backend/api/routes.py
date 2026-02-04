@@ -216,3 +216,101 @@ async def get_strategies():
         }
         for s in scanner.strategies
     ]
+
+
+# ==================== TRADER DISCOVERY ====================
+
+@router.get("/discover/leaderboard")
+async def get_leaderboard(limit: int = Query(50, ge=1, le=200)):
+    """
+    Get Polymarket leaderboard - top traders by profit.
+    """
+    try:
+        leaderboard = await polymarket_client.get_leaderboard(limit)
+        return leaderboard
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discover/top-traders")
+async def discover_top_traders(
+    limit: int = Query(50, ge=1, le=100),
+    min_trades: int = Query(10, ge=1)
+):
+    """
+    Discover top traders by analyzing recent trade activity.
+    Returns wallets sorted by trading volume.
+    """
+    try:
+        traders = await polymarket_client.get_top_traders_from_trades(
+            limit=limit,
+            min_trades=min_trades
+        )
+        return traders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discover/wallet/{address}")
+async def analyze_wallet_pnl(address: str):
+    """
+    Analyze a wallet's profit and loss, trade history, and patterns.
+    """
+    try:
+        pnl = await polymarket_client.get_wallet_pnl(address)
+        return pnl
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/discover/analyze-and-track")
+async def analyze_and_track_wallet(
+    address: str,
+    label: Optional[str] = None,
+    auto_copy: bool = False,
+    simulation_account_id: Optional[str] = None
+):
+    """
+    Analyze a wallet and optionally add it for tracking/copy trading.
+
+    - Fetches wallet's PnL and trade history
+    - Adds to tracked wallets
+    - Optionally sets up copy trading in paper mode
+    """
+    try:
+        # Analyze the wallet
+        pnl = await polymarket_client.get_wallet_pnl(address)
+
+        # Add to tracking
+        wallet_label = label or f"Discovered ({pnl.get('roi_percent', 0):.1f}% ROI)"
+        await wallet_tracker.add_wallet(address, wallet_label)
+
+        result = {
+            "status": "success",
+            "wallet": address,
+            "label": wallet_label,
+            "analysis": pnl,
+            "tracking": True,
+            "copy_trading": False
+        }
+
+        # Optionally set up copy trading
+        if auto_copy and simulation_account_id:
+            from services.copy_trader import copy_trader
+            from services.simulation import simulation_service
+
+            # Verify account exists
+            account = await simulation_service.get_account(simulation_account_id)
+            if account:
+                await copy_trader.add_config(
+                    source_wallet=address,
+                    account_id=simulation_account_id,
+                    min_roi_threshold=2.0,
+                    max_position_size=100.0
+                )
+                result["copy_trading"] = True
+                result["copy_account_id"] = simulation_account_id
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
