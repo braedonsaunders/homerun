@@ -84,6 +84,43 @@ class SimulationService:
             result = await session.execute(select(SimulationAccount))
             return list(result.scalars().all())
 
+    async def delete_account(self, account_id: str) -> bool:
+        """Delete a simulation account and all related records"""
+        async with AsyncSessionLocal() as session:
+            # Check if account exists
+            account = await session.get(SimulationAccount, account_id)
+            if not account:
+                return False
+
+            # Delete related positions
+            await session.execute(
+                select(SimulationPosition).where(SimulationPosition.account_id == account_id)
+            )
+            positions = await session.execute(
+                select(SimulationPosition).where(SimulationPosition.account_id == account_id)
+            )
+            for pos in positions.scalars():
+                await session.delete(pos)
+
+            # Delete related trades
+            trades = await session.execute(
+                select(SimulationTrade).where(SimulationTrade.account_id == account_id)
+            )
+            for trade in trades.scalars():
+                await session.delete(trade)
+
+            # Delete the account
+            await session.delete(account)
+            await session.commit()
+
+            logger.info(
+                "Deleted simulation account",
+                account_id=account_id,
+                name=account.name
+            )
+
+            return True
+
     async def execute_opportunity(
         self,
         account_id: str,

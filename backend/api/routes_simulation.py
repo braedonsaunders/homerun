@@ -64,6 +64,15 @@ async def get_simulation_account(account_id: str):
     return stats
 
 
+@simulation_router.delete("/accounts/{account_id}")
+async def delete_simulation_account(account_id: str):
+    """Delete a simulation account and all its trades/positions"""
+    deleted = await simulation_service.delete_account(account_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"message": "Account deleted successfully", "account_id": account_id}
+
+
 @simulation_router.get("/accounts/{account_id}/positions")
 async def get_account_positions(account_id: str):
     """Get open positions for a simulation account"""

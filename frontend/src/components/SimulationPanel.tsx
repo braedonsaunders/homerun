@@ -8,12 +8,14 @@ import {
   Target,
   Activity,
   RefreshCw,
-  Play
+  Play,
+  Trash2
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
   getSimulationAccounts,
   createSimulationAccount,
+  deleteSimulationAccount,
   getAccountTrades,
   executeOpportunity,
   getOpportunities,
@@ -26,6 +28,7 @@ export default function SimulationPanel() {
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
+  const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -63,6 +66,17 @@ export default function SimulationPanel() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['account-trades'] })
+    }
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (accountId: string) => deleteSimulationAccount(accountId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
+      if (selectedAccount === accountToDelete?.id) {
+        setSelectedAccount(null)
+      }
+      setAccountToDelete(null)
     }
   })
 
@@ -140,6 +154,7 @@ export default function SimulationPanel() {
               account={account}
               isSelected={selectedAccount === account.id}
               onSelect={() => setSelectedAccount(account.id)}
+              onDelete={() => setAccountToDelete(account)}
             />
           ))}
         </div>
@@ -194,6 +209,33 @@ export default function SimulationPanel() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      {accountToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6 max-w-md mx-4">
+            <h3 className="text-lg font-medium mb-2">Delete Account</h3>
+            <p className="text-gray-400 mb-4">
+              Are you sure you want to delete "{accountToDelete.name}"? This will also delete all trades and positions associated with this account. This action cannot be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setAccountToDelete(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(accountToDelete.id)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 bg-red-500 hover:bg-red-600 rounded-lg disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -201,11 +243,13 @@ export default function SimulationPanel() {
 function AccountCard({
   account,
   isSelected,
-  onSelect
+  onSelect,
+  onDelete
 }: {
   account: SimulationAccount
   isSelected: boolean
   onSelect: () => void
+  onDelete: () => void
 }) {
   const pnlColor = account.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'
   const roiColor = account.roi_percent >= 0 ? 'text-green-400' : 'text-red-400'
@@ -220,7 +264,19 @@ function AccountCard({
     >
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-medium">{account.name}</h3>
-        {isSelected && <Activity className="w-4 h-4 text-blue-500" />}
+        <div className="flex items-center gap-2">
+          {isSelected && <Activity className="w-4 h-4 text-blue-500" />}
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="p-1 text-gray-500 hover:text-red-400 rounded transition-colors"
+            title="Delete account"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-sm">

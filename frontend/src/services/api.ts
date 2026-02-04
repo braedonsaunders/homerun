@@ -316,6 +316,11 @@ export const getSimulationAccount = async (accountId: string): Promise<Simulatio
   return data
 }
 
+export const deleteSimulationAccount = async (accountId: string) => {
+  const { data } = await api.delete(`/simulation/accounts/${accountId}`)
+  return data
+}
+
 export const getAccountPositions = async (accountId: string) => {
   const { data } = await api.get(`/simulation/accounts/${accountId}/positions`)
   return data
