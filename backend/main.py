@@ -186,7 +186,7 @@ async def detailed_health_check():
         "services": {
             "scanner": {
                 "running": scanner.is_running,
-                "last_scan": scanner.last_scan.isoformat() if scanner.last_scan else None,
+                "last_scan": (scanner.last_scan.isoformat() + "Z") if scanner.last_scan else None,
                 "opportunities_count": len(scanner.get_opportunities())
             },
             "wallet_tracker": {

@@ -225,7 +225,7 @@ class ArbitrageScanner:
             "running": self._running,
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
-            "last_scan": self._last_scan.isoformat() if self._last_scan else None,
+            "last_scan": (self._last_scan.isoformat() + "Z") if self._last_scan else None,
             "opportunities_count": len(self._opportunities),
             "strategies": [
                 {"name": s.name, "type": s.strategy_type.value}

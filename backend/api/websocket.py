@@ -61,7 +61,7 @@ async def handle_websocket(websocket: WebSocket):
             ],
             "scanner_status": {
                 "running": scanner.is_running,
-                "last_scan": scanner.last_scan
+                "last_scan": (scanner.last_scan.isoformat() + "Z") if scanner.last_scan else None
             }
         }
     })
