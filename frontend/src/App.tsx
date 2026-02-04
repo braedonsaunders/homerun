@@ -43,14 +43,6 @@ type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'anomaly'
 
 const ITEMS_PER_PAGE = 20
 
-const ASCII_ART = `
- _   _  ___  __  __ _____ ____  _   _ _   _
-| | | |/ _ \\|  \\/  | ____|  _ \\| | | | \\ | |
-| |_| | | | | |\\/| |  _| | |_) | | | |  \\| |
-|  _  | |_| | |  | | |___|  _ <| |_| | |\\  |
-|_| |_|\\___/|_|  |_|_____|_| \\_\\\\___/|_| \\_|
-`
-
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -270,15 +262,6 @@ function App() {
           )}
         </div>
       </header>
-
-      {/* ASCII Art Banner - Shows in terminal style */}
-      <div className="border-b border-gray-800 bg-[#0a0a0a] overflow-hidden">
-        <div className="max-w-7xl mx-auto px-4">
-          <pre className="text-green-500 text-xs font-mono leading-tight py-2 whitespace-pre">
-            {ASCII_ART}
-          </pre>
-        </div>
-      </div>
 
       {/* Stats Bar */}
       <div className="border-b border-gray-800 bg-[#0a0a0a]">
