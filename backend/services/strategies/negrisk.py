@@ -6,29 +6,30 @@ class NegRiskStrategy(BaseStrategy):
     """
     Strategy 4: NegRisk / One-of-Many Arbitrage
 
-    For events with multiple related markets (like date-based outcomes),
-    buy NO on all outcomes when total cost < $1.00
+    For Polymarket-flagged NegRisk events where EXACTLY ONE outcome must win,
+    buy YES on all outcomes when total cost < $1.00
 
-    This is the "$1M in 7 days" strategy used by anoin123.
+    TRUE ARBITRAGE requires mutually exclusive, exhaustive outcomes:
+    - Polymarket NegRisk flag: Platform guarantees exactly one outcome wins
+    - Multi-outcome elections: "Who wins?" where one candidate must win
 
-    Example (US Strikes Iran):
-    - "by March" NO: $0.89
-    - "by April" NO: $0.03
-    - "by June" NO: $0.02
-    - Total cost: $0.94
-    - If no strike by June: All NO positions pay = $1.00
-    - Profit: $0.06
+    WARNING: Date-based "by X" markets are NOT valid for this strategy!
+    - "Event by March", "Event by June", "Event by December" are CUMULATIVE
+    - If event happens in March, ALL "by later date" markets also resolve YES
+    - Buying NO on all dates = 100% correlated loss if event happens early
+    - This is SPECULATIVE, not arbitrage
 
-    Also works for multi-outcome markets where all YES prices sum < $1:
+    Valid Example (Multi-candidate election):
     - Candidate A YES: $0.30
     - Candidate B YES: $0.35
     - Candidate C YES: $0.32
     - Total: $0.97, one must win = $1.00
+    - Profit: $0.03 (guaranteed)
     """
 
     strategy_type = StrategyType.NEGRISK
     name = "NegRisk / One-of-Many"
-    description = "Buy all NO positions on related date markets, or all YES on multi-outcome"
+    description = "Buy YES on all outcomes in verified mutually-exclusive events"
 
     def detect(
         self,
@@ -48,17 +49,20 @@ class NegRiskStrategy(BaseStrategy):
                 continue
 
             # Strategy A: NegRisk events (flagged by Polymarket)
+            # This is TRUE arbitrage - Polymarket guarantees exactly one outcome wins
             if event.neg_risk:
                 opp = self._detect_negrisk_event(event, prices)
                 if opp:
                     opportunities.append(opp)
 
-            # Strategy B: Date-based markets (buy NO on all dates)
-            opp = self._detect_date_sweep(event, prices)
-            if opp:
-                opportunities.append(opp)
+            # NOTE: Date sweep strategy REMOVED - it was incorrectly classified as arbitrage
+            # "By X date" markets are CUMULATIVE, not mutually exclusive:
+            # - If event happens by March, it ALSO happened "by June" and "by December"
+            # - So ALL NO positions lose together = 100% correlated loss
+            # - This is a SPECULATIVE BET, not arbitrage
 
-            # Strategy C: Multi-outcome (buy YES on all outcomes)
+            # Strategy B: Multi-outcome (buy YES on all outcomes)
+            # Only for non-date-based events with verified exhaustive outcomes
             opp = self._detect_multi_outcome(event, prices)
             if opp:
                 opportunities.append(opp)
@@ -116,68 +120,29 @@ class NegRiskStrategy(BaseStrategy):
         prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
         """
-        Detect date-based arbitrage: same event with different date cutoffs
-        Buy NO on all dates - if nothing happens, all pay out
+        DEPRECATED - DO NOT USE
+
+        This method was REMOVED because it incorrectly classified speculative bets as arbitrage.
+
+        WHY IT'S WRONG:
+        "By X date" markets are CUMULATIVE, not mutually exclusive:
+        - "Event by March" YES → "Event by June" YES → "Event by December" YES
+        - If you buy NO on all dates and the event happens early, ALL positions lose
+        - This is a SPECULATIVE BET with 100% correlated downside, NOT arbitrage
+
+        Example of the bug:
+        - Buy NO on "Cabinet member out by March" @ $0.002
+        - Buy NO on "Cabinet member out by June" @ $0.002
+        - Buy NO on "Cabinet member out by December" @ $0.002
+        - If cabinet member leaves in February: ALL THREE NO positions = $0
+        - Total loss: 100% of investment
+
+        True arbitrage requires MUTUALLY EXCLUSIVE outcomes where exactly one wins.
+        Date-based "by X" markets fail this requirement.
         """
-        # Look for markets with date patterns in questions
-        date_keywords = ["by", "before", "in", "during", "jan", "feb", "mar", "apr",
-                         "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-                         "january", "february", "march", "april", "june", "july",
-                         "august", "september", "october", "november", "december",
-                         "q1", "q2", "q3", "q4", "2025", "2026", "2027"]
-
-        active_markets = [m for m in event.markets if m.active and not m.closed]
-
-        # Check if this looks like a date-based event
-        date_markets = []
-        for market in active_markets:
-            question_lower = market.question.lower()
-            if any(kw in question_lower for kw in date_keywords):
-                date_markets.append(market)
-
-        if len(date_markets) < 2:
-            return None
-
-        # Calculate total NO cost
-        total_no = 0.0
-        positions = []
-
-        for market in date_markets:
-            no_price = market.no_price
-
-            # Use live price if available
-            if len(market.clob_token_ids) > 1:
-                no_token = market.clob_token_ids[1]
-                if no_token in prices:
-                    no_price = prices[no_token].get("mid", no_price)
-
-            total_no += no_price
-            positions.append({
-                "action": "BUY",
-                "outcome": "NO",
-                "market": market.question[:50],
-                "price": no_price,
-                "token_id": market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-            })
-
-        # If event never happens, all NO positions pay $1 each
-        # But we only get $1 total (the latest date NO pays)
-        # Actually for date sweeps, if nothing happens ALL NOs pay
-        # So expected payout = number of markets (but risk if event happens early)
-
-        # Conservative approach: assume only 1 NO pays (the "nothing happens" scenario)
-        # This is the safest interpretation
-        if total_no >= 1.0:
-            return None
-
-        return self.create_opportunity(
-            title=f"Date Sweep: {event.title[:40]}...",
-            description=f"Buy NO on {len(date_markets)} date markets for ${total_no:.3f}. If nothing happens = $1 payout",
-            total_cost=total_no,
-            markets=date_markets,
-            positions=positions,
-            event=event
-        )
+        # This method is intentionally disabled
+        # Returning None ensures it never produces false arbitrage signals
+        return None
 
     def _is_independent_betting_market(self, question: str) -> bool:
         """
@@ -200,6 +165,26 @@ class NegRiskStrategy(BaseStrategy):
 
         return any(kw in question_lower for kw in independent_keywords)
 
+    def _is_date_based_market(self, question: str) -> bool:
+        """
+        Check if a market is date-based (cumulative "by X date" style).
+        These are NOT mutually exclusive and should be excluded from arbitrage.
+        """
+        question_lower = question.lower()
+
+        # Date-based keywords that indicate cumulative markets
+        date_keywords = [
+            "by january", "by february", "by march", "by april", "by may", "by june",
+            "by july", "by august", "by september", "by october", "by november", "by december",
+            "by jan", "by feb", "by mar", "by apr", "by jun", "by jul", "by aug", "by sep", "by oct", "by nov", "by dec",
+            "before january", "before february", "before march", "before april",
+            "by q1", "by q2", "by q3", "by q4",
+            "by end of", "by the end of",
+            "by 2025", "by 2026", "by 2027",
+        ]
+
+        return any(kw in question_lower for kw in date_keywords)
+
     def _detect_multi_outcome(
         self,
         event: Event,
@@ -213,8 +198,9 @@ class NegRiskStrategy(BaseStrategy):
         - "Who wins the election?" with multiple candidates
         - "Which team wins?" with Team A / Team B / Draw
 
-        Does NOT work for independent betting markets like:
-        - Spread bets, over/under, both teams to score (can all be true at once!)
+        Does NOT work for:
+        - Independent betting markets (spread, over/under, BTTS - can all be true!)
+        - Date-based markets ("by March", "by June" - cumulative, not exclusive!)
         """
         # Skip if already handled as NegRisk
         if event.neg_risk:
@@ -231,7 +217,14 @@ class NegRiskStrategy(BaseStrategy):
             if not self._is_independent_betting_market(m.question)
         ]
 
-        # If most markets are independent bet types, skip this event
+        # CRITICAL: Filter out date-based markets
+        # "By X date" markets are CUMULATIVE, not mutually exclusive!
+        exclusive_markets = [
+            m for m in exclusive_markets
+            if not self._is_date_based_market(m.question)
+        ]
+
+        # If most markets are independent bet types or date-based, skip this event
         if len(exclusive_markets) < 3:
             return None
 
@@ -268,7 +261,23 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < 0.7:
             return None
 
-        return self.create_opportunity(
+        # Stricter threshold for multi-outcome - require higher confidence
+        # that these are truly exhaustive options
+        if total_yes < 0.85:
+            # Lower totals suggest missing outcomes - add extra warning
+            opp = self.create_opportunity(
+                title=f"⚠️ Multi-Outcome: {event.title[:35]}...",
+                description=f"LOW CONFIDENCE: Total {total_yes:.0%} suggests missing outcomes. Buy all {len(exclusive_markets)} YES for ${total_yes:.3f}",
+                total_cost=total_yes,
+                markets=exclusive_markets,
+                positions=positions,
+                event=event
+            )
+            if opp:
+                opp.risk_factors.insert(0, f"⚠️ LOW TOTAL ({total_yes:.0%}) - likely missing outcomes, HIGH RISK")
+            return opp
+
+        opp = self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
             description=f"Buy YES on all {len(exclusive_markets)} outcomes for ${total_yes:.3f}, one wins = $1",
             total_cost=total_yes,
@@ -276,3 +285,9 @@ class NegRiskStrategy(BaseStrategy):
             positions=positions,
             event=event
         )
+
+        # Still add a warning since we can't verify exhaustiveness
+        if opp:
+            opp.risk_factors.insert(0, "Verify manually: ensure all possible outcomes are listed")
+
+        return opp

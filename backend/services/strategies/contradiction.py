@@ -8,35 +8,45 @@ class ContradictionStrategy(BaseStrategy):
 
     Find two markets that say opposite things - buy YES in one, NO in the other
 
-    Example:
+    WARNING: This strategy has SIGNIFICANT RISKS and may produce FALSE POSITIVES!
+
+    KNOWN ISSUES:
+    1. "Above X" vs "Below X" are NOT exhaustive - value could be EXACTLY X
+    2. Timeframe mismatches: "by March" vs "in March" are different conditions
+    3. Different thresholds: "above $100K" vs "below $95K" leaves a gap
+    4. Context differences: Markets may look contradictory but refer to different scenarios
+
+    ONLY use this strategy when you can MANUALLY VERIFY:
+    - The markets cover ALL possible outcomes (no gaps)
+    - The timeframes and conditions are identical
+    - One outcome MUST be true (exhaustive)
+
+    Example that LOOKS like arbitrage but ISN'T:
     - Market A: "BTC above $100K by March" YES: $0.30
     - Market B: "BTC below $100K in March" YES: $0.65
-    - These contradict! Buy YES on A + YES on B = $0.95
-    - One must be true = $1.00
-    - Profit: $0.05
+    - PROBLEM: What if BTC is exactly $100K? Both could resolve NO!
+    - PROBLEM: "by March" vs "in March" are different timeframes!
     """
 
     strategy_type = StrategyType.CONTRADICTION
     name = "Contradiction"
-    description = "Two markets say opposite things, exploit the inconsistency"
+    description = "Two markets say opposite things - REQUIRES MANUAL VERIFICATION"
 
     # Contradiction patterns (word pairs that indicate opposite meanings)
+    # WARNING: These are HEURISTICS that may produce false positives!
+    # "above/below" is particularly dangerous - doesn't cover "exactly equal"
     CONTRADICTION_PAIRS = [
-        ("above", "below"),
-        ("over", "under"),
-        ("more", "less"),
-        ("higher", "lower"),
-        ("before", "after"),
-        ("win", "lose"),
-        ("yes", "no"),
-        ("will", "won't"),
-        ("pass", "fail"),
-        ("approve", "reject"),
-        ("rise", "fall"),
-        ("increase", "decrease"),
-        ("up", "down"),
-        ("positive", "negative"),
-        ("bull", "bear"),
+        # DANGEROUS: These don't cover the boundary case (exactly equal)
+        # ("above", "below"),  # REMOVED - not exhaustive
+        # ("over", "under"),   # REMOVED - not exhaustive
+        # ("more", "less"),    # REMOVED - not exhaustive
+        # ("higher", "lower"), # REMOVED - not exhaustive
+
+        # SAFER: These are more likely to be true contradictions
+        ("before", "after"),   # Still risky if "on the date" is possible
+        ("win", "lose"),       # Usually exhaustive in head-to-head
+        ("pass", "fail"),      # Usually binary
+        ("approve", "reject"), # Usually binary
     ]
 
     def detect(
@@ -209,13 +219,17 @@ class ContradictionStrategy(BaseStrategy):
                 }
             ]
 
-            return self.create_opportunity(
-                title=f"Contradiction: {market_a.question[:25]}...",
-                description=f"Contradicting markets. YES+YES: ${yes_a:.3f} + ${yes_b:.3f} = ${cost_both_yes:.3f}",
+            opp = self.create_opportunity(
+                title=f"⚠️ Contradiction: {market_a.question[:25]}...",
+                description=f"VERIFY MANUALLY: Check markets are truly exhaustive. YES+YES: ${yes_a:.3f} + ${yes_b:.3f} = ${cost_both_yes:.3f}",
                 total_cost=cost_both_yes,
                 markets=[market_a, market_b],
                 positions=positions
             )
+            # Add extra risk factor for contradiction strategy
+            if opp:
+                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
+            return opp
 
         # Approach 2: Buy YES on A, NO on B
         no_b = market_b.no_price
@@ -244,12 +258,16 @@ class ContradictionStrategy(BaseStrategy):
                 }
             ]
 
-            return self.create_opportunity(
-                title=f"Contradiction: {market_a.question[:25]}...",
-                description=f"Contradicting markets. YES+NO: ${yes_a:.3f} + ${no_b:.3f} = ${cost_yes_no:.3f}",
+            opp = self.create_opportunity(
+                title=f"⚠️ Contradiction: {market_a.question[:25]}...",
+                description=f"VERIFY MANUALLY: Check markets are truly exhaustive. YES+NO: ${yes_a:.3f} + ${no_b:.3f} = ${cost_yes_no:.3f}",
                 total_cost=cost_yes_no,
                 markets=[market_a, market_b],
                 positions=positions
             )
+            # Add extra risk factor for contradiction strategy
+            if opp:
+                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
+            return opp
 
         return None

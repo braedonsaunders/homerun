@@ -8,28 +8,56 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
     Find two events where only one can be true, buy YES on both for < $1
 
-    Example:
+    WARNING: This strategy has SIGNIFICANT RISKS!
+
+    KNOWN ISSUES:
+    1. Third-party candidates: "Democrats win" vs "Republicans win" ignores independents
+    2. Pattern matching false positives: Keywords may match unrelated markets
+    3. Draw/tie outcomes: In sports, both "win" options could lose if there's a draw
+    4. Different thresholds: "above $100K" vs "below $100K" leaves a gap at exactly $100K
+
+    ONLY use this strategy when:
+    - The event has EXACTLY 2 markets (enforced)
+    - You have MANUALLY verified the outcomes are truly exhaustive
+    - No third option exists (no independents, no draws, no boundary cases)
+
+    Example of FAILURE:
     - "Democrats win 2028" YES: $0.45
     - "Republicans win 2028" YES: $0.52
-    - Total: $0.97
-    - One MUST win (mutually exclusive) = $1.00 payout
+    - Independent candidate wins
+    - BOTH positions resolve to $0
+
+    Example (true binary):
+    - "Bill passes" YES: $0.45
+    - "Bill fails" YES: $0.52
+    - Total: $0.97 (assuming pass/fail is truly exhaustive)
+    - One MUST win = $1.00 payout
     - Profit: $0.03
     """
 
     strategy_type = StrategyType.MUTUALLY_EXCLUSIVE
     name = "Mutually Exclusive"
-    description = "Two events where only one can be true, buy YES on both"
+    description = "Two-market events - REQUIRES MANUAL VERIFICATION of exhaustiveness"
 
     # Pairs of mutually exclusive patterns to look for
+    # WARNING: These are HEURISTICS that may produce false positives!
     EXCLUSIVE_PATTERNS = [
-        # Political
+        # Political - RISKY: ignores third-party candidates!
         (["democrat", "biden", "harris", "democratic"], ["republican", "trump", "gop"]),
-        (["yes", "will"], ["no", "won't", "will not"]),
-        # Sports
+
+        # REMOVED: Too many false positives
+        # (["yes", "will"], ["no", "won't", "will not"]),
+
+        # Sports - RISKY: ignores draws/ties!
         (["home", "team a"], ["away", "team b"]),
-        # Binary outcomes with different framing
-        (["above", "over", "more than", "higher"], ["below", "under", "less than", "lower"]),
-        (["before", "by"], ["after", "not by"]),
+
+        # REMOVED: Boundary case issues (exactly equal)
+        # (["above", "over", "more than", "higher"], ["below", "under", "less than", "lower"]),
+
+        # Time-based - RISKY: "on the date" could be neither before nor after
+        # (["before", "by"], ["after", "not by"]),
+
+        # Win/lose - RISKY: ignores draws
         (["win", "victory"], ["lose", "defeat"]),
     ]
 
@@ -180,11 +208,23 @@ class MutuallyExclusiveStrategy(BaseStrategy):
             }
         ]
 
-        return self.create_opportunity(
-            title=f"Exclusive: {market_a.question[:25]}... vs {market_b.question[:25]}...",
-            description=f"Mutually exclusive markets. YES on both: ${yes_a:.3f} + ${yes_b:.3f} = ${total_cost:.3f}",
+        opp = self.create_opportunity(
+            title=f"⚠️ Exclusive: {market_a.question[:20]}... vs {market_b.question[:20]}...",
+            description=f"VERIFY MANUALLY: Check no third outcome exists. YES on both: ${yes_a:.3f} + ${yes_b:.3f} = ${total_cost:.3f}",
             total_cost=total_cost,
             markets=[market_a, market_b],
             positions=positions,
             event=event
         )
+
+        # Add extra risk factors
+        if opp:
+            opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - check for third-party outcomes")
+            # Warn about political markets
+            q_combined = (market_a.question + market_b.question).lower()
+            if any(p in q_combined for p in ["democrat", "republican", "trump", "biden"]):
+                opp.risk_factors.insert(1, "Political market: Independent candidates could win")
+            if any(p in q_combined for p in ["win", "lose", "victory", "defeat"]):
+                opp.risk_factors.insert(1, "Win/lose market: Draw/tie outcome possible")
+
+        return opp
