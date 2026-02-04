@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import BaseModel, field_validator
 
 from services.anomaly_detector import anomaly_detector, AnomalyType, Severity
+from services.polymarket import polymarket_client
 from utils.validation import validate_eth_address
 
 anomaly_router = APIRouter()
@@ -76,7 +77,10 @@ async def analyze_wallet_get(wallet_address: str):
             "win_rate": analysis.win_rate,
             "total_pnl": analysis.total_pnl,
             "avg_roi": analysis.avg_roi,
-            "max_roi": analysis.max_roi
+            "max_roi": analysis.max_roi,
+            "avg_hold_time_hours": analysis.avg_hold_time_hours,
+            "trade_frequency_per_day": analysis.trade_frequency_per_day,
+            "markets_traded": analysis.markets_traded
         },
         "strategies_detected": analysis.strategies_detected,
         "anomaly_score": analysis.anomaly_score,
@@ -192,4 +196,169 @@ async def quick_check_wallet(wallet_address: str):
         "total_pnl": analysis.total_pnl,
         "verdict": "AVOID" if is_suspicious else "OK",
         "summary": analysis.recommendation
+    }
+
+
+# ==================== WALLET TRADES & POSITIONS ====================
+
+@anomaly_router.get("/wallet/{wallet_address}/trades")
+async def get_wallet_trades(
+    wallet_address: str,
+    limit: int = Query(default=100, ge=1, le=500)
+):
+    """
+    Get individual trades for a wallet.
+
+    Returns raw trade data with calculated cost per trade.
+    """
+    try:
+        address = validate_eth_address(wallet_address)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    trades = await polymarket_client.get_wallet_trades(address, limit=limit)
+
+    # Enrich trades with calculated fields
+    enriched_trades = []
+    for trade in trades:
+        size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+        price = float(trade.get("price", 0) or 0)
+        side = (trade.get("side", "") or "").upper()
+        cost = size * price
+
+        enriched_trades.append({
+            "id": trade.get("id", trade.get("transactionHash", "")),
+            "market": trade.get("market", trade.get("condition_id", trade.get("asset", ""))),
+            "market_slug": trade.get("market_slug", trade.get("slug", "")),
+            "outcome": trade.get("outcome", trade.get("outcome_index", "")),
+            "side": side,
+            "size": size,
+            "price": price,
+            "cost": cost,
+            "timestamp": trade.get("timestamp", trade.get("created_at", "")),
+            "transaction_hash": trade.get("transactionHash", trade.get("transaction_hash", "")),
+        })
+
+    return {
+        "wallet": address,
+        "total": len(enriched_trades),
+        "trades": enriched_trades
+    }
+
+
+@anomaly_router.get("/wallet/{wallet_address}/positions")
+async def get_wallet_positions(wallet_address: str):
+    """
+    Get current open positions for a wallet.
+    """
+    try:
+        address = validate_eth_address(wallet_address)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    positions = await polymarket_client.get_wallet_positions(address)
+
+    # Enrich positions with calculated fields
+    enriched_positions = []
+    total_value = 0.0
+    total_unrealized_pnl = 0.0
+
+    for pos in positions:
+        size = float(pos.get("size", 0) or 0)
+        avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+        current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
+
+        cost_basis = size * avg_price
+        current_value = size * current_price
+        unrealized_pnl = current_value - cost_basis
+        roi = (unrealized_pnl / cost_basis * 100) if cost_basis > 0 else 0
+
+        total_value += current_value
+        total_unrealized_pnl += unrealized_pnl
+
+        enriched_positions.append({
+            "market": pos.get("market", pos.get("condition_id", pos.get("asset", ""))),
+            "market_slug": pos.get("market_slug", pos.get("slug", "")),
+            "outcome": pos.get("outcome", pos.get("outcome_index", "")),
+            "size": size,
+            "avg_price": avg_price,
+            "current_price": current_price,
+            "cost_basis": cost_basis,
+            "current_value": current_value,
+            "unrealized_pnl": unrealized_pnl,
+            "roi_percent": roi,
+        })
+
+    return {
+        "wallet": address,
+        "total_positions": len(enriched_positions),
+        "total_value": total_value,
+        "total_unrealized_pnl": total_unrealized_pnl,
+        "positions": enriched_positions
+    }
+
+
+@anomaly_router.get("/wallet/{wallet_address}/summary")
+async def get_wallet_summary(wallet_address: str):
+    """
+    Get a comprehensive summary of a wallet including trades, positions, and analysis.
+    """
+    try:
+        address = validate_eth_address(wallet_address)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Fetch all data in parallel
+    trades = await polymarket_client.get_wallet_trades(address, limit=500)
+    positions = await polymarket_client.get_wallet_positions(address)
+
+    # Calculate summary stats
+    total_invested = 0.0
+    total_returned = 0.0
+    buys = 0
+    sells = 0
+
+    for trade in trades:
+        size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+        price = float(trade.get("price", 0) or 0)
+        side = (trade.get("side", "") or "").upper()
+        cost = size * price
+
+        if side == "BUY":
+            total_invested += cost
+            buys += 1
+        elif side == "SELL":
+            total_returned += cost
+            sells += 1
+
+    # Calculate position values
+    position_value = 0.0
+    position_cost_basis = 0.0
+    for pos in positions:
+        size = float(pos.get("size", 0) or 0)
+        avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+        current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
+        position_value += size * current_price
+        position_cost_basis += size * avg_price
+
+    realized_pnl = total_returned - total_invested
+    unrealized_pnl = position_value - position_cost_basis
+    total_pnl = realized_pnl + unrealized_pnl
+    roi = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+
+    return {
+        "wallet": address,
+        "summary": {
+            "total_trades": len(trades),
+            "buys": buys,
+            "sells": sells,
+            "open_positions": len(positions),
+            "total_invested": total_invested,
+            "total_returned": total_returned,
+            "position_value": position_value,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl": total_pnl,
+            "roi_percent": roi,
+        }
     }

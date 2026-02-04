@@ -109,8 +109,8 @@ class AnomalyDetector:
                 recommendation="Insufficient data for analysis"
             )
 
-        # Calculate basic stats
-        stats = self._calculate_trade_stats(trades)
+        # Calculate basic stats (pass positions for unrealized PnL calculation)
+        stats = self._calculate_trade_stats(trades, positions)
 
         # Detect anomalies
         anomalies = []
@@ -167,42 +167,103 @@ class AnomalyDetector:
 
         return analysis
 
-    def _calculate_trade_stats(self, trades: list[dict]) -> dict:
-        """Calculate trading statistics"""
+    def _calculate_trade_stats(self, trades: list[dict], positions: list[dict] = None) -> dict:
+        """Calculate trading statistics from raw Polymarket trade data"""
         if not trades:
             return {}
 
-        wins = 0
-        losses = 0
-        total_pnl = 0.0
-        rois = []
-        hold_times = []
+        positions = positions or []
+
+        # Group trades by market/token to calculate PnL
+        market_positions = {}  # market_id -> {"buys": [], "sells": []}
         markets = set()
+        total_invested = 0.0
+        total_returned = 0.0
 
         for trade in trades:
-            pnl = trade.get("pnl", trade.get("profit", 0)) or 0
-            total_pnl += pnl
+            # Get trade details - handle different field names from API
+            size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+            price = float(trade.get("price", 0) or 0)
+            side = (trade.get("side", "") or "").upper()
+            market_id = trade.get("market", trade.get("condition_id", trade.get("asset", "")))
+            outcome = trade.get("outcome", trade.get("outcome_index", ""))
 
-            if pnl > 0:
-                wins += 1
-            elif pnl < 0:
-                losses += 1
-
-            # Calculate ROI if possible
-            cost = trade.get("cost", trade.get("amount", 1)) or 1
-            if cost > 0:
-                roi = (pnl / cost) * 100
-                rois.append(roi)
-
-            # Track markets
-            market_id = trade.get("market", trade.get("condition_id", ""))
             if market_id:
                 markets.add(market_id)
 
+            if market_id not in market_positions:
+                market_positions[market_id] = {"buys": [], "sells": []}
+
+            cost = size * price
+
+            if side == "BUY":
+                total_invested += cost
+                market_positions[market_id]["buys"].append({
+                    "size": size,
+                    "price": price,
+                    "cost": cost,
+                    "outcome": outcome,
+                    "timestamp": trade.get("timestamp", trade.get("created_at", ""))
+                })
+            elif side == "SELL":
+                total_returned += cost
+                market_positions[market_id]["sells"].append({
+                    "size": size,
+                    "price": price,
+                    "cost": cost,
+                    "outcome": outcome,
+                    "timestamp": trade.get("timestamp", trade.get("created_at", ""))
+                })
+
+        # Calculate realized PnL from completed trades
+        realized_pnl = total_returned - total_invested
+
+        # Calculate unrealized PnL from current positions
+        unrealized_pnl = 0.0
+        for pos in positions:
+            size = float(pos.get("size", 0) or 0)
+            avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+            current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
+            unrealized_pnl += size * (current_price - avg_price)
+
+        total_pnl = realized_pnl + unrealized_pnl
+
+        # Calculate win/loss by market (a market is a "win" if total sells > total buys)
+        wins = 0
+        losses = 0
+        rois = []
+
+        for market_id, pos_data in market_positions.items():
+            buy_cost = sum(b["cost"] for b in pos_data["buys"])
+            sell_revenue = sum(s["cost"] for s in pos_data["sells"])
+
+            # Only count markets where we have both buys and sells (closed positions)
+            if buy_cost > 0 and sell_revenue > 0:
+                market_pnl = sell_revenue - buy_cost
+                market_roi = (market_pnl / buy_cost) * 100 if buy_cost > 0 else 0
+                rois.append(market_roi)
+
+                if market_pnl > 0:
+                    wins += 1
+                elif market_pnl < 0:
+                    losses += 1
+
+        # If no closed positions, estimate from overall flow
+        if wins == 0 and losses == 0 and total_invested > 0:
+            # Use ratio of returned vs invested as proxy
+            if total_returned > total_invested * 1.02:  # > 2% profit
+                wins = max(1, len(markets) // 2)
+                losses = len(markets) - wins
+            elif total_returned < total_invested * 0.98:  # > 2% loss
+                losses = max(1, len(markets) // 2)
+                wins = len(markets) - losses
+
         total_trades = len(trades)
-        win_rate = wins / total_trades if total_trades > 0 else 0
+        closed_markets = wins + losses
+        win_rate = wins / closed_markets if closed_markets > 0 else 0
 
         # Calculate time span
+        days = 30  # default
         if trades:
             first_trade = trades[-1].get("timestamp", trades[-1].get("created_at"))
             last_trade = trades[0].get("timestamp", trades[0].get("created_at"))
@@ -215,10 +276,11 @@ class AnomalyDetector:
                     days = max((last_trade - first_trade).days, 1)
                 except:
                     days = 30
-            else:
-                days = 30
-        else:
-            days = 30
+
+        # Calculate ROI
+        avg_roi = sum(rois) / len(rois) if rois else (total_pnl / total_invested * 100 if total_invested > 0 else 0)
+        max_roi = max(rois) if rois else avg_roi
+        min_roi = min(rois) if rois else avg_roi
 
         return {
             "total_trades": total_trades,
@@ -226,14 +288,20 @@ class AnomalyDetector:
             "losses": losses,
             "win_rate": win_rate,
             "total_pnl": total_pnl,
-            "avg_roi": sum(rois) / len(rois) if rois else 0,
-            "max_roi": max(rois) if rois else 0,
-            "min_roi": min(rois) if rois else 0,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "total_invested": total_invested,
+            "total_returned": total_returned,
+            "avg_roi": avg_roi,
+            "max_roi": max_roi,
+            "min_roi": min_roi,
             "roi_std": self._std_dev(rois) if len(rois) > 1 else 0,
-            "avg_hold_time_hours": sum(hold_times) / len(hold_times) if hold_times else 0,
+            "avg_hold_time_hours": 0,  # Would need position tracking to calculate
             "trades_per_day": total_trades / days,
             "unique_markets": len(markets),
-            "days_active": days
+            "days_active": days,
+            "closed_positions": closed_markets,
+            "open_positions": len(positions)
         }
 
     def _detect_statistical_anomalies(self, trades: list, stats: dict) -> list[Anomaly]:

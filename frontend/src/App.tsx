@@ -37,9 +37,10 @@ import OpportunityCard from './components/OpportunityCard'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
 import AnomalyPanel from './components/AnomalyPanel'
+import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'anomaly'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly'
 
 const ITEMS_PER_PAGE = 20
 
@@ -328,6 +329,12 @@ function App() {
               label="Wallet Tracker"
             />
             <TabButton
+              active={activeTab === 'analysis'}
+              onClick={() => setActiveTab('analysis')}
+              icon={<Search className="w-4 h-4" />}
+              label="Wallet Analysis"
+            />
+            <TabButton
               active={activeTab === 'anomaly'}
               onClick={() => setActiveTab('anomaly')}
               icon={<Shield className="w-4 h-4" />}
@@ -462,6 +469,7 @@ function App() {
         {activeTab === 'trading' && <TradingPanel />}
         {activeTab === 'simulation' && <SimulationPanel />}
         {activeTab === 'wallets' && <WalletTracker />}
+        {activeTab === 'analysis' && <WalletAnalysisPanel />}
         {activeTab === 'anomaly' && <AnomalyPanel />}
       </main>
     </div>
