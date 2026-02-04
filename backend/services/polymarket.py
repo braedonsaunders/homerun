@@ -317,26 +317,30 @@ class PolymarketClient:
         limit: int = 50,
         time_period: str = "ALL",
         order_by: str = "PNL",
-        category: str = "OVERALL"
+        category: str = "OVERALL",
+        offset: int = 0
     ) -> list[dict]:
         """
         Fetch top traders from Polymarket leaderboard.
         Returns list of wallets with their profit stats.
 
         Args:
-            limit: Max results (1-50)
+            limit: Max results (1-50 per request, but we can paginate)
             time_period: DAY, WEEK, MONTH, or ALL
             order_by: PNL (profit/loss) or VOL (volume)
             category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE
+            offset: Number of results to skip (for pagination)
         """
         client = await self._get_client()
         try:
             # Polymarket data API leaderboard endpoint
             params = {
-                "limit": min(limit, 50),  # API max is 50
+                "limit": min(limit, 50),  # API max is 50 per request
                 "timePeriod": time_period.upper(),
                 "orderBy": order_by.upper(),
             }
+            if offset > 0:
+                params["offset"] = offset
             # Only include category if not OVERALL
             if category.upper() != "OVERALL":
                 params["category"] = category.upper()
@@ -350,6 +354,51 @@ class PolymarketClient:
         except Exception as e:
             print(f"Leaderboard fetch error: {e}")
             return []
+
+    async def get_leaderboard_paginated(
+        self,
+        total_limit: int = 100,
+        time_period: str = "ALL",
+        order_by: str = "PNL",
+        category: str = "OVERALL"
+    ) -> list[dict]:
+        """
+        Fetch traders from Polymarket leaderboard with pagination.
+        Fetches multiple pages to get more than 50 traders.
+
+        Args:
+            total_limit: Total number of traders to fetch (can exceed 50)
+            time_period: DAY, WEEK, MONTH, or ALL
+            order_by: PNL (profit/loss) or VOL (volume)
+            category: Market category filter
+        """
+        all_traders = []
+        offset = 0
+        page_size = 50
+
+        while len(all_traders) < total_limit:
+            remaining = total_limit - len(all_traders)
+            fetch_count = min(page_size, remaining)
+
+            page = await self.get_leaderboard(
+                limit=fetch_count,
+                time_period=time_period,
+                order_by=order_by,
+                category=category,
+                offset=offset
+            )
+
+            if not page:
+                break  # No more results
+
+            all_traders.extend(page)
+            offset += len(page)
+
+            # If we got fewer results than requested, we've reached the end
+            if len(page) < fetch_count:
+                break
+
+        return all_traders[:total_limit]
 
     async def get_top_traders_from_trades(
         self,
@@ -505,7 +554,10 @@ class PolymarketClient:
         min_trades: int = 10,
         limit: int = 20,
         time_period: str = "ALL",
-        category: str = "OVERALL"
+        category: str = "OVERALL",
+        min_volume: float = 0.0,
+        max_volume: float = 0.0,
+        scan_count: int = 100
     ) -> list[dict]:
         """
         Discover traders with high win rates.
@@ -517,17 +569,40 @@ class PolymarketClient:
             limit: Max results to return
             time_period: DAY, WEEK, MONTH, or ALL
             category: Market category filter
+            min_volume: Minimum trading volume filter (0 = no minimum)
+            max_volume: Maximum trading volume filter (0 = no maximum)
+            scan_count: Number of traders to scan from leaderboard (can exceed 50)
         """
-        # Fetch more traders initially since we'll filter many out
-        leaderboard = await self.get_leaderboard(
-            limit=50,
-            time_period=time_period,
-            order_by="PNL",  # Start with profitable traders
-            category=category
-        )
+        # Fetch traders - use pagination to get more than 50
+        if scan_count > 50:
+            leaderboard = await self.get_leaderboard_paginated(
+                total_limit=scan_count,
+                time_period=time_period,
+                order_by="PNL",  # Start with profitable traders
+                category=category
+            )
+        else:
+            leaderboard = await self.get_leaderboard(
+                limit=scan_count,
+                time_period=time_period,
+                order_by="PNL",
+                category=category
+            )
+
+        # Pre-filter by volume if specified
+        if min_volume > 0 or max_volume > 0:
+            filtered_leaderboard = []
+            for entry in leaderboard:
+                vol = float(entry.get("vol", 0))
+                if min_volume > 0 and vol < min_volume:
+                    continue
+                if max_volume > 0 and vol > max_volume:
+                    continue
+                filtered_leaderboard.append(entry)
+            leaderboard = filtered_leaderboard
 
         results = []
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+        semaphore = asyncio.Semaphore(10)  # Increase concurrent requests for speed
 
         async def analyze_trader(entry: dict):
             async with semaphore:

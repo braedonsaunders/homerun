@@ -504,6 +504,9 @@ export interface WinRateFilters {
   limit?: number
   time_period?: TimePeriod
   category?: Category
+  min_volume?: number
+  max_volume?: number
+  scan_count?: number
 }
 
 export interface WalletWinRate {
