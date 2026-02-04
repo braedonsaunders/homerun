@@ -12,7 +12,8 @@ from services.strategies import (
     MutuallyExclusiveStrategy,
     ContradictionStrategy,
     MustHappenStrategy,
-    MiracleStrategy
+    MiracleStrategy,
+    CombinatorialStrategy
 )
 from sqlalchemy import select
 
@@ -28,7 +29,8 @@ class ArbitrageScanner:
             MutuallyExclusiveStrategy(),
             ContradictionStrategy(),
             MustHappenStrategy(),
-            MiracleStrategy()           # Swisstony's garbage collection strategy
+            MiracleStrategy(),          # Swisstony's garbage collection strategy
+            CombinatorialStrategy()     # Cross-market arbitrage via integer programming
         ]
         self._running = False
         self._enabled = True

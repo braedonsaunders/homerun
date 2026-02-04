@@ -4,6 +4,7 @@ from .mutually_exclusive import MutuallyExclusiveStrategy
 from .contradiction import ContradictionStrategy
 from .must_happen import MustHappenStrategy
 from .miracle import MiracleStrategy
+from .combinatorial import CombinatorialStrategy
 
 __all__ = [
     "BasicArbStrategy",
@@ -11,5 +12,6 @@ __all__ = [
     "MutuallyExclusiveStrategy",
     "ContradictionStrategy",
     "MustHappenStrategy",
-    "MiracleStrategy"
+    "MiracleStrategy",
+    "CombinatorialStrategy"
 ]

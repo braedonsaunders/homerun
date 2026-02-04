@@ -11,6 +11,7 @@ class StrategyType(str, Enum):
     NEGRISK = "negrisk"
     MUST_HAPPEN = "must_happen"
     MIRACLE = "miracle"  # Bet against impossible/absurd events
+    COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
 
 
 class ArbitrageOpportunity(BaseModel):
