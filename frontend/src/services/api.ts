@@ -527,6 +527,16 @@ export const analyzeWalletPnL = async (address: string): Promise<WalletPnL> => {
   return data
 }
 
+export interface WalletProfile {
+  username: string | null
+  address: string
+}
+
+export const getWalletProfile = async (address: string): Promise<WalletProfile> => {
+  const { data } = await api.get(`/wallets/${address}/profile`)
+  return data
+}
+
 export const analyzeAndTrackWallet = async (params: {
   address: string
   label?: string

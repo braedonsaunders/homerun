@@ -195,11 +195,24 @@ async def get_wallet_info(address: str):
 
 
 @router.get("/wallets/{address}/positions")
-async def get_wallet_positions(address: str):
-    """Get current positions for a wallet"""
+async def get_wallet_positions(address: str, include_prices: bool = True):
+    """Get current positions for a wallet with optional current market prices"""
     try:
-        positions = await polymarket_client.get_wallet_positions(address)
+        if include_prices:
+            positions = await polymarket_client.get_wallet_positions_with_prices(address)
+        else:
+            positions = await polymarket_client.get_wallet_positions(address)
         return {"address": address, "positions": positions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/wallets/{address}/profile")
+async def get_wallet_profile(address: str):
+    """Get profile information for a wallet (username, etc.)"""
+    try:
+        profile = await polymarket_client.get_user_profile(address)
+        return profile
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
