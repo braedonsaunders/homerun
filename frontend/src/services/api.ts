@@ -262,6 +262,39 @@ export const removeWallet = async (address: string) => {
   return data
 }
 
+// Recent trades from tracked wallets
+export interface RecentTradeFromWallet {
+  id?: string
+  market?: string
+  market_slug?: string
+  outcome?: string
+  side?: string
+  size?: number
+  price?: number
+  cost?: number
+  timestamp?: string
+  time?: string
+  created_at?: string
+  transaction_hash?: string
+  wallet_address: string
+  wallet_label: string
+}
+
+export interface RecentTradesResponse {
+  trades: RecentTradeFromWallet[]
+  total: number
+  tracked_wallets: number
+  hours_window: number
+}
+
+export const getRecentTradesFromWallets = async (params?: {
+  limit?: number
+  hours?: number
+}): Promise<RecentTradesResponse> => {
+  const { data } = await api.get('/wallets/recent-trades/all', { params })
+  return data
+}
+
 export const getWalletPositions = async (address: string) => {
   const { data } = await api.get(`/wallets/${address}/positions`)
   return data

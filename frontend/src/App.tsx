@@ -38,6 +38,7 @@ import SimulationPanel from './components/SimulationPanel'
 import AnomalyPanel from './components/AnomalyPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
+import RecentTradesPanel from './components/RecentTradesPanel'
 
 type Tab = 'opportunities' | 'trading' | 'wallets' | 'simulation' | 'analysis' | 'anomaly'
 
@@ -54,6 +55,7 @@ function App() {
   const [showScannerSettings, setShowScannerSettings] = useState(false)
   const [intervalInput, setIntervalInput] = useState(300)
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
   const queryClient = useQueryClient()
 
   // Callback for navigating to wallet analysis from WalletTracker
@@ -356,6 +358,43 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {activeTab === 'opportunities' && (
           <div>
+            {/* View Toggle */}
+            <div className="flex items-center gap-2 mb-6">
+              <button
+                onClick={() => setOpportunitiesView('arbitrage')}
+                className={clsx(
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                  opportunitiesView === 'arbitrage'
+                    ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                    : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+                )}
+              >
+                <Zap className="w-4 h-4" />
+                Arbitrage Opportunities
+              </button>
+              <button
+                onClick={() => setOpportunitiesView('recent_trades')}
+                className={clsx(
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                  opportunitiesView === 'recent_trades'
+                    ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                    : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+                )}
+              >
+                <Activity className="w-4 h-4" />
+                Recent Wallet Trades
+              </button>
+            </div>
+
+            {opportunitiesView === 'recent_trades' ? (
+              <RecentTradesPanel
+                onNavigateToWallet={(address) => {
+                  setWalletToAnalyze(address)
+                  setActiveTab('analysis')
+                }}
+              />
+            ) : (
+            <>
             {/* Search */}
             <div className="mb-4">
               <div className="relative">
@@ -488,6 +527,8 @@ function App() {
                   </div>
                 </div>
               </>
+            )}
+            </>
             )}
           </div>
         )}
