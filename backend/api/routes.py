@@ -214,6 +214,81 @@ async def get_wallet_trades(address: str, limit: int = 100):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/wallets/recent-trades/all")
+async def get_all_recent_trades(
+    limit: int = Query(50, ge=1, le=200, description="Maximum trades to return"),
+    hours: int = Query(24, ge=1, le=168, description="Only show trades from last N hours")
+):
+    """
+    Get recent trades from all tracked wallets, aggregated and sorted by timestamp.
+
+    This provides a feed of the most recent/timely trading opportunities based on
+    what wallets you're tracking are doing.
+    """
+    try:
+        from datetime import timedelta
+
+        wallets = await wallet_tracker.get_all_wallets()
+        all_trades = []
+
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+
+        for wallet in wallets:
+            wallet_address = wallet.get("address", "")
+            wallet_label = wallet.get("label", wallet_address[:10] + "...")
+            recent_trades = wallet.get("recent_trades", [])
+
+            for trade in recent_trades:
+                # Parse timestamp and filter by cutoff
+                trade_time_str = trade.get("timestamp") or trade.get("time") or trade.get("created_at")
+                if trade_time_str:
+                    try:
+                        # Handle different timestamp formats
+                        if "T" in str(trade_time_str):
+                            trade_time = datetime.fromisoformat(trade_time_str.replace("Z", "+00:00").replace("+00:00", ""))
+                        else:
+                            trade_time = datetime.fromtimestamp(float(trade_time_str))
+
+                        if trade_time < cutoff_time:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                # Add wallet info to the trade
+                enriched_trade = {
+                    **trade,
+                    "wallet_address": wallet_address,
+                    "wallet_label": wallet_label,
+                }
+                all_trades.append(enriched_trade)
+
+        # Sort by timestamp (most recent first)
+        def get_sort_key(t):
+            ts = t.get("timestamp") or t.get("time") or t.get("created_at") or ""
+            if isinstance(ts, str) and ts:
+                try:
+                    if "T" in ts:
+                        return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
+                    return datetime.fromtimestamp(float(ts))
+                except (ValueError, TypeError):
+                    pass
+            return datetime.min
+
+        all_trades.sort(key=get_sort_key, reverse=True)
+
+        # Limit results
+        all_trades = all_trades[:limit]
+
+        return {
+            "trades": all_trades,
+            "total": len(all_trades),
+            "tracked_wallets": len(wallets),
+            "hours_window": hours
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== MARKETS ====================
 
 @router.get("/markets")
