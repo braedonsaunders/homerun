@@ -5,6 +5,7 @@ from .contradiction import ContradictionStrategy
 from .must_happen import MustHappenStrategy
 from .miracle import MiracleStrategy
 from .combinatorial import CombinatorialStrategy
+from .settlement_lag import SettlementLagStrategy
 
 __all__ = [
     "BasicArbStrategy",
@@ -13,5 +14,6 @@ __all__ = [
     "ContradictionStrategy",
     "MustHappenStrategy",
     "MiracleStrategy",
-    "CombinatorialStrategy"
+    "CombinatorialStrategy",
+    "SettlementLagStrategy",
 ]

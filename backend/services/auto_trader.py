@@ -49,7 +49,8 @@ class AutoTraderConfig:
         StrategyType.NEGRISK,
         StrategyType.MUTUALLY_EXCLUSIVE,
         StrategyType.MUST_HAPPEN,
-        StrategyType.MIRACLE
+        StrategyType.MIRACLE,
+        StrategyType.SETTLEMENT_LAG,
     ])
 
     # Entry criteria
@@ -57,6 +58,10 @@ class AutoTraderConfig:
     max_risk_score: float = 0.5           # Maximum acceptable risk
     min_liquidity_usd: float = 5000.0     # Minimum market liquidity
     min_impossibility_score: float = 0.8  # For miracle strategy
+
+    # Profit guarantee thresholds (from article Proposition 4.1)
+    min_guaranteed_profit: float = 0.05   # $0.05 min from research (gas + slippage)
+    use_profit_guarantee: bool = True     # Enable Proposition 4.1 filtering
 
     # Position sizing
     base_position_size_usd: float = 10.0  # Base position size
@@ -91,6 +96,9 @@ class TradeRecord:
     total_cost: float
     expected_profit: float
     actual_profit: Optional[float] = None
+    guaranteed_profit: Optional[float] = None  # From Proposition 4.1
+    capture_ratio: Optional[float] = None  # % of max profit captured
+    mispricing_type: Optional[str] = None  # within_market, cross_market, settlement_lag
     status: str = "pending"  # pending, open, resolved_win, resolved_loss, failed
     order_ids: list[str] = field(default_factory=list)
     mode: AutoTraderMode = AutoTraderMode.PAPER
@@ -241,6 +249,15 @@ class AutoTrader:
                 if impossibility < self.config.min_impossibility_score:
                     return False, f"Impossibility {impossibility:.0%} below threshold"
 
+        # Check profit guarantee (Proposition 4.1 from article)
+        # If the opportunity has a guaranteed_profit from Frank-Wolfe, use it
+        if self.config.use_profit_guarantee and opp.guaranteed_profit is not None:
+            if opp.guaranteed_profit < self.config.min_guaranteed_profit:
+                return False, (
+                    f"Guaranteed profit ${opp.guaranteed_profit:.4f} below "
+                    f"threshold ${self.config.min_guaranteed_profit:.4f}"
+                )
+
         # Check max concurrent positions
         open_positions = len([t for t in self._trades.values() if t.status == "open"])
         if open_positions >= self.config.max_concurrent_positions:
@@ -324,14 +341,28 @@ class AutoTrader:
             positions=opp.positions_to_take,
             total_cost=position_size,
             expected_profit=position_size * (opp.roi_percent / 100),
+            guaranteed_profit=opp.guaranteed_profit,
+            capture_ratio=opp.capture_ratio,
+            mispricing_type=opp.mispricing_type.value if opp.mispricing_type else None,
             mode=self.config.mode
         )
+
+        guarantee_str = ""
+        if opp.guaranteed_profit is not None:
+            guarantee_str = f" | Guaranteed: ${opp.guaranteed_profit:.4f}"
+            if opp.capture_ratio is not None:
+                guarantee_str += f" ({opp.capture_ratio:.0%} capture)"
+
+        mispricing_str = ""
+        if opp.mispricing_type:
+            mispricing_str = f" | Type: {opp.mispricing_type.value}"
 
         logger.info(
             f"Executing trade: {opp.strategy.value} | "
             f"ROI: {opp.roi_percent:.2f}% | "
             f"Size: ${position_size:.2f} | "
             f"Mode: {self.config.mode.value}"
+            f"{guarantee_str}{mispricing_str}"
         )
 
         if self.config.mode == AutoTraderMode.LIVE:
@@ -548,7 +579,9 @@ class AutoTrader:
             "max_daily_loss_usd": self.config.max_daily_loss_usd,
             "circuit_breaker_losses": self.config.circuit_breaker_losses,
             "require_confirmation": self.config.require_confirmation,
-            "paper_account_capital": self.config.paper_account_capital
+            "paper_account_capital": self.config.paper_account_capital,
+            "min_guaranteed_profit": self.config.min_guaranteed_profit,
+            "use_profit_guarantee": self.config.use_profit_guarantee,
         }
 
     def get_trades(self, limit: int = 100) -> list[dict]:
@@ -568,6 +601,9 @@ class AutoTrader:
                 "total_cost": t.total_cost,
                 "expected_profit": t.expected_profit,
                 "actual_profit": t.actual_profit,
+                "guaranteed_profit": t.guaranteed_profit,
+                "capture_ratio": t.capture_ratio,
+                "mispricing_type": t.mispricing_type,
                 "status": t.status,
                 "mode": t.mode.value
             }
