@@ -12,6 +12,23 @@ class StrategyType(str, Enum):
     MUST_HAPPEN = "must_happen"
     MIRACLE = "miracle"  # Bet against impossible/absurd events
     COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
+    SETTLEMENT_LAG = "settlement_lag"  # Exploit delayed price updates after outcome determined
+
+
+class MispricingType(str, Enum):
+    """Classification of mispricing source (from Kroer et al. Part 2, Section IV).
+
+    Market makers choose speed over accuracy, creating three systematic types:
+    - WITHIN_MARKET: Sum of probabilities != 1 for multi-condition markets
+      (662 NegRisk markets, 42% of all multi-condition, median deviation 0.08)
+    - CROSS_MARKET: Dependent markets priced independently, violating constraints
+      (1,576 dependent pairs identified, 13 confirmed exploitable)
+    - SETTLEMENT_LAG: Prices don't instantly lock after outcome determined
+      (windows last minutes to hours, e.g. Assad example)
+    """
+    WITHIN_MARKET = "within_market"
+    CROSS_MARKET = "cross_market"
+    SETTLEMENT_LAG = "settlement_lag"
 
 
 class ArbitrageOpportunity(BaseModel):
@@ -46,6 +63,13 @@ class ArbitrageOpportunity(BaseModel):
     # Timing
     detected_at: datetime = Field(default_factory=datetime.utcnow)
     resolution_date: Optional[datetime] = None
+
+    # Mispricing classification (from article Part IV)
+    mispricing_type: Optional[MispricingType] = None
+
+    # Profit guarantee from Frank-Wolfe (Proposition 4.1)
+    guaranteed_profit: Optional[float] = None  # D(μ̂||θ) - g(μ̂)
+    capture_ratio: Optional[float] = None  # guaranteed / max profit
 
     # Execution details
     positions_to_take: list[dict] = []  # What to buy

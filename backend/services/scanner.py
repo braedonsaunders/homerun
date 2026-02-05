@@ -13,8 +13,10 @@ from services.strategies import (
     ContradictionStrategy,
     MustHappenStrategy,
     MiracleStrategy,
-    CombinatorialStrategy
+    CombinatorialStrategy,
+    SettlementLagStrategy,
 )
+from models.opportunity import MispricingType
 from sqlalchemy import select
 
 
@@ -30,8 +32,21 @@ class ArbitrageScanner:
             ContradictionStrategy(),
             MustHappenStrategy(),
             MiracleStrategy(),          # Swisstony's garbage collection strategy
-            CombinatorialStrategy()     # Cross-market arbitrage via integer programming
+            CombinatorialStrategy(),    # Cross-market arbitrage via integer programming
+            SettlementLagStrategy(),    # Exploit delayed price adjustments (article Part IV)
         ]
+
+        # Mispricing type mapping for strategies that don't set it themselves
+        self._strategy_mispricing_map = {
+            "basic": MispricingType.WITHIN_MARKET,
+            "negrisk": MispricingType.WITHIN_MARKET,
+            "mutually_exclusive": MispricingType.WITHIN_MARKET,
+            "contradiction": MispricingType.WITHIN_MARKET,
+            "must_happen": MispricingType.WITHIN_MARKET,
+            "miracle": MispricingType.WITHIN_MARKET,
+            "combinatorial": MispricingType.CROSS_MARKET,
+            "settlement_lag": MispricingType.SETTLEMENT_LAG,
+        }
         self._running = False
         self._enabled = True
         self._interval_seconds = settings.SCAN_INTERVAL_SECONDS
@@ -134,11 +149,17 @@ class ArbitrageScanner:
                 prices = await self.client.get_prices_batch(token_sample)
                 print(f"  Fetched prices for {len(prices)} tokens")
 
-            # Run all strategies
+            # Run all strategies and classify mispricing types
             all_opportunities = []
             for strategy in self.strategies:
                 try:
                     opps = strategy.detect(events, markets, prices)
+                    # Classify mispricing type if not already set by strategy
+                    for opp in opps:
+                        if opp.mispricing_type is None:
+                            opp.mispricing_type = self._strategy_mispricing_map.get(
+                                opp.strategy.value, MispricingType.WITHIN_MARKET
+                            )
                     all_opportunities.extend(opps)
                     print(f"  {strategy.name}: found {len(opps)} opportunities")
                 except Exception as e:
