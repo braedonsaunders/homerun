@@ -26,6 +26,11 @@ class PositionSide(enum.Enum):
     NO = "no"
 
 
+class CopyTradingMode(enum.Enum):
+    ALL_TRADES = "all_trades"  # Mirror every trade from source wallet
+    ARB_ONLY = "arb_only"  # Only copy trades matching detected arbitrage opportunities
+
+
 # ==================== SIMULATION ACCOUNT ====================
 
 class SimulationAccount(Base):
@@ -137,22 +142,86 @@ class CopyTradingConfig(Base):
     account_id = Column(String, ForeignKey("simulation_accounts.id"), nullable=False)
 
     enabled = Column(Boolean, default=True)
-    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X%
+    copy_mode = Column(
+        SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES
+    )
+    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X% (arb_only mode)
     max_position_size = Column(Float, default=1000.0)
     copy_delay_seconds = Column(Integer, default=5)
     slippage_tolerance = Column(Float, default=1.0)
+
+    # Proportional sizing: scale positions relative to source wallet
+    proportional_sizing = Column(Boolean, default=False)
+    proportional_multiplier = Column(Float, default=1.0)  # 0.1 = 10% of source size
+
+    # Trade direction control
+    copy_buys = Column(Boolean, default=True)
+    copy_sells = Column(Boolean, default=True)  # Mirror sell/close positions
+
+    # Deduplication: track last processed trade timestamp
+    last_processed_trade_id = Column(String, nullable=True)
+    last_processed_timestamp = Column(DateTime, nullable=True)
+
+    # Market filtering (JSON list of categories to include, empty = all)
+    market_categories = Column(JSON, default=list)
 
     # Stats
     total_copied = Column(Integer, default=0)
     successful_copies = Column(Integer, default=0)
     failed_copies = Column(Integer, default=0)
     total_pnl = Column(Float, default=0.0)
+    total_buys_copied = Column(Integer, default=0)
+    total_sells_copied = Column(Integer, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         Index("idx_copy_wallet", "source_wallet"),
+    )
+
+
+class CopiedTrade(Base):
+    """Record of a trade that was copied from a source wallet.
+    Used for deduplication and tracking copy performance."""
+    __tablename__ = "copied_trades"
+
+    id = Column(String, primary_key=True)  # Our internal ID
+    config_id = Column(String, ForeignKey("copy_trading_configs.id"), nullable=False)
+    source_trade_id = Column(String, nullable=False)  # Trade ID from source wallet
+    source_wallet = Column(String, nullable=False)
+
+    # What was copied
+    market_id = Column(String, nullable=False)
+    market_question = Column(Text, nullable=True)
+    token_id = Column(String, nullable=True)
+    side = Column(String, nullable=False)  # BUY or SELL
+    outcome = Column(String, nullable=True)  # YES or NO
+    source_price = Column(Float, nullable=False)
+    source_size = Column(Float, nullable=False)
+    executed_price = Column(Float, nullable=True)  # Our actual execution price
+    executed_size = Column(Float, nullable=True)  # Our actual size
+
+    # Execution
+    status = Column(String, default="pending")  # pending, executed, failed, skipped
+    execution_mode = Column(String, default="simulation")  # simulation or live
+    simulation_trade_id = Column(String, nullable=True)  # Links to SimulationTrade
+    error_message = Column(Text, nullable=True)
+
+    # Timing
+    source_timestamp = Column(DateTime, nullable=True)
+    copied_at = Column(DateTime, default=datetime.utcnow)
+    executed_at = Column(DateTime, nullable=True)
+
+    # PnL tracking
+    realized_pnl = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_copied_config", "config_id"),
+        Index("idx_copied_source_trade", "source_trade_id"),
+        Index("idx_copied_source_wallet", "source_wallet"),
+        Index("idx_copied_market", "market_id"),
+        Index("idx_copied_status", "status"),
     )
 
 
