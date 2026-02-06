@@ -18,7 +18,7 @@ def validate_eth_address(address: str) -> str:
     if not ETH_ADDRESS_REGEX.match(address):
         raise ValueError(f"Invalid Ethereum address format: {address}")
 
-    return address.lower()
+    return address
 
 
 def validate_positive_number(value: float, name: str) -> float:

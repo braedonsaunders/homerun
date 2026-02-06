@@ -175,7 +175,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
   useEffect(() => {
     if (initialWallet && initialWallet !== activeWallet) {
       setSearchAddress(initialWallet)
-      setActiveWallet(initialWallet.toLowerCase())
+      setActiveWallet(initialWallet.trim())
       setPassedUsername(initialUsername || null)
       setActiveTab('summary')
       if (onWalletAnalyzed) {
@@ -237,7 +237,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
 
   const handleAnalyze = () => {
     if (searchAddress.trim()) {
-      setActiveWallet(searchAddress.trim().toLowerCase())
+      setActiveWallet(searchAddress.trim())
       setPassedUsername(null)
       setActiveTab('summary')
     }
@@ -598,7 +598,7 @@ function WalletHeroCard({
                   "text-3xl font-bold",
                   isProfitable ? "text-green-400" : "text-red-400"
                 )}>
-                  {isProfitable ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
                 <p className="text-sm text-gray-500 mt-1">
                   ROI: <span className={isProfitable ? "text-green-400" : "text-red-400"}>
@@ -775,7 +775,7 @@ function SummaryTab({
                 "text-2xl font-bold",
                 isProfitable ? "text-green-400" : "text-red-400"
               )}>
-                {isProfitable ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
               <p className="text-xs text-gray-500 mt-1">
                 {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}% ROI
@@ -830,7 +830,7 @@ function SummaryTab({
                   "font-mono font-bold text-lg",
                   totalPnl >= 0 ? "text-green-400" : "text-red-400"
                 )}>
-                  {totalPnl >= 0 ? '+' : ''}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {totalPnl >= 0 ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
             </div>
