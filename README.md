@@ -5,6 +5,10 @@
 <h1 align="center">Homerun</h1>
 
 <p align="center">
+  <a href="https://github.com/braedonsaunders/homerun/actions/workflows/sloppy.yml"><img src="https://github.com/braedonsaunders/homerun/actions/workflows/sloppy.yml/badge.svg" alt="Sloppy"></a>
+</p>
+
+<p align="center">
   <strong>$40M+ in arbitrage profits have been extracted from Polymarket.</strong><br/>
   This tool finds those opportunities in real-time — and can trade them automatically.
 </p>
@@ -403,7 +407,7 @@ frontend/
 | Data Fetching | React Query / Axios / httpx |
 | Trading | py-clob-client / web3.py / eth-account |
 | Notifications | Telegram Bot API |
-| CI/CD | GitHub Actions (Ruff lint + TypeScript checks + build) |
+| CI/CD | GitHub Actions (Ruff lint + TypeScript checks + build + [Sloppy](https://github.com/braedonsaunders/sloppy) scan) |
 | Deployment | Docker / Docker Compose |
 
 ---

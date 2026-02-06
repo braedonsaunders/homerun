@@ -13,28 +13,9 @@ on:
         default: scan
 
 jobs:
-  fix:
-    name: Sloppy Fix
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'fix')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: braedonsaunders/sloppy@main
-        with:
-          mode: fix
-          agent: claude
-          verbose: 'true'
-          timeout: 30m
-          max-cost: '$5.00'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
   scan:
     name: Sloppy Scan
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'scan'
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'scan')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,6 +23,44 @@ jobs:
       models: read
     steps:
       - uses: actions/checkout@v4
-      - uses: braedonsaunders/sloppy@main
+      - id: sloppy
+        uses: braedonsaunders/sloppy@main
+        with:
+          scan-scope: auto
+          fail-below: '60'
+          output-file: .sloppy/issues.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Print score
+        if: always()
+        run: |
+          echo "### Sloppy Score: ${{ steps.sloppy.outputs.score }}/100" >> $GITHUB_STEP_SUMMARY
+          echo "Issues found: ${{ steps.sloppy.outputs.issues-found }}" >> $GITHUB_STEP_SUMMARY
+
+  fix:
+    name: Sloppy Fix
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'fix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - id: sloppy
+        uses: braedonsaunders/sloppy@main
+        with:
+          mode: fix
+          agent: claude
+          parallel-agents: '4'
+          verbose: 'true'
+          timeout: 30m
+          max-cost: '$5.00'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Print results
+        if: always()
+        run: |
+          echo "### Sloppy Fix Results" >> $GITHUB_STEP_SUMMARY
+          echo "Score: ${{ steps.sloppy.outputs.score-before }} → ${{ steps.sloppy.outputs.score }}" >> $GITHUB_STEP_SUMMARY
+          echo "Issues fixed: ${{ steps.sloppy.outputs.issues-fixed }}/${{ steps.sloppy.outputs.issues-found }}" >> $GITHUB_STEP_SUMMARY
+          echo "PR: ${{ steps.sloppy.outputs.pr-url }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,53 @@
+# Sloppy configuration — https://github.com/braedonsaunders/sloppy
+
+# Scanning
+strictness: high
+min-severity: medium
+fail-below: 60
+
+# Fix mode
+agent: claude
+parallel-agents: 4
+timeout: 30m
+max-cost: "$5.00"
+max-passes: 10
+min-passes: 2
+verbose: false
+
+# Issue types to scan/fix
+fix-types:
+  - security
+  - bugs
+  - types
+  - lint
+  - dead-code
+  - stubs
+  - duplicates
+  - coverage
+
+# Ignore patterns
+ignore:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/node_modules/"
+  - "data/"
+  - "*.db"
+
+# Application context
+app:
+  type: web-app
+  exposure: public
+  auth: true
+  network: internet
+  data-sensitivity: high
+
+# Technology context
+framework: next.js
+runtime: node-20
+
+# Trust boundaries
+trust-untrusted:
+  - "backend/api/routes*.py"
+  - "frontend/src/services/api.ts"
