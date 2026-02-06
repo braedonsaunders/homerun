@@ -442,13 +442,13 @@ async def discover_top_traders(
 @router.get("/discover/by-win-rate")
 async def discover_by_win_rate(
     min_win_rate: float = Query(70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"),
-    min_trades: int = Query(10, ge=1, description="Minimum number of trades"),
-    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+    min_trades: int = Query(10, ge=1, description="Minimum number of closed positions"),
+    limit: int = Query(100, ge=1, le=500, description="Max results to return"),
     time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
     category: str = Query("OVERALL", description="Market category filter"),
     min_volume: float = Query(0, ge=0, description="Minimum trading volume (0 = no minimum)"),
     max_volume: float = Query(0, ge=0, description="Maximum trading volume (0 = no maximum)"),
-    scan_count: int = Query(200, ge=10, le=1000, description="Number of traders to scan per leaderboard (searches both PNL and VOL)")
+    scan_count: int = Query(500, ge=10, le=1050, description="Number of traders to scan per leaderboard sort (searches both PNL and VOL)")
 ):
     """
     Discover traders with high win rates.
