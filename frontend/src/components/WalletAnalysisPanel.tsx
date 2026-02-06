@@ -1306,13 +1306,18 @@ function PositionRow({ position }: { position: WalletPosition }) {
                    position.roi_percent >= 0 ? 'text-emerald-400' :
                    position.roi_percent >= -20 ? 'text-yellow-400' : 'text-red-400'
 
+  const displayTitle = position.title || position.market
+  const isConditionId = !position.title && position.market.length > 40
+
   return (
     <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
-          <p className="font-medium text-white truncate">{position.outcome || 'Unknown'}</p>
-          <p className="text-xs text-gray-500 font-mono truncate mt-1" title={position.market}>
-            {position.market.length > 40 ? position.market.slice(0, 40) + '...' : position.market}
+          <p className="font-medium text-white truncate" title={displayTitle}>
+            {position.title || (isConditionId ? `${position.market.slice(0, 20)}...` : position.market)}
+          </p>
+          <p className="text-xs text-gray-500 mt-1">
+            {position.outcome || 'Unknown'}
           </p>
         </div>
         <div className={clsx(
