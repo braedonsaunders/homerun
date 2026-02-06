@@ -20,7 +20,6 @@ import {
   getSimulationAccounts,
   executeOpportunity,
   executeOpportunityLive,
-  SimulationAccount,
 } from '../services/api'
 
 interface TradeExecutionModalProps {
@@ -60,10 +59,8 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
     }
   }, [opportunity.max_position_size, positionSize])
 
-  const selectedAccount = accounts.find(a => a.id === selectedAccountId)
   const estimatedCost = opportunity.total_cost * positionSize
   const estimatedProfit = opportunity.net_profit * positionSize
-  const estimatedROI = opportunity.roi_percent
 
   const paperMutation = useMutation({
     mutationFn: () => {

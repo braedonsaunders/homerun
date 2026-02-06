@@ -38,8 +38,6 @@ import {
   getTradingPositions,
   getTradingBalance,
   getOrders,
-  AutoTraderStatus,
-  AutoTraderTrade,
 } from '../services/api'
 
 interface TradingPosition {
@@ -101,7 +99,7 @@ export default function TradingPanel() {
     queryFn: getTradingBalance,
   })
 
-  const { data: orders = [] } = useQuery({
+  useQuery({
     queryKey: ['trading-orders'],
     queryFn: () => getOrders(100),
     refetchInterval: 15000,

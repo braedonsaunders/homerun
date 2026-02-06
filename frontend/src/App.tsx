@@ -11,7 +11,6 @@ import {
   Zap,
   Activity,
   PlayCircle,
-  Shield,
   Bot,
   Search,
   ChevronLeft,
