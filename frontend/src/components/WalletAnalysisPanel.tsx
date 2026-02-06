@@ -1043,6 +1043,31 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
               </div>
             )}
           </div>
+          {/* Actions */}
+          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
+            {trade.market_slug && (
+              <a
+                href={`https://polymarket.com/event/${trade.market_slug}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+              >
+                <ExternalLink className="w-3 h-3" />
+                View on Polymarket
+              </a>
+            )}
+            {trade.transaction_hash && (
+              <a
+                href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Transaction
+              </a>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1358,6 +1383,21 @@ function PositionRow({ position }: { position: WalletPosition }) {
           </p>
         </div>
       </div>
+
+      {/* Actions */}
+      {position.market_slug && (
+        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
+          <a
+            href={`https://polymarket.com/event/${position.market_slug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+          >
+            <ExternalLink className="w-3 h-3" />
+            View on Polymarket
+          </a>
+        </div>
+      )}
     </div>
   )
 }

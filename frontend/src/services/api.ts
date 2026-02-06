@@ -374,10 +374,18 @@ export const getAccountTrades = async (accountId: string, limit = 50): Promise<S
   return data
 }
 
-export const executeOpportunity = async (accountId: string, opportunityId: string, positionSize?: number) => {
+export const executeOpportunity = async (
+  accountId: string,
+  opportunityId: string,
+  positionSize?: number,
+  takeProfitPrice?: number,
+  stopLossPrice?: number
+) => {
   const { data } = await api.post(`/simulation/accounts/${accountId}/execute`, {
     opportunity_id: opportunityId,
-    position_size: positionSize
+    position_size: positionSize,
+    take_profit_price: takeProfitPrice,
+    stop_loss_price: stopLossPrice
   })
   return data
 }

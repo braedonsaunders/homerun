@@ -83,6 +83,10 @@ class SimulationPosition(Base):
     current_price = Column(Float, nullable=True)
     unrealized_pnl = Column(Float, default=0.0)
 
+    # Risk management
+    take_profit_price = Column(Float, nullable=True)
+    stop_loss_price = Column(Float, nullable=True)
+
     # Timing
     opened_at = Column(DateTime, default=datetime.utcnow)
     resolution_date = Column(DateTime, nullable=True)

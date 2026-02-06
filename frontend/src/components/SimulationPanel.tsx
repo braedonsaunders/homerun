@@ -17,11 +17,12 @@ import {
   createSimulationAccount,
   deleteSimulationAccount,
   getAccountTrades,
-  executeOpportunity,
   getOpportunities,
   SimulationAccount,
-  SimulationTrade
+  SimulationTrade,
+  Opportunity
 } from '../services/api'
+import TradeExecutionModal from './TradeExecutionModal'
 
 export default function SimulationPanel() {
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -29,6 +30,7 @@ export default function SimulationPanel() {
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
   const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)
+  const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -57,15 +59,6 @@ export default function SimulationPanel() {
       queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
       setShowCreateForm(false)
       setNewAccountName('')
-    }
-  })
-
-  const executeMutation = useMutation({
-    mutationFn: ({ accountId, opportunityId }: { accountId: string; opportunityId: string }) =>
-      executeOpportunity(accountId, opportunityId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
-      queryClient.invalidateQueries({ queryKey: ['account-trades'] })
     }
   })
 
@@ -179,11 +172,7 @@ export default function SimulationPanel() {
                     </p>
                   </div>
                   <button
-                    onClick={() => executeMutation.mutate({
-                      accountId: selectedAccountData.id,
-                      opportunityId: opp.id
-                    })}
-                    disabled={executeMutation.isPending}
+                    onClick={() => setExecutingOpportunity(opp)}
                     className="flex items-center gap-1 px-3 py-1 bg-green-500/20 text-green-400 rounded-lg text-sm hover:bg-green-500/30"
                   >
                     <Play className="w-3 h-3" />
@@ -208,6 +197,18 @@ export default function SimulationPanel() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Trade Execution Modal */}
+      {executingOpportunity && (
+        <TradeExecutionModal
+          opportunity={executingOpportunity}
+          onClose={() => {
+            setExecutingOpportunity(null)
+            queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
+            queryClient.invalidateQueries({ queryKey: ['account-trades'] })
+          }}
+        />
       )}
 
       {/* Delete Confirmation Modal */}
