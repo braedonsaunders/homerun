@@ -46,6 +46,7 @@ import {
 
 interface WalletAnalysisPanelProps {
   initialWallet?: string | null
+  initialUsername?: string | null
   onWalletAnalyzed?: () => void
 }
 
@@ -163,9 +164,10 @@ const TIME_PERIOD_OPTIONS: { value: TimePeriod; label: string }[] = [
   { value: 'ALL', label: 'All Time' },
 ]
 
-export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }: WalletAnalysisPanelProps) {
+export default function WalletAnalysisPanel({ initialWallet, initialUsername, onWalletAnalyzed }: WalletAnalysisPanelProps) {
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
+  const [passedUsername, setPassedUsername] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions' | 'anomaly'>('summary')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
 
@@ -174,12 +176,13 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
     if (initialWallet && initialWallet !== activeWallet) {
       setSearchAddress(initialWallet)
       setActiveWallet(initialWallet.toLowerCase())
+      setPassedUsername(initialUsername || null)
       setActiveTab('summary')
       if (onWalletAnalyzed) {
         onWalletAnalyzed()
       }
     }
-  }, [initialWallet, onWalletAnalyzed, activeWallet])
+  }, [initialWallet, initialUsername, onWalletAnalyzed, activeWallet])
 
   // Use the discover API for PnL data (same as wallet tracker)
   const pnlQuery = useQuery({
@@ -230,11 +233,12 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
     staleTime: 300000, // Cache for 5 minutes
   })
 
-  const username = profileQuery.data?.username || null
+  const username = passedUsername || profileQuery.data?.username || null
 
   const handleAnalyze = () => {
     if (searchAddress.trim()) {
       setActiveWallet(searchAddress.trim().toLowerCase())
+      setPassedUsername(null)
       setActiveTab('summary')
     }
   }

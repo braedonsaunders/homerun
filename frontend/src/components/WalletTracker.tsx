@@ -35,7 +35,7 @@ import {
 } from '../services/api'
 
 interface WalletTrackerProps {
-  onAnalyzeWallet?: (address: string) => void
+  onAnalyzeWallet?: (address: string, username?: string) => void
   section?: 'tracked' | 'discover'
   discoverMode?: 'leaderboard' | 'winrate'
 }
@@ -135,9 +135,9 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
     addMutation.mutate({ address: newAddress.trim(), label: newLabel.trim() || undefined })
   }
 
-  const handleAnalyze = (address: string) => {
+  const handleAnalyze = (address: string, username?: string) => {
     if (onAnalyzeWallet) {
-      onAnalyzeWallet(address)
+      onAnalyzeWallet(address, username)
     }
   }
 
@@ -558,7 +558,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => handleAnalyze(trader.address)}
+                        onClick={() => handleAnalyze(trader.address, trader.username)}
                         className="flex items-center gap-1 px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded text-xs"
                       >
                         <Activity className="w-3 h-3" />
@@ -658,7 +658,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     key={wallet.address}
                     wallet={wallet}
                     onRemove={() => removeMutation.mutate(wallet.address)}
-                    onAnalyze={() => handleAnalyze(wallet.address)}
+                    onAnalyze={() => handleAnalyze(wallet.address, wallet.username)}
                   />
                 ))}
               </div>

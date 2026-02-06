@@ -17,6 +17,7 @@ class PolymarketClient:
         self.data_url = settings.DATA_API_URL
         self._client: Optional[httpx.AsyncClient] = None
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
+        self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -347,26 +348,41 @@ class PolymarketClient:
     async def get_user_profile(self, address: str) -> dict:
         """
         Get user profile info from Polymarket.
-        Tries multiple sources: leaderboard API, data API, and website scraping.
+        Tries multiple sources: username cache, leaderboard API, data API, and website scraping.
         """
         client = await self._get_client()
         address_lower = address.lower()
 
-        # Try the leaderboard API first - it has username for top traders
+        # Check username cache first (populated by discover/leaderboard scans)
+        if address_lower in self._username_cache:
+            return {
+                "username": self._username_cache[address_lower],
+                "address": address,
+            }
+
+        # Try the leaderboard API - search both PNL and VOL sorted, multiple pages
         try:
-            leaderboard = await self.get_leaderboard(limit=50)
-            for entry in leaderboard:
-                proxy_wallet = entry.get("proxyWallet", "").lower()
-                if proxy_wallet == address_lower:
-                    username = entry.get("userName", "")
-                    if username:
-                        return {
-                            "username": username,
-                            "address": address,
-                            "pnl": float(entry.get("pnl", 0)),
-                            "volume": float(entry.get("vol", 0)),
-                            "rank": entry.get("rank", 0)
-                        }
+            for order_by in ["PNL", "VOL"]:
+                for offset in range(0, 200, 50):
+                    leaderboard = await self.get_leaderboard(
+                        limit=50, order_by=order_by, offset=offset
+                    )
+                    if not leaderboard:
+                        break
+                    for entry in leaderboard:
+                        proxy_wallet = entry.get("proxyWallet", "").lower()
+                        # Cache all usernames we see
+                        uname = entry.get("userName", "")
+                        if proxy_wallet and uname:
+                            self._username_cache[proxy_wallet] = uname
+                        if proxy_wallet == address_lower and uname:
+                            return {
+                                "username": uname,
+                                "address": address,
+                                "pnl": float(entry.get("pnl", 0)),
+                                "volume": float(entry.get("vol", 0)),
+                                "rank": entry.get("rank", 0)
+                            }
         except Exception as e:
             print(f"Leaderboard lookup failed: {e}")
 
@@ -569,6 +585,13 @@ class PolymarketClient:
             order_by=order_by,
             category=category
         )
+
+        # Cache usernames from leaderboard for later profile lookups
+        for entry in leaderboard:
+            addr = (entry.get("proxyWallet", "") or "").lower()
+            uname = entry.get("userName", "")
+            if addr and uname:
+                self._username_cache[addr] = uname
 
         # Verify each trader has real activity by fetching win rate data
         semaphore = asyncio.Semaphore(15)
@@ -890,6 +913,10 @@ class PolymarketClient:
                 if addr and addr not in seen_addresses:
                     seen_addresses.add(addr)
                     all_candidates.append(entry)
+                    # Cache username for later profile lookups
+                    uname = entry.get("userName", "")
+                    if addr and uname:
+                        self._username_cache[addr] = uname
 
         # Pre-filter by volume if specified
         if min_volume > 0 or max_volume > 0:
@@ -947,21 +974,37 @@ class PolymarketClient:
 
     async def get_wallet_pnl(self, address: str, time_period: str = "ALL") -> dict:
         """
-        Calculate PnL for a wallet using trade history and position data.
+        Calculate PnL for a wallet using closed-positions, trade history, and open position data.
 
-        Uses two methods and picks the most complete picture:
-        1. Trade history: sum of sells - sum of buys = realized PnL
-        2. Position data: API-provided currentValue, initialValue, cashPnl
+        Uses closed-positions endpoint for accurate realized P&L (same data source as
+        the Discover page), supplemented by open positions for unrealized P&L and
+        trade history for buy/sell activity counts.
         """
         try:
-            # Get positions with enriched data (already normalized)
-            positions = await self.get_wallet_positions_with_prices(address)
-            trades = await self.get_wallet_trades(address, limit=500)
+            # Fetch all data sources in parallel for speed
+            closed_positions, positions, trades = await asyncio.gather(
+                self.get_closed_positions_paginated(address, max_positions=1000),
+                self.get_wallet_positions_with_prices(address),
+                self.get_wallet_trades(address, limit=500),
+            )
 
             # Apply time period filter to trades
             trades = self._filter_by_time_period(trades, time_period)
 
-            # === Method 1: Calculate from trade history ===
+            # === Realized P&L from closed positions (most accurate) ===
+            closed_realized_pnl = 0.0
+            closed_invested = 0.0
+            closed_returned = 0.0
+            for pos in closed_positions:
+                rpnl = float(pos.get("realizedPnl", 0) or 0)
+                closed_realized_pnl += rpnl
+                # Try to get invested amount from closed positions
+                init_val = float(pos.get("initialValue", 0) or 0)
+                if init_val > 0:
+                    closed_invested += init_val
+                    closed_returned += init_val + rpnl
+
+            # === Trade-based data (for buy/sell counts and fallback) ===
             total_bought = 0.0
             total_sold = 0.0
             for trade in trades:
@@ -976,13 +1019,12 @@ class PolymarketClient:
 
             trade_realized_pnl = total_sold - total_bought
 
-            # === Method 2: Calculate from position API data ===
+            # === Open positions (for unrealized P&L) ===
             total_position_value = 0.0
             total_initial_value = 0.0
             total_cash_pnl = 0.0
 
             for pos in positions:
-                # Try multiple field name variants for robustness
                 current_value = float(
                     pos.get("currentValue", 0)
                     or pos.get("current_value", 0)
@@ -1024,30 +1066,40 @@ class PolymarketClient:
             # Unrealized P&L from open positions
             unrealized_pnl = total_position_value - total_initial_value
 
-            # Use trade-based realized PnL (covers full trade history)
-            # Position cashPnl only covers open positions' realized component
-            # Pick whichever has more signal
-            if abs(trade_realized_pnl) > abs(total_cash_pnl):
+            # Use closed-positions P&L when available (covers ALL closed positions,
+            # not limited to 500 trades like trade history)
+            if closed_positions:
+                realized_pnl = closed_realized_pnl
+            elif abs(trade_realized_pnl) > abs(total_cash_pnl):
                 realized_pnl = trade_realized_pnl
             else:
                 realized_pnl = total_cash_pnl
 
             total_pnl = realized_pnl + unrealized_pnl
 
-            # Total invested from trades (more comprehensive than position initial values)
-            total_invested = total_bought if total_bought > 0 else total_initial_value
+            # Total invested: prefer closed-positions data if available
+            if closed_invested > 0:
+                total_invested = closed_invested + total_initial_value
+                total_returned = closed_returned
+            else:
+                total_invested = total_bought if total_bought > 0 else total_initial_value
+                total_returned = total_sold if total_sold > 0 else total_cash_pnl + total_initial_value
 
             # Calculate ROI
             roi_percent = 0.0
             if total_invested > 0:
                 roi_percent = (total_pnl / total_invested) * 100
 
+            # Trade count: use closed positions count when available for accuracy
+            total_positions_count = len(closed_positions) + len(positions)
+            trade_count = total_positions_count if closed_positions else len(trades)
+
             return {
                 "address": address,
-                "total_trades": len(trades),
+                "total_trades": trade_count,
                 "open_positions": len(positions),
                 "total_invested": total_invested,
-                "total_returned": total_sold if total_sold > 0 else total_cash_pnl + total_initial_value,
+                "total_returned": total_returned,
                 "position_value": total_position_value,
                 "realized_pnl": realized_pnl,
                 "unrealized_pnl": unrealized_pnl,
