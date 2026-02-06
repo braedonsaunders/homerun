@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 import uuid
 
 from config import settings
+from services.price_chaser import price_chaser
+from services.execution_tiers import execution_tier_service
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -314,6 +316,88 @@ class TradingService:
         order.updated_at = datetime.utcnow()
         self._orders[order_id] = order
         return order
+
+    async def place_order_with_chase(
+        self,
+        token_id: str,
+        side: OrderSide,
+        price: float,
+        size: float,
+        tier: int = 2,
+        order_type: OrderType = OrderType.GTC,
+        market_question: Optional[str] = None,
+        opportunity_id: Optional[str] = None,
+    ) -> Order:
+        """
+        Place an order with price chasing retries.
+
+        Uses the PriceChaserService to automatically adjust the price
+        on each retry attempt, improving fill rates in fast-moving markets.
+
+        Args:
+            token_id: The CLOB token ID
+            side: BUY or SELL
+            price: Initial price per share
+            size: Number of shares
+            tier: Execution tier (1-4) for retry config
+            order_type: Default order type
+            market_question: Optional market reference
+            opportunity_id: Optional opportunity ID
+        """
+        # Get tier config for max retries
+        tier_config = execution_tier_service.TIERS.get(tier)
+        if tier_config:
+            from services.price_chaser import PriceChaseConfig
+            chase_config = PriceChaseConfig(
+                max_retries=tier_config.max_retries,
+                max_slippage_percent=settings.MAX_SLIPPAGE_PERCENT,
+            )
+            chaser = price_chaser.__class__(config=chase_config)
+        else:
+            chaser = price_chaser
+
+        async def _place_fn(token_id, side_str, adj_price, adj_size, order_type_str):
+            ot = OrderType(order_type_str) if order_type_str else order_type
+            os_side = OrderSide(side_str) if isinstance(side_str, str) else side
+            return await self.place_order(
+                token_id=token_id,
+                side=os_side,
+                price=adj_price,
+                size=adj_size,
+                order_type=ot,
+                market_question=market_question,
+                opportunity_id=opportunity_id,
+            )
+
+        async def _get_price_fn(tid, s):
+            from services.polymarket import polymarket_client
+            return await polymarket_client.get_price(tid, side=s)
+
+        result = await chaser.execute_with_chase(
+            token_id=token_id,
+            side=side.value,
+            price=price,
+            size=size,
+            place_order_fn=_place_fn,
+            get_market_price_fn=_get_price_fn,
+            opportunity_id=opportunity_id,
+            tier=tier,
+        )
+
+        if result.get("success") and result.get("final_order"):
+            return result["final_order"]
+
+        # Fallback: return a failed order if chase didn't succeed
+        return Order(
+            id=str(uuid.uuid4()),
+            token_id=token_id,
+            side=side,
+            price=price,
+            size=size,
+            order_type=order_type,
+            status=OrderStatus.FAILED,
+            error_message=f"Price chase failed after {result.get('total_attempts', 0)} attempts",
+        )
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order"""

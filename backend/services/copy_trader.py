@@ -19,6 +19,8 @@ from models.database import (
 from models.opportunity import ArbitrageOpportunity
 from services.polymarket import polymarket_client
 from services.scanner import scanner
+from services.depth_analyzer import depth_analyzer
+from services.token_circuit_breaker import token_circuit_breaker
 from utils.logger import get_logger
 
 logger = get_logger("copy_trader")
@@ -383,6 +385,44 @@ class CopyTradingService:
                     status="skipped",
                     error="Insufficient capital or zero size",
                 )
+
+        # Check per-token circuit breaker before executing
+        if token_id:
+            is_tripped, trip_reason = token_circuit_breaker.is_tripped(token_id)
+            if is_tripped:
+                return await self._record_copied_trade(
+                    config, trade_id, market_id, market_question, token_id,
+                    "BUY", outcome, source_price, source_size, source_timestamp,
+                    status="skipped", error=f"Token tripped: {trip_reason}",
+                )
+
+        # Depth check before executing
+        if token_id:
+            try:
+                depth_result = await depth_analyzer.check_depth(
+                    token_id=token_id, side="BUY", target_price=source_price,
+                    required_size_usd=source_price * copy_size,
+                    trade_context="copy_trader",
+                )
+                if not depth_result.has_sufficient_depth:
+                    token_circuit_breaker.trip_token(
+                        token_id, "insufficient_depth_copy",
+                        {"available": depth_result.available_depth_usd},
+                    )
+                    return await self._record_copied_trade(
+                        config, trade_id, market_id, market_question, token_id,
+                        "BUY", outcome, source_price, source_size, source_timestamp,
+                        status="skipped",
+                        error=f"Insufficient depth: ${depth_result.available_depth_usd:.0f}",
+                    )
+            except Exception as e:
+                logger.error("Depth check failed in copy trader", error=str(e))
+
+        # Record trade in token circuit breaker for trip detection
+        if token_id:
+            token_circuit_breaker.record_trade(
+                token_id, copy_size, source_price, "BUY"
+            )
 
         # Wait configured delay before executing
         if config.copy_delay_seconds > 0:
@@ -1033,6 +1073,32 @@ class CopyTradingService:
 
     # ==================== SERVICE LIFECYCLE ====================
 
+    async def _on_realtime_trade(self, event):
+        """Callback for real-time WebSocket wallet trade events.
+        Triggers immediate copy processing for the source wallet."""
+        try:
+            wallet_address = event.wallet_address.lower()
+            # Find configs that track this wallet
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(CopyTradingConfig).where(
+                        CopyTradingConfig.enabled,
+                        CopyTradingConfig.source_wallet == wallet_address,
+                    )
+                )
+                configs = list(result.scalars().all())
+
+            if configs:
+                logger.info(
+                    "Real-time trade detected, processing immediately",
+                    wallet=wallet_address,
+                    configs=len(configs),
+                )
+                tasks = [self._process_config(config) for config in configs]
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logger.error("Error handling real-time trade event", error=str(e))
+
     async def start(self):
         """Start copy trading service"""
         if self._running:
@@ -1046,6 +1112,18 @@ class CopyTradingService:
         for config in configs:
             self._active_configs[config.id] = config
 
+        # Start WebSocket monitor for real-time trade detection
+        try:
+            from services.wallet_ws_monitor import wallet_ws_monitor
+            for config in configs:
+                wallet_ws_monitor.add_wallet(config.source_wallet)
+            wallet_ws_monitor.add_callback(self._on_realtime_trade)
+            asyncio.create_task(wallet_ws_monitor.start())
+            logger.info("WebSocket wallet monitor started for copy trading")
+        except Exception as e:
+            logger.warning(f"WebSocket monitor unavailable, using polling only: {e}")
+
+        # Polling loop as fallback / supplement
         asyncio.create_task(self._poll_loop())
 
     def stop(self):
