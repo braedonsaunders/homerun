@@ -763,6 +763,90 @@ class PolymarketClient:
                 "error": str(e)
             }
 
+    async def get_closed_positions(
+        self,
+        address: str,
+        limit: int = 50,
+        offset: int = 0
+    ) -> list[dict]:
+        """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
+        client = await self._get_client()
+        try:
+            response = await client.get(
+                f"{self.data_url}/closed-positions",
+                params={
+                    "user": address,
+                    "limit": min(limit, 50),
+                    "offset": offset,
+                    "sortBy": "TIMESTAMP",
+                    "sortDirection": "DESC"
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            return []
+
+    async def get_closed_positions_paginated(
+        self,
+        address: str,
+        max_positions: int = 200
+    ) -> list[dict]:
+        """Fetch multiple pages of closed positions."""
+        all_positions = []
+        offset = 0
+        page_size = 50
+
+        while len(all_positions) < max_positions:
+            page = await self.get_closed_positions(
+                address, limit=page_size, offset=offset
+            )
+            if not page:
+                break
+            all_positions.extend(page)
+            offset += len(page)
+            if len(page) < page_size:
+                break
+
+        return all_positions[:max_positions]
+
+    async def calculate_win_rate_fast(self, address: str, min_positions: int = 5) -> Optional[dict]:
+        """
+        Fast win rate calculation using closed-positions endpoint.
+        Returns None if trader doesn't meet minimum position threshold.
+        Much faster than calculate_wallet_win_rate() since it uses a single
+        pre-aggregated endpoint instead of fetching all raw trades.
+        """
+        try:
+            closed = await self.get_closed_positions_paginated(address, max_positions=200)
+
+            if len(closed) < min_positions:
+                return None
+
+            wins = 0
+            losses = 0
+            for pos in closed:
+                realized_pnl = float(pos.get("realizedPnl", 0) or 0)
+                if realized_pnl > 0:
+                    wins += 1
+                elif realized_pnl < 0:
+                    losses += 1
+
+            total = wins + losses
+            if total < min_positions:
+                return None
+
+            win_rate = (wins / total * 100) if total > 0 else 0.0
+
+            return {
+                "win_rate": win_rate,
+                "wins": wins,
+                "losses": losses,
+                "closed_positions": total,
+            }
+        except Exception:
+            return None
+
     async def discover_by_win_rate(
         self,
         min_win_rate: float = 70.0,
@@ -775,8 +859,9 @@ class PolymarketClient:
         scan_count: int = 100
     ) -> list[dict]:
         """
-        Discover traders with high win rates. Searches aggressively across
-        both PNL and VOL leaderboards to find qualifying traders.
+        Discover traders with high win rates. Scans the full leaderboard
+        (both PNL and VOL sorts) and uses the fast closed-positions endpoint
+        to calculate win rates efficiently.
 
         Args:
             min_win_rate: Minimum win rate percentage (0-100)
@@ -786,27 +871,19 @@ class PolymarketClient:
             category: Market category filter
             min_volume: Minimum trading volume filter (0 = no minimum)
             max_volume: Maximum trading volume filter (0 = no maximum)
-            scan_count: Number of traders to scan from leaderboard (can exceed 50)
+            scan_count: Number of traders to scan from each leaderboard sort
         """
         # Search both PNL and VOL leaderboards for maximum coverage
         seen_addresses = set()
         all_candidates = []
 
         for sort_by in ["PNL", "VOL"]:
-            if scan_count > 50:
-                batch = await self.get_leaderboard_paginated(
-                    total_limit=scan_count,
-                    time_period=time_period,
-                    order_by=sort_by,
-                    category=category
-                )
-            else:
-                batch = await self.get_leaderboard(
-                    limit=scan_count,
-                    time_period=time_period,
-                    order_by=sort_by,
-                    category=category
-                )
+            batch = await self.get_leaderboard_paginated(
+                total_limit=min(scan_count, 1000),
+                time_period=time_period,
+                order_by=sort_by,
+                category=category
+            )
 
             for entry in batch:
                 addr = (entry.get("proxyWallet", "") or "").lower()
@@ -826,7 +903,8 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        semaphore = asyncio.Semaphore(15)
+        # Use higher concurrency since closed-positions is a single lightweight call
+        semaphore = asyncio.Semaphore(25)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
@@ -835,15 +913,13 @@ class PolymarketClient:
                     return None
 
                 try:
-                    win_rate_data = await self.calculate_wallet_win_rate(address)
+                    result = await self.calculate_win_rate_fast(address, min_positions=min_trades)
                 except Exception:
                     return None
 
-                # Filter by CLOSED POSITIONS (wins + losses), not raw trade count
-                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get("losses", 0)
-                if closed_positions < min_trades:
+                if not result:
                     return None
-                if win_rate_data.get("win_rate", 0) < min_win_rate:
+                if result["win_rate"] < min_win_rate:
                     return None
 
                 return {
@@ -852,11 +928,11 @@ class PolymarketClient:
                     "volume": float(entry.get("vol", 0) or 0),
                     "pnl": float(entry.get("pnl", 0) or 0),
                     "rank": entry.get("rank", 0),
-                    "win_rate": win_rate_data.get("win_rate", 0),
-                    "wins": win_rate_data.get("wins", 0),
-                    "losses": win_rate_data.get("losses", 0),
-                    "total_markets": win_rate_data.get("total_markets", 0),
-                    "trade_count": win_rate_data.get("trade_count", 0)
+                    "win_rate": result["win_rate"],
+                    "wins": result["wins"],
+                    "losses": result["losses"],
+                    "total_markets": result["closed_positions"],
+                    "trade_count": result["closed_positions"]
                 }
 
         # Analyze ALL candidates concurrently
