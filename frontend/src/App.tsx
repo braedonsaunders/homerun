@@ -32,10 +32,12 @@ import {
   triggerScan,
   getStrategies,
   startScanner,
-  pauseScanner
+  pauseScanner,
+  Opportunity
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import OpportunityCard from './components/OpportunityCard'
+import TradeExecutionModal from './components/TradeExecutionModal'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
@@ -64,6 +66,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
+  const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const queryClient = useQueryClient()
 
   // Callback for navigating to wallet analysis from WalletTracker
@@ -438,7 +441,7 @@ function App() {
               <>
                 <div className="space-y-4">
                   {opportunities.map((opp) => (
-                    <OpportunityCard key={opp.id} opportunity={opp} />
+                    <OpportunityCard key={opp.id} opportunity={opp} onExecute={setExecutingOpportunity} />
                   ))}
                 </div>
 
@@ -607,6 +610,14 @@ function App() {
           <SettingsPanel />
         </div>
       </main>
+
+      {/* Trade Execution Modal */}
+      {executingOpportunity && (
+        <TradeExecutionModal
+          opportunity={executingOpportunity}
+          onClose={() => setExecutingOpportunity(null)}
+        />
+      )}
     </div>
   )
 }

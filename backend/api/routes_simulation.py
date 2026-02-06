@@ -18,7 +18,9 @@ class CreateAccountRequest(BaseModel):
 
 class ExecuteTradeRequest(BaseModel):
     opportunity_id: str
-    position_size: Optional[float] = Field(default=None, ge=10.0)
+    position_size: Optional[float] = Field(default=None, ge=1.0)
+    take_profit_price: Optional[float] = Field(default=None, ge=0.01, le=1.0)
+    stop_loss_price: Optional[float] = Field(default=None, ge=0.01, le=1.0)
 
 
 # ==================== ACCOUNTS ====================
@@ -87,6 +89,8 @@ async def get_account_positions(account_id: str):
         "entry_cost": pos.entry_cost,
         "current_price": pos.current_price,
         "unrealized_pnl": pos.unrealized_pnl,
+        "take_profit_price": pos.take_profit_price,
+        "stop_loss_price": pos.stop_loss_price,
         "opened_at": pos.opened_at.isoformat(),
         "status": pos.status.value
     } for pos in positions]
@@ -141,7 +145,9 @@ async def execute_opportunity(
         trade = await simulation_service.execute_opportunity(
             account_id=account_id,
             opportunity=opportunity,
-            position_size=request.position_size
+            position_size=request.position_size,
+            take_profit_price=request.take_profit_price,
+            stop_loss_price=request.stop_loss_price
         )
 
         return {

@@ -6,7 +6,8 @@ import {
   TrendingUp,
   DollarSign,
   Target,
-  ExternalLink
+  ExternalLink,
+  Play
 } from 'lucide-react'
 import clsx from 'clsx'
 import { Opportunity } from '../services/api'
@@ -29,9 +30,10 @@ const STRATEGY_NAMES: Record<string, string> = {
 
 interface Props {
   opportunity: Opportunity
+  onExecute?: (opportunity: Opportunity) => void
 }
 
-export default function OpportunityCard({ opportunity }: Props) {
+export default function OpportunityCard({ opportunity, onExecute }: Props) {
   const [expanded, setExpanded] = useState(false)
 
   const riskColor = opportunity.risk_score < 0.3
@@ -215,6 +217,20 @@ export default function OpportunityCard({ opportunity }: Props) {
             <span className="text-gray-500">Max Position Size (10% of liquidity)</span>
             <span className="font-mono text-white">${opportunity.max_position_size.toFixed(2)}</span>
           </div>
+
+          {/* Execute Button */}
+          {onExecute && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onExecute(opportunity)
+              }}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600 rounded-xl text-sm font-semibold text-white transition-all shadow-lg shadow-blue-500/20"
+            >
+              <Play className="w-4 h-4" />
+              Execute Trade
+            </button>
+          )}
         </div>
       )}
     </div>

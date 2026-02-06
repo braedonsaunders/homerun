@@ -126,7 +126,9 @@ class SimulationService:
         account_id: str,
         opportunity: ArbitrageOpportunity,
         position_size: Optional[float] = None,
-        copied_from: Optional[str] = None
+        copied_from: Optional[str] = None,
+        take_profit_price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None
     ) -> SimulationTrade:
         """Execute an arbitrage opportunity in simulation"""
         async with AsyncSessionLocal() as session:
@@ -182,6 +184,8 @@ class SimulationService:
                     quantity=position_size,
                     entry_price=pos.get("price", 0),
                     entry_cost=pos.get("price", 0) * position_size,
+                    take_profit_price=take_profit_price,
+                    stop_loss_price=stop_loss_price,
                     resolution_date=opportunity.resolution_date,
                     status=TradeStatus.OPEN
                 )
