@@ -1,4 +1,4 @@
-.PHONY: setup run dev docker docker-down clean help
+.PHONY: setup run dev docker docker-down clean help stop kill backend frontend build
 
 # Default target
 help:
@@ -8,10 +8,18 @@ help:
 	@echo "  make setup      - Install dependencies"
 	@echo "  make run        - Start the application"
 	@echo "  make dev        - Start in development mode"
+	@echo "  make stop       - Stop all running services"
+	@echo "  make restart    - Stop then start in dev mode"
 	@echo "  make docker     - Run with Docker Compose"
 	@echo "  make docker-down- Stop Docker containers"
 	@echo "  make clean      - Remove generated files"
 	@echo ""
+
+# Kill processes on a port (usage: $(call kill-port,8000))
+define kill-port
+	@lsof -ti :$(1) 2>/dev/null | xargs kill -9 2>/dev/null || true
+	@sleep 0.5
+endef
 
 # Setup dependencies
 setup:
@@ -22,10 +30,23 @@ run:
 	@./run.sh
 
 # Development mode (with hot reload)
-dev:
+dev: stop
 	@echo "Starting in development mode..."
 	@(cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000) &
 	@(cd frontend && npm run dev)
+
+# Stop all running services
+stop:
+	@echo "Stopping services on ports 8000 and 3000..."
+	$(call kill-port,8000)
+	$(call kill-port,3000)
+	@echo "Ports cleared."
+
+# Alias
+kill: stop
+
+# Restart everything
+restart: stop dev
 
 # Docker Compose
 docker:
@@ -37,10 +58,12 @@ docker-down:
 
 # Backend only
 backend:
+	$(call kill-port,8000)
 	@cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
 
 # Frontend only
 frontend:
+	$(call kill-port,3000)
 	@cd frontend && npm run dev
 
 # Build frontend
@@ -48,7 +71,7 @@ build:
 	@cd frontend && npm run build
 
 # Clean generated files
-clean:
+clean: stop
 	@echo "Cleaning generated files..."
 	@rm -rf backend/venv
 	@rm -rf backend/__pycache__

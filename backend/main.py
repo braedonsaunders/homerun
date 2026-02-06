@@ -294,6 +294,56 @@ if frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="static")
 
 
+def kill_port(port: int):
+    """Kill any process currently using the given port."""
+    import subprocess
+    import signal
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = result.stdout.strip()
+        if pids:
+            for pid_str in pids.split('\n'):
+                pid = int(pid_str.strip())
+                # Don't kill ourselves
+                if pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info(f"Killed existing process on port {port}", pid=pid)
+                except ProcessLookupError:
+                    pass
+            import time
+            time.sleep(0.5)
+    except FileNotFoundError:
+        # lsof not available, try fuser as fallback
+        try:
+            result = subprocess.run(
+                ["fuser", f"{port}/tcp"],
+                capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip()
+            if pids:
+                subprocess.run(
+                    ["fuser", "-k", f"{port}/tcp"],
+                    capture_output=True, timeout=5
+                )
+                logger.info(f"Killed existing process on port {port}")
+                import time
+                time.sleep(0.5)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    port = int(os.environ.get("PORT", 8000))
+    kill_port(port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
