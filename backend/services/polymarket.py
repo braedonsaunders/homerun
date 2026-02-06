@@ -17,6 +17,22 @@ class PolymarketClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
+        self._persistent_cache = None  # Lazy-loaded MarketCacheService
+
+    async def _get_persistent_cache(self):
+        """Lazy-load the persistent market cache service."""
+        if self._persistent_cache is None:
+            try:
+                from services.market_cache import market_cache_service
+                if not market_cache_service._loaded:
+                    await market_cache_service.load_from_db()
+                self._persistent_cache = market_cache_service
+                # Pre-populate in-memory caches from DB
+                self._market_cache.update(market_cache_service._market_cache)
+                self._username_cache.update(market_cache_service._username_cache)
+            except Exception:
+                pass  # Graceful degradation: in-memory only
+        return self._persistent_cache
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -135,6 +151,15 @@ class PolymarketClient:
                     "groupItemTitle": market_data.get("groupItemTitle", ""),
                 }
                 self._market_cache[condition_id] = info
+
+                # Write-through to persistent SQL cache
+                cache = await self._get_persistent_cache()
+                if cache:
+                    try:
+                        await cache.set_market(condition_id, info)
+                    except Exception:
+                        pass  # Non-critical
+
                 return info
         except Exception as e:
             print(f"Market lookup failed for {condition_id}: {e}")
@@ -343,6 +368,14 @@ class PolymarketClient:
                 "username": self._username_cache[address_lower],
                 "address": address,
             }
+
+        # Check persistent SQL cache
+        cache = await self._get_persistent_cache()
+        if cache:
+            cached_username = await cache.get_username(address_lower)
+            if cached_username:
+                self._username_cache[address_lower] = cached_username
+                return {"username": cached_username, "address": address}
 
         # Try the leaderboard API - search both PNL and VOL sorted, multiple pages
         try:

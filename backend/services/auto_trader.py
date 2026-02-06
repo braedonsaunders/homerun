@@ -24,6 +24,10 @@ import uuid
 from config import settings
 from services.trading import trading_service, OrderStatus
 from services.scanner import scanner
+from services.depth_analyzer import depth_analyzer
+from services.token_circuit_breaker import token_circuit_breaker
+from services.execution_tiers import execution_tier_service
+from services.category_buffers import category_buffer_service
 from models import ArbitrageOpportunity, StrategyType
 from utils.logger import get_logger
 
@@ -238,6 +242,15 @@ class AutoTrader:
         if not can_trade:
             return False, reason
 
+        # Check per-token circuit breaker (trip mechanism)
+        if opp.positions_to_take:
+            for pos in opp.positions_to_take:
+                token_id = pos.get("token_id", "")
+                if token_id:
+                    is_tripped, trip_reason = token_circuit_breaker.is_tripped(token_id)
+                    if is_tripped:
+                        return False, f"Token tripped: {trip_reason}"
+
         # Check strategy filter
         if opp.strategy not in self.config.enabled_strategies:
             return False, f"Strategy {opp.strategy.value} not enabled"
@@ -250,9 +263,15 @@ class AutoTrader:
         if opp.risk_score > self.config.max_risk_score:
             return False, f"Risk score {opp.risk_score:.2f} above threshold"
 
-        # Check liquidity
-        if opp.min_liquidity < self.config.min_liquidity_usd:
-            return False, f"Liquidity ${opp.min_liquidity:.0f} below threshold"
+        # Apply category-specific liquidity adjustments
+        category = getattr(opp, "category", None)
+        adjusted_min_liquidity = category_buffer_service.adjust_min_liquidity(
+            self.config.min_liquidity_usd, category
+        ) if category else self.config.min_liquidity_usd
+
+        # Check liquidity with category adjustment
+        if opp.min_liquidity < adjusted_min_liquidity:
+            return False, f"Liquidity ${opp.min_liquidity:.0f} below threshold (${adjusted_min_liquidity:.0f} for {category or 'default'})"
 
         # For miracle strategy, check impossibility score
         if opp.strategy == StrategyType.MIRACLE:
@@ -351,7 +370,84 @@ class AutoTrader:
     async def _execute_trade(self, opp: ArbitrageOpportunity) -> TradeRecord:
         """Execute a trade for an opportunity"""
         trade_id = str(uuid.uuid4())
+
+        # Classify into execution tier for price buffers and retry config
+        category = getattr(opp, "category", None)
+        tier = execution_tier_service.classify_opportunity(
+            roi_percent=opp.roi_percent,
+            liquidity=opp.min_liquidity,
+            strategy=opp.strategy.value,
+            category=category,
+        )
+
+        # Apply category-specific position size adjustment
         position_size = self._calculate_position_size(opp)
+        if category:
+            position_size = category_buffer_service.adjust_position_size(
+                position_size, category
+            )
+        position_size *= tier.size_multiplier
+
+        # Apply limits after tier/category adjustments
+        position_size = min(position_size, self.config.max_position_size_usd)
+        position_size = max(position_size, settings.MIN_ORDER_SIZE_USD) if position_size > 0 else 0
+
+        # Depth check for each position leg (only for live/paper trades)
+        if self.config.mode in (AutoTraderMode.LIVE, AutoTraderMode.PAPER):
+            if opp.positions_to_take:
+                for pos in opp.positions_to_take:
+                    token_id = pos.get("token_id", "")
+                    if not token_id:
+                        continue
+                    price = pos.get("price", 0)
+                    try:
+                        depth_result = await depth_analyzer.check_depth(
+                            token_id=token_id,
+                            side="BUY",
+                            target_price=price + tier.price_buffer,
+                            required_size_usd=position_size / max(len(opp.positions_to_take), 1),
+                            trade_context="auto_trader",
+                        )
+                        if not depth_result.has_sufficient_depth:
+                            # Trip the token on insufficient depth
+                            token_circuit_breaker.trip_token(
+                                token_id, "insufficient_depth",
+                                {"available": depth_result.available_depth_usd}
+                            )
+                            logger.warning(
+                                "Insufficient depth, blocking trade",
+                                token_id=token_id,
+                                available=depth_result.available_depth_usd,
+                            )
+                            trade = TradeRecord(
+                                id=trade_id,
+                                opportunity_id=opp.id,
+                                strategy=opp.strategy,
+                                executed_at=datetime.utcnow(),
+                                positions=opp.positions_to_take,
+                                total_cost=0,
+                                expected_profit=0,
+                                status="failed",
+                                mode=self.config.mode,
+                            )
+                            self._trades[trade_id] = trade
+                            self._processed_opportunities.add(opp.id)
+                            return trade
+                    except Exception as e:
+                        logger.error(f"Depth check failed: {e}")
+
+        # Record tier assignment for analytics
+        try:
+            await execution_tier_service.record_tier_assignment(
+                tier=tier,
+                roi_percent=opp.roi_percent,
+                liquidity=opp.min_liquidity,
+                strategy=opp.strategy.value,
+                category=category,
+                opportunity_id=opp.id,
+            )
+        except Exception as e:
+            logger.error(f"Failed to record tier assignment: {e}")
 
         trade = TradeRecord(
             id=trade_id,

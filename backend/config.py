@@ -78,7 +78,20 @@ class Settings(BaseSettings):
 
     # Polygon Network (for on-chain operations)
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
+    POLYGON_WS_URL: str = "wss://polygon-bor-rpc.publicnode.com"
     CHAIN_ID: int = 137  # Polygon mainnet
+
+    # Depth Analysis
+    MIN_DEPTH_USD: float = 200.0  # Minimum order book depth to allow trade
+
+    # Token Circuit Breaker (per-token trip mechanism)
+    CB_LARGE_TRADE_SHARES: float = 1500.0  # What counts as a large trade
+    CB_CONSECUTIVE_TRIGGER: int = 2  # Large trades in window to trip
+    CB_DETECTION_WINDOW_SECONDS: int = 30  # Window for rapid trade detection
+    CB_TRIP_DURATION_SECONDS: int = 120  # How long to block a tripped token
+
+    # WebSocket Wallet Monitor
+    WS_WALLET_MONITOR_ENABLED: bool = True  # Enable real-time wallet monitoring
 
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup

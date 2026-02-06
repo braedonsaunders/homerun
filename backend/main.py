@@ -28,6 +28,16 @@ from models.database import init_database
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
+# Import new service modules so their SQLAlchemy models are registered
+# before init_database() calls create_all()
+from services.depth_analyzer import DepthCheck  # noqa: F401
+from services.wallet_ws_monitor import WalletMonitorEvent  # noqa: F401
+from services.execution_tiers import TierAssignment  # noqa: F401
+from services.price_chaser import OrderRetryLog  # noqa: F401
+from services.token_circuit_breaker import TokenTrip  # noqa: F401
+from services.category_buffers import CategoryBufferLog  # noqa: F401
+from services.market_cache import CachedMarket, CachedUsername  # noqa: F401
+
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL if hasattr(settings, "LOG_LEVEL") else "INFO")
 logger = get_logger("main")
@@ -42,6 +52,19 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Load persistent market cache from DB into memory
+        try:
+            from services.market_cache import market_cache_service
+            await market_cache_service.load_from_db()
+            stats = await market_cache_service.get_cache_stats()
+            logger.info(
+                "Market cache loaded from DB",
+                markets=stats.get("market_count", 0),
+                usernames=stats.get("username_count", 0),
+            )
+        except Exception as e:
+            logger.warning(f"Market cache load failed (non-critical): {e}")
 
         # Add any preconfigured wallets
         for wallet in settings.TRACKED_WALLETS:
