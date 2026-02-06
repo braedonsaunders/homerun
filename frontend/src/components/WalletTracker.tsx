@@ -6,9 +6,6 @@ import {
   Wallet,
   ExternalLink,
   RefreshCw,
-  TrendingUp,
-  TrendingDown,
-  Search,
   Star,
   Copy,
   UserPlus,
@@ -657,12 +654,13 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 </p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {wallets.map((wallet) => (
                   <WalletCard
                     key={wallet.address}
                     wallet={wallet}
                     onRemove={() => removeMutation.mutate(wallet.address)}
+                    onAnalyze={() => handleAnalyze(wallet.address)}
                   />
                 ))}
               </div>
@@ -790,108 +788,66 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
   )
 }
 
-function WalletCard({ wallet, onRemove }: { wallet: WalletType; onRemove: () => void }) {
-  const [expanded, setExpanded] = useState(false)
+function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRemove: () => void; onAnalyze: () => void }) {
+  const displayName = wallet.username || wallet.label
+  const hasUsername = !!wallet.username
+  const posCount = wallet.positions?.length || 0
+  const tradeCount = wallet.recent_trades?.length || 0
 
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
-      <div
-        className="p-4 cursor-pointer hover:bg-[#1a1a1a] transition-colors"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
-              <Wallet className="w-5 h-5 text-purple-500" />
-            </div>
-            <div>
-              <p className="font-medium">{wallet.label}</p>
-              <p className="text-xs text-gray-500 font-mono">{wallet.address}</p>
-            </div>
+    <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
+            <Wallet className="w-5 h-5 text-purple-500" />
           </div>
+          <div>
+            <p className="font-medium text-white">{displayName}</p>
+            {hasUsername && wallet.label !== wallet.username && (
+              <p className="text-xs text-gray-500">{wallet.label}</p>
+            )}
+            <p className="text-xs text-gray-600 font-mono">
+              {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
+            </p>
+          </div>
+        </div>
 
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <p className="text-sm text-gray-400">Positions</p>
-              <p className="font-medium">{wallet.positions?.length || 0}</p>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4 mr-2">
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Positions</p>
+              <p className="text-sm font-medium text-white">{posCount}</p>
             </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-400">Recent Trades</p>
-              <p className="font-medium">{wallet.recent_trades?.length || 0}</p>
+            <div className="text-center">
+              <p className="text-xs text-gray-500">Trades</p>
+              <p className="text-sm font-medium text-white">{tradeCount}</p>
             </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onRemove()
-              }}
-              className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 transition-colors"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
           </div>
+          <button
+            onClick={onAnalyze}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-xs font-medium transition-colors"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            Analyze
+          </button>
+          <a
+            href={`https://polymarket.com/profile/${wallet.address}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            title="View on Polymarket"
+          >
+            <ExternalLink className="w-4 h-4 text-gray-500" />
+          </a>
+          <button
+            onClick={onRemove}
+            className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 transition-colors"
+            title="Remove wallet"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
-
-      {expanded && (
-        <div className="border-t border-gray-800 p-4">
-          {/* Positions */}
-          {wallet.positions && wallet.positions.length > 0 && (
-            <div className="mb-4">
-              <h4 className="text-sm font-medium text-gray-400 mb-2">Open Positions</h4>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {wallet.positions.slice(0, 10).map((pos: any, idx: number) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3 text-sm"
-                  >
-                    <span className="text-gray-300">{pos.market || pos.condition_id}</span>
-                    <span className={clsx(
-                      "font-mono",
-                      pos.pnl >= 0 ? "text-green-400" : "text-red-400"
-                    )}>
-                      {pos.pnl >= 0 ? '+' : ''}{pos.pnl?.toFixed(2) || '0.00'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Recent Trades */}
-          {wallet.recent_trades && wallet.recent_trades.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium text-gray-400 mb-2">Recent Trades</h4>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {wallet.recent_trades.slice(0, 10).map((trade: any, idx: number) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3 text-sm"
-                  >
-                    <div className="flex items-center gap-2">
-                      {trade.side === 'BUY' ? (
-                        <TrendingUp className="w-4 h-4 text-green-400" />
-                      ) : (
-                        <TrendingDown className="w-4 h-4 text-red-400" />
-                      )}
-                      <span className="text-gray-300">{trade.market || 'Unknown'}</span>
-                    </div>
-                    <span className="font-mono text-gray-400">
-                      ${trade.amount?.toFixed(2) || '0.00'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {(!wallet.positions || wallet.positions.length === 0) &&
-           (!wallet.recent_trades || wallet.recent_trades.length === 0) && (
-            <p className="text-gray-500 text-sm text-center py-4">
-              No position or trade data available yet
-            </p>
-          )}
-        </div>
-      )}
     </div>
   )
 }

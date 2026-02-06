@@ -64,6 +64,7 @@ export interface Strategy {
 export interface Wallet {
   address: string
   label: string
+  username?: string
   positions: any[]
   recent_trades: any[]
 }
@@ -285,6 +286,7 @@ export interface RecentTradeFromWallet {
   asset_id?: string
   wallet_address: string
   wallet_label: string
+  wallet_username?: string
 }
 
 export interface RecentTradesResponse {

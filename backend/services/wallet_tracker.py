@@ -17,6 +17,7 @@ class WalletTracker:
         self._running = False
         self._callbacks: list[callable] = []
         self._initialized = False
+        self._username_cache: dict[str, str] = {}  # address -> username
 
     def add_callback(self, callback: callable):
         """Add callback for new trade notifications"""
@@ -35,6 +36,7 @@ class WalletTracker:
                 self.tracked_wallets[wallet.address.lower()] = {
                     "address": wallet.address,
                     "label": wallet.label or wallet.address[:10] + "...",
+                    "username": None,
                     "last_trade_id": None,
                     "positions": [],
                     "recent_trades": [],
@@ -42,6 +44,23 @@ class WalletTracker:
                 }
 
         self._initialized = True
+
+    async def _lookup_username(self, address: str) -> Optional[str]:
+        """Look up Polymarket username for an address, with caching."""
+        address_lower = address.lower()
+        if address_lower in self._username_cache:
+            return self._username_cache[address_lower]
+
+        try:
+            profile = await self.client.get_user_profile(address)
+            username = profile.get("username")
+            if username:
+                self._username_cache[address_lower] = username
+                return username
+        except Exception as e:
+            print(f"Username lookup failed for {address}: {e}")
+
+        return None
 
     async def add_wallet(self, address: str, label: str = None):
         """Add a wallet to track (persisted to database)"""
@@ -59,10 +78,14 @@ class WalletTracker:
                 session.add(wallet)
                 await session.commit()
 
+        # Look up username
+        username = await self._lookup_username(address)
+
         # Add to in-memory cache
         self.tracked_wallets[address_lower] = {
             "address": address,
             "label": label or address[:10] + "...",
+            "username": username,
             "last_trade_id": None,
             "positions": [],
             "recent_trades": []
@@ -95,12 +118,18 @@ class WalletTracker:
         new_trades = []
 
         try:
+            # Refresh username if not cached yet
+            if not wallet.get("username"):
+                username = await self._lookup_username(address)
+                if username:
+                    wallet["username"] = username
+
             # Fetch positions
             positions = await self.client.get_wallet_positions(address)
             wallet["positions"] = positions
 
             # Fetch recent trades
-            trades = await self.client.get_wallet_trades(address, limit=50)
+            trades = await self.client.get_wallet_trades(address, limit=200)
             wallet["recent_trades"] = trades
 
             # Check for new trades
