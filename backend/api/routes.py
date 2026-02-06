@@ -418,7 +418,7 @@ async def discover_by_win_rate(
     category: str = Query("OVERALL", description="Market category filter"),
     min_volume: float = Query(0, ge=0, description="Minimum trading volume (0 = no minimum)"),
     max_volume: float = Query(0, ge=0, description="Maximum trading volume (0 = no maximum)"),
-    scan_count: int = Query(100, ge=10, le=500, description="Number of traders to scan from leaderboard")
+    scan_count: int = Query(200, ge=10, le=1000, description="Number of traders to scan per leaderboard (searches both PNL and VOL)")
 ):
     """
     Discover traders with high win rates.

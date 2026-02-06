@@ -455,47 +455,62 @@ class PolymarketClient:
         category: str = "OVERALL"
     ) -> list[dict]:
         """
-        Get top traders from Polymarket leaderboard.
-        Uses the official leaderboard API.
+        Get top traders from Polymarket leaderboard with verified trade counts.
+        Fetches leaderboard then verifies each trader has real activity.
         """
-        # Fetch extra entries so we can filter by min_trades if trade counts are available
-        leaderboard = await self.get_leaderboard(
-            limit=min(limit * 2, 50),
+        # Fetch more candidates than needed so filtering still yields enough
+        scan_count = max(limit * 3, 100)
+        leaderboard = await self.get_leaderboard_paginated(
+            total_limit=scan_count,
             time_period=time_period,
             order_by=order_by,
             category=category
         )
 
-        # Transform to our expected format
-        traders = []
-        for entry in leaderboard:
-            # Extract trade count from API (try multiple field names)
-            trade_count = int(
-                entry.get("nbrTrades", 0)
-                or entry.get("numTrades", 0)
-                or entry.get("trades", 0)
-                or entry.get("numberOfTrades", 0)
-                or 0
-            )
-            buys = int(entry.get("buys", 0) or entry.get("nbrBuys", 0) or 0)
-            sells = int(entry.get("sells", 0) or entry.get("nbrSells", 0) or 0)
+        # Verify each trader has real activity by fetching win rate data
+        semaphore = asyncio.Semaphore(15)
+        results = []
 
-            # If trade count is available, apply min_trades filter
-            if trade_count > 0 and trade_count < min_trades:
-                continue
+        async def verify_trader(entry: dict):
+            async with semaphore:
+                address = entry.get("proxyWallet", "")
+                if not address:
+                    return None
 
-            traders.append({
-                "address": entry.get("proxyWallet", ""),
-                "username": entry.get("userName", ""),
-                "trades": trade_count,
-                "volume": float(entry.get("vol", 0) or 0),
-                "pnl": float(entry.get("pnl", 0) or 0),
-                "rank": entry.get("rank", 0),
-                "buys": buys,
-                "sells": sells,
-            })
+                win_rate_data = await self.calculate_wallet_win_rate(address)
 
-        return traders[:limit]
+                # Use actual closed positions (wins + losses) for min_trades
+                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get("losses", 0)
+                if closed_positions < min_trades:
+                    return None
+
+                return {
+                    "address": address,
+                    "username": entry.get("userName", ""),
+                    "trades": win_rate_data.get("trade_count", 0),
+                    "volume": float(entry.get("vol", 0) or 0),
+                    "pnl": float(entry.get("pnl", 0) or 0),
+                    "rank": entry.get("rank", 0),
+                    "buys": win_rate_data.get("wins", 0),
+                    "sells": win_rate_data.get("losses", 0),
+                    "win_rate": win_rate_data.get("win_rate", 0),
+                    "wins": win_rate_data.get("wins", 0),
+                    "losses": win_rate_data.get("losses", 0),
+                    "total_markets": win_rate_data.get("total_markets", 0),
+                    "trade_count": win_rate_data.get("trade_count", 0),
+                }
+
+        tasks = [verify_trader(entry) for entry in leaderboard]
+        analyzed = await asyncio.gather(*tasks)
+        results = [r for r in analyzed if r is not None]
+
+        # Sort by the requested order
+        if order_by.upper() == "VOL":
+            results.sort(key=lambda x: x["volume"], reverse=True)
+        else:
+            results.sort(key=lambda x: x["pnl"], reverse=True)
+
+        return results[:limit]
 
     def _filter_by_time_period(self, trades: list[dict], time_period: str) -> list[dict]:
         """Filter trades by time period (DAY, WEEK, MONTH, ALL)."""
@@ -657,12 +672,12 @@ class PolymarketClient:
         scan_count: int = 100
     ) -> list[dict]:
         """
-        Discover traders with high win rates.
-        Fetches leaderboard, calculates win rates, and filters by threshold.
+        Discover traders with high win rates. Searches aggressively across
+        both PNL and VOL leaderboards to find qualifying traders.
 
         Args:
             min_win_rate: Minimum win rate percentage (0-100)
-            min_trades: Minimum trades required
+            min_trades: Minimum closed positions (wins + losses) required
             limit: Max results to return
             time_period: DAY, WEEK, MONTH, or ALL
             category: Market category filter
@@ -670,36 +685,45 @@ class PolymarketClient:
             max_volume: Maximum trading volume filter (0 = no maximum)
             scan_count: Number of traders to scan from leaderboard (can exceed 50)
         """
-        # Fetch traders - use pagination to get more than 50
-        if scan_count > 50:
-            leaderboard = await self.get_leaderboard_paginated(
-                total_limit=scan_count,
-                time_period=time_period,
-                order_by="PNL",  # Start with profitable traders
-                category=category
-            )
-        else:
-            leaderboard = await self.get_leaderboard(
-                limit=scan_count,
-                time_period=time_period,
-                order_by="PNL",
-                category=category
-            )
+        # Search both PNL and VOL leaderboards for maximum coverage
+        seen_addresses = set()
+        all_candidates = []
+
+        for sort_by in ["PNL", "VOL"]:
+            if scan_count > 50:
+                batch = await self.get_leaderboard_paginated(
+                    total_limit=scan_count,
+                    time_period=time_period,
+                    order_by=sort_by,
+                    category=category
+                )
+            else:
+                batch = await self.get_leaderboard(
+                    limit=scan_count,
+                    time_period=time_period,
+                    order_by=sort_by,
+                    category=category
+                )
+
+            for entry in batch:
+                addr = (entry.get("proxyWallet", "") or "").lower()
+                if addr and addr not in seen_addresses:
+                    seen_addresses.add(addr)
+                    all_candidates.append(entry)
 
         # Pre-filter by volume if specified
         if min_volume > 0 or max_volume > 0:
-            filtered_leaderboard = []
-            for entry in leaderboard:
-                vol = float(entry.get("vol", 0))
+            filtered = []
+            for entry in all_candidates:
+                vol = float(entry.get("vol", 0) or 0)
                 if min_volume > 0 and vol < min_volume:
                     continue
                 if max_volume > 0 and vol > max_volume:
                     continue
-                filtered_leaderboard.append(entry)
-            leaderboard = filtered_leaderboard
+                filtered.append(entry)
+            all_candidates = filtered
 
-        results = []
-        semaphore = asyncio.Semaphore(10)  # Increase concurrent requests for speed
+        semaphore = asyncio.Semaphore(15)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
@@ -707,10 +731,14 @@ class PolymarketClient:
                 if not address:
                     return None
 
-                win_rate_data = await self.calculate_wallet_win_rate(address)
+                try:
+                    win_rate_data = await self.calculate_wallet_win_rate(address)
+                except Exception:
+                    return None
 
-                # Apply filters
-                if win_rate_data.get("trade_count", 0) < min_trades:
+                # Filter by CLOSED POSITIONS (wins + losses), not raw trade count
+                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get("losses", 0)
+                if closed_positions < min_trades:
                     return None
                 if win_rate_data.get("win_rate", 0) < min_win_rate:
                     return None
@@ -718,8 +746,8 @@ class PolymarketClient:
                 return {
                     "address": address,
                     "username": entry.get("userName", ""),
-                    "volume": float(entry.get("vol", 0)),
-                    "pnl": float(entry.get("pnl", 0)),
+                    "volume": float(entry.get("vol", 0) or 0),
+                    "pnl": float(entry.get("pnl", 0) or 0),
                     "rank": entry.get("rank", 0),
                     "win_rate": win_rate_data.get("win_rate", 0),
                     "wins": win_rate_data.get("wins", 0),
@@ -728,13 +756,13 @@ class PolymarketClient:
                     "trade_count": win_rate_data.get("trade_count", 0)
                 }
 
-        # Analyze all traders concurrently
-        tasks = [analyze_trader(entry) for entry in leaderboard]
+        # Analyze ALL candidates concurrently
+        tasks = [analyze_trader(entry) for entry in all_candidates]
         analyzed = await asyncio.gather(*tasks)
 
         # Filter out None results and sort by win rate
         results = [r for r in analyzed if r is not None]
-        results.sort(key=lambda x: x["win_rate"], reverse=True)
+        results.sort(key=lambda x: (x["win_rate"], x["wins"]), reverse=True)
 
         return results[:limit]
 
