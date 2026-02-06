@@ -22,7 +22,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: braedonsaunders/sloppy@claude/compare-ai-token-usage-71HEb
+      - uses: braedonsaunders/sloppy@claude/main
         with:
           mode: fix
           agent: claude
@@ -42,6 +42,6 @@ jobs:
       models: read
     steps:
       - uses: actions/checkout@v4
-      - uses: braedonsaunders/sloppy@claude/compare-ai-token-usage-71HEb
+      - uses: braedonsaunders/sloppy@claude/main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
