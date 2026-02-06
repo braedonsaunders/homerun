@@ -25,6 +25,18 @@ if [ ! -d "backend/venv" ]; then
     ./setup.sh
 fi
 
+# Kill any process using a given port
+kill_port() {
+    local port=$1
+    local pids
+    pids=$(lsof -ti :"$port" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo -e "${YELLOW}Killing existing process(es) on port $port (PIDs: $pids)${NC}"
+        echo "$pids" | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
+}
+
 # Function to cleanup on exit
 cleanup() {
     echo ""
@@ -35,6 +47,10 @@ cleanup() {
 }
 
 trap cleanup SIGINT SIGTERM
+
+# Clean up ports before starting
+kill_port 8000
+kill_port 3000
 
 # Start backend
 echo -e "${CYAN}Starting backend...${NC}"
