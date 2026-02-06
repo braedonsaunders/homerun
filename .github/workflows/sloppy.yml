@@ -1,30 +1,12 @@
 name: Sloppy
 on:
-  # Free scan runs on PRs
   pull_request:
-  # Fix mode runs on-demand or weekly
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * 1'  # Monday 6am
 
 jobs:
-  scan:
-    name: Sloppy Scan
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      models: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: braedonsaunders/sloppy@claude/compare-ai-token-usage-71HEb
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   fix:
     name: Sloppy Fix
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,3 +21,17 @@ jobs:
           max-cost: '$5.00'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  scan:
+    name: Sloppy Scan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: braedonsaunders/sloppy@claude/compare-ai-token-usage-71HEb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
