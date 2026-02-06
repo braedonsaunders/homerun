@@ -38,8 +38,8 @@ ignore:
 # Application context
 app:
   type: web-app
-  exposure: public
-  auth: true
+  exposure: private
+  auth: false
   network: internet
   data-sensitivity: high
 
