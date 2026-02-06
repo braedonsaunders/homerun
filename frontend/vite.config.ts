@@ -22,6 +22,14 @@ export default defineConfig({
             }
             console.error('WebSocket proxy error:', err.message)
           })
+          proxy.on('proxyReqWs', (_proxyReq, _req, socket) => {
+            socket.on('error', (err) => {
+              if (err.message.includes('EPIPE') || err.message.includes('ECONNRESET')) {
+                return
+              }
+              console.error('WebSocket socket error:', err.message)
+            })
+          })
         },
       },
     },
