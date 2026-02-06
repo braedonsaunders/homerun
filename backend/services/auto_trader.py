@@ -15,6 +15,7 @@ IMPORTANT: This executes REAL trades with REAL money.
 """
 
 import asyncio
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -41,6 +42,7 @@ class AutoTraderMode(str, Enum):
     PAPER = "paper"  # Simulation only (uses simulation service)
     LIVE = "live"  # Real trading
     SHADOW = "shadow"  # Track what would be traded but don't execute
+    MOCK = "mock"  # Full pipeline with simulated execution
 
 
 @dataclass
@@ -150,6 +152,8 @@ class AutoTrader:
         self._running = False
         self._trades: dict[str, TradeRecord] = {}
         self._processed_opportunities: set[str] = set()
+        self._executing_opportunities: set[str] = set()  # Currently being executed
+        self._execution_lock = asyncio.Lock()
         self._callbacks: list[Callable] = []
         self._daily_reset_date = datetime.utcnow().date()
 
@@ -353,9 +357,16 @@ class AutoTrader:
             size = self.config.max_position_size_usd * kelly_fraction
 
             # Minimum viable: must exceed fees by enough to be worth it
-            min_viable = 0.02 * 10  # At least 10x the 2% fee
+            MIN_CASH_VALUE = 1.01  # From terauss settings
+            min_viable = max(0.02 * 10, MIN_CASH_VALUE)  # At least 10x the 2% fee or min cash value
             if size < min_viable and size > 0:
-                size = 0  # Not worth executing
+                probability = size / min_viable
+                if random.random() < probability:
+                    size = min_viable  # Execute at minimum size
+                    logger.info(f"Probabilistic execution: size below minimum, executing at ${min_viable:.2f} (prob={probability:.2f})")
+                else:
+                    size = 0  # Skip this time
+                    logger.debug(f"Probabilistic skip: size below minimum (prob={probability:.2f})")
 
         else:
             size = self.config.base_position_size_usd
@@ -392,8 +403,8 @@ class AutoTrader:
         position_size = min(position_size, self.config.max_position_size_usd)
         position_size = max(position_size, settings.MIN_ORDER_SIZE_USD) if position_size > 0 else 0
 
-        # Depth check for each position leg (only for live/paper trades)
-        if self.config.mode in (AutoTraderMode.LIVE, AutoTraderMode.PAPER):
+        # Depth check for each position leg (only for live/paper/mock trades)
+        if self.config.mode in (AutoTraderMode.LIVE, AutoTraderMode.PAPER, AutoTraderMode.MOCK):
             if opp.positions_to_take:
                 for pos in opp.positions_to_take:
                     token_id = pos.get("token_id", "")
@@ -433,6 +444,11 @@ class AutoTrader:
                             self._trades[trade_id] = trade
                             self._processed_opportunities.add(opp.id)
                             return trade
+
+                        # After depth check succeeds, use VWAP price if available
+                        if depth_result and depth_result.vwap_price > 0:
+                            # Use depth-aware executable price instead of raw price
+                            pos["effective_price"] = depth_result.vwap_price
                     except Exception as e:
                         logger.error(f"Depth check failed: {e}")
 
@@ -540,6 +556,12 @@ class AutoTrader:
             else:
                 trade.status = "failed"
 
+        elif self.config.mode == AutoTraderMode.MOCK:
+            # Run full real pipeline but simulate the fill
+            logger.info(f"MOCK execution: would place {len(opp.positions_to_take)} orders, size=${position_size:.2f}")
+            trade.status = "open"
+            trade.order_ids = [f"mock_{uuid.uuid4().hex[:8]}" for _ in (opp.positions_to_take or [])]
+
         elif self.config.mode == AutoTraderMode.SHADOW:
             # Shadow mode - just record what would happen
             trade.status = "shadow"
@@ -579,11 +601,19 @@ class AutoTrader:
                     logger.info("Confirmation required - skipping")
                     continue
 
+                # In-flight deduplication: prevent concurrent execution of same opportunity
+                async with self._execution_lock:
+                    if opp.id in self._executing_opportunities:
+                        continue  # Already being executed concurrently
+                    self._executing_opportunities.add(opp.id)
+
                 try:
                     await self._execute_trade(opp)
                 except Exception as e:
                     logger.error(f"Trade execution error: {e}")
                     self.stats.opportunities_skipped += 1
+                finally:
+                    self._executing_opportunities.discard(opp.id)
             else:
                 self.stats.opportunities_skipped += 1
                 if reason != "Already processed":

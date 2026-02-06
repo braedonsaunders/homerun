@@ -231,12 +231,14 @@ class WalletWebSocketMonitor:
         self._last_processed_block: Optional[int] = None
         self._poll_fallback_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
+        self._mempool_mode = False  # Enable for pre-confirmation (<1s) latency
         self._stats = {
             "blocks_processed": 0,
             "events_detected": 0,
             "ws_reconnects": 0,
             "fallback_polls": 0,
             "errors": 0,
+            "mempool_txns_seen": 0,
         }
 
     # ==================== WALLET MANAGEMENT ====================
@@ -279,6 +281,51 @@ class WalletWebSocketMonitor:
             callback: Sync or async callable accepting a WalletTradeEvent.
         """
         self._callbacks.append(callback)
+
+    # ==================== MEMPOOL MONITORING ====================
+
+    def enable_mempool_mode(self):
+        """Enable mempool monitoring for pre-confirmation detection.
+
+        When enabled, the monitor will additionally subscribe to
+        ``newPendingTransactions`` on the WebSocket connection, providing
+        sub-second detection latency for tracked wallet activity before
+        the transaction is included in a block.
+        """
+        self._mempool_mode = True
+        logger.info("Mempool monitoring enabled - pre-confirmation detection active")
+
+    def disable_mempool_mode(self):
+        """Disable mempool monitoring, reverting to block-based detection only."""
+        self._mempool_mode = False
+        logger.info("Mempool monitoring disabled")
+
+    async def _subscribe_mempool(self, ws):
+        """Subscribe to pending transactions for pre-confirmation detection."""
+        subscribe_msg = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "eth_subscribe",
+            "params": ["newPendingTransactions"]
+        })
+        await ws.send(subscribe_msg)
+
+        response = await ws.recv()
+        sub_result = json.loads(response)
+
+        if "error" in sub_result:
+            logger.warning(
+                "Mempool subscription failed (node may not support it)",
+                error=sub_result["error"],
+            )
+            return None
+
+        subscription_id = sub_result.get("result")
+        logger.info(
+            "Subscribed to mempool (pending transactions)",
+            subscription_id=subscription_id,
+        )
+        return subscription_id
 
     # ==================== LIFECYCLE ====================
 
@@ -384,6 +431,10 @@ class WalletWebSocketMonitor:
                         "Subscribed to newHeads",
                         subscription_id=subscription_id,
                     )
+
+                    # Optionally subscribe to mempool for pre-confirmation detection
+                    if self._mempool_mode:
+                        await self._subscribe_mempool(ws)
 
                     # Process incoming messages
                     async for message in ws:

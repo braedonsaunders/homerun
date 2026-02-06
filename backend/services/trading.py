@@ -40,6 +40,7 @@ class OrderType(str, Enum):
     GTC = "GTC"  # Good Till Cancel
     FOK = "FOK"  # Fill Or Kill
     GTD = "GTD"  # Good Till Date
+    FAK = "FAK"  # Fill-and-Kill (immediate partial fill, cancel rest)
 
 
 class OrderStatus(str, Enum):
@@ -118,6 +119,8 @@ class TradingService:
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
         self._daily_volume_reset = datetime.utcnow().date()
+        self._market_positions: dict[str, float] = {}  # token_id -> USD exposure
+        self.MAX_PER_MARKET_USD = settings.MAX_PER_MARKET_USD
 
     async def initialize(self) -> bool:
         """
@@ -187,7 +190,7 @@ class TradingService:
             self._stats.daily_pnl = 0.0
             self._daily_volume_reset = today
 
-    def _validate_order(self, size_usd: float) -> tuple[bool, str]:
+    def _validate_order(self, size_usd: float, token_id: str = None) -> tuple[bool, str]:
         """
         Validate order against safety limits.
 
@@ -225,6 +228,12 @@ class TradingService:
                 False,
                 f"Maximum open positions ({settings.MAX_OPEN_POSITIONS}) reached",
             )
+
+        # Per-market position limit
+        if token_id and token_id in self._market_positions:
+            current = self._market_positions[token_id]
+            if current + size_usd > self.MAX_PER_MARKET_USD:
+                return False, f"Per-market limit: ${current:.2f} + ${size_usd:.2f} exceeds ${self.MAX_PER_MARKET_USD:.2f}"
 
         return True, ""
 
@@ -269,7 +278,7 @@ class TradingService:
         size_usd = price * size
 
         # Validate order
-        is_valid, error = self._validate_order(size_usd)
+        is_valid, error = self._validate_order(size_usd, token_id=token_id)
         if not is_valid:
             order.status = OrderStatus.FAILED
             order.error_message = error
@@ -303,6 +312,11 @@ class TradingService:
                 self._stats.total_volume += size_usd
                 self._stats.last_trade_at = datetime.utcnow()
                 logger.info(f"Order placed successfully: {order.clob_order_id}")
+
+                # Update per-market position tracking
+                if token_id not in self._market_positions:
+                    self._market_positions[token_id] = 0.0
+                self._market_positions[token_id] += size_usd
             else:
                 order.status = OrderStatus.FAILED
                 order.error_message = response.get("errorMsg", "Unknown error")
@@ -610,8 +624,30 @@ class TradingService:
                 f"PARTIAL EXECUTION: {len(orders) - failed_count}/{len(valid_positions)} legs filled. "
                 f"Position has EXPOSURE RISK!"
             )
+            # Auto-reconcile: unwind filled legs from failed arbitrage
+            asyncio.create_task(self._auto_reconcile(orders, valid_positions, failed_count))
 
         return orders
+
+    async def _auto_reconcile(self, orders: list, positions: list, failed_count: int):
+        """Auto-unwind partial multi-leg fills to prevent one-sided exposure."""
+        await asyncio.sleep(2)  # Brief delay before reconciliation
+        logger.info(f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs")
+        for order in orders:
+            if order.status in (OrderStatus.OPEN, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                if order.filled_size > 0:
+                    try:
+                        unwind = await self.place_order(
+                            token_id=order.token_id,
+                            side=OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY,
+                            price=order.price * 0.95 if order.side == OrderSide.BUY else order.price * 1.05,
+                            size=order.filled_size,
+                            order_type=OrderType.FOK,
+                            market_question=f"AUTO_RECONCILE: {order.market_question}",
+                        )
+                        logger.info(f"Reconciliation order placed: {unwind.status.value}")
+                    except Exception as e:
+                        logger.error(f"Reconciliation failed: {e}")
 
     def get_stats(self) -> TradingStats:
         """Get trading statistics"""

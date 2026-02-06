@@ -84,6 +84,8 @@ class TokenCircuitBreaker:
         self._trips: dict[str, TokenTripEvent] = {}  # token_id -> active trip
         self._recent_trades: dict[str, list[dict]] = {}  # token_id -> recent trades
         self._trip_history: list[TokenTripEvent] = []  # All trips for stats
+        self._api_errors: dict[str, list[datetime]] = {}  # token_id -> error timestamps
+        self._max_consecutive_api_errors = 5
 
     def record_trade(
         self, token_id: str, size: float, price: float, side: str
@@ -171,6 +173,53 @@ class TokenCircuitBreaker:
             return event
 
         return None
+
+    def record_api_error(self, token_id: str) -> Optional[TokenTripEvent]:
+        """Record an API error for a token. Trips after consecutive errors exceed threshold.
+
+        Tracks API errors (e.g. from depth analysis, price fetching) per token
+        within the detection window. After ``_max_consecutive_api_errors``
+        errors in the window, the token is automatically tripped with reason
+        ``"consecutive_api_errors"``.
+
+        Args:
+            token_id: The token that experienced the API error.
+
+        Returns:
+            A TokenTripEvent if the error threshold was reached, None otherwise.
+        """
+        now = datetime.utcnow()
+        if token_id not in self._api_errors:
+            self._api_errors[token_id] = []
+
+        self._api_errors[token_id].append(now)
+
+        # Keep only recent errors (within detection window)
+        cutoff = now - timedelta(seconds=self.config.detection_window_seconds)
+        self._api_errors[token_id] = [
+            t for t in self._api_errors[token_id] if t > cutoff
+        ]
+
+        if len(self._api_errors[token_id]) >= self._max_consecutive_api_errors:
+            logger.warning(
+                "Token tripped due to consecutive API errors",
+                token_id=token_id,
+                error_count=len(self._api_errors[token_id]),
+                window_seconds=self.config.detection_window_seconds,
+            )
+            # Clear the error list after tripping
+            error_count = len(self._api_errors[token_id])
+            self._api_errors[token_id] = []
+            return self.trip_token(
+                token_id,
+                "consecutive_api_errors",
+                {"error_count": error_count},
+            )
+        return None
+
+    def clear_api_errors(self, token_id: str):
+        """Clear tracked API errors for a token (e.g. after a successful call)."""
+        self._api_errors.pop(token_id, None)
 
     def is_tripped(self, token_id: str) -> tuple[bool, Optional[str]]:
         """
