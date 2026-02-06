@@ -8,5 +8,5 @@ __all__ = [
     "scanner",
     "ArbitrageScanner",
     "wallet_tracker",
-    "WalletTracker"
+    "WalletTracker",
 ]

@@ -13,25 +13,26 @@ class CreateCopyConfigRequest(BaseModel):
     account_id: str
     copy_mode: str = Field(
         default="all_trades",
-        description="all_trades = mirror every trade; arb_only = only copy arb-matching trades"
+        description="all_trades = mirror every trade; arb_only = only copy arb-matching trades",
     )
     min_roi_threshold: float = Field(default=2.5, ge=0.0, le=100.0)
     max_position_size: float = Field(default=1000.0, ge=10.0, le=1000000.0)
     copy_delay_seconds: int = Field(default=5, ge=0, le=300)
     slippage_tolerance: float = Field(default=1.0, ge=0.0, le=10.0)
     proportional_sizing: bool = Field(
-        default=False,
-        description="Scale positions relative to source wallet size"
+        default=False, description="Scale positions relative to source wallet size"
     )
     proportional_multiplier: float = Field(
-        default=1.0, ge=0.01, le=100.0,
-        description="Multiplier for proportional sizing (0.1 = 10% of source size)"
+        default=1.0,
+        ge=0.01,
+        le=100.0,
+        description="Multiplier for proportional sizing (0.1 = 10% of source size)",
     )
     copy_buys: bool = Field(default=True, description="Copy buy trades")
     copy_sells: bool = Field(default=True, description="Copy sell/close trades")
     market_categories: list[str] = Field(
         default=[],
-        description="Only copy trades in these market categories (empty = all)"
+        description="Only copy trades in these market categories (empty = all)",
     )
 
     @field_validator("source_wallet")
@@ -70,6 +71,7 @@ class UpdateCopyConfigRequest(BaseModel):
 
 # ==================== COPY CONFIGURATIONS ====================
 
+
 @copy_trading_router.post("/configs")
 async def create_copy_config(request: CreateCopyConfigRequest):
     """Create a new copy trading configuration"""
@@ -95,44 +97,45 @@ async def create_copy_config(request: CreateCopyConfigRequest):
             "account_id": config.account_id,
             "enabled": config.enabled,
             "copy_mode": config.copy_mode.value,
-            "message": "Copy trading configuration created"
+            "message": "Copy trading configuration created",
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @copy_trading_router.get("/configs")
-async def list_copy_configs(
-    account_id: Optional[str] = Query(default=None)
-):
+async def list_copy_configs(account_id: Optional[str] = Query(default=None)):
     """List all copy trading configurations"""
     configs = await copy_trader.get_configs(account_id)
-    return [{
-        "id": cfg.id,
-        "source_wallet": cfg.source_wallet,
-        "account_id": cfg.account_id,
-        "enabled": cfg.enabled,
-        "copy_mode": cfg.copy_mode.value if cfg.copy_mode else "all_trades",
-        "settings": {
-            "min_roi_threshold": cfg.min_roi_threshold,
-            "max_position_size": cfg.max_position_size,
-            "copy_delay_seconds": cfg.copy_delay_seconds,
-            "slippage_tolerance": cfg.slippage_tolerance,
-            "proportional_sizing": cfg.proportional_sizing,
-            "proportional_multiplier": cfg.proportional_multiplier,
-            "copy_buys": cfg.copy_buys,
-            "copy_sells": cfg.copy_sells,
-            "market_categories": cfg.market_categories,
-        },
-        "stats": {
-            "total_copied": cfg.total_copied,
-            "successful_copies": cfg.successful_copies,
-            "failed_copies": cfg.failed_copies,
-            "total_pnl": cfg.total_pnl,
-            "total_buys_copied": cfg.total_buys_copied,
-            "total_sells_copied": cfg.total_sells_copied,
+    return [
+        {
+            "id": cfg.id,
+            "source_wallet": cfg.source_wallet,
+            "account_id": cfg.account_id,
+            "enabled": cfg.enabled,
+            "copy_mode": cfg.copy_mode.value if cfg.copy_mode else "all_trades",
+            "settings": {
+                "min_roi_threshold": cfg.min_roi_threshold,
+                "max_position_size": cfg.max_position_size,
+                "copy_delay_seconds": cfg.copy_delay_seconds,
+                "slippage_tolerance": cfg.slippage_tolerance,
+                "proportional_sizing": cfg.proportional_sizing,
+                "proportional_multiplier": cfg.proportional_multiplier,
+                "copy_buys": cfg.copy_buys,
+                "copy_sells": cfg.copy_sells,
+                "market_categories": cfg.market_categories,
+            },
+            "stats": {
+                "total_copied": cfg.total_copied,
+                "successful_copies": cfg.successful_copies,
+                "failed_copies": cfg.failed_copies,
+                "total_pnl": cfg.total_pnl,
+                "total_buys_copied": cfg.total_buys_copied,
+                "total_sells_copied": cfg.total_sells_copied,
+            },
         }
-    } for cfg in configs]
+        for cfg in configs
+    ]
 
 
 @copy_trading_router.get("/configs/{config_id}")
@@ -192,12 +195,12 @@ async def force_sync_config(config_id: str):
 
 # ==================== COPIED TRADE HISTORY ====================
 
+
 @copy_trading_router.get("/trades")
 async def list_copied_trades(
     config_id: Optional[str] = Query(default=None),
     status: Optional[str] = Query(
-        default=None,
-        description="Filter by status: pending, executed, failed, skipped"
+        default=None, description="Filter by status: pending, executed, failed, skipped"
     ),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -214,6 +217,7 @@ async def list_copied_trades(
 
 # ==================== SOURCE WALLET ====================
 
+
 @copy_trading_router.get("/wallet/{wallet_address}/positions")
 async def get_source_wallet_positions(wallet_address: str):
     """Get current open positions for a source wallet being copied"""
@@ -227,6 +231,7 @@ async def get_source_wallet_positions(wallet_address: str):
 
 
 # ==================== SERVICE STATUS ====================
+
 
 @copy_trading_router.get("/status")
 async def get_copy_trading_status():

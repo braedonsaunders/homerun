@@ -5,8 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
-    SimulationAccount, SimulationPosition, SimulationTrade,
-    TradeStatus, PositionSide, AsyncSessionLocal
+    SimulationAccount,
+    SimulationPosition,
+    SimulationTrade,
+    TradeStatus,
+    PositionSide,
+    AsyncSessionLocal,
 )
 from models.opportunity import ArbitrageOpportunity
 from utils.logger import get_logger
@@ -23,13 +27,17 @@ class SlippageModel:
         return base_price * (1 + slippage_bps / 10000)
 
     @staticmethod
-    def linear(base_price: float, size: float, liquidity: float, slippage_bps: float) -> float:
+    def linear(
+        base_price: float, size: float, liquidity: float, slippage_bps: float
+    ) -> float:
         """Linear slippage based on size vs liquidity"""
         impact = (size / liquidity) * slippage_bps / 10000
         return base_price * (1 + impact)
 
     @staticmethod
-    def sqrt(base_price: float, size: float, liquidity: float, slippage_bps: float) -> float:
+    def sqrt(
+        base_price: float, size: float, liquidity: float, slippage_bps: float
+    ) -> float:
         """Square root slippage (more realistic for large orders)"""
         impact = (size / liquidity) ** 0.5 * slippage_bps / 10000
         return base_price * (1 + impact)
@@ -45,7 +53,7 @@ class SimulationService:
         name: str,
         initial_capital: float = 10000.0,
         max_position_pct: float = 10.0,
-        max_positions: int = 10
+        max_positions: int = 10,
     ) -> SimulationAccount:
         """Create a new simulation account"""
         async with AsyncSessionLocal() as session:
@@ -55,7 +63,7 @@ class SimulationService:
                 initial_capital=initial_capital,
                 current_capital=initial_capital,
                 max_position_size_pct=max_position_pct,
-                max_open_positions=max_positions
+                max_open_positions=max_positions,
             )
             session.add(account)
             await session.commit()
@@ -65,7 +73,7 @@ class SimulationService:
                 "Created simulation account",
                 account_id=account.id,
                 name=name,
-                capital=initial_capital
+                capital=initial_capital,
             )
 
             return account
@@ -94,10 +102,14 @@ class SimulationService:
 
             # Delete related positions
             await session.execute(
-                select(SimulationPosition).where(SimulationPosition.account_id == account_id)
+                select(SimulationPosition).where(
+                    SimulationPosition.account_id == account_id
+                )
             )
             positions = await session.execute(
-                select(SimulationPosition).where(SimulationPosition.account_id == account_id)
+                select(SimulationPosition).where(
+                    SimulationPosition.account_id == account_id
+                )
             )
             for pos in positions.scalars():
                 await session.delete(pos)
@@ -114,9 +126,7 @@ class SimulationService:
             await session.commit()
 
             logger.info(
-                "Deleted simulation account",
-                account_id=account_id,
-                name=account.name
+                "Deleted simulation account", account_id=account_id, name=account.name
             )
 
             return True
@@ -128,7 +138,7 @@ class SimulationService:
         position_size: Optional[float] = None,
         copied_from: Optional[str] = None,
         take_profit_price: Optional[float] = None,
-        stop_loss_price: Optional[float] = None
+        stop_loss_price: Optional[float] = None,
     ) -> SimulationTrade:
         """Execute an arbitrage opportunity in simulation"""
         async with AsyncSessionLocal() as session:
@@ -139,11 +149,15 @@ class SimulationService:
 
             # Calculate position size
             if position_size is None:
-                max_size = account.current_capital * (account.max_position_size_pct / 100)
+                max_size = account.current_capital * (
+                    account.max_position_size_pct / 100
+                )
                 position_size = min(max_size, opportunity.max_position_size)
 
             if position_size > account.current_capital:
-                raise ValueError(f"Insufficient capital: {account.current_capital} < {position_size}")
+                raise ValueError(
+                    f"Insufficient capital: {account.current_capital} < {position_size}"
+                )
 
             # Calculate total cost with slippage
             base_cost = opportunity.total_cost * position_size
@@ -152,7 +166,7 @@ class SimulationService:
                 base_cost,
                 position_size,
                 opportunity.min_liquidity,
-                account.slippage_bps
+                account.slippage_bps,
             )
             total_cost = base_cost + slippage
 
@@ -167,7 +181,7 @@ class SimulationService:
                 expected_profit=opportunity.net_profit * position_size,
                 slippage=slippage,
                 status=TradeStatus.OPEN,
-                copied_from_wallet=copied_from
+                copied_from_wallet=copied_from,
             )
             session.add(trade)
 
@@ -180,14 +194,16 @@ class SimulationService:
                     market_id=pos.get("market", ""),
                     market_question=pos.get("market", ""),
                     token_id=pos.get("token_id"),
-                    side=PositionSide.YES if pos.get("outcome") == "YES" else PositionSide.NO,
+                    side=PositionSide.YES
+                    if pos.get("outcome") == "YES"
+                    else PositionSide.NO,
                     quantity=position_size,
                     entry_price=pos.get("price", 0),
                     entry_cost=pos.get("price", 0) * position_size,
                     take_profit_price=take_profit_price,
                     stop_loss_price=stop_loss_price,
                     resolution_date=opportunity.resolution_date,
-                    status=TradeStatus.OPEN
+                    status=TradeStatus.OPEN,
                 )
                 session.add(position)
 
@@ -205,7 +221,7 @@ class SimulationService:
                 opportunity_id=opportunity.id,
                 position_size=position_size,
                 total_cost=total_cost,
-                slippage=slippage
+                slippage=slippage,
             )
 
             return trade
@@ -214,7 +230,7 @@ class SimulationService:
         self,
         trade_id: str,
         winning_outcome: str,  # Which outcome won
-        session: AsyncSession = None
+        session: AsyncSession = None,
     ) -> SimulationTrade:
         """Resolve a trade when market settles"""
         should_close = session is None
@@ -247,7 +263,9 @@ class SimulationService:
             is_win = pnl > 0
 
             # Update trade
-            trade.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+            trade.status = (
+                TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+            )
             trade.actual_payout = net_payout
             trade.actual_pnl = pnl
             trade.fees_paid = fee
@@ -268,7 +286,9 @@ class SimulationService:
                 )
             )
             for pos in positions.scalars():
-                pos.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+                pos.status = (
+                    TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
+                )
 
             await session.commit()
             await session.refresh(trade)
@@ -279,7 +299,7 @@ class SimulationService:
                 winning_outcome=winning_outcome,
                 payout=net_payout,
                 pnl=pnl,
-                is_win=is_win
+                is_win=is_win,
             )
 
             return trade
@@ -294,15 +314,13 @@ class SimulationService:
             result = await session.execute(
                 select(SimulationPosition).where(
                     SimulationPosition.account_id == account_id,
-                    SimulationPosition.status == TradeStatus.OPEN
+                    SimulationPosition.status == TradeStatus.OPEN,
                 )
             )
             return list(result.scalars().all())
 
     async def get_trade_history(
-        self,
-        account_id: str,
-        limit: int = 100
+        self, account_id: str, limit: int = 100
     ) -> list[SimulationTrade]:
         """Get trade history for an account"""
         async with AsyncSessionLocal() as session:
@@ -324,11 +342,13 @@ class SimulationService:
             # Calculate additional stats
             win_rate = (
                 account.winning_trades / account.total_trades * 100
-                if account.total_trades > 0 else 0
+                if account.total_trades > 0
+                else 0
             )
             roi = (
                 (account.current_capital - account.initial_capital)
-                / account.initial_capital * 100
+                / account.initial_capital
+                * 100
             )
 
             # Get open positions count
@@ -356,18 +376,18 @@ class SimulationService:
         base_cost: float,
         size: float,
         liquidity: float,
-        slippage_bps: float
+        slippage_bps: float,
     ) -> float:
         """Calculate slippage based on model"""
         if liquidity <= 0:
             liquidity = 10000  # Default if unknown
 
         if model == "linear":
-            factor = (1 + (size / liquidity) * slippage_bps / 10000)
+            factor = 1 + (size / liquidity) * slippage_bps / 10000
         elif model == "sqrt":
-            factor = (1 + (size / liquidity) ** 0.5 * slippage_bps / 10000)
+            factor = 1 + (size / liquidity) ** 0.5 * slippage_bps / 10000
         else:  # fixed
-            factor = (1 + slippage_bps / 10000)
+            factor = 1 + slippage_bps / 10000
 
         return base_cost * (factor - 1)
 

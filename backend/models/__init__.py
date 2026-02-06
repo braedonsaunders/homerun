@@ -1,5 +1,10 @@
 from .market import Market, Event, Token
-from .opportunity import ArbitrageOpportunity, StrategyType, MispricingType, OpportunityFilter
+from .opportunity import (
+    ArbitrageOpportunity,
+    StrategyType,
+    MispricingType,
+    OpportunityFilter,
+)
 
 __all__ = [
     "Market",
@@ -8,5 +13,5 @@ __all__ = [
     "ArbitrageOpportunity",
     "StrategyType",
     "MispricingType",
-    "OpportunityFilter"
+    "OpportunityFilter",
 ]

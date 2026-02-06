@@ -1,5 +1,7 @@
 """Tests for ArbitrageScanner: initialisation, scan pipeline, filtering, lifecycle."""
+
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
@@ -20,6 +22,7 @@ from models.opportunity import (
 # Helpers to build a scanner with mocked externals
 # ---------------------------------------------------------------------------
 
+
 def _build_scanner(
     mock_client=None,
     strategies=None,
@@ -28,9 +31,12 @@ def _build_scanner(
     Import ArbitrageScanner inside a mock context so the singleton
     polymarket_client and database are never touched.
     """
-    with patch("services.scanner.polymarket_client", mock_client or AsyncMock()), \
-         patch("services.scanner.AsyncSessionLocal", MagicMock()):
+    with (
+        patch("services.scanner.polymarket_client", mock_client or AsyncMock()),
+        patch("services.scanner.AsyncSessionLocal", MagicMock()),
+    ):
         from services.scanner import ArbitrageScanner
+
         scanner = ArbitrageScanner()
         scanner.client = mock_client or scanner.client
         if strategies is not None:
@@ -41,6 +47,7 @@ def _build_scanner(
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
+
 
 class TestScannerInit:
     """Tests for ArbitrageScanner.__init__."""
@@ -74,6 +81,7 @@ class TestScannerInit:
 # ---------------------------------------------------------------------------
 # scan_once
 # ---------------------------------------------------------------------------
+
 
 class TestScanOnce:
     """Tests for ArbitrageScanner.scan_once."""
@@ -109,9 +117,7 @@ class TestScanOnce:
         strategy_b = MagicMock()
         strategy_b.name = "StratB"
         strategy_b.strategy_type = StrategyType.NEGRISK
-        strategy_b.detect = MagicMock(
-            return_value=[sample_opportunity_high_roi]
-        )
+        strategy_b.detect = MagicMock(return_value=[sample_opportunity_high_roi])
 
         scanner = _build_scanner(
             mock_client=mock_polymarket_client,
@@ -166,7 +172,10 @@ class TestScanOnce:
     async def test_scan_once_fetches_prices_for_tokens(self, mock_polymarket_client):
         """When markets have tokens, get_prices_batch is called."""
         market = Market(
-            id="m1", condition_id="c1", question="Q?", slug="q",
+            id="m1",
+            condition_id="c1",
+            question="Q?",
+            slug="q",
             clob_token_ids=["tok_a", "tok_b"],
             outcome_prices=[0.6, 0.4],
         )
@@ -193,6 +202,7 @@ class TestScanOnce:
 # ---------------------------------------------------------------------------
 # Mispricing type classification
 # ---------------------------------------------------------------------------
+
 
 class TestMispricingClassification:
     """Tests for mispricing type assignment during scan_once."""
@@ -325,6 +335,7 @@ class TestMispricingClassification:
 # get_opportunities with OpportunityFilter
 # ---------------------------------------------------------------------------
 
+
 class TestGetOpportunities:
     """Tests for ArbitrageScanner.get_opportunities with filtering."""
 
@@ -334,16 +345,26 @@ class TestGetOpportunities:
         return scanner
 
     def test_no_filter_returns_all(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         result = scanner.get_opportunities()
         assert len(result) == 3
 
     def test_min_profit_filter(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         """min_profit is multiplied by 100 in the filter logic.
         - sample_opportunity: roi_percent=2.08 -> min_profit=0.02 (2%) pass if min_profit<=0.0208
@@ -351,7 +372,11 @@ class TestGetOpportunities:
         - sample_opportunity_low_roi: roi_percent=1.03
         """
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         f = OpportunityFilter(min_profit=0.05)  # 0.05 * 100 = 5% threshold
         result = scanner.get_opportunities(filter=f)
@@ -361,7 +386,10 @@ class TestGetOpportunities:
         assert result[0].roi_percent == 15.29
 
     def test_max_risk_filter(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         """
         Risk scores:
@@ -370,7 +398,11 @@ class TestGetOpportunities:
         - sample_opportunity_low_roi: 0.8
         """
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         f = OpportunityFilter(max_risk=0.5)
         result = scanner.get_opportunities(filter=f)
@@ -380,10 +412,17 @@ class TestGetOpportunities:
             assert opp.risk_score <= 0.5
 
     def test_strategy_filter(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         f = OpportunityFilter(strategies=[StrategyType.NEGRISK])
         result = scanner.get_opportunities(filter=f)
@@ -392,10 +431,17 @@ class TestGetOpportunities:
         assert result[0].strategy == StrategyType.NEGRISK
 
     def test_category_filter(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         f = OpportunityFilter(category="Crypto")
         result = scanner.get_opportunities(filter=f)
@@ -411,11 +457,18 @@ class TestGetOpportunities:
         assert len(result) == 1
 
     def test_combined_filters(
-        self, sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi
+        self,
+        sample_opportunity,
+        sample_opportunity_high_roi,
+        sample_opportunity_low_roi,
     ):
         """Multiple filter criteria combine (AND logic)."""
         scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_high_roi, sample_opportunity_low_roi]
+            [
+                sample_opportunity,
+                sample_opportunity_high_roi,
+                sample_opportunity_low_roi,
+            ]
         )
         f = OpportunityFilter(max_risk=0.5, strategies=[StrategyType.BASIC])
         result = scanner.get_opportunities(filter=f)
@@ -449,12 +502,11 @@ class TestGetOpportunities:
 # clear / remove operations
 # ---------------------------------------------------------------------------
 
+
 class TestClearAndRemove:
     """Tests for clear_opportunities, remove_expired, remove_old."""
 
-    def test_clear_opportunities(
-        self, sample_opportunity, sample_opportunity_high_roi
-    ):
+    def test_clear_opportunities(self, sample_opportunity, sample_opportunity_high_roi):
         scanner = _build_scanner()
         scanner._opportunities = [sample_opportunity, sample_opportunity_high_roi]
 
@@ -490,9 +542,7 @@ class TestClearAndRemove:
         assert removed == 0
         assert len(scanner._opportunities) == 1
 
-    def test_remove_old_opportunities(
-        self, sample_opportunity, old_opportunity
-    ):
+    def test_remove_old_opportunities(self, sample_opportunity, old_opportunity):
         scanner = _build_scanner()
         scanner._opportunities = [sample_opportunity, old_opportunity]
 
@@ -519,6 +569,7 @@ class TestClearAndRemove:
 # ---------------------------------------------------------------------------
 # Scanner status
 # ---------------------------------------------------------------------------
+
 
 class TestScannerStatus:
     """Tests for get_status."""
@@ -566,6 +617,7 @@ class TestScannerStatus:
 # ---------------------------------------------------------------------------
 # set_interval bounds
 # ---------------------------------------------------------------------------
+
 
 class TestSetInterval:
     """Tests for set_interval clamping."""
@@ -615,11 +667,14 @@ class TestSetInterval:
 # Callbacks
 # ---------------------------------------------------------------------------
 
+
 class TestScannerCallbacks:
     """Tests for scan and status callbacks."""
 
     @pytest.mark.asyncio
-    async def test_scan_callback_invoked(self, mock_polymarket_client, sample_opportunity):
+    async def test_scan_callback_invoked(
+        self, mock_polymarket_client, sample_opportunity
+    ):
         strategy = MagicMock()
         strategy.name = "S"
         strategy.strategy_type = StrategyType.BASIC
@@ -716,6 +771,7 @@ class TestScannerCallbacks:
 # ---------------------------------------------------------------------------
 # Properties
 # ---------------------------------------------------------------------------
+
 
 class TestScannerProperties:
     """Tests for scanner property accessors."""

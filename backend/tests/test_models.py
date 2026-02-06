@@ -1,5 +1,7 @@
 """Tests for Pydantic models: Market, Event, Token, ArbitrageOpportunity, OpportunityFilter, StrategyType."""
+
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import json
@@ -17,6 +19,7 @@ from models.opportunity import (
 # ============================================================================
 # Market.from_gamma_response
 # ============================================================================
+
 
 class TestMarketFromGammaResponse:
     """Tests for Market.from_gamma_response."""
@@ -149,6 +152,7 @@ class TestMarketFromGammaResponse:
 # Market.yes_price / Market.no_price properties
 # ============================================================================
 
+
 class TestMarketPriceProperties:
     """Tests for Market.yes_price and Market.no_price properties."""
 
@@ -164,14 +168,20 @@ class TestMarketPriceProperties:
 
     def test_no_price_single_price_returns_zero(self):
         market = Market(
-            id="x", condition_id="x", question="q", slug="s",
+            id="x",
+            condition_id="x",
+            question="q",
+            slug="s",
             outcome_prices=[0.7],
         )
         assert market.no_price == 0.0
 
     def test_yes_price_single_price_still_works(self):
         market = Market(
-            id="x", condition_id="x", question="q", slug="s",
+            id="x",
+            condition_id="x",
+            question="q",
+            slug="s",
             outcome_prices=[0.7],
         )
         assert market.yes_price == 0.7
@@ -180,6 +190,7 @@ class TestMarketPriceProperties:
 # ============================================================================
 # Event.from_gamma_response
 # ============================================================================
+
 
 class TestEventFromGammaResponse:
     """Tests for Event.from_gamma_response."""
@@ -208,7 +219,9 @@ class TestEventFromGammaResponse:
     def test_category_from_category_string(self):
         """Category field as a plain string is used directly."""
         data = {
-            "id": "e1", "slug": "s", "title": "T",
+            "id": "e1",
+            "slug": "s",
+            "title": "T",
             "category": "Sports",
         }
         event = Event.from_gamma_response(data)
@@ -217,7 +230,9 @@ class TestEventFromGammaResponse:
     def test_category_from_category_dict(self):
         """Category as a dict {label, name} extracts label first."""
         data = {
-            "id": "e2", "slug": "s", "title": "T",
+            "id": "e2",
+            "slug": "s",
+            "title": "T",
             "category": {"id": 1, "label": "Politics", "name": "politics"},
         }
         event = Event.from_gamma_response(data)
@@ -226,7 +241,9 @@ class TestEventFromGammaResponse:
     def test_category_from_category_dict_fallback_to_name(self):
         """If dict has no label, falls back to name."""
         data = {
-            "id": "e3", "slug": "s", "title": "T",
+            "id": "e3",
+            "slug": "s",
+            "title": "T",
             "category": {"id": 1, "name": "tech"},
         }
         event = Event.from_gamma_response(data)
@@ -235,7 +252,9 @@ class TestEventFromGammaResponse:
     def test_category_from_tags_list_of_strings(self):
         """tags as a list of strings, first tag used as category."""
         data = {
-            "id": "e4", "slug": "s", "title": "T",
+            "id": "e4",
+            "slug": "s",
+            "title": "T",
             "tags": ["Entertainment", "Music"],
         }
         event = Event.from_gamma_response(data)
@@ -244,7 +263,9 @@ class TestEventFromGammaResponse:
     def test_category_from_tags_list_of_dicts(self):
         """tags as a list of dicts, first tag label used."""
         data = {
-            "id": "e5", "slug": "s", "title": "T",
+            "id": "e5",
+            "slug": "s",
+            "title": "T",
             "tags": [{"label": "Finance", "name": "finance"}],
         }
         event = Event.from_gamma_response(data)
@@ -253,7 +274,9 @@ class TestEventFromGammaResponse:
     def test_category_from_tags_string(self):
         """tags as a plain string is used directly."""
         data = {
-            "id": "e6", "slug": "s", "title": "T",
+            "id": "e6",
+            "slug": "s",
+            "title": "T",
             "tags": "Weather",
         }
         event = Event.from_gamma_response(data)
@@ -268,7 +291,9 @@ class TestEventFromGammaResponse:
     def test_category_field_preferred_over_tags(self):
         """When both category and tags exist, category field wins."""
         data = {
-            "id": "e8", "slug": "s", "title": "T",
+            "id": "e8",
+            "slug": "s",
+            "title": "T",
             "category": "Primary",
             "tags": ["Secondary"],
         }
@@ -278,7 +303,9 @@ class TestEventFromGammaResponse:
     def test_bad_nested_market_is_skipped(self):
         """A malformed nested market dict is silently skipped."""
         data = {
-            "id": "e9", "slug": "s", "title": "T",
+            "id": "e9",
+            "slug": "s",
+            "title": "T",
             "markets": [
                 {"id": "good1", "question": "Q?", "slug": "q"},
                 "not_a_dict",  # This will cause an exception and be skipped
@@ -297,6 +324,7 @@ class TestEventFromGammaResponse:
 # ============================================================================
 # Token model
 # ============================================================================
+
 
 class TestToken:
     """Tests for the Token model."""
@@ -321,6 +349,7 @@ class TestToken:
 # ============================================================================
 # ArbitrageOpportunity
 # ============================================================================
+
 
 class TestArbitrageOpportunity:
     """Tests for ArbitrageOpportunity model."""
@@ -434,13 +463,20 @@ class TestArbitrageOpportunity:
 # StrategyType enum
 # ============================================================================
 
+
 class TestStrategyType:
     """Tests for StrategyType enum values."""
 
     def test_all_strategy_types_present(self):
         expected = {
-            "basic", "mutually_exclusive", "contradiction", "negrisk",
-            "must_happen", "miracle", "combinatorial", "settlement_lag",
+            "basic",
+            "mutually_exclusive",
+            "contradiction",
+            "negrisk",
+            "must_happen",
+            "miracle",
+            "combinatorial",
+            "settlement_lag",
             "cross_platform",
         }
         actual = {s.value for s in StrategyType}
@@ -460,6 +496,7 @@ class TestStrategyType:
 # ============================================================================
 # OpportunityFilter
 # ============================================================================
+
 
 class TestOpportunityFilter:
     """Tests for OpportunityFilter model."""

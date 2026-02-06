@@ -32,62 +32,67 @@ logger = get_logger(__name__)
 
 class AutoTraderMode(str, Enum):
     """Operating modes for auto trader"""
-    DISABLED = "disabled"       # No automatic trading
-    PAPER = "paper"             # Simulation only (uses simulation service)
-    LIVE = "live"               # Real trading
-    SHADOW = "shadow"           # Track what would be traded but don't execute
+
+    DISABLED = "disabled"  # No automatic trading
+    PAPER = "paper"  # Simulation only (uses simulation service)
+    LIVE = "live"  # Real trading
+    SHADOW = "shadow"  # Track what would be traded but don't execute
 
 
 @dataclass
 class AutoTraderConfig:
     """Configuration for automatic trading"""
+
     mode: AutoTraderMode = AutoTraderMode.DISABLED
 
     # Strategy filters
-    enabled_strategies: list[StrategyType] = field(default_factory=lambda: [
-        StrategyType.BASIC,
-        StrategyType.NEGRISK,
-        StrategyType.MUTUALLY_EXCLUSIVE,
-        StrategyType.MUST_HAPPEN,
-        StrategyType.MIRACLE,
-        StrategyType.SETTLEMENT_LAG,
-    ])
+    enabled_strategies: list[StrategyType] = field(
+        default_factory=lambda: [
+            StrategyType.BASIC,
+            StrategyType.NEGRISK,
+            StrategyType.MUTUALLY_EXCLUSIVE,
+            StrategyType.MUST_HAPPEN,
+            StrategyType.MIRACLE,
+            StrategyType.SETTLEMENT_LAG,
+        ]
+    )
 
     # Entry criteria
-    min_roi_percent: float = 2.5          # Minimum ROI to trade
-    max_risk_score: float = 0.5           # Maximum acceptable risk
-    min_liquidity_usd: float = 5000.0     # Minimum market liquidity
+    min_roi_percent: float = 2.5  # Minimum ROI to trade
+    max_risk_score: float = 0.5  # Maximum acceptable risk
+    min_liquidity_usd: float = 5000.0  # Minimum market liquidity
     min_impossibility_score: float = 0.8  # For miracle strategy
 
     # Profit guarantee thresholds (from article Proposition 4.1)
-    min_guaranteed_profit: float = 0.05   # $0.05 min from research (gas + slippage)
-    use_profit_guarantee: bool = True     # Enable Proposition 4.1 filtering
+    min_guaranteed_profit: float = 0.05  # $0.05 min from research (gas + slippage)
+    use_profit_guarantee: bool = True  # Enable Proposition 4.1 filtering
 
     # Position sizing
     base_position_size_usd: float = 10.0  # Base position size
     max_position_size_usd: float = 100.0  # Maximum per trade
-    position_size_method: str = "fixed"   # fixed, kelly, volatility_adjusted
+    position_size_method: str = "fixed"  # fixed, kelly, volatility_adjusted
     paper_account_capital: float = 10000.0  # Starting capital for paper trading
 
     # Risk management
-    max_daily_trades: int = 50            # Maximum trades per day
-    max_daily_loss_usd: float = 100.0     # Stop trading if daily loss exceeds
-    max_concurrent_positions: int = 10    # Maximum open positions
-    cooldown_after_loss_seconds: int = 60 # Wait after losing trade
+    max_daily_trades: int = 50  # Maximum trades per day
+    max_daily_loss_usd: float = 100.0  # Stop trading if daily loss exceeds
+    max_concurrent_positions: int = 10  # Maximum open positions
+    cooldown_after_loss_seconds: int = 60  # Wait after losing trade
 
     # Execution
     execution_delay_seconds: float = 0.0  # Delay before executing (0 for speed)
-    require_confirmation: bool = False    # Require manual confirmation
-    auto_retry_failed: bool = True        # Retry failed orders
+    require_confirmation: bool = False  # Require manual confirmation
+    auto_retry_failed: bool = True  # Retry failed orders
 
     # Circuit breakers
-    circuit_breaker_losses: int = 3       # Pause after N consecutive losses
+    circuit_breaker_losses: int = 3  # Pause after N consecutive losses
     circuit_breaker_duration_minutes: int = 30
 
 
 @dataclass
 class TradeRecord:
     """Record of an automatic trade"""
+
     id: str
     opportunity_id: str
     strategy: StrategyType
@@ -107,6 +112,7 @@ class TradeRecord:
 @dataclass
 class AutoTraderStats:
     """Statistics for auto trader"""
+
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
@@ -182,7 +188,9 @@ class AutoTrader:
         # Check circuit breaker timeout
         if self.stats.circuit_breaker_until:
             if datetime.utcnow() < self.stats.circuit_breaker_until:
-                remaining = (self.stats.circuit_breaker_until - datetime.utcnow()).seconds
+                remaining = (
+                    self.stats.circuit_breaker_until - datetime.utcnow()
+                ).seconds
                 return False, f"Circuit breaker active ({remaining}s remaining)"
             else:
                 self.stats.circuit_breaker_until = None
@@ -194,15 +202,23 @@ class AutoTrader:
             self.stats.circuit_breaker_until = datetime.utcnow() + timedelta(
                 minutes=self.config.circuit_breaker_duration_minutes
             )
-            logger.warning(f"Circuit breaker triggered: {self.stats.consecutive_losses} consecutive losses")
-            return False, f"Circuit breaker triggered after {self.stats.consecutive_losses} losses"
+            logger.warning(
+                f"Circuit breaker triggered: {self.stats.consecutive_losses} consecutive losses"
+            )
+            return (
+                False,
+                f"Circuit breaker triggered after {self.stats.consecutive_losses} losses",
+            )
 
         # Check daily limits
         if self.stats.daily_trades >= self.config.max_daily_trades:
             return False, f"Daily trade limit reached ({self.config.max_daily_trades})"
 
         if self.stats.daily_profit < -self.config.max_daily_loss_usd:
-            return False, f"Daily loss limit exceeded (${abs(self.stats.daily_profit):.2f})"
+            return (
+                False,
+                f"Daily loss limit exceeded (${abs(self.stats.daily_profit):.2f})",
+            )
 
         return True, ""
 
@@ -243,6 +259,7 @@ class AutoTrader:
             # Extract impossibility score from description
             # Format: "... | Impossibility: XX%"
             import re
+
             match = re.search(r"Impossibility: (\d+)%", opp.description)
             if match:
                 impossibility = int(match.group(1)) / 100
@@ -261,7 +278,10 @@ class AutoTrader:
         # Check max concurrent positions
         open_positions = len([t for t in self._trades.values() if t.status == "open"])
         if open_positions >= self.config.max_concurrent_positions:
-            return False, f"Max concurrent positions ({self.config.max_concurrent_positions}) reached"
+            return (
+                False,
+                f"Max concurrent positions ({self.config.max_concurrent_positions}) reached",
+            )
 
         return True, "Opportunity meets criteria"
 
@@ -306,7 +326,7 @@ class AutoTrader:
                 standard_kelly = (expected_return * exec_prob - q) / expected_return
 
                 # Apply √p adjustment for execution uncertainty
-                adjusted_kelly = standard_kelly * (exec_prob ** 0.5)
+                adjusted_kelly = standard_kelly * (exec_prob**0.5)
                 kelly_fraction = max(0, min(adjusted_kelly, 0.25))
             else:
                 kelly_fraction = 0
@@ -344,7 +364,7 @@ class AutoTrader:
             guaranteed_profit=opp.guaranteed_profit,
             capture_ratio=opp.capture_ratio,
             mispricing_type=opp.mispricing_type.value if opp.mispricing_type else None,
-            mode=self.config.mode
+            mode=self.config.mode,
         )
 
         guarantee_str = ""
@@ -380,7 +400,7 @@ class AutoTrader:
             orders = await trading_service.execute_opportunity(
                 opportunity_id=opp.id,
                 positions=opp.positions_to_take,
-                size_usd=position_size
+                size_usd=position_size,
             )
 
             trade.order_ids = [o.id for o in orders]
@@ -408,16 +428,14 @@ class AutoTrader:
             if not auto_trader_account:
                 auto_trader_account = await simulation_service.create_account(
                     name="Auto Trader",
-                    initial_capital=self.config.paper_account_capital
+                    initial_capital=self.config.paper_account_capital,
                 )
 
             account = auto_trader_account
 
             # Execute in simulation
             sim_trade = await simulation_service.execute_opportunity(
-                account_id=account.id,
-                opportunity=opp,
-                position_size=position_size
+                account_id=account.id, opportunity=opp, position_size=position_size
             )
 
             if sim_trade:
@@ -444,10 +462,9 @@ class AutoTrader:
         self._processed_opportunities.add(opp.id)
 
         # Notify callbacks
-        await self._notify_callbacks("trade_executed", {
-            "trade": trade,
-            "opportunity": opp
-        })
+        await self._notify_callbacks(
+            "trade_executed", {"trade": trade, "opportunity": opp}
+        )
 
         return trade
 
@@ -493,7 +510,9 @@ class AutoTrader:
             if not trading_service.is_ready():
                 success = await trading_service.initialize()
                 if not success:
-                    logger.error("Failed to initialize trading service, falling back to paper mode")
+                    logger.error(
+                        "Failed to initialize trading service, falling back to paper mode"
+                    )
                     self.config.mode = AutoTraderMode.PAPER
 
     async def _on_scan_complete(self, opportunities: list[ArbitrageOpportunity]):
@@ -543,7 +562,9 @@ class AutoTrader:
 
         win_rate = 0.0
         if self.stats.winning_trades + self.stats.losing_trades > 0:
-            win_rate = self.stats.winning_trades / (self.stats.winning_trades + self.stats.losing_trades)
+            win_rate = self.stats.winning_trades / (
+                self.stats.winning_trades + self.stats.losing_trades
+            )
 
         return {
             "mode": self.config.mode.value,
@@ -554,15 +575,19 @@ class AutoTrader:
             "win_rate": win_rate,
             "total_profit": self.stats.total_profit,
             "total_invested": self.stats.total_invested,
-            "roi_percent": (self.stats.total_profit / self.stats.total_invested * 100) if self.stats.total_invested > 0 else 0,
+            "roi_percent": (self.stats.total_profit / self.stats.total_invested * 100)
+            if self.stats.total_invested > 0
+            else 0,
             "daily_trades": self.stats.daily_trades,
             "daily_profit": self.stats.daily_profit,
             "consecutive_losses": self.stats.consecutive_losses,
             "circuit_breaker_active": self.stats.circuit_breaker_until is not None,
-            "last_trade_at": self.stats.last_trade_at.isoformat() if self.stats.last_trade_at else None,
+            "last_trade_at": self.stats.last_trade_at.isoformat()
+            if self.stats.last_trade_at
+            else None,
             "opportunities_seen": self.stats.opportunities_seen,
             "opportunities_executed": self.stats.opportunities_executed,
-            "opportunities_skipped": self.stats.opportunities_skipped
+            "opportunities_skipped": self.stats.opportunities_skipped,
         }
 
     def get_config(self) -> dict:
@@ -587,9 +612,7 @@ class AutoTrader:
     def get_trades(self, limit: int = 100) -> list[dict]:
         """Get recent trades"""
         trades = sorted(
-            self._trades.values(),
-            key=lambda t: t.executed_at,
-            reverse=True
+            self._trades.values(), key=lambda t: t.executed_at, reverse=True
         )[:limit]
 
         return [
@@ -605,7 +628,7 @@ class AutoTrader:
                 "capture_ratio": t.capture_ratio,
                 "mispricing_type": t.mispricing_type,
                 "status": t.status,
-                "mode": t.mode.value
+                "mode": t.mode.value,
             }
             for t in trades
         ]

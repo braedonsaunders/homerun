@@ -12,7 +12,9 @@ class WalletTracker:
 
     def __init__(self):
         self.client = polymarket_client
-        self.tracked_wallets: dict[str, dict] = {}  # In-memory cache with positions/trades
+        self.tracked_wallets: dict[
+            str, dict
+        ] = {}  # In-memory cache with positions/trades
         self._running = False
         self._callbacks: list[callable] = []
         self._initialized = False
@@ -39,7 +41,9 @@ class WalletTracker:
                     "last_trade_id": None,
                     "positions": [],
                     "recent_trades": [],
-                    "added_at": wallet.added_at.isoformat() if wallet.added_at else None
+                    "added_at": wallet.added_at.isoformat()
+                    if wallet.added_at
+                    else None,
                 }
 
         self._initialized = True
@@ -71,8 +75,7 @@ class WalletTracker:
             existing = await session.get(TrackedWallet, address_lower)
             if not existing:
                 wallet = TrackedWallet(
-                    address=address_lower,
-                    label=label or address[:10] + "..."
+                    address=address_lower, label=label or address[:10] + "..."
                 )
                 session.add(wallet)
                 await session.commit()
@@ -87,7 +90,7 @@ class WalletTracker:
             "username": username,
             "last_trade_id": None,
             "positions": [],
-            "recent_trades": []
+            "recent_trades": [],
         }
 
         # Fetch initial state
@@ -177,7 +180,9 @@ class WalletTracker:
             try:
                 new_trades = await self.check_all_wallets()
                 if new_trades:
-                    print(f"[{datetime.utcnow().isoformat()}] {len(new_trades)} new trades detected")
+                    print(
+                        f"[{datetime.utcnow().isoformat()}] {len(new_trades)} new trades detected"
+                    )
             except Exception as e:
                 print(f"Wallet monitor error: {e}")
 

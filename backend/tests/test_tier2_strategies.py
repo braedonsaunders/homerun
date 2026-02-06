@@ -10,6 +10,7 @@ Covers:
 """
 
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
@@ -20,13 +21,18 @@ from models.opportunity import StrategyType, MispricingType
 from services.strategies.mutually_exclusive import MutuallyExclusiveStrategy
 from services.strategies.contradiction import ContradictionStrategy
 from services.strategies.must_happen import MustHappenStrategy
-from services.strategies.miracle import MiracleStrategy, MIRACLE_KEYWORDS, IMPOSSIBILITY_PHRASES
+from services.strategies.miracle import (
+    MiracleStrategy,
+    MIRACLE_KEYWORDS,
+    IMPOSSIBILITY_PHRASES,
+)
 from services.strategies.settlement_lag import SettlementLagStrategy
 
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_market(
     id: str = "m1",
@@ -93,6 +99,7 @@ def _make_event(
 # MutuallyExclusiveStrategy Tests
 # ===========================================================================
 
+
 class TestMutuallyExclusiveStrategy:
     """Tests for MutuallyExclusiveStrategy (Strategy 2)."""
 
@@ -116,7 +123,9 @@ class TestMutuallyExclusiveStrategy:
             yes_price=0.48,
             no_price=0.52,
         )
-        event = _make_event(id="e_pol", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_pol", title="2028 Presidential Election", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2], prices={})
 
         assert len(opps) >= 1
@@ -146,7 +155,9 @@ class TestMutuallyExclusiveStrategy:
             yes_price=0.50,
             no_price=0.50,
         )
-        event = _make_event(id="e_pol2", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_pol2", title="2028 Presidential Election", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2], prices={})
         assert len(opps) == 0
 
@@ -166,7 +177,9 @@ class TestMutuallyExclusiveStrategy:
             yes_price=0.46,
             no_price=0.54,
         )
-        event = _make_event(id="e_wl", title="Championship 2028 Finals", markets=[m1, m2])
+        event = _make_event(
+            id="e_wl", title="Championship 2028 Finals", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2], prices={})
 
         assert len(opps) >= 1
@@ -213,7 +226,9 @@ class TestMutuallyExclusiveStrategy:
             no_price=0.52,
             closed=True,
         )
-        event = _make_event(id="e_cl", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_cl", title="2028 Presidential Election", markets=[m1, m2]
+        )
         # Only test the in-event path (empty markets list avoids cross-market detection)
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
@@ -234,7 +249,9 @@ class TestMutuallyExclusiveStrategy:
             no_price=0.52,
             active=False,
         )
-        event = _make_event(id="e_inact", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_inact", title="2028 Presidential Election", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -242,9 +259,15 @@ class TestMutuallyExclusiveStrategy:
 
     def test_more_than_two_markets_skipped_in_event(self, strategy):
         """Events with more than 2 active markets should not produce in-event pairs."""
-        m1 = _make_market(id="3a", question="Will the Democrat win the 2028 race?", yes_price=0.30)
-        m2 = _make_market(id="3b", question="Will the Republican win the 2028 race?", yes_price=0.35)
-        m3 = _make_market(id="3c", question="Will the Independent win the 2028 race?", yes_price=0.20)
+        m1 = _make_market(
+            id="3a", question="Will the Democrat win the 2028 race?", yes_price=0.30
+        )
+        m2 = _make_market(
+            id="3b", question="Will the Republican win the 2028 race?", yes_price=0.35
+        )
+        m3 = _make_market(
+            id="3c", question="Will the Independent win the 2028 race?", yes_price=0.20
+        )
         event = _make_event(id="e3", title="2028 Race", markets=[m1, m2, m3])
         # pass empty market list so cross-market check doesn't fire
         opps = strategy.detect(events=[event], markets=[], prices={})
@@ -271,7 +294,9 @@ class TestMutuallyExclusiveStrategy:
             "lp1_yes": {"mid": 0.44},
             "lp2_yes": {"mid": 0.46},
         }
-        event = _make_event(id="e_lp", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_lp", title="2028 Presidential Election", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2], prices=live_prices)
         assert len(opps) >= 1
 
@@ -312,7 +337,9 @@ class TestMutuallyExclusiveStrategy:
             yes_price=0.30,
             no_price=0.70,
         )
-        event = _make_event(id="e_low", title="2028 Presidential Election", markets=[m1, m2])
+        event = _make_event(
+            id="e_low", title="2028 Presidential Election", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2], prices={})
         assert len(opps) == 0
 
@@ -320,6 +347,7 @@ class TestMutuallyExclusiveStrategy:
 # ===========================================================================
 # ContradictionStrategy Tests
 # ===========================================================================
+
 
 class TestContradictionStrategy:
     """Tests for ContradictionStrategy (Strategy 3)."""
@@ -535,6 +563,7 @@ class TestContradictionStrategy:
 # MustHappenStrategy Tests
 # ===========================================================================
 
+
 class TestMustHappenStrategy:
     """Tests for MustHappenStrategy (Strategy 5)."""
 
@@ -546,10 +575,29 @@ class TestMustHappenStrategy:
 
     def test_detects_must_happen_with_winner_keyword(self, strategy):
         """Event whose title contains 'winner' and YES prices sum < 1.0 should produce opp."""
-        m1 = _make_market(id="mh1", question="Candidate Alpha wins the 2028 primary?", yes_price=0.30, no_price=0.70)
-        m2 = _make_market(id="mh2", question="Candidate Beta wins the 2028 primary?", yes_price=0.32, no_price=0.68)
-        m3 = _make_market(id="mh3", question="Candidate Gamma wins the 2028 primary?", yes_price=0.30, no_price=0.70)
-        event = _make_event(id="e_mh", title="Who will be the winner of the 2028 primary?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="mh1",
+            question="Candidate Alpha wins the 2028 primary?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        m2 = _make_market(
+            id="mh2",
+            question="Candidate Beta wins the 2028 primary?",
+            yes_price=0.32,
+            no_price=0.68,
+        )
+        m3 = _make_market(
+            id="mh3",
+            question="Candidate Gamma wins the 2028 primary?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        event = _make_event(
+            id="e_mh",
+            title="Who will be the winner of the 2028 primary?",
+            markets=[m1, m2, m3],
+        )
         opps = strategy.detect(events=[event], markets=[m1, m2, m3], prices={})
 
         assert len(opps) == 1
@@ -563,10 +611,18 @@ class TestMustHappenStrategy:
 
     def test_detects_with_who_will_keyword(self, strategy):
         """Event with 'who will' in title should be recognised as potentially exhaustive."""
-        m1 = _make_market(id="ww1", question="Player A wins MVP 2028?", yes_price=0.28, no_price=0.72)
-        m2 = _make_market(id="ww2", question="Player B wins MVP 2028?", yes_price=0.30, no_price=0.70)
-        m3 = _make_market(id="ww3", question="Player C wins MVP 2028?", yes_price=0.32, no_price=0.68)
-        event = _make_event(id="e_ww", title="Who will win MVP 2028?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="ww1", question="Player A wins MVP 2028?", yes_price=0.28, no_price=0.72
+        )
+        m2 = _make_market(
+            id="ww2", question="Player B wins MVP 2028?", yes_price=0.30, no_price=0.70
+        )
+        m3 = _make_market(
+            id="ww3", question="Player C wins MVP 2028?", yes_price=0.32, no_price=0.68
+        )
+        event = _make_event(
+            id="e_ww", title="Who will win MVP 2028?", markets=[m1, m2, m3]
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
 
@@ -574,10 +630,27 @@ class TestMustHappenStrategy:
 
     def test_detects_with_elected_keyword(self, strategy):
         """Event with 'elected' in title should match."""
-        m1 = _make_market(id="el1", question="Person A elected governor 2028?", yes_price=0.29, no_price=0.71)
-        m2 = _make_market(id="el2", question="Person B elected governor 2028?", yes_price=0.30, no_price=0.70)
-        m3 = _make_market(id="el3", question="Person C elected governor 2028?", yes_price=0.31, no_price=0.69)
-        event = _make_event(id="e_el", title="Who gets elected governor 2028?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="el1",
+            question="Person A elected governor 2028?",
+            yes_price=0.29,
+            no_price=0.71,
+        )
+        m2 = _make_market(
+            id="el2",
+            question="Person B elected governor 2028?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        m3 = _make_market(
+            id="el3",
+            question="Person C elected governor 2028?",
+            yes_price=0.31,
+            no_price=0.69,
+        )
+        event = _make_event(
+            id="e_el", title="Who gets elected governor 2028?", markets=[m1, m2, m3]
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
 
@@ -585,10 +658,29 @@ class TestMustHappenStrategy:
 
     def test_no_opportunity_when_sum_gte_one(self, strategy):
         """When total YES prices >= 1.0 no must-happen opportunity should exist."""
-        m1 = _make_market(id="mhn1", question="Runner A wins the 2028 marathon?", yes_price=0.40, no_price=0.60)
-        m2 = _make_market(id="mhn2", question="Runner B wins the 2028 marathon?", yes_price=0.35, no_price=0.65)
-        m3 = _make_market(id="mhn3", question="Runner C wins the 2028 marathon?", yes_price=0.30, no_price=0.70)
-        event = _make_event(id="e_mhn", title="Who will be the winner of the 2028 marathon?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="mhn1",
+            question="Runner A wins the 2028 marathon?",
+            yes_price=0.40,
+            no_price=0.60,
+        )
+        m2 = _make_market(
+            id="mhn2",
+            question="Runner B wins the 2028 marathon?",
+            yes_price=0.35,
+            no_price=0.65,
+        )
+        m3 = _make_market(
+            id="mhn3",
+            question="Runner C wins the 2028 marathon?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        event = _make_event(
+            id="e_mhn",
+            title="Who will be the winner of the 2028 marathon?",
+            markets=[m1, m2, m3],
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0  # sum = 1.05
 
@@ -596,10 +688,29 @@ class TestMustHappenStrategy:
 
     def test_very_low_total_filtered_out(self, strategy):
         """If total YES is below 0.80 the strategy suspects hidden outcomes."""
-        m1 = _make_market(id="lf1", question="Candidate A wins the 2028 race?", yes_price=0.20, no_price=0.80)
-        m2 = _make_market(id="lf2", question="Candidate B wins the 2028 race?", yes_price=0.20, no_price=0.80)
-        m3 = _make_market(id="lf3", question="Candidate C wins the 2028 race?", yes_price=0.20, no_price=0.80)
-        event = _make_event(id="e_lf", title="Who will be the winner of the 2028 race?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="lf1",
+            question="Candidate A wins the 2028 race?",
+            yes_price=0.20,
+            no_price=0.80,
+        )
+        m2 = _make_market(
+            id="lf2",
+            question="Candidate B wins the 2028 race?",
+            yes_price=0.20,
+            no_price=0.80,
+        )
+        m3 = _make_market(
+            id="lf3",
+            question="Candidate C wins the 2028 race?",
+            yes_price=0.20,
+            no_price=0.80,
+        )
+        event = _make_event(
+            id="e_lf",
+            title="Who will be the winner of the 2028 race?",
+            markets=[m1, m2, m3],
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0  # sum = 0.60
 
@@ -607,10 +718,21 @@ class TestMustHappenStrategy:
 
     def test_negrisk_events_skipped(self, strategy):
         """NegRisk events should be deferred to the NegRiskStrategy."""
-        m1 = _make_market(id="nr1", question="Team X wins?", yes_price=0.30, no_price=0.70)
-        m2 = _make_market(id="nr2", question="Team Y wins?", yes_price=0.32, no_price=0.68)
-        m3 = _make_market(id="nr3", question="Team Z wins?", yes_price=0.30, no_price=0.70)
-        event = _make_event(id="e_nr", title="Who will be the winner?", markets=[m1, m2, m3], neg_risk=True)
+        m1 = _make_market(
+            id="nr1", question="Team X wins?", yes_price=0.30, no_price=0.70
+        )
+        m2 = _make_market(
+            id="nr2", question="Team Y wins?", yes_price=0.32, no_price=0.68
+        )
+        m3 = _make_market(
+            id="nr3", question="Team Z wins?", yes_price=0.30, no_price=0.70
+        )
+        event = _make_event(
+            id="e_nr",
+            title="Who will be the winner?",
+            markets=[m1, m2, m3],
+            neg_risk=True,
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -618,10 +740,21 @@ class TestMustHappenStrategy:
 
     def test_closed_events_skipped(self, strategy):
         """Closed events should not be analysed."""
-        m1 = _make_market(id="ce1", question="Team X wins?", yes_price=0.30, no_price=0.70)
-        m2 = _make_market(id="ce2", question="Team Y wins?", yes_price=0.32, no_price=0.68)
-        m3 = _make_market(id="ce3", question="Team Z wins?", yes_price=0.30, no_price=0.70)
-        event = _make_event(id="e_ce", title="Who will be the winner?", markets=[m1, m2, m3], closed=True)
+        m1 = _make_market(
+            id="ce1", question="Team X wins?", yes_price=0.30, no_price=0.70
+        )
+        m2 = _make_market(
+            id="ce2", question="Team Y wins?", yes_price=0.32, no_price=0.68
+        )
+        m3 = _make_market(
+            id="ce3", question="Team Z wins?", yes_price=0.30, no_price=0.70
+        )
+        event = _make_event(
+            id="e_ce",
+            title="Who will be the winner?",
+            markets=[m1, m2, m3],
+            closed=True,
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -629,7 +762,9 @@ class TestMustHappenStrategy:
 
     def test_single_market_event_skipped(self, strategy):
         """Events with fewer than 2 markets should be skipped."""
-        m1 = _make_market(id="sm1", question="Will X happen?", yes_price=0.30, no_price=0.70)
+        m1 = _make_market(
+            id="sm1", question="Will X happen?", yes_price=0.30, no_price=0.70
+        )
         event = _make_event(id="e_sm", title="Who will be the winner?", markets=[m1])
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
@@ -638,9 +773,21 @@ class TestMustHappenStrategy:
 
     def test_non_exhaustive_title_skipped(self, strategy):
         """Events without exhaustive keywords and < 3 markets should be skipped."""
-        m1 = _make_market(id="ne1", question="Will the weather be sunny?", yes_price=0.30, no_price=0.70)
-        m2 = _make_market(id="ne2", question="Will it rain heavily today?", yes_price=0.32, no_price=0.68)
-        event = _make_event(id="e_ne", title="Weather forecast for Tuesday", markets=[m1, m2])
+        m1 = _make_market(
+            id="ne1",
+            question="Will the weather be sunny?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        m2 = _make_market(
+            id="ne2",
+            question="Will it rain heavily today?",
+            yes_price=0.32,
+            no_price=0.68,
+        )
+        event = _make_event(
+            id="e_ne", title="Weather forecast for Tuesday", markets=[m1, m2]
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -648,16 +795,35 @@ class TestMustHappenStrategy:
 
     def test_live_prices_override_static(self, strategy):
         """Live prices from the prices dict should be used when available."""
-        m1 = _make_market(id="mlp1", question="Runner A wins the 2028 marathon?", yes_price=0.40, no_price=0.60)
-        m2 = _make_market(id="mlp2", question="Runner B wins the 2028 marathon?", yes_price=0.35, no_price=0.65)
-        m3 = _make_market(id="mlp3", question="Runner C wins the 2028 marathon?", yes_price=0.30, no_price=0.70)
+        m1 = _make_market(
+            id="mlp1",
+            question="Runner A wins the 2028 marathon?",
+            yes_price=0.40,
+            no_price=0.60,
+        )
+        m2 = _make_market(
+            id="mlp2",
+            question="Runner B wins the 2028 marathon?",
+            yes_price=0.35,
+            no_price=0.65,
+        )
+        m3 = _make_market(
+            id="mlp3",
+            question="Runner C wins the 2028 marathon?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
         # Static sum = 1.05 (no opp). Live prices bring it down.
         live_prices = {
             "mlp1_yes": {"mid": 0.30},
             "mlp2_yes": {"mid": 0.30},
             "mlp3_yes": {"mid": 0.30},
         }
-        event = _make_event(id="e_mlp", title="Who will be the winner of the 2028 marathon?", markets=[m1, m2, m3])
+        event = _make_event(
+            id="e_mlp",
+            title="Who will be the winner of the 2028 marathon?",
+            markets=[m1, m2, m3],
+        )
         opps = strategy.detect(events=[event], markets=[], prices=live_prices)
         assert len(opps) == 1
 
@@ -665,10 +831,29 @@ class TestMustHappenStrategy:
 
     def test_low_total_adds_risk_factor(self, strategy):
         """Totals between 0.80 and 0.90 should add a 'missing outcomes' risk factor."""
-        m1 = _make_market(id="lr1", question="Candidate A wins the 2028 race?", yes_price=0.27, no_price=0.73)
-        m2 = _make_market(id="lr2", question="Candidate B wins the 2028 race?", yes_price=0.28, no_price=0.72)
-        m3 = _make_market(id="lr3", question="Candidate C wins the 2028 race?", yes_price=0.30, no_price=0.70)
-        event = _make_event(id="e_lr", title="Who will be the winner of the 2028 race?", markets=[m1, m2, m3])
+        m1 = _make_market(
+            id="lr1",
+            question="Candidate A wins the 2028 race?",
+            yes_price=0.27,
+            no_price=0.73,
+        )
+        m2 = _make_market(
+            id="lr2",
+            question="Candidate B wins the 2028 race?",
+            yes_price=0.28,
+            no_price=0.72,
+        )
+        m3 = _make_market(
+            id="lr3",
+            question="Candidate C wins the 2028 race?",
+            yes_price=0.30,
+            no_price=0.70,
+        )
+        event = _make_event(
+            id="e_lr",
+            title="Who will be the winner of the 2028 race?",
+            markets=[m1, m2, m3],
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         # total = 0.85, above 0.80 but below 0.90
         assert len(opps) == 1
@@ -679,6 +864,7 @@ class TestMustHappenStrategy:
 # ===========================================================================
 # MiracleStrategy Tests
 # ===========================================================================
+
 
 class TestMiracleStrategy:
     """Tests for MiracleStrategy (Strategy 6)."""
@@ -702,7 +888,10 @@ class TestMiracleStrategy:
         assert len(opps) == 1
         opp = opps[0]
         assert opp.strategy == StrategyType.MIRACLE
-        assert "alien" in opp.description.lower() or "supernatural" in opp.description.lower()
+        assert (
+            "alien" in opp.description.lower()
+            or "supernatural" in opp.description.lower()
+        )
         assert opp.positions_to_take[0]["outcome"] == "NO"
 
     # --- Supernatural event detection ---
@@ -807,14 +996,18 @@ class TestMiracleStrategy:
 
     def test_impossibility_score_alien(self, strategy):
         """Alien keyword should yield high impossibility score."""
-        score, category, reasons = strategy.calculate_impossibility_score("Will aliens invade Earth?")
+        score, category, reasons = strategy.calculate_impossibility_score(
+            "Will aliens invade Earth?"
+        )
         assert score >= 0.90
         assert category == "supernatural"
         assert len(reasons) > 0
 
     def test_impossibility_score_time_travel(self, strategy):
         """Time travel keyword should yield high score."""
-        score, category, reasons = strategy.calculate_impossibility_score("Will time travel be proven real?")
+        score, category, reasons = strategy.calculate_impossibility_score(
+            "Will time travel be proven real?"
+        )
         assert score >= 0.90
         assert category == "impossible_physics"
 
@@ -919,7 +1112,9 @@ class TestMiracleStrategy:
     # --- Various miracle categories ---
 
     def test_nuclear_war_category(self, strategy):
-        score, category, reasons = strategy.calculate_impossibility_score("Will nuclear war start in 2028?")
+        score, category, reasons = strategy.calculate_impossibility_score(
+            "Will nuclear war start in 2028?"
+        )
         assert score >= 0.70
         assert category == "apocalypse"
 
@@ -930,12 +1125,16 @@ class TestMiracleStrategy:
         assert score >= 0.90
 
     def test_rapture_category(self, strategy):
-        score, category, reasons = strategy.calculate_impossibility_score("Will the rapture happen this year?")
+        score, category, reasons = strategy.calculate_impossibility_score(
+            "Will the rapture happen this year?"
+        )
         assert score >= 0.90
         assert category == "supernatural"
 
     def test_ww3_category(self, strategy):
-        score, category, reasons = strategy.calculate_impossibility_score("Will ww3 break out by Friday?")
+        score, category, reasons = strategy.calculate_impossibility_score(
+            "Will ww3 break out by Friday?"
+        )
         assert score >= 0.80
 
     def test_asteroid_impact_category(self, strategy):
@@ -955,6 +1154,7 @@ class TestMiracleStrategy:
 # ===========================================================================
 # SettlementLagStrategy Tests
 # ===========================================================================
+
 
 class TestSettlementLagStrategy:
     """Tests for SettlementLagStrategy (Strategy 8)."""
@@ -981,7 +1181,10 @@ class TestSettlementLagStrategy:
         opp = opps[0]
         assert opp.strategy == StrategyType.SETTLEMENT_LAG
         assert opp.mispricing_type == MispricingType.SETTLEMENT_LAG
-        assert "past resolution date" in opp.description.lower() or "past resolution date" in str(opp.description)
+        assert (
+            "past resolution date" in opp.description.lower()
+            or "past resolution date" in str(opp.description)
+        )
         assert opp.total_cost == pytest.approx(0.60, abs=0.01)
 
     # --- Appears resolved (YES near zero) ---
@@ -1064,10 +1267,18 @@ class TestSettlementLagStrategy:
 
     def test_negrisk_settlement_lag(self, strategy):
         """NegRisk events with YES sum deviation should be detected."""
-        m1 = _make_market(id="nrs1", question="Candidate A wins?", yes_price=0.02, no_price=0.98)
-        m2 = _make_market(id="nrs2", question="Candidate B wins?", yes_price=0.85, no_price=0.15)
-        m3 = _make_market(id="nrs3", question="Candidate C wins?", yes_price=0.02, no_price=0.98)
-        event = _make_event(id="e_nrs", title="Who wins?", markets=[m1, m2, m3], neg_risk=True)
+        m1 = _make_market(
+            id="nrs1", question="Candidate A wins?", yes_price=0.02, no_price=0.98
+        )
+        m2 = _make_market(
+            id="nrs2", question="Candidate B wins?", yes_price=0.85, no_price=0.15
+        )
+        m3 = _make_market(
+            id="nrs3", question="Candidate C wins?", yes_price=0.02, no_price=0.98
+        )
+        event = _make_event(
+            id="e_nrs", title="Who wins?", markets=[m1, m2, m3], neg_risk=True
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         opp = opps[0]
@@ -1078,10 +1289,18 @@ class TestSettlementLagStrategy:
 
     def test_negrisk_no_deviation_no_opportunity(self, strategy):
         """NegRisk event with YES prices summing to ~1.0 should not flag."""
-        m1 = _make_market(id="nrn1", question="Option A?", yes_price=0.33, no_price=0.67)
-        m2 = _make_market(id="nrn2", question="Option B?", yes_price=0.34, no_price=0.66)
-        m3 = _make_market(id="nrn3", question="Option C?", yes_price=0.33, no_price=0.67)
-        event = _make_event(id="e_nrn", title="Pick one", markets=[m1, m2, m3], neg_risk=True)
+        m1 = _make_market(
+            id="nrn1", question="Option A?", yes_price=0.33, no_price=0.67
+        )
+        m2 = _make_market(
+            id="nrn2", question="Option B?", yes_price=0.34, no_price=0.66
+        )
+        m3 = _make_market(
+            id="nrn3", question="Option C?", yes_price=0.33, no_price=0.67
+        )
+        event = _make_event(
+            id="e_nrn", title="Pick one", markets=[m1, m2, m3], neg_risk=True
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0  # sum = 1.0
 
@@ -1161,7 +1380,9 @@ class TestSettlementLagStrategy:
         """Closed NegRisk events should be skipped."""
         m1 = _make_market(id="nrcl1", question="A wins?", yes_price=0.02, no_price=0.98)
         m2 = _make_market(id="nrcl2", question="B wins?", yes_price=0.85, no_price=0.15)
-        event = _make_event(id="e_nrcl", title="Who wins?", markets=[m1, m2], neg_risk=True, closed=True)
+        event = _make_event(
+            id="e_nrcl", title="Who wins?", markets=[m1, m2], neg_risk=True, closed=True
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -1171,7 +1392,9 @@ class TestSettlementLagStrategy:
         """NegRisk event with YES sum > 1.0 should not flag."""
         m1 = _make_market(id="nrgt1", question="X wins?", yes_price=0.50, no_price=0.50)
         m2 = _make_market(id="nrgt2", question="Y wins?", yes_price=0.60, no_price=0.40)
-        event = _make_event(id="e_nrgt", title="Who wins?", markets=[m1, m2], neg_risk=True)
+        event = _make_event(
+            id="e_nrgt", title="Who wins?", markets=[m1, m2], neg_risk=True
+        )
         opps = strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
@@ -1179,6 +1402,7 @@ class TestSettlementLagStrategy:
 # ===========================================================================
 # BaseStrategy integration tests
 # ===========================================================================
+
 
 class TestBaseStrategyIntegration:
     """Cross-cutting concerns tested through concrete strategies."""
@@ -1229,7 +1453,10 @@ class TestBaseStrategyIntegration:
         opps = strategy.detect(events=[event], markets=[m1, m2], prices={})
         assert len(opps) >= 1
         opp = opps[0]
-        assert any("short time" in rf.lower() or "very short" in rf.lower() for rf in opp.risk_factors)
+        assert any(
+            "short time" in rf.lower() or "very short" in rf.lower()
+            for rf in opp.risk_factors
+        )
 
     def test_max_position_size_based_on_liquidity(self):
         """max_position_size should be 10% of min liquidity."""

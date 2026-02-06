@@ -32,10 +32,7 @@ class NegRiskStrategy(BaseStrategy):
     description = "Buy YES on all outcomes in verified mutually-exclusive events"
 
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         opportunities = []
 
@@ -70,9 +67,7 @@ class NegRiskStrategy(BaseStrategy):
         return opportunities
 
     def _detect_negrisk_event(
-        self,
-        event: Event,
-        prices: dict[str, dict]
+        self, event: Event, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
         """Detect arbitrage in official NegRisk events"""
         active_markets = [m for m in event.markets if m.active and not m.closed]
@@ -93,13 +88,17 @@ class NegRiskStrategy(BaseStrategy):
                     yes_price = prices[yes_token].get("mid", yes_price)
 
             total_yes += yes_price
-            positions.append({
-                "action": "BUY",
-                "outcome": "YES",
-                "market": market.question[:50],
-                "price": yes_price,
-                "token_id": market.clob_token_ids[0] if market.clob_token_ids else None
-            })
+            positions.append(
+                {
+                    "action": "BUY",
+                    "outcome": "YES",
+                    "market": market.question[:50],
+                    "price": yes_price,
+                    "token_id": market.clob_token_ids[0]
+                    if market.clob_token_ids
+                    else None,
+                }
+            )
 
         # In NegRisk, exactly one outcome wins, so total YES should = $1
         if total_yes >= 1.0:
@@ -111,13 +110,11 @@ class NegRiskStrategy(BaseStrategy):
             total_cost=total_yes,
             markets=active_markets,
             positions=positions,
-            event=event
+            event=event,
         )
 
     def _detect_date_sweep(
-        self,
-        event: Event,
-        prices: dict[str, dict]
+        self, event: Event, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
         """
         DEPRECATED - DO NOT USE
@@ -153,14 +150,39 @@ class NegRiskStrategy(BaseStrategy):
 
         # Independent bet type keywords - these can all be true simultaneously
         independent_keywords = [
-            "spread", "handicap", "-1.5", "+1.5", "-0.5", "+0.5", "-2.5", "+2.5",
-            "over/under", "o/u", "over ", "under ", "total goals", "total points",
-            "both teams", "btts", "both to score",
-            "first half", "second half", "1st half", "2nd half",
-            "corners", "cards", "yellow", "red card",
-            "clean sheet", "to nil",
-            "anytime scorer", "first scorer", "last scorer",
-            "odd/even", "odd goals", "even goals"
+            "spread",
+            "handicap",
+            "-1.5",
+            "+1.5",
+            "-0.5",
+            "+0.5",
+            "-2.5",
+            "+2.5",
+            "over/under",
+            "o/u",
+            "over ",
+            "under ",
+            "total goals",
+            "total points",
+            "both teams",
+            "btts",
+            "both to score",
+            "first half",
+            "second half",
+            "1st half",
+            "2nd half",
+            "corners",
+            "cards",
+            "yellow",
+            "red card",
+            "clean sheet",
+            "to nil",
+            "anytime scorer",
+            "first scorer",
+            "last scorer",
+            "odd/even",
+            "odd goals",
+            "even goals",
         ]
 
         return any(kw in question_lower for kw in independent_keywords)
@@ -174,21 +196,48 @@ class NegRiskStrategy(BaseStrategy):
 
         # Date-based keywords that indicate cumulative markets
         date_keywords = [
-            "by january", "by february", "by march", "by april", "by may", "by june",
-            "by july", "by august", "by september", "by october", "by november", "by december",
-            "by jan", "by feb", "by mar", "by apr", "by jun", "by jul", "by aug", "by sep", "by oct", "by nov", "by dec",
-            "before january", "before february", "before march", "before april",
-            "by q1", "by q2", "by q3", "by q4",
-            "by end of", "by the end of",
-            "by 2025", "by 2026", "by 2027",
+            "by january",
+            "by february",
+            "by march",
+            "by april",
+            "by may",
+            "by june",
+            "by july",
+            "by august",
+            "by september",
+            "by october",
+            "by november",
+            "by december",
+            "by jan",
+            "by feb",
+            "by mar",
+            "by apr",
+            "by jun",
+            "by jul",
+            "by aug",
+            "by sep",
+            "by oct",
+            "by nov",
+            "by dec",
+            "before january",
+            "before february",
+            "before march",
+            "before april",
+            "by q1",
+            "by q2",
+            "by q3",
+            "by q4",
+            "by end of",
+            "by the end of",
+            "by 2025",
+            "by 2026",
+            "by 2027",
         ]
 
         return any(kw in question_lower for kw in date_keywords)
 
     def _detect_multi_outcome(
-        self,
-        event: Event,
-        prices: dict[str, dict]
+        self, event: Event, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
         """
         Detect multi-outcome arbitrage: exhaustive outcomes where one must win
@@ -213,15 +262,15 @@ class NegRiskStrategy(BaseStrategy):
         # CRITICAL: Filter out independent betting markets
         # These are NOT mutually exclusive - spread, over/under, BTTS can all be true!
         exclusive_markets = [
-            m for m in active_markets
+            m
+            for m in active_markets
             if not self._is_independent_betting_market(m.question)
         ]
 
         # CRITICAL: Filter out date-based markets
         # "By X date" markets are CUMULATIVE, not mutually exclusive!
         exclusive_markets = [
-            m for m in exclusive_markets
-            if not self._is_date_based_market(m.question)
+            m for m in exclusive_markets if not self._is_date_based_market(m.question)
         ]
 
         # If most markets are independent bet types or date-based, skip this event
@@ -245,13 +294,17 @@ class NegRiskStrategy(BaseStrategy):
                     yes_price = prices[yes_token].get("mid", yes_price)
 
             total_yes += yes_price
-            positions.append({
-                "action": "BUY",
-                "outcome": "YES",
-                "market": market.question[:50],
-                "price": yes_price,
-                "token_id": market.clob_token_ids[0] if market.clob_token_ids else None
-            })
+            positions.append(
+                {
+                    "action": "BUY",
+                    "outcome": "YES",
+                    "market": market.question[:50],
+                    "price": yes_price,
+                    "token_id": market.clob_token_ids[0]
+                    if market.clob_token_ids
+                    else None,
+                }
+            )
 
         if total_yes >= 1.0:
             return None
@@ -271,10 +324,13 @@ class NegRiskStrategy(BaseStrategy):
                 total_cost=total_yes,
                 markets=exclusive_markets,
                 positions=positions,
-                event=event
+                event=event,
             )
             if opp:
-                opp.risk_factors.insert(0, f"⚠️ LOW TOTAL ({total_yes:.0%}) - likely missing outcomes, HIGH RISK")
+                opp.risk_factors.insert(
+                    0,
+                    f"⚠️ LOW TOTAL ({total_yes:.0%}) - likely missing outcomes, HIGH RISK",
+                )
             return opp
 
         opp = self.create_opportunity(
@@ -283,11 +339,13 @@ class NegRiskStrategy(BaseStrategy):
             total_cost=total_yes,
             markets=exclusive_markets,
             positions=positions,
-            event=event
+            event=event,
         )
 
         # Still add a warning since we can't verify exhaustiveness
         if opp:
-            opp.risk_factors.insert(0, "Verify manually: ensure all possible outcomes are listed")
+            opp.risk_factors.insert(
+                0, "Verify manually: ensure all possible outcomes are listed"
+            )
 
         return opp

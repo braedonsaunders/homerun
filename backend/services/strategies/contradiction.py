@@ -41,19 +41,15 @@ class ContradictionStrategy(BaseStrategy):
         # ("over", "under"),   # REMOVED - not exhaustive
         # ("more", "less"),    # REMOVED - not exhaustive
         # ("higher", "lower"), # REMOVED - not exhaustive
-
         # SAFER: These are more likely to be true contradictions
-        ("before", "after"),   # Still risky if "on the date" is possible
-        ("win", "lose"),       # Usually exhaustive in head-to-head
-        ("pass", "fail"),      # Usually binary
-        ("approve", "reject"), # Usually binary
+        ("before", "after"),  # Still risky if "on the date" is possible
+        ("win", "lose"),  # Usually exhaustive in head-to-head
+        ("pass", "fail"),  # Usually binary
+        ("approve", "reject"),  # Usually binary
     ]
 
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         opportunities = []
 
@@ -91,9 +87,32 @@ class ContradictionStrategy(BaseStrategy):
 
         # Common words to ignore
         stop_words = {
-            "will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are",
-            "of", "for", "with", "this", "that", "it", "at", "from", "or", "and",
-            "market", "price", "2025", "2026", "2027"
+            "will",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "by",
+            "to",
+            "be",
+            "is",
+            "are",
+            "of",
+            "for",
+            "with",
+            "this",
+            "that",
+            "it",
+            "at",
+            "from",
+            "or",
+            "and",
+            "market",
+            "price",
+            "2025",
+            "2026",
+            "2027",
         }
 
         for market in markets:
@@ -111,16 +130,27 @@ class ContradictionStrategy(BaseStrategy):
         return index
 
     def _find_contradiction_candidates(
-        self,
-        market: Market,
-        topic_index: dict[str, list[Market]]
+        self, market: Market, topic_index: dict[str, list[Market]]
     ) -> list[Market]:
         """Find markets that might contradict this one"""
         candidates = {}  # Use dict keyed by ID since Market isn't hashable
         question = market.question.lower()
 
         # Get markets sharing topic words
-        stop_words = {"will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are", "of"}
+        stop_words = {
+            "will",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "by",
+            "to",
+            "be",
+            "is",
+            "are",
+            "of",
+        }
         words = [w for w in question.split() if w not in stop_words and len(w) > 3]
 
         for word in words:
@@ -154,8 +184,26 @@ class ContradictionStrategy(BaseStrategy):
     def _share_topic(self, q_a: str, q_b: str) -> bool:
         """Check if two questions share enough topic context"""
         stop_words = {
-            "will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are",
-            "of", "for", "with", "above", "below", "over", "under", "more", "less"
+            "will",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "by",
+            "to",
+            "be",
+            "is",
+            "are",
+            "of",
+            "for",
+            "with",
+            "above",
+            "below",
+            "over",
+            "under",
+            "more",
+            "less",
         }
 
         words_a = set(q_a.split()) - stop_words
@@ -171,10 +219,7 @@ class ContradictionStrategy(BaseStrategy):
         return len(common) >= 2
 
     def _check_contradiction(
-        self,
-        market_a: Market,
-        market_b: Market,
-        prices: dict[str, dict]
+        self, market_a: Market, market_b: Market, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
         """
         Check contradiction arbitrage.
@@ -208,15 +253,19 @@ class ContradictionStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market_a.question[:50],
                     "price": yes_a,
-                    "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None
+                    "token_id": market_a.clob_token_ids[0]
+                    if market_a.clob_token_ids
+                    else None,
                 },
                 {
                     "action": "BUY",
                     "outcome": "YES",
                     "market": market_b.question[:50],
                     "price": yes_b,
-                    "token_id": market_b.clob_token_ids[0] if market_b.clob_token_ids else None
-                }
+                    "token_id": market_b.clob_token_ids[0]
+                    if market_b.clob_token_ids
+                    else None,
+                },
             ]
 
             opp = self.create_opportunity(
@@ -224,11 +273,13 @@ class ContradictionStrategy(BaseStrategy):
                 description=f"VERIFY MANUALLY: Check markets are truly exhaustive. YES+YES: ${yes_a:.3f} + ${yes_b:.3f} = ${cost_both_yes:.3f}",
                 total_cost=cost_both_yes,
                 markets=[market_a, market_b],
-                positions=positions
+                positions=positions,
             )
             # Add extra risk factor for contradiction strategy
             if opp:
-                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
+                opp.risk_factors.insert(
+                    0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive"
+                )
             return opp
 
         # Approach 2: Buy YES on A, NO on B
@@ -247,15 +298,19 @@ class ContradictionStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market_a.question[:50],
                     "price": yes_a,
-                    "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None
+                    "token_id": market_a.clob_token_ids[0]
+                    if market_a.clob_token_ids
+                    else None,
                 },
                 {
                     "action": "BUY",
                     "outcome": "NO",
                     "market": market_b.question[:50],
                     "price": no_b,
-                    "token_id": market_b.clob_token_ids[1] if len(market_b.clob_token_ids) > 1 else None
-                }
+                    "token_id": market_b.clob_token_ids[1]
+                    if len(market_b.clob_token_ids) > 1
+                    else None,
+                },
             ]
 
             opp = self.create_opportunity(
@@ -263,11 +318,13 @@ class ContradictionStrategy(BaseStrategy):
                 description=f"VERIFY MANUALLY: Check markets are truly exhaustive. YES+NO: ${yes_a:.3f} + ${no_b:.3f} = ${cost_yes_no:.3f}",
                 total_cost=cost_yes_no,
                 markets=[market_a, market_b],
-                positions=positions
+                positions=positions,
             )
             # Add extra risk factor for contradiction strategy
             if opp:
-                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
+                opp.risk_factors.insert(
+                    0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive"
+                )
             return opp
 
         return None

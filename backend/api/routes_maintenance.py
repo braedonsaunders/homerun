@@ -19,61 +19,62 @@ router = APIRouter(prefix="/maintenance", tags=["Maintenance"])
 
 # ==================== REQUEST MODELS ====================
 
+
 class CleanupRequest(BaseModel):
     """Request for cleanup operations"""
+
     resolved_trade_days: int = Field(
         default=30,
         ge=1,
         le=365,
-        description="Delete resolved trades older than this many days"
+        description="Delete resolved trades older than this many days",
     )
     open_trade_expiry_days: int = Field(
         default=90,
         ge=1,
         le=365,
-        description="Expire open trades older than this many days"
+        description="Expire open trades older than this many days",
     )
     wallet_trade_days: int = Field(
         default=60,
         ge=1,
         le=365,
-        description="Delete wallet trades older than this many days"
+        description="Delete wallet trades older than this many days",
     )
     anomaly_days: int = Field(
         default=30,
         ge=1,
         le=365,
-        description="Delete resolved anomalies older than this many days"
+        description="Delete resolved anomalies older than this many days",
     )
 
 
 class DeleteTradesRequest(BaseModel):
     """Request for deleting trades"""
+
     older_than_days: Optional[int] = Field(
         default=None,
         ge=1,
         le=365,
-        description="Delete trades older than this many days"
+        description="Delete trades older than this many days",
     )
     statuses: Optional[list[str]] = Field(
         default=None,
-        description="Delete trades with these statuses (e.g., ['resolved_win', 'resolved_loss'])"
+        description="Delete trades with these statuses (e.g., ['resolved_win', 'resolved_loss'])",
     )
     account_id: Optional[str] = Field(
-        default=None,
-        description="Only delete trades for this account"
+        default=None, description="Only delete trades for this account"
     )
     delete_all: bool = Field(
-        default=False,
-        description="Delete ALL trades (dangerous!)"
+        default=False, description="Delete ALL trades (dangerous!)"
     )
     confirm: bool = Field(
-        default=False,
-        description="Must be True to proceed with delete_all"
+        default=False, description="Must be True to proceed with delete_all"
     )
 
 
 # ==================== ENDPOINTS ====================
+
 
 @router.get("/stats")
 async def get_database_stats():
@@ -88,7 +89,7 @@ async def get_database_stats():
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            "stats": stats
+            "stats": stats,
         }
     except Exception as e:
         logger.error("Failed to get database stats", error=str(e))
@@ -117,12 +118,12 @@ async def run_cleanup(request: CleanupRequest = CleanupRequest()):
             resolved_trade_days=request.resolved_trade_days,
             open_trade_expiry_days=request.open_trade_expiry_days,
             wallet_trade_days=request.wallet_trade_days,
-            anomaly_days=request.anomaly_days
+            anomaly_days=request.anomaly_days,
         )
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            "results": results
+            "results": results,
         }
     except Exception as e:
         logger.error("Cleanup failed", error=str(e))
@@ -135,8 +136,8 @@ async def expire_old_trades(
         default=90,
         ge=1,
         le=365,
-        description="Expire open trades older than this many days"
-    )
+        description="Expire open trades older than this many days",
+    ),
 ):
     """
     Expire old open trades.
@@ -151,7 +152,7 @@ async def expire_old_trades(
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            **result
+            **result,
         }
     except Exception as e:
         logger.error("Failed to expire old trades", error=str(e))
@@ -173,10 +174,14 @@ async def delete_trades(request: DeleteTradesRequest):
     """
     try:
         # Validate request
-        if not request.older_than_days and not request.statuses and not request.delete_all:
+        if (
+            not request.older_than_days
+            and not request.statuses
+            and not request.delete_all
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Must specify older_than_days, statuses, or delete_all"
+                detail="Must specify older_than_days, statuses, or delete_all",
             )
 
         results = {}
@@ -184,12 +189,10 @@ async def delete_trades(request: DeleteTradesRequest):
         if request.delete_all:
             if not request.confirm:
                 raise HTTPException(
-                    status_code=400,
-                    detail="Must set confirm=True to delete all trades"
+                    status_code=400, detail="Must set confirm=True to delete all trades"
                 )
             results = await maintenance_service.delete_all_trades(
-                account_id=request.account_id,
-                confirm=True
+                account_id=request.account_id, confirm=True
             )
         elif request.statuses:
             # Convert status strings to enums
@@ -199,23 +202,21 @@ async def delete_trades(request: DeleteTradesRequest):
                 valid_statuses = [s.value for s in TradeStatus]
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid status. Valid statuses: {valid_statuses}"
+                    detail=f"Invalid status. Valid statuses: {valid_statuses}",
                 )
 
             results = await maintenance_service.delete_trades_by_status(
-                statuses=status_enums,
-                account_id=request.account_id
+                statuses=status_enums, account_id=request.account_id
             )
         elif request.older_than_days:
             results = await maintenance_service.cleanup_resolved_trades(
-                older_than_days=request.older_than_days,
-                account_id=request.account_id
+                older_than_days=request.older_than_days, account_id=request.account_id
             )
 
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            **results
+            **results,
         }
     except HTTPException:
         raise
@@ -230,12 +231,11 @@ async def delete_wallet_trades(
         default=60,
         ge=1,
         le=365,
-        description="Delete wallet trades older than this many days"
+        description="Delete wallet trades older than this many days",
     ),
     wallet_address: Optional[str] = Query(
-        default=None,
-        description="Only delete for specific wallet"
-    )
+        default=None, description="Only delete for specific wallet"
+    ),
 ):
     """
     Delete old wallet trades.
@@ -244,13 +244,12 @@ async def delete_wallet_trades(
     """
     try:
         result = await maintenance_service.cleanup_wallet_trades(
-            older_than_days=older_than_days,
-            wallet_address=wallet_address
+            older_than_days=older_than_days, wallet_address=wallet_address
         )
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            **result
+            **result,
         }
     except Exception as e:
         logger.error("Failed to delete wallet trades", error=str(e))
@@ -263,25 +262,23 @@ async def delete_anomalies(
         default=30,
         ge=1,
         le=365,
-        description="Delete anomalies older than this many days"
+        description="Delete anomalies older than this many days",
     ),
     resolved_only: bool = Query(
-        default=True,
-        description="Only delete resolved anomalies"
-    )
+        default=True, description="Only delete resolved anomalies"
+    ),
 ):
     """
     Delete old anomaly records.
     """
     try:
         result = await maintenance_service.cleanup_anomalies(
-            older_than_days=older_than_days,
-            resolved_only=resolved_only
+            older_than_days=older_than_days, resolved_only=resolved_only
         )
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            **result
+            **result,
         }
     except Exception as e:
         logger.error("Failed to delete anomalies", error=str(e))
@@ -290,14 +287,15 @@ async def delete_anomalies(
 
 # ==================== CONVENIENCE ENDPOINTS ====================
 
+
 @router.post("/cleanup/resolved")
 async def cleanup_resolved_only(
     older_than_days: int = Query(
         default=30,
         ge=1,
         le=365,
-        description="Delete resolved trades older than this many days"
-    )
+        description="Delete resolved trades older than this many days",
+    ),
 ):
     """
     Quick cleanup of resolved trades only.
@@ -312,7 +310,7 @@ async def cleanup_resolved_only(
         return {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
-            **result
+            **result,
         }
     except Exception as e:
         logger.error("Failed to cleanup resolved trades", error=str(e))
@@ -321,14 +319,10 @@ async def cleanup_resolved_only(
 
 @router.post("/reset")
 async def reset_all_trades(
-    confirm: bool = Query(
-        default=False,
-        description="Must be True to proceed"
-    ),
+    confirm: bool = Query(default=False, description="Must be True to proceed"),
     account_id: Optional[str] = Query(
-        default=None,
-        description="Only reset specific account"
-    )
+        default=None, description="Only reset specific account"
+    ),
 ):
     """
     Reset/delete ALL trades.
@@ -339,19 +333,20 @@ async def reset_all_trades(
     if not confirm:
         raise HTTPException(
             status_code=400,
-            detail="This will delete ALL trades! Set confirm=True to proceed."
+            detail="This will delete ALL trades! Set confirm=True to proceed.",
         )
 
     try:
         result = await maintenance_service.delete_all_trades(
-            account_id=account_id,
-            confirm=True
+            account_id=account_id, confirm=True
         )
         return {
             "status": "success",
-            "message": "All trades deleted" if not account_id else f"All trades for account {account_id} deleted",
+            "message": "All trades deleted"
+            if not account_id
+            else f"All trades for account {account_id} deleted",
             "timestamp": datetime.utcnow().isoformat(),
-            **result
+            **result,
         }
     except Exception as e:
         logger.error("Failed to reset trades", error=str(e))

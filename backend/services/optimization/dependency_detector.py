@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 try:
     import httpx
+
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
@@ -35,6 +36,7 @@ from .constraint_solver import Dependency, DependencyType
 @dataclass
 class MarketInfo:
     """Information about a market for dependency analysis."""
+
     id: str
     question: str
     outcomes: list[str]  # List of outcome descriptions
@@ -44,6 +46,7 @@ class MarketInfo:
 @dataclass
 class DependencyAnalysis:
     """Result of LLM dependency analysis."""
+
     dependencies: List[Dependency]
     valid_combinations: int
     total_combinations: int
@@ -62,7 +65,7 @@ class DependencyDetector:
     - Anthropic API
     """
 
-    DEPENDENCY_PROMPT = '''Analyze these two prediction markets for logical dependencies.
+    DEPENDENCY_PROMPT = """Analyze these two prediction markets for logical dependencies.
 
 Market A: {market_a_question}
 Outcomes: {market_a_outcomes}
@@ -90,7 +93,7 @@ Return valid JSON only:
   "valid_combinations": <number>,
   "is_independent": <true if no dependencies>,
   "confidence": <0.0 to 1.0>
-}}'''
+}}"""
 
     def __init__(
         self,
@@ -98,7 +101,7 @@ Return valid JSON only:
         model: str = "llama3.1:8b",
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: float = 60.0
+        timeout: float = 60.0,
     ):
         """
         Args:
@@ -125,9 +128,7 @@ Return valid JSON only:
             self.api_url = "http://localhost:11434/api/generate"
 
     async def detect_dependencies(
-        self,
-        market_a: MarketInfo,
-        market_b: MarketInfo
+        self, market_a: MarketInfo, market_b: MarketInfo
     ) -> DependencyAnalysis:
         """
         Detect dependencies between two markets using LLM.
@@ -152,7 +153,7 @@ Return valid JSON only:
             market_a_question=market_a.question,
             market_a_outcomes=json.dumps(market_a.outcomes),
             market_b_question=market_b.question,
-            market_b_outcomes=json.dumps(market_b.outcomes)
+            market_b_outcomes=json.dumps(market_b.outcomes),
         )
 
         try:
@@ -163,9 +164,7 @@ Return valid JSON only:
             return heuristic_result
 
     def _heuristic_detect(
-        self,
-        market_a: MarketInfo,
-        market_b: MarketInfo
+        self, market_a: MarketInfo, market_b: MarketInfo
     ) -> DependencyAnalysis:
         """
         Fast heuristic dependency detection without LLM.
@@ -191,7 +190,7 @@ Return valid JSON only:
                 valid_combinations=len(market_a.outcomes) * len(market_b.outcomes),
                 total_combinations=len(market_a.outcomes) * len(market_b.outcomes),
                 is_independent=True,
-                confidence=0.8
+                confidence=0.8,
             )
 
         # Check for implies relationships
@@ -207,14 +206,16 @@ Return valid JSON only:
                 for i, out_a in enumerate(market_a.outcomes):
                     for j, out_b in enumerate(market_b.outcomes):
                         if self._outcomes_related(out_a, out_b, "implies"):
-                            dependencies.append(Dependency(
-                                market_a_idx=0,
-                                outcome_a_idx=i,
-                                market_b_idx=1,
-                                outcome_b_idx=j,
-                                dep_type=DependencyType.IMPLIES,
-                                reason=f"Heuristic: {pattern_a} implies {pattern_b}"
-                            ))
+                            dependencies.append(
+                                Dependency(
+                                    market_a_idx=0,
+                                    outcome_a_idx=i,
+                                    market_b_idx=1,
+                                    outcome_b_idx=j,
+                                    dep_type=DependencyType.IMPLIES,
+                                    reason=f"Heuristic: {pattern_a} implies {pattern_b}",
+                                )
+                            )
 
         # Check for date-based cumulative relationships
         date_pattern = r"by\s+(january|february|march|april|may|june|july|august|september|october|november|december|\d{1,2}/\d{1,2})"
@@ -227,14 +228,16 @@ Return valid JSON only:
                 if "yes" in out_a.lower():
                     for j, out_b in enumerate(market_b.outcomes):
                         if "yes" in out_b.lower():
-                            dependencies.append(Dependency(
-                                market_a_idx=0,
-                                outcome_a_idx=i,
-                                market_b_idx=1,
-                                outcome_b_idx=j,
-                                dep_type=DependencyType.CUMULATIVE,
-                                reason="Same event with different dates"
-                            ))
+                            dependencies.append(
+                                Dependency(
+                                    market_a_idx=0,
+                                    outcome_a_idx=i,
+                                    market_b_idx=1,
+                                    outcome_b_idx=j,
+                                    dep_type=DependencyType.CUMULATIVE,
+                                    reason="Same event with different dates",
+                                )
+                            )
 
         # Check for exclusion relationships
         exclusion_patterns = [
@@ -249,14 +252,16 @@ Return valid JSON only:
                     if "yes" in out_a.lower():
                         for j, out_b in enumerate(market_b.outcomes):
                             if "yes" in out_b.lower():
-                                dependencies.append(Dependency(
-                                    market_a_idx=0,
-                                    outcome_a_idx=i,
-                                    market_b_idx=1,
-                                    outcome_b_idx=j,
-                                    dep_type=DependencyType.EXCLUDES,
-                                    reason=f"Heuristic: {pattern_a} excludes {pattern_b}"
-                                ))
+                                dependencies.append(
+                                    Dependency(
+                                        market_a_idx=0,
+                                        outcome_a_idx=i,
+                                        market_b_idx=1,
+                                        outcome_b_idx=j,
+                                        dep_type=DependencyType.EXCLUDES,
+                                        reason=f"Heuristic: {pattern_a} excludes {pattern_b}",
+                                    )
+                                )
 
         n_a = len(market_a.outcomes)
         n_b = len(market_b.outcomes)
@@ -269,7 +274,7 @@ Return valid JSON only:
             valid_combinations=valid,
             total_combinations=total,
             is_independent=len(dependencies) == 0,
-            confidence=0.6 if dependencies else 0.7
+            confidence=0.6 if dependencies else 0.7,
         )
 
     def _extract_entities(self, text: str) -> set:
@@ -290,7 +295,14 @@ Return valid JSON only:
             entities.add("democrat")
 
         # States
-        states = ["pennsylvania", "georgia", "michigan", "wisconsin", "arizona", "nevada"]
+        states = [
+            "pennsylvania",
+            "georgia",
+            "michigan",
+            "wisconsin",
+            "arizona",
+            "nevada",
+        ]
         for s in states:
             if s in text:
                 entities.add(s)
@@ -324,8 +336,8 @@ Return valid JSON only:
                         "model": self.model,
                         "prompt": prompt,
                         "stream": False,
-                        "format": "json"
-                    }
+                        "format": "json",
+                    },
                 )
                 if response.status_code == 200:
                     return response.json().get("response", "{}")
@@ -335,13 +347,13 @@ Return valid JSON only:
                     self.api_url,
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
                     },
                     json={
                         "model": self.model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "response_format": {"type": "json_object"}
-                    }
+                        "response_format": {"type": "json_object"},
+                    },
                 )
                 if response.status_code == 200:
                     return response.json()["choices"][0]["message"]["content"]
@@ -352,13 +364,13 @@ Return valid JSON only:
                     headers={
                         "x-api-key": self.api_key,
                         "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
                     },
                     json={
                         "model": self.model,
                         "max_tokens": 1024,
-                        "messages": [{"role": "user", "content": prompt}]
-                    }
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
                 )
                 if response.status_code == 200:
                     return response.json()["content"][0]["text"]
@@ -366,15 +378,12 @@ Return valid JSON only:
         return "{}"
 
     def _parse_response(
-        self,
-        response: str,
-        market_a: MarketInfo,
-        market_b: MarketInfo
+        self, response: str, market_a: MarketInfo, market_b: MarketInfo
     ) -> DependencyAnalysis:
         """Parse LLM response into DependencyAnalysis."""
         try:
             # Extract JSON from response
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            json_match = re.search(r"\{.*\}", response, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
             else:
@@ -390,14 +399,16 @@ Return valid JSON only:
                 else:
                     dtype = DependencyType.EXCLUDES
 
-                dependencies.append(Dependency(
-                    market_a_idx=0,
-                    outcome_a_idx=int(dep.get("a_outcome", 0)),
-                    market_b_idx=1,
-                    outcome_b_idx=int(dep.get("b_outcome", 0)),
-                    dep_type=dtype,
-                    reason=dep.get("reason", "")
-                ))
+                dependencies.append(
+                    Dependency(
+                        market_a_idx=0,
+                        outcome_a_idx=int(dep.get("a_outcome", 0)),
+                        market_b_idx=1,
+                        outcome_b_idx=int(dep.get("b_outcome", 0)),
+                        dep_type=dtype,
+                        reason=dep.get("reason", ""),
+                    )
+                )
 
             n_a = len(market_a.outcomes)
             n_b = len(market_b.outcomes)
@@ -408,7 +419,7 @@ Return valid JSON only:
                 total_combinations=n_a * n_b,
                 is_independent=data.get("is_independent", len(dependencies) == 0),
                 confidence=data.get("confidence", 0.8),
-                raw_response=response
+                raw_response=response,
             )
 
         except Exception:
@@ -418,13 +429,11 @@ Return valid JSON only:
                 total_combinations=len(market_a.outcomes) * len(market_b.outcomes),
                 is_independent=True,
                 confidence=0.5,
-                raw_response=response
+                raw_response=response,
             )
 
     async def batch_detect(
-        self,
-        market_pairs: List[Tuple[MarketInfo, MarketInfo]],
-        concurrency: int = 5
+        self, market_pairs: List[Tuple[MarketInfo, MarketInfo]], concurrency: int = 5
     ) -> List[DependencyAnalysis]:
         """
         Batch process market pairs for dependency detection.

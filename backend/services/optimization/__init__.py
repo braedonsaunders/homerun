@@ -25,14 +25,26 @@ from .vwap import VWAPCalculator, OrderBook, OrderBookLevel, VWAPResult
 from .parallel_executor import ParallelExecutor, ExecutionLeg, ParallelExecutionResult
 from .bregman import BregmanProjector, ProjectionResult, bregman_projector
 from .constraint_solver import (
-    ConstraintSolver, ArbitrageResult, Dependency, DependencyType, constraint_solver
+    ConstraintSolver,
+    ArbitrageResult,
+    Dependency,
+    DependencyType,
+    constraint_solver,
 )
 from .frank_wolfe import (
-    FrankWolfeSolver, FrankWolfeResult, InitFWResult, IPOracle,
-    create_binary_market_oracle, create_cross_market_oracle, frank_wolfe_solver
+    FrankWolfeSolver,
+    FrankWolfeResult,
+    InitFWResult,
+    IPOracle,
+    create_binary_market_oracle,
+    create_cross_market_oracle,
+    frank_wolfe_solver,
 )
 from .dependency_detector import (
-    DependencyDetector, DependencyAnalysis, MarketInfo, dependency_detector
+    DependencyDetector,
+    DependencyAnalysis,
+    MarketInfo,
+    dependency_detector,
 )
 
 __all__ = [

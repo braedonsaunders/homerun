@@ -34,7 +34,7 @@ class PolymarketClient:
         active: bool = True,
         closed: bool = False,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> list[Market]:
         """Fetch markets from Gamma API"""
         client = await self._get_client()
@@ -42,7 +42,7 @@ class PolymarketClient:
             "active": str(active).lower(),
             "closed": str(closed).lower(),
             "limit": limit,
-            "offset": offset
+            "offset": offset,
         }
 
         response = await client.get(f"{self.gamma_url}/markets", params=params)
@@ -58,11 +58,7 @@ class PolymarketClient:
         limit = 100
 
         while True:
-            markets = await self.get_markets(
-                active=active,
-                limit=limit,
-                offset=offset
-            )
+            markets = await self.get_markets(active=active, limit=limit, offset=offset)
             if not markets:
                 break
 
@@ -75,18 +71,11 @@ class PolymarketClient:
         return all_markets
 
     async def get_events(
-        self,
-        closed: bool = False,
-        limit: int = 100,
-        offset: int = 0
+        self, closed: bool = False, limit: int = 100, offset: int = 0
     ) -> list[Event]:
         """Fetch events from Gamma API (events contain grouped markets)"""
         client = await self._get_client()
-        params = {
-            "closed": str(closed).lower(),
-            "limit": limit,
-            "offset": offset
-        }
+        params = {"closed": str(closed).lower(), "limit": limit, "offset": offset}
 
         response = await client.get(f"{self.gamma_url}/events", params=params)
         response.raise_for_status()
@@ -101,11 +90,7 @@ class PolymarketClient:
         limit = 100
 
         while True:
-            events = await self.get_events(
-                closed=closed,
-                limit=limit,
-                offset=offset
-            )
+            events = await self.get_events(closed=closed, limit=limit, offset=offset)
             if not events:
                 break
 
@@ -137,7 +122,7 @@ class PolymarketClient:
             client = await self._get_client()
             response = await client.get(
                 f"{self.gamma_url}/markets",
-                params={"condition_id": condition_id, "limit": 1}
+                params={"condition_id": condition_id, "limit": 1},
             )
             response.raise_for_status()
             data = response.json()
@@ -207,14 +192,18 @@ class PolymarketClient:
                 try:
                     if isinstance(ts, (int, float)):
                         # Unix timestamp in seconds
-                        enriched_trade["timestamp_iso"] = datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                        enriched_trade["timestamp_iso"] = (
+                            datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                        )
                     elif isinstance(ts, str):
                         if "T" in ts or "-" in ts:
                             # Already ISO format
                             enriched_trade["timestamp_iso"] = ts
                         else:
                             # Numeric string (unix seconds)
-                            enriched_trade["timestamp_iso"] = datetime.utcfromtimestamp(float(ts)).isoformat() + "Z"
+                            enriched_trade["timestamp_iso"] = (
+                                datetime.utcfromtimestamp(float(ts)).isoformat() + "Z"
+                            )
                 except (ValueError, TypeError, OSError):
                     enriched_trade["timestamp_iso"] = ""
             else:
@@ -236,8 +225,7 @@ class PolymarketClient:
         """Get midpoint price for a token"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.clob_url}/midpoint",
-            params={"token_id": token_id}
+            f"{self.clob_url}/midpoint", params={"token_id": token_id}
         )
         response.raise_for_status()
         data = response.json()
@@ -247,8 +235,7 @@ class PolymarketClient:
         """Get best price for a token (BUY = best ask, SELL = best bid)"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.clob_url}/price",
-            params={"token_id": token_id, "side": side}
+            f"{self.clob_url}/price", params={"token_id": token_id, "side": side}
         )
         response.raise_for_status()
         data = response.json()
@@ -258,8 +245,7 @@ class PolymarketClient:
         """Get full order book for a token"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.clob_url}/book",
-            params={"token_id": token_id}
+            f"{self.clob_url}/book", params={"token_id": token_id}
         )
         response.raise_for_status()
         return response.json()
@@ -288,8 +274,7 @@ class PolymarketClient:
         """Get open positions for a wallet"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.data_url}/positions",
-            params={"user": address}
+            f"{self.data_url}/positions", params={"user": address}
         )
         response.raise_for_status()
         return response.json()
@@ -380,7 +365,7 @@ class PolymarketClient:
                                 "address": address,
                                 "pnl": float(entry.get("pnl", 0)),
                                 "volume": float(entry.get("vol", 0)),
-                                "rank": entry.get("rank", 0)
+                                "rank": entry.get("rank", 0),
                             }
         except Exception as e:
             print(f"Leaderboard lookup failed: {e}")
@@ -388,27 +373,31 @@ class PolymarketClient:
         # Try the data API profile endpoint
         try:
             response = await client.get(
-                f"{self.data_url}/profile",
-                params={"address": address}
+                f"{self.data_url}/profile", params={"address": address}
             )
             if response.status_code == 200:
                 data = response.json()
                 if data and data.get("username"):
-                    return {"username": data.get("username"), "address": address, **data}
+                    return {
+                        "username": data.get("username"),
+                        "address": address,
+                        **data,
+                    }
         except Exception:
             pass
 
         # Try the users endpoint which may have username
         try:
             response = await client.get(
-                f"{self.data_url}/users",
-                params={"proxyAddress": address}
+                f"{self.data_url}/users", params={"proxyAddress": address}
             )
             if response.status_code == 200:
                 data = response.json()
                 if data and len(data) > 0:
                     user = data[0]
-                    username = user.get("name") or user.get("username") or user.get("userName")
+                    username = (
+                        user.get("name") or user.get("username") or user.get("userName")
+                    )
                     if username:
                         return {"username": username, "address": address, **user}
         except Exception:
@@ -421,21 +410,23 @@ class PolymarketClient:
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 },
-                follow_redirects=True
+                follow_redirects=True,
             )
             if response.status_code == 200:
                 html = response.text
                 import re
 
                 # Try title tag
-                title_match = re.search(r'<title>([^|<]+)\s*\|?\s*Polymarket', html)
+                title_match = re.search(r"<title>([^|<]+)\s*\|?\s*Polymarket", html)
                 if title_match:
                     username = title_match.group(1).strip()
                     if username and username.lower() != address_lower[:10]:
                         return {"username": username, "address": address}
 
                 # Try meta og:title
-                og_match = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html)
+                og_match = re.search(
+                    r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html
+                )
                 if og_match:
                     username = og_match.group(1).strip()
                     if username and "polymarket" not in username.lower():
@@ -446,30 +437,22 @@ class PolymarketClient:
 
         return {"username": None, "address": address}
 
-    async def get_wallet_trades(
-        self,
-        address: str,
-        limit: int = 100
-    ) -> list[dict]:
+    async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.data_url}/trades",
-            params={"user": address, "limit": limit}
+            f"{self.data_url}/trades", params={"user": address, "limit": limit}
         )
         response.raise_for_status()
         return response.json()
 
     async def get_market_trades(
-        self,
-        condition_id: str,
-        limit: int = 100
+        self, condition_id: str, limit: int = 100
     ) -> list[dict]:
         """Get recent trades for a market"""
         client = await self._get_client()
         response = await client.get(
-            f"{self.data_url}/trades",
-            params={"market": condition_id, "limit": limit}
+            f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
         )
         response.raise_for_status()
         return response.json()
@@ -482,7 +465,7 @@ class PolymarketClient:
         time_period: str = "ALL",
         order_by: str = "PNL",
         category: str = "OVERALL",
-        offset: int = 0
+        offset: int = 0,
     ) -> list[dict]:
         """
         Fetch top traders from Polymarket leaderboard.
@@ -510,8 +493,7 @@ class PolymarketClient:
                 params["category"] = category.upper()
 
             response = await client.get(
-                f"{self.data_url}/v1/leaderboard",
-                params=params
+                f"{self.data_url}/v1/leaderboard", params=params
             )
             response.raise_for_status()
             return response.json()
@@ -524,7 +506,7 @@ class PolymarketClient:
         total_limit: int = 100,
         time_period: str = "ALL",
         order_by: str = "PNL",
-        category: str = "OVERALL"
+        category: str = "OVERALL",
     ) -> list[dict]:
         """
         Fetch traders from Polymarket leaderboard with pagination.
@@ -549,7 +531,7 @@ class PolymarketClient:
                 time_period=time_period,
                 order_by=order_by,
                 category=category,
-                offset=offset
+                offset=offset,
             )
 
             if not page:
@@ -570,7 +552,7 @@ class PolymarketClient:
         min_trades: int = 10,
         time_period: str = "ALL",
         order_by: str = "PNL",
-        category: str = "OVERALL"
+        category: str = "OVERALL",
     ) -> list[dict]:
         """
         Get top traders from Polymarket leaderboard with verified trade counts.
@@ -582,7 +564,7 @@ class PolymarketClient:
             total_limit=scan_count,
             time_period=time_period,
             order_by=order_by,
-            category=category
+            category=category,
         )
 
         # Cache usernames from leaderboard for later profile lookups
@@ -605,7 +587,9 @@ class PolymarketClient:
                 win_rate_data = await self.calculate_wallet_win_rate(address)
 
                 # Use actual closed positions (wins + losses) for min_trades
-                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get("losses", 0)
+                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get(
+                    "losses", 0
+                )
                 if closed_positions < min_trades:
                     return None
 
@@ -637,7 +621,9 @@ class PolymarketClient:
 
         return results[:limit]
 
-    def _filter_by_time_period(self, trades: list[dict], time_period: str) -> list[dict]:
+    def _filter_by_time_period(
+        self, trades: list[dict], time_period: str
+    ) -> list[dict]:
         """Filter trades by time period (DAY, WEEK, MONTH, ALL)."""
         if not trades or time_period.upper() == "ALL":
             return trades
@@ -655,13 +641,19 @@ class PolymarketClient:
         cutoff = now - delta
         filtered = []
         for trade in trades:
-            ts = trade.get("timestamp") or trade.get("created_at") or trade.get("createdAt", "")
+            ts = (
+                trade.get("timestamp")
+                or trade.get("created_at")
+                or trade.get("createdAt", "")
+            )
             if not ts:
                 filtered.append(trade)  # Keep trades without timestamps
                 continue
             try:
                 if isinstance(ts, str):
-                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(
+                        tzinfo=None
+                    )
                 if ts >= cutoff:
                     filtered.append(trade)
             except (ValueError, TypeError):
@@ -669,7 +661,9 @@ class PolymarketClient:
 
         return filtered
 
-    async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500, time_period: str = "ALL") -> dict:
+    async def calculate_wallet_win_rate(
+        self, address: str, max_trades: int = 500, time_period: str = "ALL"
+    ) -> dict:
         """
         Calculate win rate for a wallet by analyzing trade history and open positions.
 
@@ -695,18 +689,25 @@ class PolymarketClient:
                     "wins": 0,
                     "losses": 0,
                     "total_markets": 0,
-                    "trade_count": 0
+                    "trade_count": 0,
                 }
 
             # Group trades by market
             markets: dict[str, dict] = {}
             for trade in trades:
-                market_id = trade.get("market") or trade.get("condition_id") or trade.get("assetId", "unknown")
+                market_id = (
+                    trade.get("market")
+                    or trade.get("condition_id")
+                    or trade.get("assetId", "unknown")
+                )
                 if market_id not in markets:
                     markets[market_id] = {
-                        "buys": 0.0, "sells": 0.0,
-                        "buy_count": 0, "sell_count": 0,
-                        "buy_size": 0.0, "sell_size": 0.0
+                        "buys": 0.0,
+                        "sells": 0.0,
+                        "buy_count": 0,
+                        "sell_count": 0,
+                        "buy_size": 0.0,
+                        "sell_size": 0.0,
                     }
 
                 size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
@@ -758,7 +759,9 @@ class PolymarketClient:
             total_losses = closed_losses + position_losses
             total_positions = total_wins + total_losses
 
-            win_rate = (total_wins / total_positions * 100) if total_positions > 0 else 0.0
+            win_rate = (
+                (total_wins / total_positions * 100) if total_positions > 0 else 0.0
+            )
 
             return {
                 "address": address,
@@ -771,7 +774,7 @@ class PolymarketClient:
                 "closed_wins": closed_wins,
                 "closed_losses": closed_losses,
                 "unrealized_wins": position_wins,
-                "unrealized_losses": position_losses
+                "unrealized_losses": position_losses,
             }
         except Exception as e:
             print(f"Error calculating win rate for {address}: {e}")
@@ -782,14 +785,11 @@ class PolymarketClient:
                 "losses": 0,
                 "total_markets": 0,
                 "trade_count": 0,
-                "error": str(e)
+                "error": str(e),
             }
 
     async def get_closed_positions(
-        self,
-        address: str,
-        limit: int = 50,
-        offset: int = 0
+        self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
         client = await self._get_client()
@@ -801,8 +801,8 @@ class PolymarketClient:
                     "limit": min(limit, 50),
                     "offset": offset,
                     "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC"
-                }
+                    "sortDirection": "DESC",
+                },
             )
             response.raise_for_status()
             return response.json()
@@ -810,9 +810,7 @@ class PolymarketClient:
             return []
 
     async def get_closed_positions_paginated(
-        self,
-        address: str,
-        max_positions: int = 200
+        self, address: str, max_positions: int = 200
     ) -> list[dict]:
         """Fetch multiple pages of closed positions."""
         all_positions = []
@@ -832,7 +830,9 @@ class PolymarketClient:
 
         return all_positions[:max_positions]
 
-    async def calculate_win_rate_fast(self, address: str, min_positions: int = 5) -> Optional[dict]:
+    async def calculate_win_rate_fast(
+        self, address: str, min_positions: int = 5
+    ) -> Optional[dict]:
         """
         Fast win rate calculation using closed-positions endpoint.
         Returns None if trader doesn't meet minimum position threshold.
@@ -840,7 +840,9 @@ class PolymarketClient:
         pre-aggregated endpoint instead of fetching all raw trades.
         """
         try:
-            closed = await self.get_closed_positions_paginated(address, max_positions=200)
+            closed = await self.get_closed_positions_paginated(
+                address, max_positions=200
+            )
 
             if len(closed) < min_positions:
                 return None
@@ -878,7 +880,7 @@ class PolymarketClient:
         category: str = "OVERALL",
         min_volume: float = 0.0,
         max_volume: float = 0.0,
-        scan_count: int = 100
+        scan_count: int = 100,
     ) -> list[dict]:
         """
         Discover traders with high win rates. Scans the full leaderboard
@@ -904,7 +906,7 @@ class PolymarketClient:
                 total_limit=min(scan_count, 1000),
                 time_period=time_period,
                 order_by=sort_by,
-                category=category
+                category=category,
             )
 
             for entry in batch:
@@ -939,7 +941,9 @@ class PolymarketClient:
                     return None
 
                 try:
-                    result = await self.calculate_win_rate_fast(address, min_positions=min_trades)
+                    result = await self.calculate_win_rate_fast(
+                        address, min_positions=min_trades
+                    )
                 except Exception:
                     return None
 
@@ -958,7 +962,7 @@ class PolymarketClient:
                     "wins": result["wins"],
                     "losses": result["losses"],
                     "total_markets": result["closed_positions"],
-                    "trade_count": result["closed_positions"]
+                    "trade_count": result["closed_positions"],
                 }
 
         # Analyze ALL candidates concurrently
@@ -1025,14 +1029,10 @@ class PolymarketClient:
 
             for pos in positions:
                 current_value = float(
-                    pos.get("currentValue", 0)
-                    or pos.get("current_value", 0)
-                    or 0
+                    pos.get("currentValue", 0) or pos.get("current_value", 0) or 0
                 )
                 initial_value = float(
-                    pos.get("initialValue", 0)
-                    or pos.get("initial_value", 0)
-                    or 0
+                    pos.get("initialValue", 0) or pos.get("initial_value", 0) or 0
                 )
                 cash_pnl = float(
                     pos.get("cashPnl", 0)
@@ -1045,9 +1045,7 @@ class PolymarketClient:
                 if current_value == 0 and initial_value == 0:
                     size = float(pos.get("size", 0) or 0)
                     avg_price = float(
-                        pos.get("avgPrice", 0)
-                        or pos.get("avg_price", 0)
-                        or 0
+                        pos.get("avgPrice", 0) or pos.get("avg_price", 0) or 0
                     )
                     current_price = float(
                         pos.get("currentPrice", 0)
@@ -1081,8 +1079,14 @@ class PolymarketClient:
                 total_invested = closed_invested + total_initial_value
                 total_returned = closed_returned
             else:
-                total_invested = total_bought if total_bought > 0 else total_initial_value
-                total_returned = total_sold if total_sold > 0 else total_cash_pnl + total_initial_value
+                total_invested = (
+                    total_bought if total_bought > 0 else total_initial_value
+                )
+                total_returned = (
+                    total_sold
+                    if total_sold > 0
+                    else total_cash_pnl + total_initial_value
+                )
 
             # Calculate ROI
             roi_percent = 0.0
@@ -1103,7 +1107,7 @@ class PolymarketClient:
                 "realized_pnl": realized_pnl,
                 "unrealized_pnl": unrealized_pnl,
                 "total_pnl": total_pnl,
-                "roi_percent": roi_percent
+                "roi_percent": roi_percent,
             }
         except Exception as e:
             print(f"Error calculating PnL for {address}: {e}")
@@ -1118,7 +1122,7 @@ class PolymarketClient:
                 "unrealized_pnl": 0,
                 "total_pnl": 0,
                 "roi_percent": 0,
-                "error": str(e)
+                "error": str(e),
             }
 
 

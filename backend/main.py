@@ -29,7 +29,7 @@ from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
 # Setup logging
-setup_logging(level=settings.LOG_LEVEL if hasattr(settings, 'LOG_LEVEL') else "INFO")
+setup_logging(level=settings.LOG_LEVEL if hasattr(settings, "LOG_LEVEL") else "INFO")
 logger = get_logger("main")
 
 
@@ -55,9 +55,7 @@ async def lifespan(app: FastAPI):
         )
         tasks.append(scan_task)
 
-        wallet_task = asyncio.create_task(
-            wallet_tracker.start_monitoring(30)
-        )
+        wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
         # Start copy trading service
@@ -69,7 +67,9 @@ async def lifespan(app: FastAPI):
             if trading_initialized:
                 logger.info("Trading service initialized")
             else:
-                logger.warning("Trading service initialization failed - check credentials")
+                logger.warning(
+                    "Trading service initialization failed - check credentials"
+                )
 
         # Start background cleanup if enabled
         if settings.AUTO_CLEANUP_ENABLED:
@@ -77,12 +77,12 @@ async def lifespan(app: FastAPI):
                 "resolved_trade_days": settings.CLEANUP_RESOLVED_TRADE_DAYS,
                 "open_trade_expiry_days": settings.CLEANUP_OPEN_TRADE_EXPIRY_DAYS,
                 "wallet_trade_days": settings.CLEANUP_WALLET_TRADE_DAYS,
-                "anomaly_days": settings.CLEANUP_ANOMALY_DAYS
+                "anomaly_days": settings.CLEANUP_ANOMALY_DAYS,
             }
             cleanup_task = asyncio.create_task(
                 maintenance_service.start_background_cleanup(
                     interval_hours=settings.CLEANUP_INTERVAL_HOURS,
-                    cleanup_config=cleanup_config
+                    cleanup_config=cleanup_config,
                 )
             )
             tasks.append(cleanup_task)
@@ -99,7 +99,9 @@ async def lifespan(app: FastAPI):
         yield
 
     except Exception as e:
-        logger.critical("Startup failed", error=str(e), traceback=traceback.format_exc())
+        logger.critical(
+            "Startup failed", error=str(e), traceback=traceback.format_exc()
+        )
         raise
 
     finally:
@@ -129,7 +131,7 @@ app = FastAPI(
     title="Homerun",
     description="Polymarket arbitrage detection, paper trading, and autonomous trading",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
@@ -141,18 +143,17 @@ async def global_exception_handler(request: Request, exc: Exception):
         path=request.url.path,
         method=request.method,
         error=str(exc),
-        traceback=traceback.format_exc()
+        traceback=traceback.format_exc(),
     )
     return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error", "error": str(exc)}
+        status_code=500, content={"detail": "Internal server error", "error": str(exc)}
     )
 
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS if hasattr(settings, 'CORS_ORIGINS') else ["*"],
+    allow_origins=settings.CORS_ORIGINS if hasattr(settings, "CORS_ORIGINS") else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -163,7 +164,9 @@ app.add_middleware(
 # API routes
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
-app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
+app.include_router(
+    copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"]
+)
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
@@ -204,7 +207,7 @@ async def readiness_check():
     return {
         "status": "ready" if all_ready else "not_ready",
         "checks": checks,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
     }
 
 
@@ -217,37 +220,43 @@ async def detailed_health_check():
         "services": {
             "scanner": {
                 "running": scanner.is_running,
-                "last_scan": (scanner.last_scan.isoformat() + "Z") if scanner.last_scan else None,
-                "opportunities_count": len(scanner.get_opportunities())
+                "last_scan": (scanner.last_scan.isoformat() + "Z")
+                if scanner.last_scan
+                else None,
+                "opportunities_count": len(scanner.get_opportunities()),
             },
             "wallet_tracker": {
                 "tracked_wallets": len(wallet_tracker.get_all_wallets())
             },
             "copy_trader": {
                 "running": copy_trader._running,
-                "active_configs": len(copy_trader._active_configs)
+                "active_configs": len(copy_trader._active_configs),
             },
             "trading": {
                 "enabled": settings.TRADING_ENABLED,
                 "initialized": trading_service.is_ready(),
-                "stats": trading_service.get_stats().__dict__ if trading_service.is_ready() else None
+                "stats": trading_service.get_stats().__dict__
+                if trading_service.is_ready()
+                else None,
             },
             "auto_trader": {
                 "running": auto_trader._running,
                 "mode": auto_trader.config.mode.value,
-                "stats": auto_trader.get_stats()
+                "stats": auto_trader.get_stats(),
             },
             "maintenance": {
                 "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
-                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS if settings.AUTO_CLEANUP_ENABLED else None
-            }
+                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS
+                if settings.AUTO_CLEANUP_ENABLED
+                else None,
+            },
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {
             "scan_interval": settings.SCAN_INTERVAL_SECONDS,
             "min_profit_threshold": settings.MIN_PROFIT_THRESHOLD,
-            "max_markets": settings.MAX_MARKETS_TO_SCAN
-        }
+            "max_markets": settings.MAX_MARKETS_TO_SCAN,
+        },
     }
 
 
@@ -290,10 +299,7 @@ polymarket_auto_trader_trades {auto_trader.stats.total_trades}
 polymarket_auto_trader_profit {auto_trader.stats.total_profit}
 """
 
-    return JSONResponse(
-        content=metrics_text,
-        media_type="text/plain"
-    )
+    return JSONResponse(content=metrics_text, media_type="text/plain")
 
 
 # Serve frontend static files (if built)
@@ -309,12 +315,11 @@ def kill_port(port: int):
 
     try:
         result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
-            capture_output=True, text=True, timeout=5
+            ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5
         )
         pids = result.stdout.strip()
         if pids:
-            for pid_str in pids.split('\n'):
+            for pid_str in pids.split("\n"):
                 pid = int(pid_str.strip())
                 # Don't kill ourselves
                 if pid == os.getpid():
@@ -325,22 +330,22 @@ def kill_port(port: int):
                 except ProcessLookupError:
                     pass
             import time
+
             time.sleep(0.5)
     except FileNotFoundError:
         # lsof not available, try fuser as fallback
         try:
             result = subprocess.run(
-                ["fuser", f"{port}/tcp"],
-                capture_output=True, text=True, timeout=5
+                ["fuser", f"{port}/tcp"], capture_output=True, text=True, timeout=5
             )
             pids = result.stdout.strip()
             if pids:
                 subprocess.run(
-                    ["fuser", "-k", f"{port}/tcp"],
-                    capture_output=True, timeout=5
+                    ["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5
                 )
                 logger.info(f"Killed existing process on port {port}")
                 import time
+
                 time.sleep(0.5)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass

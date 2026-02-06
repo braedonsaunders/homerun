@@ -30,19 +30,22 @@ logger = get_logger("decay_analyzer")
 # Data containers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class DecayStats:
     """Aggregate decay statistics for a group of opportunities."""
+
     median_lifetime_seconds: float
     mean_lifetime_seconds: float
-    p25_lifetime: float   # 25th percentile -- fast closers
-    p75_lifetime: float   # 75th percentile -- slow closers
+    p25_lifetime: float  # 25th percentile -- fast closers
+    p75_lifetime: float  # 75th percentile -- slow closers
     total_tracked: int
 
 
 @dataclass
 class _TrackedOpportunity:
     """In-memory record for an opportunity we are actively watching."""
+
     opportunity_id: str
     strategy_type: str
     roi_at_detection: float
@@ -57,10 +60,10 @@ class _TrackedOpportunity:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_STATS = DecayStats(
-    median_lifetime_seconds=300.0,   # 5 minutes
-    mean_lifetime_seconds=360.0,     # 6 minutes
-    p25_lifetime=120.0,              # 2 minutes
-    p75_lifetime=600.0,              # 10 minutes
+    median_lifetime_seconds=300.0,  # 5 minutes
+    mean_lifetime_seconds=360.0,  # 6 minutes
+    p25_lifetime=120.0,  # 2 minutes
+    p75_lifetime=600.0,  # 10 minutes
     total_tracked=0,
 )
 
@@ -68,6 +71,7 @@ _DEFAULT_STATS = DecayStats(
 # ---------------------------------------------------------------------------
 # Singleton service
 # ---------------------------------------------------------------------------
+
 
 class DecayAnalyzer:
     """Tracks opportunity lifetimes and scores urgency for new detections.
@@ -115,9 +119,7 @@ class DecayAnalyzer:
     # Public API: scan callback
     # ------------------------------------------------------------------
 
-    async def on_scan_complete(
-        self, opportunities: List[ArbitrageOpportunity]
-    ) -> None:
+    async def on_scan_complete(self, opportunities: List[ArbitrageOpportunity]) -> None:
         """Scanner callback -- compare incoming opportunities with the
         previously-active set to detect appearances and disappearances.
 
@@ -183,9 +185,7 @@ class DecayAnalyzer:
     # Public API: decay statistics
     # ------------------------------------------------------------------
 
-    async def get_decay_stats(
-        self, strategy: Optional[str] = None
-    ) -> DecayStats:
+    async def get_decay_stats(self, strategy: Optional[str] = None) -> DecayStats:
         """Return aggregate decay statistics.
 
         Parameters
@@ -235,9 +235,7 @@ class DecayAnalyzer:
     # Public API: urgency scoring
     # ------------------------------------------------------------------
 
-    async def get_urgency_score(
-        self, opportunity: ArbitrageOpportunity
-    ) -> float:
+    async def get_urgency_score(self, opportunity: ArbitrageOpportunity) -> float:
         """Score how urgently an opportunity must be acted upon (0-1).
 
         Higher values mean the window is predicted to close faster.
@@ -329,9 +327,7 @@ class DecayAnalyzer:
             now = datetime.utcnow()
             cutoff = now - timedelta(seconds=max_age_seconds)
             expired_ids = [
-                oid
-                for oid, t in self._active.items()
-                if t.first_seen < cutoff
+                oid for oid, t in self._active.items() if t.first_seen < cutoff
             ]
             for oid in expired_ids:
                 tracked = self._active.pop(oid)
@@ -476,9 +472,7 @@ class DecayAnalyzer:
             async with AsyncSessionLocal() as session:
                 ids = [t.db_record_id for t in tracked_list]
                 result = await session.execute(
-                    select(OpportunityLifetime).where(
-                        OpportunityLifetime.id.in_(ids)
-                    )
+                    select(OpportunityLifetime).where(OpportunityLifetime.id.in_(ids))
                 )
                 records = result.scalars().all()
                 for record in records:
@@ -487,9 +481,7 @@ class DecayAnalyzer:
         except Exception:
             logger.error("Failed to bulk update last_seen")
 
-    async def _load_lifetimes(
-        self, strategy: Optional[str] = None
-    ) -> List[float]:
+    async def _load_lifetimes(self, strategy: Optional[str] = None) -> List[float]:
         """Load closed lifetime_seconds from the database."""
         try:
             async with AsyncSessionLocal() as session:
@@ -497,9 +489,7 @@ class DecayAnalyzer:
                     OpportunityLifetime.lifetime_seconds.isnot(None)
                 )
                 if strategy is not None:
-                    query = query.where(
-                        OpportunityLifetime.strategy_type == strategy
-                    )
+                    query = query.where(OpportunityLifetime.strategy_type == strategy)
                 result = await session.execute(query)
                 rows = result.scalars().all()
                 return [float(v) for v in rows if v is not None]

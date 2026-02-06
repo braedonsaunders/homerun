@@ -27,13 +27,13 @@ class ArbitrageScanner:
         self.client = polymarket_client
         self.strategies = [
             BasicArbStrategy(),
-            NegRiskStrategy(),          # Most profitable historically
+            NegRiskStrategy(),  # Most profitable historically
             MutuallyExclusiveStrategy(),
             ContradictionStrategy(),
             MustHappenStrategy(),
-            MiracleStrategy(),          # Swisstony's garbage collection strategy
-            CombinatorialStrategy(),    # Cross-market arbitrage via integer programming
-            SettlementLagStrategy(),    # Exploit delayed price adjustments (article Part IV)
+            MiracleStrategy(),  # Swisstony's garbage collection strategy
+            CombinatorialStrategy(),  # Cross-market arbitrage via integer programming
+            SettlementLagStrategy(),  # Exploit delayed price adjustments (article Part IV)
         ]
 
         # Mispricing type mapping for strategies that don't set it themselves
@@ -85,13 +85,15 @@ class ArbitrageScanner:
                 if settings_row:
                     self._enabled = settings_row.is_enabled
                     self._interval_seconds = settings_row.scan_interval_seconds
-                    print(f"Loaded scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s")
+                    print(
+                        f"Loaded scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s"
+                    )
                 else:
                     # Create default settings
                     new_settings = ScannerSettings(
                         id="default",
                         is_enabled=True,
-                        scan_interval_seconds=settings.SCAN_INTERVAL_SECONDS
+                        scan_interval_seconds=settings.SCAN_INTERVAL_SECONDS,
                     )
                     session.add(new_settings)
                     await session.commit()
@@ -116,12 +118,14 @@ class ArbitrageScanner:
                     settings_row = ScannerSettings(
                         id="default",
                         is_enabled=self._enabled,
-                        scan_interval_seconds=self._interval_seconds
+                        scan_interval_seconds=self._interval_seconds,
                     )
                     session.add(settings_row)
 
                 await session.commit()
-                print(f"Saved scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s")
+                print(
+                    f"Saved scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s"
+                )
         except Exception as e:
             print(f"Error saving scanner settings: {e}")
 
@@ -178,7 +182,9 @@ class ArbitrageScanner:
                 except Exception as e:
                     print(f"  Callback error: {e}")
 
-            print(f"[{datetime.utcnow().isoformat()}] Scan complete. {len(all_opportunities)} total opportunities")
+            print(
+                f"[{datetime.utcnow().isoformat()}] Scan complete. {len(all_opportunities)} total opportunities"
+            )
             return all_opportunities
 
         except Exception as e:
@@ -205,7 +211,9 @@ class ArbitrageScanner:
             self._interval_seconds = interval_seconds
 
         self._running = True
-        print(f"Starting continuous scan (interval: {self._interval_seconds}s, enabled: {self._enabled})")
+        print(
+            f"Starting continuous scan (interval: {self._interval_seconds}s, enabled: {self._enabled})"
+        )
 
         # Run the scan loop
         await self._scan_loop()
@@ -248,17 +256,17 @@ class ArbitrageScanner:
             "running": self._running,
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
-            "last_scan": (self._last_scan.isoformat() + "Z") if self._last_scan else None,
+            "last_scan": (self._last_scan.isoformat() + "Z")
+            if self._last_scan
+            else None,
             "opportunities_count": len(self._opportunities),
             "strategies": [
-                {"name": s.name, "type": s.strategy_type.value}
-                for s in self.strategies
-            ]
+                {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
+            ],
         }
 
     def get_opportunities(
-        self,
-        filter: Optional[OpportunityFilter] = None
+        self, filter: Optional[OpportunityFilter] = None
     ) -> list[ArbitrageOpportunity]:
         """Get current opportunities with optional filtering"""
         opps = self._opportunities
@@ -275,7 +283,11 @@ class ArbitrageScanner:
             if filter.category:
                 # Case-insensitive category matching
                 category_lower = filter.category.lower()
-                opps = [o for o in opps if o.category and o.category.lower() == category_lower]
+                opps = [
+                    o
+                    for o in opps
+                    if o.category and o.category.lower() == category_lower
+                ]
 
         return opps
 
@@ -308,7 +320,8 @@ class ArbitrageScanner:
         before_count = len(self._opportunities)
 
         self._opportunities = [
-            opp for opp in self._opportunities
+            opp
+            for opp in self._opportunities
             if opp.resolution_date is None or opp.resolution_date > now
         ]
 
@@ -320,17 +333,19 @@ class ArbitrageScanner:
     def remove_old_opportunities(self, max_age_minutes: int = 60) -> int:
         """Remove opportunities older than max_age_minutes. Returns count removed."""
         from datetime import timedelta
+
         cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
         before_count = len(self._opportunities)
 
         self._opportunities = [
-            opp for opp in self._opportunities
-            if opp.detected_at >= cutoff
+            opp for opp in self._opportunities if opp.detected_at >= cutoff
         ]
 
         removed = before_count - len(self._opportunities)
         if removed > 0:
-            print(f"Removed {removed} opportunities older than {max_age_minutes} minutes")
+            print(
+                f"Removed {removed} opportunities older than {max_age_minutes} minutes"
+            )
         return removed
 
 

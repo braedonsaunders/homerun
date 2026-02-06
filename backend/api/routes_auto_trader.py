@@ -19,6 +19,7 @@ router = APIRouter(prefix="/auto-trader", tags=["Auto Trader"])
 
 # ==================== REQUEST/RESPONSE MODELS ====================
 
+
 class AutoTraderConfigRequest(BaseModel):
     mode: Optional[str] = Field(None, description="disabled, paper, live, or shadow")
     enabled_strategies: Optional[list[str]] = None
@@ -30,7 +31,9 @@ class AutoTraderConfigRequest(BaseModel):
     max_daily_trades: Optional[int] = Field(None, ge=1)
     max_daily_loss_usd: Optional[float] = Field(None, ge=0)
     require_confirmation: Optional[bool] = None
-    paper_account_capital: Optional[float] = Field(None, ge=100, description="Starting capital for paper trading")
+    paper_account_capital: Optional[float] = Field(
+        None, ge=100, description="Starting capital for paper trading"
+    )
 
 
 class AutoTraderStatusResponse(BaseModel):
@@ -42,6 +45,7 @@ class AutoTraderStatusResponse(BaseModel):
 
 # ==================== ENDPOINTS ====================
 
+
 @router.get("/status", response_model=AutoTraderStatusResponse)
 async def get_auto_trader_status():
     """Get auto trader status, configuration, and statistics"""
@@ -49,7 +53,7 @@ async def get_auto_trader_status():
         mode=auto_trader.config.mode.value,
         running=auto_trader._running,
         config=auto_trader.get_config(),
-        stats=auto_trader.get_stats()
+        stats=auto_trader.get_stats(),
     )
 
 
@@ -74,7 +78,7 @@ async def start_auto_trader(mode: Optional[str] = None):
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid mode: {mode}. Must be one of: disabled, paper, live, shadow"
+                detail=f"Invalid mode: {mode}. Must be one of: disabled, paper, live, shadow",
             )
     elif auto_trader.config.mode == AutoTraderMode.DISABLED:
         auto_trader.config.mode = AutoTraderMode.PAPER
@@ -86,7 +90,7 @@ async def start_auto_trader(mode: Optional[str] = None):
     return {
         "status": "started",
         "mode": auto_trader.config.mode.value,
-        "message": f"Auto trader started in {auto_trader.config.mode.value} mode"
+        "message": f"Auto trader started in {auto_trader.config.mode.value} mode",
     }
 
 
@@ -152,10 +156,7 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
 
     auto_trader.configure(**updates)
 
-    return {
-        "status": "updated",
-        "config": auto_trader.get_config()
-    }
+    return {"status": "updated", "config": auto_trader.get_config()}
 
 
 @router.get("/trades")
@@ -199,11 +200,9 @@ async def reset_circuit_breaker():
 
 # ==================== QUICK ACTIONS ====================
 
+
 @router.post("/enable-live-trading")
-async def enable_live_trading(
-    confirm: bool = False,
-    max_daily_loss: float = 100.0
-):
+async def enable_live_trading(confirm: bool = False, max_daily_loss: float = 100.0):
     """
     Enable live trading mode.
 
@@ -213,7 +212,7 @@ async def enable_live_trading(
     if not confirm:
         raise HTTPException(
             status_code=400,
-            detail="Must set confirm=true to enable live trading. This will trade REAL MONEY."
+            detail="Must set confirm=true to enable live trading. This will trade REAL MONEY.",
         )
 
     # Check if trading service can be initialized
@@ -224,14 +223,14 @@ async def enable_live_trading(
         if not success:
             raise HTTPException(
                 status_code=400,
-                detail="Failed to initialize trading service. Check credentials."
+                detail="Failed to initialize trading service. Check credentials.",
             )
 
     # Set conservative limits
     auto_trader.configure(
         mode=AutoTraderMode.LIVE,
         max_daily_loss_usd=max_daily_loss,
-        require_confirmation=False  # Can be set to True for extra safety
+        require_confirmation=False,  # Can be set to True for extra safety
     )
 
     if not auto_trader._running:
@@ -243,7 +242,7 @@ async def enable_live_trading(
         "status": "live_trading_enabled",
         "warning": "Auto trader is now executing REAL trades",
         "max_daily_loss": max_daily_loss,
-        "config": auto_trader.get_config()
+        "config": auto_trader.get_config(),
     }
 
 
@@ -262,6 +261,7 @@ async def emergency_stop():
 
     # Cancel all open orders
     from services.trading import trading_service
+
     cancelled_orders = 0
 
     if trading_service.is_ready():
@@ -272,5 +272,5 @@ async def emergency_stop():
         "auto_trader": "stopped",
         "mode": "disabled",
         "cancelled_orders": cancelled_orders,
-        "message": "All automated trading has been stopped"
+        "message": "All automated trading has been stopped",
     }

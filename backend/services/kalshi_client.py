@@ -105,7 +105,9 @@ class KalshiClient:
 
         # Use midpoint of bid/ask when available; fall back to last_price
         yes_price = (yes_bid + yes_ask) / 2.0 if (yes_bid + yes_ask) > 0 else last_price
-        no_price = (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
+        no_price = (
+            (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
+        )
 
         outcome_prices = [yes_price, no_price]
 
@@ -358,7 +360,9 @@ class KalshiClient:
         try:
             return self._parse_kalshi_market(market_data)
         except Exception as exc:
-            logger.error("Failed to parse Kalshi market", ticker=market_id, error=str(exc))
+            logger.error(
+                "Failed to parse Kalshi market", ticker=market_id, error=str(exc)
+            )
             return None
 
     # ------------------------------------------------------------------ #

@@ -12,8 +12,12 @@ class StrategyType(str, Enum):
     MUST_HAPPEN = "must_happen"
     MIRACLE = "miracle"  # Bet against impossible/absurd events
     COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
-    SETTLEMENT_LAG = "settlement_lag"  # Exploit delayed price updates after outcome determined
-    CROSS_PLATFORM = "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
+    SETTLEMENT_LAG = (
+        "settlement_lag"  # Exploit delayed price updates after outcome determined
+    )
+    CROSS_PLATFORM = (
+        "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
+    )
 
 
 class MispricingType(str, Enum):
@@ -27,6 +31,7 @@ class MispricingType(str, Enum):
     - SETTLEMENT_LAG: Prices don't instantly lock after outcome determined
       (windows last minutes to hours, e.g. Assad example)
     """
+
     WITHIN_MARKET = "within_market"
     CROSS_MARKET = "cross_market"
     SETTLEMENT_LAG = "settlement_lag"
@@ -34,6 +39,7 @@ class MispricingType(str, Enum):
 
 class ArbitrageOpportunity(BaseModel):
     """Represents a detected arbitrage opportunity"""
+
     id: str = Field(default_factory=lambda: "")
     strategy: StrategyType
     title: str
@@ -85,6 +91,7 @@ class ArbitrageOpportunity(BaseModel):
 
 class OpportunityFilter(BaseModel):
     """Filter criteria for opportunities"""
+
     min_profit: float = 0.0
     max_risk: float = 1.0
     strategies: list[StrategyType] = []

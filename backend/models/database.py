@@ -1,7 +1,17 @@
 from sqlalchemy import (
-    Column, String, Float, Integer, Boolean, DateTime, Text, JSON,
-    ForeignKey, Enum as SQLEnum, Index, inspect as sa_inspect,
-    text
+    Column,
+    String,
+    Float,
+    Integer,
+    Boolean,
+    DateTime,
+    Text,
+    JSON,
+    ForeignKey,
+    Enum as SQLEnum,
+    Index,
+    inspect as sa_inspect,
+    text,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -37,8 +47,10 @@ class CopyTradingMode(enum.Enum):
 
 # ==================== SIMULATION ACCOUNT ====================
 
+
 class SimulationAccount(Base):
     """Simulated trading account for paper trading"""
+
     __tablename__ = "simulation_accounts"
 
     id = Column(String, primary_key=True)
@@ -64,6 +76,7 @@ class SimulationAccount(Base):
 
 class SimulationPosition(Base):
     """Open position in simulation account"""
+
     __tablename__ = "simulation_positions"
 
     id = Column(String, primary_key=True)
@@ -104,6 +117,7 @@ class SimulationPosition(Base):
 
 class SimulationTrade(Base):
     """Completed trade in simulation account"""
+
     __tablename__ = "simulation_trades"
 
     id = Column(String, primary_key=True)
@@ -141,8 +155,10 @@ class SimulationTrade(Base):
 
 # ==================== COPY TRADING ====================
 
+
 class CopyTradingConfig(Base):
     """Configuration for copy trading a wallet"""
+
     __tablename__ = "copy_trading_configs"
 
     id = Column(String, primary_key=True)
@@ -150,10 +166,10 @@ class CopyTradingConfig(Base):
     account_id = Column(String, ForeignKey("simulation_accounts.id"), nullable=False)
 
     enabled = Column(Boolean, default=True)
-    copy_mode = Column(
-        SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES
-    )
-    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X% (arb_only mode)
+    copy_mode = Column(SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES)
+    min_roi_threshold = Column(
+        Float, default=2.5
+    )  # Only copy if ROI > X% (arb_only mode)
     max_position_size = Column(Float, default=1000.0)
     copy_delay_seconds = Column(Integer, default=5)
     slippage_tolerance = Column(Float, default=1.0)
@@ -184,14 +200,13 @@ class CopyTradingConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_copy_wallet", "source_wallet"),
-    )
+    __table_args__ = (Index("idx_copy_wallet", "source_wallet"),)
 
 
 class CopiedTrade(Base):
     """Record of a trade that was copied from a source wallet.
     Used for deduplication and tracking copy performance."""
+
     __tablename__ = "copied_trades"
 
     id = Column(String, primary_key=True)  # Our internal ID
@@ -235,8 +250,10 @@ class CopiedTrade(Base):
 
 # ==================== WALLET ANALYSIS ====================
 
+
 class TrackedWallet(Base):
     """Wallet being tracked for analysis"""
+
     __tablename__ = "tracked_wallets"
 
     address = Column(String, primary_key=True)
@@ -262,10 +279,13 @@ class TrackedWallet(Base):
 
 class WalletTrade(Base):
     """Trade made by a tracked wallet"""
+
     __tablename__ = "wallet_trades"
 
     id = Column(String, primary_key=True)
-    wallet_address = Column(String, ForeignKey("tracked_wallets.address"), nullable=False)
+    wallet_address = Column(
+        String, ForeignKey("tracked_wallets.address"), nullable=False
+    )
 
     # Trade details
     market_id = Column(String, nullable=False)
@@ -294,8 +314,10 @@ class WalletTrade(Base):
 
 # ==================== OPPORTUNITIES ====================
 
+
 class OpportunityHistory(Base):
     """Historical record of detected opportunities"""
+
     __tablename__ = "opportunity_history"
 
     id = Column(String, primary_key=True)
@@ -326,8 +348,10 @@ class OpportunityHistory(Base):
 
 # ==================== OPPORTUNITY DECAY TRACKING ====================
 
+
 class OpportunityLifetime(Base):
     """Tracks how long arbitrage opportunities survive before closing"""
+
     __tablename__ = "opportunity_lifetimes"
 
     id = Column(String, primary_key=True)
@@ -351,8 +375,10 @@ class OpportunityLifetime(Base):
 
 # ==================== ANOMALIES ====================
 
+
 class DetectedAnomaly(Base):
     """Detected anomaly in trading data"""
+
     __tablename__ = "detected_anomalies"
 
     id = Column(String, primary_key=True)
@@ -385,13 +411,17 @@ class DetectedAnomaly(Base):
 
 # ==================== ML CLASSIFIER ====================
 
+
 class MLModelWeights(Base):
     """Stored weights and metadata for the ML false-positive classifier"""
+
     __tablename__ = "ml_model_weights"
 
     id = Column(String, primary_key=True)
     model_version = Column(Integer, nullable=False, default=1)
-    weights = Column(JSON, nullable=False)  # Model parameters (weights, bias, thresholds)
+    weights = Column(
+        JSON, nullable=False
+    )  # Model parameters (weights, bias, thresholds)
     feature_names = Column(JSON, nullable=False)  # Ordered list of feature names
     metrics = Column(JSON, nullable=True)  # accuracy, precision, recall, f1
     training_samples = Column(Integer, default=0)
@@ -401,6 +431,7 @@ class MLModelWeights(Base):
 
 class MLPredictionLog(Base):
     """Log of ML classifier predictions for auditing and retraining"""
+
     __tablename__ = "ml_prediction_log"
 
     id = Column(String, primary_key=True)
@@ -425,8 +456,10 @@ class MLPredictionLog(Base):
 
 # ==================== PARAMETER OPTIMIZATION ====================
 
+
 class ParameterSet(Base):
     """Stored parameter sets for hyperparameter optimization"""
+
     __tablename__ = "parameter_sets"
 
     id = Column(String, primary_key=True)
@@ -439,8 +472,10 @@ class ParameterSet(Base):
 
 # ==================== SCANNER SETTINGS ====================
 
+
 class ScannerSettings(Base):
     """Persisted scanner configuration"""
+
     __tablename__ = "scanner_settings"
 
     id = Column(String, primary_key=True, default="default")
@@ -451,8 +486,10 @@ class ScannerSettings(Base):
 
 # ==================== APP SETTINGS ====================
 
+
 class AppSettings(Base):
     """Application-wide settings stored in database"""
+
     __tablename__ = "app_settings"
 
     id = Column(String, primary_key=True, default="default")
@@ -562,7 +599,9 @@ def _fix_enum_values(connection):
             continue
         for wrong_val, correct_val in value_map.items():
             connection.execute(
-                text(f"UPDATE {table_name} SET {col_name} = :correct WHERE {col_name} = :wrong"),
+                text(
+                    f"UPDATE {table_name} SET {col_name} = :correct WHERE {col_name} = :wrong"
+                ),
                 {"correct": correct_val, "wrong": wrong_val},
             )
 

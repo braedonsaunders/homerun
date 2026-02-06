@@ -19,58 +19,106 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 
 # ==================== REQUEST/RESPONSE MODELS ====================
 
+
 class PolymarketSettings(BaseModel):
     """Polymarket API credentials"""
+
     api_key: Optional[str] = Field(default=None, description="Polymarket API key")
     api_secret: Optional[str] = Field(default=None, description="Polymarket API secret")
-    api_passphrase: Optional[str] = Field(default=None, description="Polymarket API passphrase")
-    private_key: Optional[str] = Field(default=None, description="Wallet private key for signing")
+    api_passphrase: Optional[str] = Field(
+        default=None, description="Polymarket API passphrase"
+    )
+    private_key: Optional[str] = Field(
+        default=None, description="Wallet private key for signing"
+    )
 
 
 class LLMSettings(BaseModel):
     """LLM service configuration"""
-    provider: str = Field(default="none", description="LLM provider: none, openai, anthropic")
+
+    provider: str = Field(
+        default="none", description="LLM provider: none, openai, anthropic"
+    )
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
-    anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    model: Optional[str] = Field(default=None, description="Model to use (e.g., gpt-4, claude-3)")
+    anthropic_api_key: Optional[str] = Field(
+        default=None, description="Anthropic API key"
+    )
+    model: Optional[str] = Field(
+        default=None, description="Model to use (e.g., gpt-4, claude-3)"
+    )
 
 
 class NotificationSettings(BaseModel):
     """Notification configuration"""
+
     enabled: bool = Field(default=False, description="Enable notifications")
-    telegram_bot_token: Optional[str] = Field(default=None, description="Telegram bot token")
-    telegram_chat_id: Optional[str] = Field(default=None, description="Telegram chat ID")
-    notify_on_opportunity: bool = Field(default=True, description="Notify on new opportunities")
+    telegram_bot_token: Optional[str] = Field(
+        default=None, description="Telegram bot token"
+    )
+    telegram_chat_id: Optional[str] = Field(
+        default=None, description="Telegram chat ID"
+    )
+    notify_on_opportunity: bool = Field(
+        default=True, description="Notify on new opportunities"
+    )
     notify_on_trade: bool = Field(default=True, description="Notify on trade execution")
-    notify_min_roi: float = Field(default=5.0, ge=0, description="Minimum ROI % to notify")
+    notify_min_roi: float = Field(
+        default=5.0, ge=0, description="Minimum ROI % to notify"
+    )
 
 
 class ScannerSettingsModel(BaseModel):
     """Scanner configuration"""
-    scan_interval_seconds: int = Field(default=60, ge=10, le=3600, description="Scan interval in seconds")
-    min_profit_threshold: float = Field(default=2.5, ge=0, description="Minimum profit threshold %")
-    max_markets_to_scan: int = Field(default=500, ge=10, le=5000, description="Maximum markets to scan")
-    min_liquidity: float = Field(default=1000.0, ge=0, description="Minimum liquidity in USD")
+
+    scan_interval_seconds: int = Field(
+        default=60, ge=10, le=3600, description="Scan interval in seconds"
+    )
+    min_profit_threshold: float = Field(
+        default=2.5, ge=0, description="Minimum profit threshold %"
+    )
+    max_markets_to_scan: int = Field(
+        default=500, ge=10, le=5000, description="Maximum markets to scan"
+    )
+    min_liquidity: float = Field(
+        default=1000.0, ge=0, description="Minimum liquidity in USD"
+    )
 
 
 class TradingSettings(BaseModel):
     """Trading safety configuration"""
+
     trading_enabled: bool = Field(default=False, description="Enable live trading")
-    max_trade_size_usd: float = Field(default=100.0, ge=1, description="Maximum single trade size")
-    max_daily_trade_volume: float = Field(default=1000.0, ge=10, description="Maximum daily trading volume")
-    max_open_positions: int = Field(default=10, ge=1, le=100, description="Maximum concurrent open positions")
-    max_slippage_percent: float = Field(default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %")
+    max_trade_size_usd: float = Field(
+        default=100.0, ge=1, description="Maximum single trade size"
+    )
+    max_daily_trade_volume: float = Field(
+        default=1000.0, ge=10, description="Maximum daily trading volume"
+    )
+    max_open_positions: int = Field(
+        default=10, ge=1, le=100, description="Maximum concurrent open positions"
+    )
+    max_slippage_percent: float = Field(
+        default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %"
+    )
 
 
 class MaintenanceSettings(BaseModel):
     """Database maintenance configuration"""
-    auto_cleanup_enabled: bool = Field(default=False, description="Enable automatic database cleanup")
-    cleanup_interval_hours: int = Field(default=24, ge=1, le=168, description="Cleanup interval in hours")
-    cleanup_resolved_trade_days: int = Field(default=30, ge=1, le=365, description="Delete resolved trades older than X days")
+
+    auto_cleanup_enabled: bool = Field(
+        default=False, description="Enable automatic database cleanup"
+    )
+    cleanup_interval_hours: int = Field(
+        default=24, ge=1, le=168, description="Cleanup interval in hours"
+    )
+    cleanup_resolved_trade_days: int = Field(
+        default=30, ge=1, le=365, description="Delete resolved trades older than X days"
+    )
 
 
 class AllSettings(BaseModel):
     """Complete settings response"""
+
     polymarket: PolymarketSettings
     llm: LLMSettings
     notifications: NotificationSettings
@@ -82,6 +130,7 @@ class AllSettings(BaseModel):
 
 class UpdateSettingsRequest(BaseModel):
     """Request to update settings (partial updates supported)"""
+
     polymarket: Optional[PolymarketSettings] = None
     llm: Optional[LLMSettings] = None
     notifications: Optional[NotificationSettings] = None
@@ -91,6 +140,7 @@ class UpdateSettingsRequest(BaseModel):
 
 
 # ==================== HELPER FUNCTIONS ====================
+
 
 def mask_secret(value: Optional[str], show_chars: int = 4) -> Optional[str]:
     """Mask a secret value, showing only first few characters"""
@@ -119,6 +169,7 @@ async def get_or_create_settings() -> AppSettings:
 
 
 # ==================== ENDPOINTS ====================
+
 
 @router.get("", response_model=AllSettings)
 async def get_settings():
@@ -263,7 +314,7 @@ async def update_settings(request: UpdateSettingsRequest):
             return {
                 "status": "success",
                 "message": "Settings updated successfully",
-                "updated_at": settings.updated_at.isoformat()
+                "updated_at": settings.updated_at.isoformat(),
             }
     except Exception as e:
         logger.error("Failed to update settings", error=str(e))
@@ -271,6 +322,7 @@ async def update_settings(request: UpdateSettingsRequest):
 
 
 # ==================== SECTION-SPECIFIC ENDPOINTS ====================
+
 
 @router.get("/polymarket")
 async def get_polymarket_settings():
@@ -384,6 +436,7 @@ async def update_maintenance_settings(request: MaintenanceSettings):
 
 # ==================== VALIDATION ENDPOINTS ====================
 
+
 @router.post("/test/polymarket")
 async def test_polymarket_connection():
     """Test Polymarket API connection with stored credentials"""
@@ -391,21 +444,15 @@ async def test_polymarket_connection():
         settings = await get_or_create_settings()
 
         if not settings.polymarket_api_key:
-            return {
-                "status": "error",
-                "message": "Polymarket API key not configured"
-            }
+            return {"status": "error", "message": "Polymarket API key not configured"}
 
         # TODO: Implement actual API test
         return {
             "status": "success",
-            "message": "Polymarket credentials are configured (connection test not implemented)"
+            "message": "Polymarket credentials are configured (connection test not implemented)",
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}
 
 
 @router.post("/test/telegram")
@@ -417,16 +464,13 @@ async def test_telegram_connection():
         if not settings.telegram_bot_token or not settings.telegram_chat_id:
             return {
                 "status": "error",
-                "message": "Telegram bot token or chat ID not configured"
+                "message": "Telegram bot token or chat ID not configured",
             }
 
         # TODO: Implement actual bot test (send test message)
         return {
             "status": "success",
-            "message": "Telegram credentials are configured (connection test not implemented)"
+            "message": "Telegram credentials are configured (connection test not implemented)",
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}

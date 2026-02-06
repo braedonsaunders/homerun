@@ -32,16 +32,20 @@ logger = get_logger(__name__)
 # Parameter definition helpers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ParameterSpec:
     """Specification for a single tunable parameter."""
+
     name: str
     current_value: float
     min_bound: float
     max_bound: float
     step: float
     description: str
-    category: str  # entry_criteria | risk_management | position_sizing | strategy_specific
+    category: (
+        str  # entry_criteria | risk_management | position_sizing | strategy_specific
+    )
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -65,6 +69,7 @@ class ParameterSpec:
 # ---------------------------------------------------------------------------
 # Centralized TradingParameters dataclass
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TradingParameters:
@@ -120,68 +125,247 @@ class TradingParameters:
 # The canonical registry of every parameter, its bounds, and step size.
 DEFAULT_PARAM_SPECS: list[ParameterSpec] = [
     # --- entry_criteria ---
-    ParameterSpec("min_profit_threshold", 0.025, 0.005, 0.10, 0.005,
-                  "Minimum profit threshold after fees (fraction)", "entry_criteria"),
-    ParameterSpec("polymarket_fee", 0.02, 0.01, 0.05, 0.005,
-                  "Polymarket winner fee (fraction)", "entry_criteria"),
-    ParameterSpec("min_liquidity", 1000.0, 200.0, 5000.0, 200.0,
-                  "Minimum market liquidity in USD (config)", "entry_criteria"),
-    ParameterSpec("min_roi_percent", 2.5, 0.5, 10.0, 0.5,
-                  "Minimum ROI percentage to enter trade", "entry_criteria"),
-    ParameterSpec("max_risk_score", 0.5, 0.1, 0.9, 0.1,
-                  "Maximum acceptable risk score (0-1)", "entry_criteria"),
-    ParameterSpec("min_liquidity_usd", 5000.0, 1000.0, 20000.0, 1000.0,
-                  "Minimum market liquidity for auto trader (USD)", "entry_criteria"),
-    ParameterSpec("min_impossibility_score", 0.8, 0.5, 1.0, 0.05,
-                  "Minimum impossibility score for miracle strategy", "entry_criteria"),
-    ParameterSpec("min_guaranteed_profit", 0.05, 0.01, 0.20, 0.01,
-                  "Minimum guaranteed profit from Proposition 4.1", "entry_criteria"),
-
+    ParameterSpec(
+        "min_profit_threshold",
+        0.025,
+        0.005,
+        0.10,
+        0.005,
+        "Minimum profit threshold after fees (fraction)",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "polymarket_fee",
+        0.02,
+        0.01,
+        0.05,
+        0.005,
+        "Polymarket winner fee (fraction)",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "min_liquidity",
+        1000.0,
+        200.0,
+        5000.0,
+        200.0,
+        "Minimum market liquidity in USD (config)",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "min_roi_percent",
+        2.5,
+        0.5,
+        10.0,
+        0.5,
+        "Minimum ROI percentage to enter trade",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "max_risk_score",
+        0.5,
+        0.1,
+        0.9,
+        0.1,
+        "Maximum acceptable risk score (0-1)",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "min_liquidity_usd",
+        5000.0,
+        1000.0,
+        20000.0,
+        1000.0,
+        "Minimum market liquidity for auto trader (USD)",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "min_impossibility_score",
+        0.8,
+        0.5,
+        1.0,
+        0.05,
+        "Minimum impossibility score for miracle strategy",
+        "entry_criteria",
+    ),
+    ParameterSpec(
+        "min_guaranteed_profit",
+        0.05,
+        0.01,
+        0.20,
+        0.01,
+        "Minimum guaranteed profit from Proposition 4.1",
+        "entry_criteria",
+    ),
     # --- risk_management ---
-    ParameterSpec("circuit_breaker_losses", 3, 1, 10, 1,
-                  "Consecutive losses before circuit breaker triggers", "risk_management"),
-    ParameterSpec("max_daily_trades", 50, 10, 200, 10,
-                  "Maximum trades per day", "risk_management"),
-    ParameterSpec("max_daily_loss_usd", 100.0, 25.0, 500.0, 25.0,
-                  "Daily loss limit in USD", "risk_management"),
-    ParameterSpec("cooldown_after_loss_seconds", 60, 0, 300, 30,
-                  "Seconds to wait after a losing trade", "risk_management"),
-
+    ParameterSpec(
+        "circuit_breaker_losses",
+        3,
+        1,
+        10,
+        1,
+        "Consecutive losses before circuit breaker triggers",
+        "risk_management",
+    ),
+    ParameterSpec(
+        "max_daily_trades", 50, 10, 200, 10, "Maximum trades per day", "risk_management"
+    ),
+    ParameterSpec(
+        "max_daily_loss_usd",
+        100.0,
+        25.0,
+        500.0,
+        25.0,
+        "Daily loss limit in USD",
+        "risk_management",
+    ),
+    ParameterSpec(
+        "cooldown_after_loss_seconds",
+        60,
+        0,
+        300,
+        30,
+        "Seconds to wait after a losing trade",
+        "risk_management",
+    ),
     # --- position_sizing ---
-    ParameterSpec("base_position_size_usd", 10.0, 1.0, 100.0, 5.0,
-                  "Base position size in USD", "position_sizing"),
-    ParameterSpec("max_position_size_usd", 100.0, 10.0, 500.0, 10.0,
-                  "Maximum position size per trade in USD", "position_sizing"),
-
+    ParameterSpec(
+        "base_position_size_usd",
+        10.0,
+        1.0,
+        100.0,
+        5.0,
+        "Base position size in USD",
+        "position_sizing",
+    ),
+    ParameterSpec(
+        "max_position_size_usd",
+        100.0,
+        10.0,
+        500.0,
+        10.0,
+        "Maximum position size per trade in USD",
+        "position_sizing",
+    ),
     # --- strategy_specific: risk score weights (base.py) ---
-    ParameterSpec("risk_time_short", 0.4, 0.1, 0.7, 0.05,
-                  "Risk weight for <2-day resolution", "strategy_specific"),
-    ParameterSpec("risk_time_medium", 0.2, 0.05, 0.5, 0.05,
-                  "Risk weight for <7-day resolution", "strategy_specific"),
-    ParameterSpec("risk_liquidity_low", 0.3, 0.1, 0.6, 0.05,
-                  "Risk weight for low liquidity (<$1k)", "strategy_specific"),
-    ParameterSpec("risk_liquidity_moderate", 0.15, 0.05, 0.4, 0.05,
-                  "Risk weight for moderate liquidity (<$5k)", "strategy_specific"),
-    ParameterSpec("risk_complexity_high", 0.2, 0.05, 0.5, 0.05,
-                  "Risk weight for complex trades (>5 markets)", "strategy_specific"),
-    ParameterSpec("risk_complexity_moderate", 0.1, 0.02, 0.3, 0.02,
-                  "Risk weight for multi-position trades (>3 markets)", "strategy_specific"),
-
+    ParameterSpec(
+        "risk_time_short",
+        0.4,
+        0.1,
+        0.7,
+        0.05,
+        "Risk weight for <2-day resolution",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "risk_time_medium",
+        0.2,
+        0.05,
+        0.5,
+        0.05,
+        "Risk weight for <7-day resolution",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "risk_liquidity_low",
+        0.3,
+        0.1,
+        0.6,
+        0.05,
+        "Risk weight for low liquidity (<$1k)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "risk_liquidity_moderate",
+        0.15,
+        0.05,
+        0.4,
+        0.05,
+        "Risk weight for moderate liquidity (<$5k)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "risk_complexity_high",
+        0.2,
+        0.05,
+        0.5,
+        0.05,
+        "Risk weight for complex trades (>5 markets)",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "risk_complexity_moderate",
+        0.1,
+        0.02,
+        0.3,
+        0.02,
+        "Risk weight for multi-position trades (>3 markets)",
+        "strategy_specific",
+    ),
     # --- strategy_specific: miracle weights ---
-    ParameterSpec("miracle_alien_weight", 0.95, 0.7, 1.0, 0.05,
-                  "Miracle keyword weight for alien/ufo terms", "strategy_specific"),
-    ParameterSpec("miracle_supernatural_weight", 0.90, 0.6, 1.0, 0.05,
-                  "Miracle keyword weight for supernatural terms", "strategy_specific"),
-    ParameterSpec("miracle_apocalypse_weight", 0.80, 0.5, 1.0, 0.05,
-                  "Miracle keyword weight for apocalypse terms", "strategy_specific"),
-    ParameterSpec("miracle_time_travel_weight", 0.95, 0.7, 1.0, 0.05,
-                  "Miracle keyword weight for impossible physics", "strategy_specific"),
-    ParameterSpec("miracle_min_no_price", 0.90, 0.80, 0.97, 0.01,
-                  "Minimum NO price for miracle strategy", "strategy_specific"),
-    ParameterSpec("miracle_max_no_price", 0.995, 0.98, 1.0, 0.005,
-                  "Maximum NO price for miracle strategy", "strategy_specific"),
-    ParameterSpec("miracle_min_impossibility", 0.70, 0.40, 0.90, 0.05,
-                  "Minimum impossibility score within miracle strategy", "strategy_specific"),
+    ParameterSpec(
+        "miracle_alien_weight",
+        0.95,
+        0.7,
+        1.0,
+        0.05,
+        "Miracle keyword weight for alien/ufo terms",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_supernatural_weight",
+        0.90,
+        0.6,
+        1.0,
+        0.05,
+        "Miracle keyword weight for supernatural terms",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_apocalypse_weight",
+        0.80,
+        0.5,
+        1.0,
+        0.05,
+        "Miracle keyword weight for apocalypse terms",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_time_travel_weight",
+        0.95,
+        0.7,
+        1.0,
+        0.05,
+        "Miracle keyword weight for impossible physics",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_min_no_price",
+        0.90,
+        0.80,
+        0.97,
+        0.01,
+        "Minimum NO price for miracle strategy",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_max_no_price",
+        0.995,
+        0.98,
+        1.0,
+        0.005,
+        "Maximum NO price for miracle strategy",
+        "strategy_specific",
+    ),
+    ParameterSpec(
+        "miracle_min_impossibility",
+        0.70,
+        0.40,
+        0.90,
+        0.05,
+        "Minimum impossibility score within miracle strategy",
+        "strategy_specific",
+    ),
 ]
 
 
@@ -189,9 +373,11 @@ DEFAULT_PARAM_SPECS: list[ParameterSpec] = [
 # Backtest metrics
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BacktestResult:
     """Results from running a parameter set against historical data."""
+
     total_profit: float = 0.0
     total_cost: float = 0.0
     num_trades: int = 0
@@ -208,7 +394,9 @@ class BacktestResult:
 
     @staticmethod
     def from_dict(d: dict) -> "BacktestResult":
-        return BacktestResult(**{k: v for k, v in d.items() if k in BacktestResult.__dataclass_fields__})
+        return BacktestResult(
+            **{k: v for k, v in d.items() if k in BacktestResult.__dataclass_fields__}
+        )
 
 
 class SearchMethod(str, Enum):
@@ -219,6 +407,7 @@ class SearchMethod(str, Enum):
 # ---------------------------------------------------------------------------
 # Core backtesting / replay engine
 # ---------------------------------------------------------------------------
+
 
 def _replay_opportunities(
     opportunities: list[dict],
@@ -275,7 +464,9 @@ def _replay_opportunities(
         positions_data = opp.get("positions_data") or []
         min_liq = 0.0
         if isinstance(positions_data, list):
-            liqs = [p.get("liquidity", 0) for p in positions_data if isinstance(p, dict)]
+            liqs = [
+                p.get("liquidity", 0) for p in positions_data if isinstance(p, dict)
+            ]
             min_liq = min(liqs) if liqs else 0.0
         elif isinstance(positions_data, dict):
             min_liq = positions_data.get("liquidity", 0)
@@ -366,7 +557,13 @@ def _replay_opportunities(
         sharpe = 0.0
 
     avg_roi = float(np.mean(roi_values)) * 100 if roi_values else 0.0
-    profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0.0
+    profit_factor = (
+        gross_wins / gross_losses
+        if gross_losses > 0
+        else float("inf")
+        if gross_wins > 0
+        else 0.0
+    )
 
     return BacktestResult(
         total_profit=round(total_profit, 4),
@@ -385,6 +582,7 @@ def _replay_opportunities(
 # ---------------------------------------------------------------------------
 # Parameter sweep helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_param_sets_grid(
     base: TradingParameters,
@@ -439,6 +637,7 @@ def _build_param_sets_random(
 # Walk-forward validation
 # ---------------------------------------------------------------------------
 
+
 def _split_walk_forward(
     opportunities: list[dict],
     n_windows: int = 5,
@@ -472,6 +671,7 @@ def _split_walk_forward(
 # ---------------------------------------------------------------------------
 # ParameterOptimizer service (singleton)
 # ---------------------------------------------------------------------------
+
 
 class ParameterOptimizer:
     """
@@ -548,9 +748,7 @@ class ParameterOptimizer:
             async with session.begin():
                 if is_active:
                     # Deactivate all others first
-                    await session.execute(
-                        update(ParameterSet).values(is_active=False)
-                    )
+                    await session.execute(update(ParameterSet).values(is_active=False))
                 ps = ParameterSet(
                     id=set_id,
                     name=name,
@@ -622,9 +820,7 @@ class ParameterOptimizer:
         """Set one parameter set as active (deactivate all others)."""
         async with AsyncSessionLocal() as session:
             async with session.begin():
-                await session.execute(
-                    update(ParameterSet).values(is_active=False)
-                )
+                await session.execute(update(ParameterSet).values(is_active=False))
                 result = await session.execute(
                     update(ParameterSet)
                     .where(ParameterSet.id == set_id)
@@ -652,7 +848,9 @@ class ParameterOptimizer:
         """Load all opportunity history records sorted by detected_at."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(OpportunityHistory).order_by(OpportunityHistory.detected_at.asc())
+                select(OpportunityHistory).order_by(
+                    OpportunityHistory.detected_at.asc()
+                )
             )
             rows = result.scalars().all()
             return [
@@ -763,9 +961,13 @@ class ParameterOptimizer:
         scored: list[dict] = []
 
         if walk_forward:
-            folds = _split_walk_forward(opportunities, n_windows=n_windows, train_ratio=train_ratio)
+            folds = _split_walk_forward(
+                opportunities, n_windows=n_windows, train_ratio=train_ratio
+            )
             if not folds:
-                logger.warning("Could not create walk-forward folds, falling back to full history")
+                logger.warning(
+                    "Could not create walk-forward folds, falling back to full history"
+                )
                 walk_forward = False
 
         for idx, params in enumerate(candidates):
@@ -781,28 +983,62 @@ class ParameterOptimizer:
 
                 # Aggregate test results
                 avg_test = BacktestResult(
-                    total_profit=round(sum(r.total_profit for r in test_results) / len(test_results), 4),
-                    total_cost=round(sum(r.total_cost for r in test_results) / len(test_results), 4),
-                    num_trades=sum(r.num_trades for r in test_results) // len(test_results),
+                    total_profit=round(
+                        sum(r.total_profit for r in test_results) / len(test_results), 4
+                    ),
+                    total_cost=round(
+                        sum(r.total_cost for r in test_results) / len(test_results), 4
+                    ),
+                    num_trades=sum(r.num_trades for r in test_results)
+                    // len(test_results),
                     num_wins=sum(r.num_wins for r in test_results) // len(test_results),
-                    num_losses=sum(r.num_losses for r in test_results) // len(test_results),
-                    win_rate=round(sum(r.win_rate for r in test_results) / len(test_results), 4),
+                    num_losses=sum(r.num_losses for r in test_results)
+                    // len(test_results),
+                    win_rate=round(
+                        sum(r.win_rate for r in test_results) / len(test_results), 4
+                    ),
                     max_drawdown=round(max(r.max_drawdown for r in test_results), 4),
-                    sharpe_ratio=round(sum(r.sharpe_ratio for r in test_results) / len(test_results), 4),
-                    avg_roi=round(sum(r.avg_roi for r in test_results) / len(test_results), 4),
-                    profit_factor=round(sum(r.profit_factor for r in test_results) / len(test_results), 4),
+                    sharpe_ratio=round(
+                        sum(r.sharpe_ratio for r in test_results) / len(test_results), 4
+                    ),
+                    avg_roi=round(
+                        sum(r.avg_roi for r in test_results) / len(test_results), 4
+                    ),
+                    profit_factor=round(
+                        sum(r.profit_factor for r in test_results) / len(test_results),
+                        4,
+                    ),
                 )
                 avg_train = BacktestResult(
-                    total_profit=round(sum(r.total_profit for r in train_results) / len(train_results), 4),
-                    total_cost=round(sum(r.total_cost for r in train_results) / len(train_results), 4),
-                    num_trades=sum(r.num_trades for r in train_results) // len(train_results),
-                    num_wins=sum(r.num_wins for r in train_results) // len(train_results),
-                    num_losses=sum(r.num_losses for r in train_results) // len(train_results),
-                    win_rate=round(sum(r.win_rate for r in train_results) / len(train_results), 4),
+                    total_profit=round(
+                        sum(r.total_profit for r in train_results) / len(train_results),
+                        4,
+                    ),
+                    total_cost=round(
+                        sum(r.total_cost for r in train_results) / len(train_results), 4
+                    ),
+                    num_trades=sum(r.num_trades for r in train_results)
+                    // len(train_results),
+                    num_wins=sum(r.num_wins for r in train_results)
+                    // len(train_results),
+                    num_losses=sum(r.num_losses for r in train_results)
+                    // len(train_results),
+                    win_rate=round(
+                        sum(r.win_rate for r in train_results) / len(train_results), 4
+                    ),
                     max_drawdown=round(max(r.max_drawdown for r in train_results), 4),
-                    sharpe_ratio=round(sum(r.sharpe_ratio for r in train_results) / len(train_results), 4),
-                    avg_roi=round(sum(r.avg_roi for r in train_results) / len(train_results), 4),
-                    profit_factor=round(sum(r.profit_factor for r in train_results) / len(train_results), 4),
+                    sharpe_ratio=round(
+                        sum(r.sharpe_ratio for r in train_results) / len(train_results),
+                        4,
+                    ),
+                    avg_roi=round(
+                        sum(r.avg_roi for r in train_results) / len(train_results), 4
+                    ),
+                    profit_factor=round(
+                        sum(r.profit_factor for r in train_results)
+                        / len(train_results),
+                        4,
+                    ),
                 )
 
                 # Composite score: weight Sharpe highly, penalise drawdown, reward profit
@@ -813,13 +1049,15 @@ class ParameterOptimizer:
                     - avg_test.max_drawdown * 0.1
                 )
 
-                scored.append({
-                    "rank": 0,
-                    "params": params.to_dict(),
-                    "train_result": avg_train.to_dict(),
-                    "test_result": avg_test.to_dict(),
-                    "score": round(score, 4),
-                })
+                scored.append(
+                    {
+                        "rank": 0,
+                        "params": params.to_dict(),
+                        "train_result": avg_train.to_dict(),
+                        "test_result": avg_test.to_dict(),
+                        "score": round(score, 4),
+                    }
+                )
             else:
                 # Full-history backtest
                 result = _replay_opportunities(opportunities, params)
@@ -829,13 +1067,15 @@ class ParameterOptimizer:
                     + result.total_profit * 0.3
                     - result.max_drawdown * 0.1
                 )
-                scored.append({
-                    "rank": 0,
-                    "params": params.to_dict(),
-                    "train_result": result.to_dict(),
-                    "test_result": result.to_dict(),
-                    "score": round(score, 4),
-                })
+                scored.append(
+                    {
+                        "rank": 0,
+                        "params": params.to_dict(),
+                        "train_result": result.to_dict(),
+                        "test_result": result.to_dict(),
+                        "score": round(score, 4),
+                    }
+                )
 
         # Sort by composite score descending
         scored.sort(key=lambda x: x["score"], reverse=True)
@@ -865,8 +1105,7 @@ class ParameterOptimizer:
         Returns BacktestResult as a dict.
         """
         trading_params = (
-            TradingParameters.from_dict(params) if params
-            else self._current_params
+            TradingParameters.from_dict(params) if params else self._current_params
         )
         opportunities = await self._load_opportunity_history()
         result = _replay_opportunities(opportunities, trading_params)

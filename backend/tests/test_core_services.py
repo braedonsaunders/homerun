@@ -7,6 +7,7 @@ Comprehensive unit tests for core services:
 """
 
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import math
@@ -51,6 +52,7 @@ from models.database import CopyTradingConfig, CopyTradingMode
 # HELPERS
 # ============================================================================
 
+
 def _make_opportunity(**overrides) -> ArbitrageOpportunity:
     """Build a valid ArbitrageOpportunity with sane defaults."""
     defaults = dict(
@@ -71,8 +73,18 @@ def _make_opportunity(**overrides) -> ArbitrageOpportunity:
         min_liquidity=10000.0,
         max_position_size=50.0,
         positions_to_take=[
-            {"market": "mkt_abc12345", "outcome": "YES", "price": 0.45, "token_id": "tok1"},
-            {"market": "mkt_abc12345", "outcome": "NO", "price": 0.50, "token_id": "tok2"},
+            {
+                "market": "mkt_abc12345",
+                "outcome": "YES",
+                "price": 0.45,
+                "token_id": "tok1",
+            },
+            {
+                "market": "mkt_abc12345",
+                "outcome": "NO",
+                "price": 0.50,
+                "token_id": "tok2",
+            },
         ],
     )
     defaults.update(overrides)
@@ -125,8 +137,12 @@ class TestAutoTraderCircuitBreaker:
         for i in range(2):
             tid = f"t_{i}"
             trader._trades[tid] = TradeRecord(
-                id=tid, opportunity_id="opp", strategy=StrategyType.BASIC,
-                executed_at=datetime.utcnow(), positions=[], total_cost=10,
+                id=tid,
+                opportunity_id="opp",
+                strategy=StrategyType.BASIC,
+                executed_at=datetime.utcnow(),
+                positions=[],
+                total_cost=10,
                 expected_profit=1,
             )
             trader.record_trade_result(tid, won=False, actual_profit=-5)
@@ -136,8 +152,12 @@ class TestAutoTraderCircuitBreaker:
         # Then a win
         tid = "t_win"
         trader._trades[tid] = TradeRecord(
-            id=tid, opportunity_id="opp", strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(), positions=[], total_cost=10,
+            id=tid,
+            opportunity_id="opp",
+            strategy=StrategyType.BASIC,
+            executed_at=datetime.utcnow(),
+            positions=[],
+            total_cost=10,
             expected_profit=1,
         )
         trader.record_trade_result(tid, won=True, actual_profit=2)
@@ -308,9 +328,14 @@ class TestAutoTraderMaxOpenPositions:
         for i in range(2):
             tid = f"open_{i}"
             trader._trades[tid] = TradeRecord(
-                id=tid, opportunity_id=f"opp_{i}", strategy=StrategyType.BASIC,
-                executed_at=datetime.utcnow(), positions=[], total_cost=10,
-                expected_profit=1, status="open",
+                id=tid,
+                opportunity_id=f"opp_{i}",
+                strategy=StrategyType.BASIC,
+                executed_at=datetime.utcnow(),
+                positions=[],
+                total_cost=10,
+                expected_profit=1,
+                status="open",
             )
 
         opp = _make_opportunity()
@@ -323,14 +348,24 @@ class TestAutoTraderMaxOpenPositions:
 
         # 1 open, 1 resolved
         trader._trades["open_1"] = TradeRecord(
-            id="open_1", opportunity_id="o1", strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(), positions=[], total_cost=10,
-            expected_profit=1, status="open",
+            id="open_1",
+            opportunity_id="o1",
+            strategy=StrategyType.BASIC,
+            executed_at=datetime.utcnow(),
+            positions=[],
+            total_cost=10,
+            expected_profit=1,
+            status="open",
         )
         trader._trades["resolved_1"] = TradeRecord(
-            id="resolved_1", opportunity_id="o2", strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(), positions=[], total_cost=10,
-            expected_profit=1, status="resolved_win",
+            id="resolved_1",
+            opportunity_id="o2",
+            strategy=StrategyType.BASIC,
+            executed_at=datetime.utcnow(),
+            positions=[],
+            total_cost=10,
+            expected_profit=1,
+            status="resolved_win",
         )
 
         opp = _make_opportunity()
@@ -625,10 +660,10 @@ class TestSimulationPortfolioTracking:
     def test_multiple_trades_track_correctly(self):
         capital = 10000.0
         # Trade 1: cost 100, win payout 100 (net 98 after 2% fee)
-        capital -= 100.0         # 9900
+        capital -= 100.0  # 9900
         capital += 100.0 * 0.98  # 9998 (net payout after fee)
         # Trade 2: cost 50, lose (0 payout)
-        capital -= 50.0          # 9948
+        capital -= 50.0  # 9948
         assert capital == pytest.approx(9948.0)
 
 
@@ -689,10 +724,22 @@ class TestAnomalyDetectorWashTrading:
     def test_detects_wash_trading(self):
         detector = AnomalyDetector()
         trades = [
-            {"market": "m1", "side": "BUY", "timestamp": "2024-01-01T00:00:00Z",
-             "size": 100, "price": 0.5, "outcome": "YES"},
-            {"market": "m1", "side": "SELL", "timestamp": "2024-01-01T00:00:30Z",
-             "size": 100, "price": 0.5, "outcome": "YES"},
+            {
+                "market": "m1",
+                "side": "BUY",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "size": 100,
+                "price": 0.5,
+                "outcome": "YES",
+            },
+            {
+                "market": "m1",
+                "side": "SELL",
+                "timestamp": "2024-01-01T00:00:30Z",
+                "size": 100,
+                "price": 0.5,
+                "outcome": "YES",
+            },
         ]
         anomalies = detector._detect_pattern_anomalies(trades)
         wash = [a for a in anomalies if a.type == AnomalyType.WASH_TRADING]
@@ -701,10 +748,20 @@ class TestAnomalyDetectorWashTrading:
     def test_no_wash_trading_same_side(self):
         detector = AnomalyDetector()
         trades = [
-            {"market": "m1", "side": "BUY", "timestamp": "2024-01-01T00:00:00Z",
-             "size": 100, "price": 0.5},
-            {"market": "m1", "side": "BUY", "timestamp": "2024-01-01T00:00:30Z",
-             "size": 100, "price": 0.5},
+            {
+                "market": "m1",
+                "side": "BUY",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "size": 100,
+                "price": 0.5,
+            },
+            {
+                "market": "m1",
+                "side": "BUY",
+                "timestamp": "2024-01-01T00:00:30Z",
+                "size": 100,
+                "price": 0.5,
+            },
         ]
         anomalies = detector._detect_pattern_anomalies(trades)
         wash = [a for a in anomalies if a.type == AnomalyType.WASH_TRADING]
@@ -717,8 +774,13 @@ class TestAnomalyDetectorFrontRunning:
     def test_timing_anomalies_returns_list(self):
         detector = AnomalyDetector()
         trades = [
-            {"market": "m1", "side": "BUY", "timestamp": "2024-01-01T00:00:00Z",
-             "price": 0.3, "size": 500},
+            {
+                "market": "m1",
+                "side": "BUY",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "price": 0.3,
+                "size": 500,
+            },
         ]
         result = detector._detect_timing_anomalies(trades)
         assert isinstance(result, list)
@@ -727,10 +789,20 @@ class TestAnomalyDetectorFrontRunning:
         """The current code's timing detection is a placeholder; verify it doesn't crash."""
         detector = AnomalyDetector()
         trades = [
-            {"market": "m1", "side": "BUY", "timestamp": "2024-01-01T00:00:00Z",
-             "price": 0.1, "size": 1000},
-            {"market": "m1", "side": "SELL", "timestamp": "2024-01-01T00:00:05Z",
-             "price": 0.9, "size": 1000},
+            {
+                "market": "m1",
+                "side": "BUY",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "price": 0.1,
+                "size": 1000,
+            },
+            {
+                "market": "m1",
+                "side": "SELL",
+                "timestamp": "2024-01-01T00:00:05Z",
+                "price": 0.9,
+                "size": 1000,
+            },
         ]
         anomalies = detector._detect_timing_anomalies(trades)
         # Currently returns empty, placeholder logic
@@ -798,7 +870,9 @@ class TestAnomalyDetectorImpossibleWinRate:
             "max_roi": 10.0,
         }
         anomalies = detector._detect_statistical_anomalies([], stats)
-        stat_imp = [a for a in anomalies if a.type == AnomalyType.STATISTICALLY_IMPOSSIBLE]
+        stat_imp = [
+            a for a in anomalies if a.type == AnomalyType.STATISTICALLY_IMPOSSIBLE
+        ]
         assert len(stat_imp) >= 1
 
 
@@ -828,10 +902,20 @@ class TestAnomalyScoring:
     def test_mixed_severity_scoring(self):
         detector = AnomalyDetector()
         anomalies = [
-            Anomaly(type=AnomalyType.WASH_TRADING, severity=Severity.MEDIUM,
-                     score=0.6, description="", evidence={}),
-            Anomaly(type=AnomalyType.UNUSUAL_ROI, severity=Severity.HIGH,
-                     score=0.8, description="", evidence={}),
+            Anomaly(
+                type=AnomalyType.WASH_TRADING,
+                severity=Severity.MEDIUM,
+                score=0.6,
+                description="",
+                evidence={},
+            ),
+            Anomaly(
+                type=AnomalyType.UNUSUAL_ROI,
+                severity=Severity.HIGH,
+                score=0.8,
+                description="",
+                evidence={},
+            ),
         ]
         score = detector._calculate_anomaly_score(anomalies)
         # (0.6*0.4 + 0.8*0.7) / 2 = (0.24 + 0.56) / 2 = 0.40
@@ -841,10 +925,20 @@ class TestAnomalyScoring:
     def test_score_capped_at_one(self):
         detector = AnomalyDetector()
         anomalies = [
-            Anomaly(type=AnomalyType.IMPOSSIBLE_WIN_RATE, severity=Severity.CRITICAL,
-                     score=1.0, description="", evidence={}),
-            Anomaly(type=AnomalyType.STATISTICALLY_IMPOSSIBLE, severity=Severity.CRITICAL,
-                     score=1.0, description="", evidence={}),
+            Anomaly(
+                type=AnomalyType.IMPOSSIBLE_WIN_RATE,
+                severity=Severity.CRITICAL,
+                score=1.0,
+                description="",
+                evidence={},
+            ),
+            Anomaly(
+                type=AnomalyType.STATISTICALLY_IMPOSSIBLE,
+                severity=Severity.CRITICAL,
+                score=1.0,
+                description="",
+                evidence={},
+            ),
         ]
         score = detector._calculate_anomaly_score(anomalies)
         assert score <= 1.0
@@ -870,8 +964,16 @@ class TestAnomalyDetectorCleanData:
     def test_clean_pattern_no_anomalies(self):
         detector = AnomalyDetector()
         trades = [
-            {"market": f"m{i}", "side": "BUY", "timestamp": f"2024-01-0{i+1}T00:00:00Z",
-             "size": 100, "price": 0.5, "pnl": 2, "cost": 50, "outcome": "YES"}
+            {
+                "market": f"m{i}",
+                "side": "BUY",
+                "timestamp": f"2024-01-0{i + 1}T00:00:00Z",
+                "size": 100,
+                "price": 0.5,
+                "pnl": 2,
+                "cost": 50,
+                "outcome": "YES",
+            }
             for i in range(5)
         ]
         anomalies = detector._detect_pattern_anomalies(trades)
@@ -903,10 +1005,18 @@ class TestAnomalyDetectorSuspiciousPatterns:
         # 90% arb-like trades (pnl/cost in 1-10% range)
         trades = []
         for i in range(20):
-            trades.append({
-                "market": f"m{i}", "side": "BUY", "timestamp": f"2024-01-01T00:{i:02d}:00Z",
-                "size": 100, "price": 0.5, "pnl": 3, "cost": 50, "outcome": "YES",
-            })
+            trades.append(
+                {
+                    "market": f"m{i}",
+                    "side": "BUY",
+                    "timestamp": f"2024-01-01T00:{i:02d}:00Z",
+                    "size": 100,
+                    "price": 0.5,
+                    "pnl": 3,
+                    "cost": 50,
+                    "outcome": "YES",
+                }
+            )
         anomalies = detector._detect_pattern_anomalies(trades)
         arb_only = [a for a in anomalies if a.type == AnomalyType.ARBITRAGE_ONLY]
         assert len(arb_only) >= 1
@@ -925,10 +1035,18 @@ class TestAnomalyDetectorSuspiciousPatterns:
         detector = AnomalyDetector()
         stats = {"total_pnl": 1000, "win_rate": 0.70}
         anomalies = [
-            Anomaly(type=AnomalyType.IMPOSSIBLE_WIN_RATE, severity=Severity.CRITICAL,
-                     score=1.0, description="", evidence={})
+            Anomaly(
+                type=AnomalyType.IMPOSSIBLE_WIN_RATE,
+                severity=Severity.CRITICAL,
+                score=1.0,
+                description="",
+                evidence={},
+            )
         ]
-        assert detector._is_profitable_pattern(stats, anomalies, ["basic_arbitrage"]) is False
+        assert (
+            detector._is_profitable_pattern(stats, anomalies, ["basic_arbitrage"])
+            is False
+        )
 
     def test_is_profitable_pattern_accepts_good_wallet(self):
         detector = AnomalyDetector()
@@ -1152,10 +1270,11 @@ class TestCopyTraderDelayMechanism:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session), \
-             patch("services.copy_trader.polymarket_client") as mock_pc, \
-             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-
+        with (
+            patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session),
+            patch("services.copy_trader.polymarket_client") as mock_pc,
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
             mock_pc.get_price = AsyncMock(return_value=0.50)
 
             # Mock the internal execution to avoid deep DB calls
@@ -1197,10 +1316,11 @@ class TestCopyTraderDelayMechanism:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session), \
-             patch("services.copy_trader.polymarket_client") as mock_pc, \
-             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-
+        with (
+            patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session),
+            patch("services.copy_trader.polymarket_client") as mock_pc,
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
             mock_pc.get_price = AsyncMock(return_value=0.50)
             mock_sim_trade = MagicMock()
             mock_sim_trade.id = "sim_1"
@@ -1227,15 +1347,22 @@ class TestCopyTraderAnomalyFiltering:
             description="Impossible",
             evidence={},
         )
-        result = detector._is_profitable_pattern(stats, [critical_anomaly], ["basic_arbitrage"])
+        result = detector._is_profitable_pattern(
+            stats, [critical_anomaly], ["basic_arbitrage"]
+        )
         assert result is False
 
     def test_recommendation_avoid_critical(self):
         detector = AnomalyDetector()
         stats = {"total_trades": 100, "win_rate": 0.99}
         anomalies = [
-            Anomaly(type=AnomalyType.IMPOSSIBLE_WIN_RATE, severity=Severity.CRITICAL,
-                     score=1.0, description="", evidence={})
+            Anomaly(
+                type=AnomalyType.IMPOSSIBLE_WIN_RATE,
+                severity=Severity.CRITICAL,
+                score=1.0,
+                description="",
+                evidence={},
+            )
         ]
         rec = detector._generate_recommendation(stats, anomalies, is_profitable=False)
         assert "AVOID" in rec
@@ -1244,8 +1371,13 @@ class TestCopyTraderAnomalyFiltering:
         detector = AnomalyDetector()
         stats = {"total_trades": 100, "win_rate": 0.80}
         anomalies = [
-            Anomaly(type=AnomalyType.UNUSUAL_ROI, severity=Severity.HIGH,
-                     score=0.7, description="", evidence={})
+            Anomaly(
+                type=AnomalyType.UNUSUAL_ROI,
+                severity=Severity.HIGH,
+                score=0.7,
+                description="",
+                evidence={},
+            )
         ]
         rec = detector._generate_recommendation(stats, anomalies, is_profitable=False)
         assert "CAUTION" in rec
@@ -1296,15 +1428,21 @@ class TestCopyTraderWalletTracking:
         mock_session = AsyncMock()
 
         execute_results = [MagicMock(), MagicMock()]
-        execute_results[0].scalar_one_or_none.return_value = mock_existing_t1  # t1 exists
-        execute_results[1].scalar_one_or_none.return_value = mock_no_existing  # t2 is new
+        execute_results[
+            0
+        ].scalar_one_or_none.return_value = mock_existing_t1  # t1 exists
+        execute_results[
+            1
+        ].scalar_one_or_none.return_value = mock_no_existing  # t2 is new
         mock_session.execute = AsyncMock(side_effect=execute_results)
 
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("services.copy_trader.polymarket_client") as mock_pc, \
-             patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session):
+        with (
+            patch("services.copy_trader.polymarket_client") as mock_pc,
+            patch("services.copy_trader.AsyncSessionLocal", return_value=mock_session),
+        ):
             mock_pc.get_wallet_trades = AsyncMock(return_value=mock_trades)
 
             new_trades = await svc._get_new_trades("0xabc", config)
@@ -1385,8 +1523,12 @@ class TestAutoTraderRecordTradeResult:
         trader = AutoTrader()
         tid = "t1"
         trader._trades[tid] = TradeRecord(
-            id=tid, opportunity_id="o1", strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(), positions=[], total_cost=10,
+            id=tid,
+            opportunity_id="o1",
+            strategy=StrategyType.BASIC,
+            executed_at=datetime.utcnow(),
+            positions=[],
+            total_cost=10,
             expected_profit=1,
         )
         trader.record_trade_result(tid, won=True, actual_profit=2.0)
@@ -1399,8 +1541,12 @@ class TestAutoTraderRecordTradeResult:
         trader = AutoTrader()
         tid = "t1"
         trader._trades[tid] = TradeRecord(
-            id=tid, opportunity_id="o1", strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(), positions=[], total_cost=10,
+            id=tid,
+            opportunity_id="o1",
+            strategy=StrategyType.BASIC,
+            executed_at=datetime.utcnow(),
+            positions=[],
+            total_cost=10,
             expected_profit=1,
         )
         trader.record_trade_result(tid, won=False, actual_profit=-5.0)
@@ -1451,9 +1597,13 @@ class TestAutoTraderGetTrades:
         for i in range(5):
             tid = f"t_{i}"
             trader._trades[tid] = TradeRecord(
-                id=tid, opportunity_id=f"o_{i}", strategy=StrategyType.BASIC,
+                id=tid,
+                opportunity_id=f"o_{i}",
+                strategy=StrategyType.BASIC,
                 executed_at=datetime.utcnow() + timedelta(seconds=i),
-                positions=[], total_cost=10, expected_profit=1,
+                positions=[],
+                total_cost=10,
+                expected_profit=1,
                 mode=AutoTraderMode.SHADOW,
             )
 

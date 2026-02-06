@@ -6,6 +6,7 @@ import json
 
 class Token(BaseModel):
     """Represents a YES or NO token in a market"""
+
     token_id: str
     outcome: str  # "Yes" or "No"
     price: float = 0.0
@@ -13,6 +14,7 @@ class Token(BaseModel):
 
 class Market(BaseModel):
     """Represents a single prediction market"""
+
     id: str
     condition_id: str
     question: str
@@ -67,7 +69,7 @@ class Market(BaseModel):
             neg_risk=data.get("negRisk", data.get("neg_risk", False)),
             volume=float(data.get("volume", 0) or 0),
             liquidity=float(data.get("liquidity", 0) or 0),
-            end_date=data.get("endDate")
+            end_date=data.get("endDate"),
         )
 
     @property
@@ -87,6 +89,7 @@ class Market(BaseModel):
 
 class Event(BaseModel):
     """Represents an event containing one or more markets"""
+
     id: str
     slug: str
     title: str
@@ -138,5 +141,5 @@ class Event(BaseModel):
             markets=markets,
             neg_risk=data.get("negRisk", False),
             active=data.get("active", True),
-            closed=data.get("closed", False)
+            closed=data.get("closed", False),
         )

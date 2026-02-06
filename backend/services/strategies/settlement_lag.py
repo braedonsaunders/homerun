@@ -52,15 +52,12 @@ class SettlementLagStrategy(BaseStrategy):
 
     # Thresholds calibrated from research
     NEAR_ZERO_THRESHOLD = 0.05  # Price below this suggests resolved to NO
-    NEAR_ONE_THRESHOLD = 0.95   # Price above this suggests resolved to YES
-    MIN_SUM_DEVIATION = 0.03    # Minimum deviation from 1.0 to be interesting
+    NEAR_ONE_THRESHOLD = 0.95  # Price above this suggests resolved to YES
+    MIN_SUM_DEVIATION = 0.03  # Minimum deviation from 1.0 to be interesting
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
 
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         opportunities = []
 
@@ -157,15 +154,15 @@ class SettlementLagStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market.question[:50],
                     "price": yes_price,
-                    "token_id": market.clob_token_ids[0]
+                    "token_id": market.clob_token_ids[0],
                 },
                 {
                     "action": "BUY",
                     "outcome": "NO",
                     "market": market.question[:50],
                     "price": no_price,
-                    "token_id": market.clob_token_ids[1]
-                }
+                    "token_id": market.clob_token_ids[1],
+                },
             ]
 
         opp = self.create_opportunity(
@@ -185,9 +182,7 @@ class SettlementLagStrategy(BaseStrategy):
         return opp
 
     def _check_negrisk_settlement(
-        self,
-        event: Event,
-        prices: dict[str, dict]
+        self, event: Event, prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """Check NegRisk events for settlement lag in multi-outcome markets.
 
@@ -237,13 +232,15 @@ class SettlementLagStrategy(BaseStrategy):
             positions = []
             for m, price in market_prices:
                 if m.clob_token_ids and len(m.clob_token_ids) > 0:
-                    positions.append({
-                        "action": "BUY",
-                        "outcome": "YES",
-                        "market": m.question[:50],
-                        "price": price,
-                        "token_id": m.clob_token_ids[0]
-                    })
+                    positions.append(
+                        {
+                            "action": "BUY",
+                            "outcome": "YES",
+                            "market": m.question[:50],
+                            "price": price,
+                            "token_id": m.clob_token_ids[0],
+                        }
+                    )
 
             signals = [f"sum YES = ${total_yes:.3f}"]
             if near_zero_count > 0:

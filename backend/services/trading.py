@@ -53,6 +53,7 @@ class OrderStatus(str, Enum):
 @dataclass
 class Order:
     """Represents a trading order"""
+
     id: str
     token_id: str
     side: OrderSide
@@ -73,6 +74,7 @@ class Order:
 @dataclass
 class Position:
     """Represents an open position"""
+
     token_id: str
     market_id: str
     market_question: str
@@ -87,6 +89,7 @@ class Position:
 @dataclass
 class TradingStats:
     """Trading statistics"""
+
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
@@ -124,13 +127,17 @@ class TradingService:
             logger.warning("Trading is disabled. Set TRADING_ENABLED=true to enable.")
             return False
 
-        if not all([
-            settings.POLYMARKET_PRIVATE_KEY,
-            settings.POLYMARKET_API_KEY,
-            settings.POLYMARKET_API_SECRET,
-            settings.POLYMARKET_API_PASSPHRASE
-        ]):
-            logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
+        if not all(
+            [
+                settings.POLYMARKET_PRIVATE_KEY,
+                settings.POLYMARKET_API_KEY,
+                settings.POLYMARKET_API_SECRET,
+                settings.POLYMARKET_API_PASSPHRASE,
+            ]
+        ):
+            logger.error(
+                "Missing Polymarket API credentials. Cannot initialize trading."
+            )
             return False
 
         try:
@@ -142,7 +149,7 @@ class TradingService:
             creds = ApiCreds(
                 api_key=settings.POLYMARKET_API_KEY,
                 api_secret=settings.POLYMARKET_API_SECRET,
-                api_passphrase=settings.POLYMARKET_API_PASSPHRASE
+                api_passphrase=settings.POLYMARKET_API_PASSPHRASE,
             )
 
             # Initialize client
@@ -150,7 +157,7 @@ class TradingService:
                 host=settings.CLOB_API_URL,
                 key=settings.POLYMARKET_PRIVATE_KEY,
                 chain_id=settings.CHAIN_ID,
-                creds=creds
+                creds=creds,
             )
 
             self._initialized = True
@@ -158,7 +165,9 @@ class TradingService:
             return True
 
         except ImportError:
-            logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+            logger.error(
+                "py-clob-client not installed. Run: pip install py-clob-client"
+            )
             return False
         except Exception as e:
             logger.error(f"Failed to initialize trading client: {e}")
@@ -191,17 +200,29 @@ class TradingService:
             return False, "Trading is disabled"
 
         if size_usd < settings.MIN_ORDER_SIZE_USD:
-            return False, f"Order size ${size_usd:.2f} below minimum ${settings.MIN_ORDER_SIZE_USD:.2f}"
+            return (
+                False,
+                f"Order size ${size_usd:.2f} below minimum ${settings.MIN_ORDER_SIZE_USD:.2f}",
+            )
 
         if size_usd > settings.MAX_TRADE_SIZE_USD:
-            return False, f"Order size ${size_usd:.2f} exceeds maximum ${settings.MAX_TRADE_SIZE_USD:.2f}"
+            return (
+                False,
+                f"Order size ${size_usd:.2f} exceeds maximum ${settings.MAX_TRADE_SIZE_USD:.2f}",
+            )
 
         projected_daily_volume = self._stats.daily_volume + size_usd
         if projected_daily_volume > settings.MAX_DAILY_TRADE_VOLUME:
-            return False, f"Would exceed daily volume limit (${projected_daily_volume:.2f} > ${settings.MAX_DAILY_TRADE_VOLUME:.2f})"
+            return (
+                False,
+                f"Would exceed daily volume limit (${projected_daily_volume:.2f} > ${settings.MAX_DAILY_TRADE_VOLUME:.2f})",
+            )
 
         if len(self._positions) >= settings.MAX_OPEN_POSITIONS:
-            return False, f"Maximum open positions ({settings.MAX_OPEN_POSITIONS}) reached"
+            return (
+                False,
+                f"Maximum open positions ({settings.MAX_OPEN_POSITIONS}) reached",
+            )
 
         return True, ""
 
@@ -213,7 +234,7 @@ class TradingService:
         size: float,
         order_type: OrderType = OrderType.GTC,
         market_question: Optional[str] = None,
-        opportunity_id: Optional[str] = None
+        opportunity_id: Optional[str] = None,
     ) -> Order:
         """
         Place an order on Polymarket.
@@ -239,7 +260,7 @@ class TradingService:
             size=size,
             order_type=order_type,
             market_question=market_question,
-            opportunity_id=opportunity_id
+            opportunity_id=opportunity_id,
         )
 
         # Calculate USD value
@@ -263,7 +284,7 @@ class TradingService:
                 price=price,
                 size=size,
                 side=BUY if side == OrderSide.BUY else SELL,
-                token_id=token_id
+                token_id=token_id,
             )
 
             # Create and sign the order
@@ -365,7 +386,11 @@ class TradingService:
         except Exception as e:
             logger.error(f"Get orders error: {e}")
 
-        return [o for o in self._orders.values() if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]]
+        return [
+            o
+            for o in self._orders.values()
+            if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
+        ]
 
     async def sync_positions(self) -> list[Position]:
         """Sync positions from Polymarket"""
@@ -393,9 +418,11 @@ class TradingService:
                     outcome=pos.get("outcome", ""),
                     size=float(pos.get("size", 0)),
                     average_cost=float(pos.get("avgCost", 0)),
-                    current_price=float(pos.get("currentPrice", 0))
+                    current_price=float(pos.get("currentPrice", 0)),
                 )
-                position.unrealized_pnl = (position.current_price - position.average_cost) * position.size
+                position.unrealized_pnl = (
+                    position.current_price - position.average_cost
+                ) * position.size
                 self._positions[token_id] = position
 
             self._stats.open_positions = len(self._positions)
@@ -411,16 +438,14 @@ class TradingService:
             return None
         try:
             from eth_account import Account
+
             account = Account.from_key(settings.POLYMARKET_PRIVATE_KEY)
             return account.address
         except Exception:
             return None
 
     async def execute_opportunity(
-        self,
-        opportunity_id: str,
-        positions: list[dict],
-        size_usd: float
+        self, opportunity_id: str, positions: list[dict], size_usd: float
     ) -> list[Order]:
         """
         Execute an arbitrage opportunity with PARALLEL order submission.
@@ -471,7 +496,7 @@ class TradingService:
                 price=price,
                 size=shares,
                 market_question=position.get("market"),
-                opportunity_id=opportunity_id
+                opportunity_id=opportunity_id,
             )
 
         # Execute ALL orders in PARALLEL - this is the critical change
@@ -515,11 +540,7 @@ class TradingService:
 
     def get_orders(self, limit: int = 100) -> list[Order]:
         """Get recent orders"""
-        orders = sorted(
-            self._orders.values(),
-            key=lambda x: x.created_at,
-            reverse=True
-        )
+        orders = sorted(self._orders.values(), key=lambda x: x.created_at, reverse=True)
         return orders[:limit]
 
     def get_positions(self) -> list[Position]:
@@ -542,7 +563,9 @@ class TradingService:
             return {
                 "address": address,
                 "usdc_balance": 0.0,  # Would need web3 call
-                "positions_value": sum(p.size * p.current_price for p in self._positions.values())
+                "positions_value": sum(
+                    p.size * p.current_price for p in self._positions.values()
+                ),
             }
         except Exception as e:
             return {"error": str(e)}

@@ -1,5 +1,7 @@
 """Shared fixtures for Polymarket arbitrage tests."""
+
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
@@ -18,6 +20,7 @@ from models.opportunity import (
 # ---------------------------------------------------------------------------
 # Raw API response fixtures (mimicking Gamma API payloads)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def raw_market_response():
@@ -78,6 +81,7 @@ def raw_event_response(raw_market_response, raw_market_response_neg_risk):
 # Parsed model fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_market(raw_market_response):
     return Market.from_gamma_response(raw_market_response)
@@ -102,6 +106,7 @@ def sample_token():
 # Opportunity fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_opportunity():
     """A fully-populated ArbitrageOpportunity."""
@@ -117,7 +122,15 @@ def sample_opportunity():
         roi_percent=2.08,
         risk_score=0.3,
         risk_factors=["Moderate liquidity ($5000)"],
-        markets=[{"id": "123456", "question": "Will BTC exceed $100k?", "yes_price": 0.48, "no_price": 0.48, "liquidity": 5000}],
+        markets=[
+            {
+                "id": "123456",
+                "question": "Will BTC exceed $100k?",
+                "yes_price": 0.48,
+                "no_price": 0.48,
+                "liquidity": 5000,
+            }
+        ],
         event_id="evt_001",
         event_title="Bitcoin Price Predictions",
         category="Crypto",
@@ -141,7 +154,15 @@ def sample_opportunity_high_roi():
         net_profit=0.13,
         roi_percent=15.29,
         risk_score=0.2,
-        markets=[{"id": "789", "question": "Election?", "yes_price": 0.40, "no_price": 0.45, "liquidity": 20000}],
+        markets=[
+            {
+                "id": "789",
+                "question": "Election?",
+                "yes_price": 0.40,
+                "no_price": 0.45,
+                "liquidity": 20000,
+            }
+        ],
         event_id="evt_002",
         event_title="US Election",
         category="Politics",
@@ -165,7 +186,15 @@ def sample_opportunity_low_roi():
         net_profit=0.01,
         roi_percent=1.03,
         risk_score=0.8,
-        markets=[{"id": "999", "question": "Will aliens land?", "yes_price": 0.03, "no_price": 0.94, "liquidity": 500}],
+        markets=[
+            {
+                "id": "999",
+                "question": "Will aliens land?",
+                "yes_price": 0.03,
+                "no_price": 0.94,
+                "liquidity": 500,
+            }
+        ],
         event_id="evt_003",
         event_title="Aliens",
         category="Science",
@@ -216,6 +245,7 @@ def old_opportunity():
 # ---------------------------------------------------------------------------
 # Scanner helper fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_polymarket_client():

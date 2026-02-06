@@ -35,8 +35,9 @@ try:
         dependency_detector,
         MarketInfo,
         Dependency,
-        DependencyType
+        DependencyType,
     )
+
     OPTIMIZATION_AVAILABLE = True
 except ImportError:
     OPTIMIZATION_AVAILABLE = False
@@ -44,6 +45,7 @@ except ImportError:
 
 try:
     import numpy  # noqa: F401
+
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
@@ -75,10 +77,7 @@ class CombinatorialStrategy(BaseStrategy):
         self._pair_cache: dict[str, bool] = {}
 
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """
         Detect combinatorial arbitrage opportunities.
@@ -111,10 +110,7 @@ class CombinatorialStrategy(BaseStrategy):
         return opportunities
 
     def _check_pair(
-        self,
-        market_a: Market,
-        market_b: Market,
-        prices: dict[str, dict]
+        self, market_a: Market, market_b: Market, prices: dict[str, dict]
     ) -> Optional[ArbitrageOpportunity]:
         """
         Check a market pair for combinatorial arbitrage.
@@ -148,9 +144,7 @@ class CombinatorialStrategy(BaseStrategy):
 
             if result.arbitrage_found and result.profit > self.min_profit:
                 return self._create_combinatorial_opportunity(
-                    market_a, market_b,
-                    prices_a, prices_b,
-                    result, dependencies
+                    market_a, market_b, prices_a, prices_b, result, dependencies
                 )
 
         except Exception as e:
@@ -159,9 +153,7 @@ class CombinatorialStrategy(BaseStrategy):
         return None
 
     def _get_market_prices(
-        self,
-        market: Market,
-        prices: dict[str, dict]
+        self, market: Market, prices: dict[str, dict]
     ) -> list[float]:
         """Get outcome prices for a market."""
         if len(market.outcome_prices) == 2:
@@ -193,9 +185,7 @@ class CombinatorialStrategy(BaseStrategy):
         return []
 
     def _detect_dependencies_sync(
-        self,
-        market_a: Market,
-        market_b: Market
+        self, market_a: Market, market_b: Market
     ) -> list[Dependency]:
         """
         Synchronously detect dependencies using heuristics.
@@ -207,8 +197,12 @@ class CombinatorialStrategy(BaseStrategy):
         q_b = market_b.question.lower()
 
         # Extract outcomes
-        ["YES", "NO"] if len(market_a.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_a.outcome_prices))]
-        ["YES", "NO"] if len(market_b.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_b.outcome_prices))]
+        ["YES", "NO"] if len(market_a.outcome_prices) == 2 else [
+            f"Outcome {i}" for i in range(len(market_a.outcome_prices))
+        ]
+        ["YES", "NO"] if len(market_b.outcome_prices) == 2 else [
+            f"Outcome {i}" for i in range(len(market_b.outcome_prices))
+        ]
 
         # Heuristic: Check for implies relationships
         # Pattern: Specific candidate implies party win
@@ -231,25 +225,29 @@ class CombinatorialStrategy(BaseStrategy):
             if has_specific_a and has_general_b:
                 # Market A specific implies Market B general
                 # YES in A implies YES in B
-                dependencies.append(Dependency(
-                    market_a_idx=0,
-                    outcome_a_idx=0,  # YES
-                    market_b_idx=1,
-                    outcome_b_idx=0,  # YES
-                    dep_type=DependencyType.IMPLIES,
-                    reason=f"Specific outcome implies general: {specific_terms} -> {general_terms}"
-                ))
+                dependencies.append(
+                    Dependency(
+                        market_a_idx=0,
+                        outcome_a_idx=0,  # YES
+                        market_b_idx=1,
+                        outcome_b_idx=0,  # YES
+                        dep_type=DependencyType.IMPLIES,
+                        reason=f"Specific outcome implies general: {specific_terms} -> {general_terms}",
+                    )
+                )
 
             if has_specific_b and has_general_a:
                 # Market B specific implies Market A general
-                dependencies.append(Dependency(
-                    market_a_idx=0,
-                    outcome_a_idx=0,
-                    market_b_idx=1,
-                    outcome_b_idx=0,
-                    dep_type=DependencyType.IMPLIES,
-                    reason="Specific outcome implies general"
-                ))
+                dependencies.append(
+                    Dependency(
+                        market_a_idx=0,
+                        outcome_a_idx=0,
+                        market_b_idx=1,
+                        outcome_b_idx=0,
+                        dep_type=DependencyType.IMPLIES,
+                        reason="Specific outcome implies general",
+                    )
+                )
 
         # Heuristic: Check for exclusion relationships
         exclusion_patterns = [
@@ -264,14 +262,16 @@ class CombinatorialStrategy(BaseStrategy):
 
             if has_a and has_b and self._share_context(q_a, q_b):
                 # YES in A excludes YES in B
-                dependencies.append(Dependency(
-                    market_a_idx=0,
-                    outcome_a_idx=0,
-                    market_b_idx=1,
-                    outcome_b_idx=0,
-                    dep_type=DependencyType.EXCLUDES,
-                    reason=f"Contradictory outcomes: {terms_a} vs {terms_b}"
-                ))
+                dependencies.append(
+                    Dependency(
+                        market_a_idx=0,
+                        outcome_a_idx=0,
+                        market_b_idx=1,
+                        outcome_b_idx=0,
+                        dep_type=DependencyType.EXCLUDES,
+                        reason=f"Contradictory outcomes: {terms_a} vs {terms_b}",
+                    )
+                )
 
         return dependencies
 
@@ -279,9 +279,30 @@ class CombinatorialStrategy(BaseStrategy):
         """Check if two questions share enough context to be related."""
         # Extract significant words
         stop_words = {
-            "will", "the", "a", "an", "in", "on", "by", "to", "be", "is",
-            "of", "for", "with", "this", "that", "it", "at", "from", "or",
-            "and", "yes", "no", "market", "price"
+            "will",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "by",
+            "to",
+            "be",
+            "is",
+            "of",
+            "for",
+            "with",
+            "this",
+            "that",
+            "it",
+            "at",
+            "from",
+            "or",
+            "and",
+            "yes",
+            "no",
+            "market",
+            "price",
         }
 
         words_a = set(q_a.split()) - stop_words
@@ -295,9 +316,7 @@ class CombinatorialStrategy(BaseStrategy):
         return len(common) >= 2
 
     def _find_related_markets(
-        self,
-        market: Market,
-        all_markets: list[Market]
+        self, market: Market, all_markets: list[Market]
     ) -> list[Market]:
         """Find markets potentially related to the given market."""
         q = market.question.lower()
@@ -305,9 +324,20 @@ class CombinatorialStrategy(BaseStrategy):
         # Extract key entities
         entities = set()
         entity_patterns = [
-            "trump", "biden", "harris", "republican", "democrat",
-            "bitcoin", "btc", "ethereum", "eth",
-            "pennsylvania", "georgia", "michigan", "arizona", "nevada"
+            "trump",
+            "biden",
+            "harris",
+            "republican",
+            "democrat",
+            "bitcoin",
+            "btc",
+            "ethereum",
+            "eth",
+            "pennsylvania",
+            "georgia",
+            "michigan",
+            "arizona",
+            "nevada",
         ]
         for e in entity_patterns:
             if e in q:
@@ -337,7 +367,7 @@ class CombinatorialStrategy(BaseStrategy):
         prices_a: list[float],
         prices_b: list[float],
         result,  # ArbitrageResult
-        dependencies: list[Dependency]
+        dependencies: list[Dependency],
     ) -> ArbitrageOpportunity:
         """Create opportunity from IP solver result."""
         # Build positions to take
@@ -351,26 +381,30 @@ class CombinatorialStrategy(BaseStrategy):
                 token_id = None
                 if market_a.clob_token_ids and idx < len(market_a.clob_token_ids):
                     token_id = market_a.clob_token_ids[idx]
-                positions.append({
-                    "action": "BUY",
-                    "outcome": "YES" if idx == 0 else "NO",
-                    "market": market_a.question[:50],
-                    "price": pos["price"],
-                    "token_id": token_id
-                })
+                positions.append(
+                    {
+                        "action": "BUY",
+                        "outcome": "YES" if idx == 0 else "NO",
+                        "market": market_a.question[:50],
+                        "price": pos["price"],
+                        "token_id": token_id,
+                    }
+                )
             else:
                 # Position in market B
                 b_idx = idx - n_a
                 token_id = None
                 if market_b.clob_token_ids and b_idx < len(market_b.clob_token_ids):
                     token_id = market_b.clob_token_ids[b_idx]
-                positions.append({
-                    "action": "BUY",
-                    "outcome": "YES" if b_idx == 0 else "NO",
-                    "market": market_b.question[:50],
-                    "price": pos["price"],
-                    "token_id": token_id
-                })
+                positions.append(
+                    {
+                        "action": "BUY",
+                        "outcome": "YES" if b_idx == 0 else "NO",
+                        "market": market_b.question[:50],
+                        "price": pos["price"],
+                        "token_id": token_id,
+                    }
+                )
 
         dep_desc = ", ".join([d.reason for d in dependencies[:2]])
 
@@ -379,14 +413,11 @@ class CombinatorialStrategy(BaseStrategy):
             description=f"Cross-market arbitrage via IP solver. Dependencies: {dep_desc}. Cost: ${result.total_cost:.3f}",
             total_cost=result.total_cost,
             markets=[market_a, market_b],
-            positions=positions
+            positions=positions,
         )
 
     async def detect_async(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """
         Async version with LLM dependency detection.
@@ -415,20 +446,19 @@ class CombinatorialStrategy(BaseStrategy):
                 id=market_a.id,
                 question=market_a.question,
                 outcomes=["YES", "NO"],
-                prices=self._get_market_prices(market_a, prices)
+                prices=self._get_market_prices(market_a, prices),
             )
             info_b = MarketInfo(
                 id=market_b.id,
                 question=market_b.question,
                 outcomes=["YES", "NO"],
-                prices=self._get_market_prices(market_b, prices)
+                prices=self._get_market_prices(market_b, prices),
             )
             market_infos.append((info_a, info_b))
 
         # Run LLM detection in parallel
         analyses = await dependency_detector.batch_detect(
-            [(a, b) for a, b in market_infos],
-            concurrency=5
+            [(a, b) for a, b in market_infos], concurrency=5
         )
 
         # Check each pair with detected dependencies
@@ -446,9 +476,12 @@ class CombinatorialStrategy(BaseStrategy):
 
                 if result.arbitrage_found and result.profit > self.min_profit:
                     opp = self._create_combinatorial_opportunity(
-                        market_a, market_b,
-                        prices_a, prices_b,
-                        result, analysis.dependencies
+                        market_a,
+                        market_b,
+                        prices_a,
+                        prices_b,
+                        result,
+                        analysis.dependencies,
                     )
                     if opp:
                         opportunities.append(opp)

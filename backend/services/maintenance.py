@@ -10,9 +10,13 @@ from typing import Optional
 from sqlalchemy import select, delete, func, and_
 
 from models.database import (
-    SimulationTrade, SimulationPosition, WalletTrade,
-    OpportunityHistory, DetectedAnomaly, TradeStatus,
-    AsyncSessionLocal
+    SimulationTrade,
+    SimulationPosition,
+    WalletTrade,
+    OpportunityHistory,
+    DetectedAnomaly,
+    TradeStatus,
+    AsyncSessionLocal,
 )
 from utils.logger import get_logger
 
@@ -24,9 +28,9 @@ class MaintenanceService:
 
     # Default age thresholds (in days)
     DEFAULT_RESOLVED_TRADE_AGE = 30  # Delete resolved trades older than 30 days
-    DEFAULT_OPEN_TRADE_EXPIRY = 90   # Mark open trades as expired after 90 days
-    DEFAULT_WALLET_TRADE_AGE = 60    # Delete wallet trades older than 60 days
-    DEFAULT_ANOMALY_AGE = 30         # Delete resolved anomalies older than 30 days
+    DEFAULT_OPEN_TRADE_EXPIRY = 90  # Mark open trades as expired after 90 days
+    DEFAULT_WALLET_TRADE_AGE = 60  # Delete wallet trades older than 60 days
+    DEFAULT_ANOMALY_AGE = 30  # Delete resolved anomalies older than 30 days
 
     async def get_database_stats(self) -> dict:
         """Get statistics about database contents"""
@@ -42,9 +46,7 @@ class MaintenanceService:
                 trade_counts[status.value] = result.scalar() or 0
 
             # Count total simulation trades
-            total_trades = await session.execute(
-                select(func.count(SimulationTrade.id))
-            )
+            total_trades = await session.execute(select(func.count(SimulationTrade.id)))
 
             # Count simulation positions
             total_positions = await session.execute(
@@ -57,9 +59,7 @@ class MaintenanceService:
             )
 
             # Count wallet trades
-            wallet_trades = await session.execute(
-                select(func.count(WalletTrade.id))
-            )
+            wallet_trades = await session.execute(select(func.count(WalletTrade.id)))
 
             # Count opportunity history
             opportunities = await session.execute(
@@ -67,9 +67,7 @@ class MaintenanceService:
             )
 
             # Count anomalies
-            anomalies = await session.execute(
-                select(func.count(DetectedAnomaly.id))
-            )
+            anomalies = await session.execute(select(func.count(DetectedAnomaly.id)))
             resolved_anomalies = await session.execute(
                 select(func.count(DetectedAnomaly.id)).where(
                     DetectedAnomaly.is_resolved
@@ -87,28 +85,32 @@ class MaintenanceService:
             return {
                 "simulation_trades": {
                     "total": total_trades.scalar() or 0,
-                    "by_status": trade_counts
+                    "by_status": trade_counts,
                 },
                 "simulation_positions": {
                     "total": total_positions.scalar() or 0,
-                    "open": open_positions.scalar() or 0
+                    "open": open_positions.scalar() or 0,
                 },
                 "wallet_trades": wallet_trades.scalar() or 0,
                 "opportunity_history": opportunities.scalar() or 0,
                 "anomalies": {
                     "total": anomalies.scalar() or 0,
-                    "resolved": resolved_anomalies.scalar() or 0
+                    "resolved": resolved_anomalies.scalar() or 0,
                 },
                 "date_range": {
-                    "oldest_trade": oldest_trade.scalar().isoformat() if oldest_trade.scalar() else None,
-                    "newest_trade": newest_trade.scalar().isoformat() if newest_trade.scalar() else None
-                }
+                    "oldest_trade": oldest_trade.scalar().isoformat()
+                    if oldest_trade.scalar()
+                    else None,
+                    "newest_trade": newest_trade.scalar().isoformat()
+                    if newest_trade.scalar()
+                    else None,
+                },
             }
 
     async def cleanup_resolved_trades(
         self,
         older_than_days: int = DEFAULT_RESOLVED_TRADE_AGE,
-        account_id: Optional[str] = None
+        account_id: Optional[str] = None,
     ) -> dict:
         """
         Delete resolved trades older than specified days.
@@ -126,12 +128,14 @@ class MaintenanceService:
             # Build conditions
             conditions = [
                 SimulationTrade.resolved_at < cutoff_date,
-                SimulationTrade.status.in_([
-                    TradeStatus.RESOLVED_WIN,
-                    TradeStatus.RESOLVED_LOSS,
-                    TradeStatus.CANCELLED,
-                    TradeStatus.FAILED
-                ])
+                SimulationTrade.status.in_(
+                    [
+                        TradeStatus.RESOLVED_WIN,
+                        TradeStatus.RESOLVED_LOSS,
+                        TradeStatus.CANCELLED,
+                        TradeStatus.FAILED,
+                    ]
+                ),
             ]
 
             if account_id:
@@ -159,9 +163,7 @@ class MaintenanceService:
 
             # Delete trades
             trades_deleted = await session.execute(
-                delete(SimulationTrade).where(
-                    SimulationTrade.id.in_(trade_ids)
-                )
+                delete(SimulationTrade).where(SimulationTrade.id.in_(trade_ids))
             )
 
             await session.commit()
@@ -170,18 +172,17 @@ class MaintenanceService:
                 "Cleaned up resolved trades",
                 trades_deleted=trades_deleted.rowcount,
                 positions_deleted=positions_deleted.rowcount,
-                older_than_days=older_than_days
+                older_than_days=older_than_days,
             )
 
             return {
                 "trades_deleted": trades_deleted.rowcount,
                 "positions_deleted": positions_deleted.rowcount,
-                "cutoff_date": cutoff_date.isoformat()
+                "cutoff_date": cutoff_date.isoformat(),
             }
 
     async def expire_old_open_trades(
-        self,
-        older_than_days: int = DEFAULT_OPEN_TRADE_EXPIRY
+        self, older_than_days: int = DEFAULT_OPEN_TRADE_EXPIRY
     ) -> dict:
         """
         Mark old open trades as expired/cancelled.
@@ -202,7 +203,7 @@ class MaintenanceService:
                 select(SimulationTrade).where(
                     and_(
                         SimulationTrade.executed_at < cutoff_date,
-                        SimulationTrade.status == TradeStatus.OPEN
+                        SimulationTrade.status == TradeStatus.OPEN,
                     )
                 )
             )
@@ -232,18 +233,18 @@ class MaintenanceService:
             logger.info(
                 "Expired old open trades",
                 expired_count=expired_count,
-                older_than_days=older_than_days
+                older_than_days=older_than_days,
             )
 
             return {
                 "trades_expired": expired_count,
-                "cutoff_date": cutoff_date.isoformat()
+                "cutoff_date": cutoff_date.isoformat(),
             }
 
     async def cleanup_wallet_trades(
         self,
         older_than_days: int = DEFAULT_WALLET_TRADE_AGE,
-        wallet_address: Optional[str] = None
+        wallet_address: Optional[str] = None,
     ) -> dict:
         """
         Delete old wallet trades.
@@ -263,26 +264,22 @@ class MaintenanceService:
             if wallet_address:
                 conditions.append(WalletTrade.wallet_address == wallet_address)
 
-            result = await session.execute(
-                delete(WalletTrade).where(and_(*conditions))
-            )
+            result = await session.execute(delete(WalletTrade).where(and_(*conditions)))
             await session.commit()
 
             logger.info(
                 "Cleaned up wallet trades",
                 deleted_count=result.rowcount,
-                older_than_days=older_than_days
+                older_than_days=older_than_days,
             )
 
             return {
                 "wallet_trades_deleted": result.rowcount,
-                "cutoff_date": cutoff_date.isoformat()
+                "cutoff_date": cutoff_date.isoformat(),
             }
 
     async def cleanup_anomalies(
-        self,
-        older_than_days: int = DEFAULT_ANOMALY_AGE,
-        resolved_only: bool = True
+        self, older_than_days: int = DEFAULT_ANOMALY_AGE, resolved_only: bool = True
     ) -> dict:
         """
         Delete old anomalies.
@@ -311,18 +308,16 @@ class MaintenanceService:
                 "Cleaned up anomalies",
                 deleted_count=result.rowcount,
                 older_than_days=older_than_days,
-                resolved_only=resolved_only
+                resolved_only=resolved_only,
             )
 
             return {
                 "anomalies_deleted": result.rowcount,
-                "cutoff_date": cutoff_date.isoformat()
+                "cutoff_date": cutoff_date.isoformat(),
             }
 
     async def delete_all_trades(
-        self,
-        account_id: Optional[str] = None,
-        confirm: bool = False
+        self, account_id: Optional[str] = None, confirm: bool = False
     ) -> dict:
         """
         Delete ALL trades (nuclear option).
@@ -363,12 +358,8 @@ class MaintenanceService:
                 )
             else:
                 # Delete everything
-                positions_result = await session.execute(
-                    delete(SimulationPosition)
-                )
-                trades_result = await session.execute(
-                    delete(SimulationTrade)
-                )
+                positions_result = await session.execute(delete(SimulationPosition))
+                trades_result = await session.execute(delete(SimulationTrade))
 
             await session.commit()
 
@@ -376,19 +367,17 @@ class MaintenanceService:
                 "Deleted all trades",
                 trades_deleted=trades_result.rowcount,
                 positions_deleted=positions_result.rowcount,
-                account_id=account_id
+                account_id=account_id,
             )
 
             return {
                 "trades_deleted": trades_result.rowcount,
                 "positions_deleted": positions_result.rowcount,
-                "account_id": account_id
+                "account_id": account_id,
             }
 
     async def delete_trades_by_status(
-        self,
-        statuses: list[TradeStatus],
-        account_id: Optional[str] = None
+        self, statuses: list[TradeStatus], account_id: Optional[str] = None
     ) -> dict:
         """
         Delete trades by status.
@@ -433,13 +422,13 @@ class MaintenanceService:
                 "Deleted trades by status",
                 trades_deleted=trades_result.rowcount,
                 positions_deleted=positions_deleted,
-                statuses=[s.value for s in statuses]
+                statuses=[s.value for s in statuses],
             )
 
             return {
                 "trades_deleted": trades_result.rowcount,
                 "positions_deleted": positions_deleted,
-                "statuses": [s.value for s in statuses]
+                "statuses": [s.value for s in statuses],
             }
 
     async def full_cleanup(
@@ -447,7 +436,7 @@ class MaintenanceService:
         resolved_trade_days: int = DEFAULT_RESOLVED_TRADE_AGE,
         open_trade_expiry_days: int = DEFAULT_OPEN_TRADE_EXPIRY,
         wallet_trade_days: int = DEFAULT_WALLET_TRADE_AGE,
-        anomaly_days: int = DEFAULT_ANOMALY_AGE
+        anomaly_days: int = DEFAULT_ANOMALY_AGE,
     ) -> dict:
         """
         Run full database cleanup with all maintenance tasks.
@@ -489,11 +478,8 @@ class MaintenanceService:
 
         return results
 
-
     async def start_background_cleanup(
-        self,
-        interval_hours: int = 24,
-        cleanup_config: Optional[dict] = None
+        self, interval_hours: int = 24, cleanup_config: Optional[dict] = None
     ):
         """
         Start background cleanup task that runs periodically.
@@ -505,10 +491,7 @@ class MaintenanceService:
         self._running = True
         config = cleanup_config or {}
 
-        logger.info(
-            "Starting background cleanup task",
-            interval_hours=interval_hours
-        )
+        logger.info("Starting background cleanup task", interval_hours=interval_hours)
 
         while self._running:
             try:
@@ -522,10 +505,16 @@ class MaintenanceService:
 
                 # Run full cleanup with configured thresholds
                 await self.full_cleanup(
-                    resolved_trade_days=config.get("resolved_trade_days", self.DEFAULT_RESOLVED_TRADE_AGE),
-                    open_trade_expiry_days=config.get("open_trade_expiry_days", self.DEFAULT_OPEN_TRADE_EXPIRY),
-                    wallet_trade_days=config.get("wallet_trade_days", self.DEFAULT_WALLET_TRADE_AGE),
-                    anomaly_days=config.get("anomaly_days", self.DEFAULT_ANOMALY_AGE)
+                    resolved_trade_days=config.get(
+                        "resolved_trade_days", self.DEFAULT_RESOLVED_TRADE_AGE
+                    ),
+                    open_trade_expiry_days=config.get(
+                        "open_trade_expiry_days", self.DEFAULT_OPEN_TRADE_EXPIRY
+                    ),
+                    wallet_trade_days=config.get(
+                        "wallet_trade_days", self.DEFAULT_WALLET_TRADE_AGE
+                    ),
+                    anomaly_days=config.get("anomaly_days", self.DEFAULT_ANOMALY_AGE),
                 )
 
             except asyncio.CancelledError:
