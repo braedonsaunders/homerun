@@ -267,10 +267,16 @@ async def get_wallet_positions(wallet_address: str):
     for pos in positions:
         size = float(pos.get("size", 0) or 0)
         avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-        current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
+        current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
 
-        cost_basis = size * avg_price
-        current_value = size * current_price
+        # Use API-provided values when available, fallback to manual calculation
+        current_value = float(pos.get("currentValue", pos.get("current_value", 0)) or 0)
+        cost_basis = float(pos.get("initialValue", pos.get("initial_value", 0)) or 0)
+
+        if current_value == 0 and cost_basis == 0:
+            cost_basis = size * avg_price
+            current_value = size * current_price
+
         unrealized_pnl = current_value - cost_basis
         roi = (unrealized_pnl / cost_basis * 100) if cost_basis > 0 else 0
 
@@ -279,6 +285,7 @@ async def get_wallet_positions(wallet_address: str):
 
         enriched_positions.append({
             "market": pos.get("market", pos.get("condition_id", pos.get("asset", ""))),
+            "title": pos.get("title", ""),
             "market_slug": pos.get("market_slug", pos.get("slug", "")),
             "outcome": pos.get("outcome", pos.get("outcome_index", "")),
             "size": size,
@@ -332,15 +339,22 @@ async def get_wallet_summary(wallet_address: str):
             total_returned += cost
             sells += 1
 
-    # Calculate position values
+    # Calculate position values - use API-provided values with fallback
     position_value = 0.0
     position_cost_basis = 0.0
     for pos in positions:
-        size = float(pos.get("size", 0) or 0)
-        avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-        current_price = float(pos.get("currentPrice", pos.get("price", 0)) or 0)
-        position_value += size * current_price
-        position_cost_basis += size * avg_price
+        cv = float(pos.get("currentValue", pos.get("current_value", 0)) or 0)
+        iv = float(pos.get("initialValue", pos.get("initial_value", 0)) or 0)
+
+        if cv == 0 and iv == 0:
+            size = float(pos.get("size", 0) or 0)
+            avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
+            current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
+            cv = size * current_price
+            iv = size * avg_price
+
+        position_value += cv
+        position_cost_basis += iv
 
     realized_pnl = total_returned - total_invested
     unrealized_pnl = position_value - position_cost_basis

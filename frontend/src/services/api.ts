@@ -125,6 +125,9 @@ export interface WalletAnalysis {
     total_pnl: number
     avg_roi: number
     max_roi: number
+    avg_hold_time_hours?: number
+    trade_frequency_per_day?: number
+    markets_traded?: number
   }
   strategies_detected: string[]
   anomaly_score: number
@@ -558,13 +561,17 @@ export const discoverByWinRate = async (filters?: WinRateFilters): Promise<Disco
   return data
 }
 
-export const getWalletWinRate = async (address: string): Promise<WalletWinRate> => {
-  const { data } = await api.get(`/discover/wallet/${address}/win-rate`)
+export const getWalletWinRate = async (address: string, timePeriod?: TimePeriod): Promise<WalletWinRate> => {
+  const { data } = await api.get(`/discover/wallet/${address}/win-rate`, {
+    params: timePeriod ? { time_period: timePeriod } : undefined
+  })
   return data
 }
 
-export const analyzeWalletPnL = async (address: string): Promise<WalletPnL> => {
-  const { data } = await api.get(`/discover/wallet/${address}`)
+export const analyzeWalletPnL = async (address: string, timePeriod?: TimePeriod): Promise<WalletPnL> => {
+  const { data } = await api.get(`/discover/wallet/${address}`, {
+    params: timePeriod ? { time_period: timePeriod } : undefined
+  })
   return data
 }
 

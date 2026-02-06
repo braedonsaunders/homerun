@@ -2,7 +2,7 @@ import httpx
 import asyncio
 import json
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
@@ -458,9 +458,9 @@ class PolymarketClient:
         Get top traders from Polymarket leaderboard.
         Uses the official leaderboard API.
         """
-        # Just use the leaderboard API - it has exactly what we need
+        # Fetch extra entries so we can filter by min_trades if trade counts are available
         leaderboard = await self.get_leaderboard(
-            limit=limit,
+            limit=min(limit * 2, 50),
             time_period=time_period,
             order_by=order_by,
             category=category
@@ -469,20 +469,67 @@ class PolymarketClient:
         # Transform to our expected format
         traders = []
         for entry in leaderboard:
+            # Extract trade count from API (try multiple field names)
+            trade_count = int(
+                entry.get("nbrTrades", 0)
+                or entry.get("numTrades", 0)
+                or entry.get("trades", 0)
+                or entry.get("numberOfTrades", 0)
+                or 0
+            )
+            buys = int(entry.get("buys", 0) or entry.get("nbrBuys", 0) or 0)
+            sells = int(entry.get("sells", 0) or entry.get("nbrSells", 0) or 0)
+
+            # If trade count is available, apply min_trades filter
+            if trade_count > 0 and trade_count < min_trades:
+                continue
+
             traders.append({
                 "address": entry.get("proxyWallet", ""),
                 "username": entry.get("userName", ""),
-                "trades": 0,  # Not provided by leaderboard
-                "volume": float(entry.get("vol", 0)),
-                "pnl": float(entry.get("pnl", 0)),
+                "trades": trade_count,
+                "volume": float(entry.get("vol", 0) or 0),
+                "pnl": float(entry.get("pnl", 0) or 0),
                 "rank": entry.get("rank", 0),
-                "buys": 0,
-                "sells": 0,
+                "buys": buys,
+                "sells": sells,
             })
 
         return traders[:limit]
 
-    async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500) -> dict:
+    def _filter_by_time_period(self, trades: list[dict], time_period: str) -> list[dict]:
+        """Filter trades by time period (DAY, WEEK, MONTH, ALL)."""
+        if not trades or time_period.upper() == "ALL":
+            return trades
+
+        now = datetime.utcnow()
+        period_map = {
+            "DAY": timedelta(days=1),
+            "WEEK": timedelta(weeks=1),
+            "MONTH": timedelta(days=30),
+        }
+        delta = period_map.get(time_period.upper())
+        if not delta:
+            return trades
+
+        cutoff = now - delta
+        filtered = []
+        for trade in trades:
+            ts = trade.get("timestamp") or trade.get("created_at") or trade.get("createdAt", "")
+            if not ts:
+                filtered.append(trade)  # Keep trades without timestamps
+                continue
+            try:
+                if isinstance(ts, str):
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+                if ts >= cutoff:
+                    filtered.append(trade)
+            except (ValueError, TypeError):
+                filtered.append(trade)  # Keep if we can't parse
+
+        return filtered
+
+    async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500, time_period: str = "ALL") -> dict:
         """
         Calculate win rate for a wallet by analyzing trade history and open positions.
 
@@ -497,6 +544,9 @@ class PolymarketClient:
             # Fetch both trades and positions with current prices
             trades = await self.get_wallet_trades(address, limit=max_trades)
             positions = await self.get_wallet_positions_with_prices(address)
+
+            # Apply time period filter to trades
+            trades = self._filter_by_time_period(trades, time_period)
 
             if not trades and not positions:
                 return {
@@ -688,55 +738,111 @@ class PolymarketClient:
 
         return results[:limit]
 
-    async def get_wallet_pnl(self, address: str) -> dict:
+    async def get_wallet_pnl(self, address: str, time_period: str = "ALL") -> dict:
         """
-        Calculate PnL for a wallet using the Data API's position data.
+        Calculate PnL for a wallet using trade history and position data.
 
-        The Polymarket Data API returns positions with:
-        - cashPnl: realized P&L for the position
-        - currentValue: current market value
-        - initialValue: cost basis (what was invested)
-        - percentPnl: ROI percentage
+        Uses two methods and picks the most complete picture:
+        1. Trade history: sum of sells - sum of buys = realized PnL
+        2. Position data: API-provided currentValue, initialValue, cashPnl
         """
         try:
             # Get positions with enriched data (already normalized)
             positions = await self.get_wallet_positions_with_prices(address)
             trades = await self.get_wallet_trades(address, limit=500)
 
-            # Sum up position values directly from API data
+            # Apply time period filter to trades
+            trades = self._filter_by_time_period(trades, time_period)
+
+            # === Method 1: Calculate from trade history ===
+            total_bought = 0.0
+            total_sold = 0.0
+            for trade in trades:
+                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+                price = float(trade.get("price", 0) or 0)
+                side = (trade.get("side", "") or "").upper()
+                cost = size * price
+                if side == "BUY":
+                    total_bought += cost
+                elif side == "SELL":
+                    total_sold += cost
+
+            trade_realized_pnl = total_sold - total_bought
+
+            # === Method 2: Calculate from position API data ===
             total_position_value = 0.0
             total_initial_value = 0.0
             total_cash_pnl = 0.0
 
             for pos in positions:
-                # Use the API-provided values
-                current_value = float(pos.get("currentValue", 0) or 0)
-                initial_value = float(pos.get("initialValue", 0) or 0)
-                cash_pnl = float(pos.get("cashPnl", 0) or 0)
+                # Try multiple field name variants for robustness
+                current_value = float(
+                    pos.get("currentValue", 0)
+                    or pos.get("current_value", 0)
+                    or 0
+                )
+                initial_value = float(
+                    pos.get("initialValue", 0)
+                    or pos.get("initial_value", 0)
+                    or 0
+                )
+                cash_pnl = float(
+                    pos.get("cashPnl", 0)
+                    or pos.get("cash_pnl", 0)
+                    or pos.get("pnl", 0)
+                    or 0
+                )
+
+                # Fallback: calculate from size * price if API values are 0
+                if current_value == 0 and initial_value == 0:
+                    size = float(pos.get("size", 0) or 0)
+                    avg_price = float(
+                        pos.get("avgPrice", 0)
+                        or pos.get("avg_price", 0)
+                        or 0
+                    )
+                    current_price = float(
+                        pos.get("currentPrice", 0)
+                        or pos.get("curPrice", 0)
+                        or pos.get("price", 0)
+                        or 0
+                    )
+                    initial_value = size * avg_price
+                    current_value = size * current_price
 
                 total_position_value += current_value
                 total_initial_value += initial_value
                 total_cash_pnl += cash_pnl
 
-            # Unrealized P&L = current value - cost basis
+            # Unrealized P&L from open positions
             unrealized_pnl = total_position_value - total_initial_value
 
-            # Total P&L = realized (cash) + unrealized
-            total_pnl = total_cash_pnl + unrealized_pnl
+            # Use trade-based realized PnL (covers full trade history)
+            # Position cashPnl only covers open positions' realized component
+            # Pick whichever has more signal
+            if abs(trade_realized_pnl) > abs(total_cash_pnl):
+                realized_pnl = trade_realized_pnl
+            else:
+                realized_pnl = total_cash_pnl
 
-            # Calculate ROI based on initial investment
+            total_pnl = realized_pnl + unrealized_pnl
+
+            # Total invested from trades (more comprehensive than position initial values)
+            total_invested = total_bought if total_bought > 0 else total_initial_value
+
+            # Calculate ROI
             roi_percent = 0.0
-            if total_initial_value > 0:
-                roi_percent = (total_pnl / total_initial_value) * 100
+            if total_invested > 0:
+                roi_percent = (total_pnl / total_invested) * 100
 
             return {
                 "address": address,
                 "total_trades": len(trades),
                 "open_positions": len(positions),
-                "total_invested": total_initial_value,
-                "total_returned": total_cash_pnl + total_initial_value,  # For compatibility
+                "total_invested": total_invested,
+                "total_returned": total_sold if total_sold > 0 else total_cash_pnl + total_initial_value,
                 "position_value": total_position_value,
-                "realized_pnl": total_cash_pnl,
+                "realized_pnl": realized_pnl,
                 "unrealized_pnl": unrealized_pnl,
                 "total_pnl": total_pnl,
                 "roi_percent": roi_percent
@@ -745,6 +851,15 @@ class PolymarketClient:
             print(f"Error calculating PnL for {address}: {e}")
             return {
                 "address": address,
+                "total_trades": 0,
+                "open_positions": 0,
+                "total_invested": 0,
+                "total_returned": 0,
+                "position_value": 0,
+                "realized_pnl": 0,
+                "unrealized_pnl": 0,
+                "total_pnl": 0,
+                "roi_percent": 0,
                 "error": str(e)
             }
 

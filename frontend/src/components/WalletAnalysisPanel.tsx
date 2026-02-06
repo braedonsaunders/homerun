@@ -20,7 +20,12 @@ import {
   CheckCircle2,
   Clock,
   Sparkles,
-  User
+  User,
+  ShieldAlert,
+  ShieldCheck,
+  AlertTriangle,
+  Zap,
+  Eye
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -30,11 +35,13 @@ import {
   getWalletWinRate,
   analyzeWalletPnL,
   getWalletProfile,
+  analyzeWallet,
   WalletTrade,
   WalletPosition,
   WalletSummary,
   WalletWinRate,
   WalletPnL,
+  WalletAnalysis,
 } from '../services/api'
 
 interface WalletAnalysisPanelProps {
@@ -159,7 +166,7 @@ const TIME_PERIOD_OPTIONS: { value: TimePeriod; label: string }[] = [
 export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }: WalletAnalysisPanelProps) {
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions'>('summary')
+  const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions' | 'anomaly'>('summary')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
 
   // Auto-analyze when initialWallet changes
@@ -176,8 +183,8 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
 
   // Use the discover API for PnL data (same as wallet tracker)
   const pnlQuery = useQuery({
-    queryKey: ['wallet-pnl-discover', activeWallet],
-    queryFn: () => analyzeWalletPnL(activeWallet!),
+    queryKey: ['wallet-pnl-discover', activeWallet, timePeriod],
+    queryFn: () => analyzeWalletPnL(activeWallet!, timePeriod),
     enabled: !!activeWallet,
   })
 
@@ -189,8 +196,8 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
   })
 
   const winRateQuery = useQuery({
-    queryKey: ['wallet-win-rate', activeWallet],
-    queryFn: () => getWalletWinRate(activeWallet!),
+    queryKey: ['wallet-win-rate', activeWallet, timePeriod],
+    queryFn: () => getWalletWinRate(activeWallet!, timePeriod),
     enabled: !!activeWallet,
   })
 
@@ -204,6 +211,15 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
     queryKey: ['wallet-positions', activeWallet],
     queryFn: () => getWalletPositionsAnalysis(activeWallet!),
     enabled: !!activeWallet,
+  })
+
+  // Auto-run anomaly detection when wallet is opened
+  const anomalyQuery = useQuery({
+    queryKey: ['wallet-anomaly', activeWallet],
+    queryFn: () => analyzeWallet(activeWallet!),
+    enabled: !!activeWallet,
+    staleTime: 300000, // Cache for 5 minutes
+    retry: 1,
   })
 
   // Fetch user profile (username) directly from Polymarket
@@ -317,12 +333,14 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
             trades={tradesQuery.data?.trades || []}
             isLoading={isLoading}
             timePeriod={timePeriod}
+            anomalyData={anomalyQuery.data}
             onRefresh={() => {
               pnlQuery.refetch()
               summaryQuery.refetch()
               winRateQuery.refetch()
               tradesQuery.refetch()
               positionsQuery.refetch()
+              anomalyQuery.refetch()
             }}
           />
 
@@ -332,6 +350,7 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
               { id: 'summary' as const, label: 'Overview', icon: BarChart3 },
               { id: 'trades' as const, label: 'Trade History', icon: History },
               { id: 'positions' as const, label: 'Open Positions', icon: Briefcase },
+              { id: 'anomaly' as const, label: 'Risk Analysis', icon: ShieldAlert },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -366,6 +385,9 @@ export default function WalletAnalysisPanel({ initialWallet, onWalletAnalyzed }:
               {activeTab === 'positions' && (
                 <PositionsTab data={positionsQuery.data} isLoading={positionsQuery.isLoading} />
               )}
+              {activeTab === 'anomaly' && (
+                <AnomalyTab data={anomalyQuery.data} isLoading={anomalyQuery.isLoading} />
+              )}
             </div>
           </div>
         </div>
@@ -396,6 +418,7 @@ function WalletHeroCard({
   trades,
   isLoading,
   timePeriod,
+  anomalyData,
   onRefresh
 }: {
   address: string
@@ -406,6 +429,7 @@ function WalletHeroCard({
   trades: WalletTrade[]
   isLoading: boolean
   timePeriod: TimePeriod
+  anomalyData?: WalletAnalysis
   onRefresh: () => void
 }) {
   const timePeriodLabel = TIME_PERIOD_OPTIONS.find(o => o.value === timePeriod)?.label || 'All Time'
@@ -525,8 +549,27 @@ function WalletHeroCard({
             </div>
           </div>
 
-          {/* Time Period Badge & Refresh */}
+          {/* Badges & Refresh */}
           <div className="flex items-center gap-2">
+            {anomalyData && (
+              <span className={clsx(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium",
+                anomalyData.anomaly_score > 0.7
+                  ? "bg-red-500/20 border-red-500/30 text-red-300"
+                  : anomalyData.anomaly_score > 0.3
+                  ? "bg-yellow-500/20 border-yellow-500/30 text-yellow-300"
+                  : "bg-green-500/20 border-green-500/30 text-green-300"
+              )}>
+                {anomalyData.anomaly_score > 0.7 ? (
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                ) : anomalyData.anomaly_score > 0.3 ? (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                ) : (
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                )}
+                Risk: {(anomalyData.anomaly_score * 100).toFixed(0)}%
+              </span>
+            )}
             <span className="px-3 py-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 text-xs font-medium text-purple-300">
               {timePeriodLabel}
             </span>
@@ -1054,6 +1097,200 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
         {data.positions.map((position, idx) => (
           <PositionRow key={idx} position={position} />
         ))}
+      </div>
+    </div>
+  )
+}
+
+function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boolean }) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="text-center">
+          <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-4" />
+          <p className="text-gray-500">Running anomaly detection...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="text-center py-16">
+        <ShieldAlert className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+        <p className="text-gray-500">No analysis data available</p>
+      </div>
+    )
+  }
+
+  const scoreColor = data.anomaly_score > 0.7 ? 'text-red-400' :
+                     data.anomaly_score > 0.3 ? 'text-yellow-400' : 'text-green-400'
+  const scoreBg = data.anomaly_score > 0.7 ? 'from-red-500/10 to-red-500/5 border-red-500/20' :
+                  data.anomaly_score > 0.3 ? 'from-yellow-500/10 to-yellow-500/5 border-yellow-500/20' :
+                  'from-green-500/10 to-green-500/5 border-green-500/20'
+  const scoreLabel = data.anomaly_score > 0.7 ? 'High Risk' :
+                     data.anomaly_score > 0.3 ? 'Moderate Risk' : 'Low Risk'
+
+  const severityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-500/20 text-red-400 border-red-500/30'
+      case 'high': return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+      case 'medium': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+      case 'low': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Score & Recommendation */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Anomaly Score */}
+        <div className={clsx("relative overflow-hidden rounded-xl bg-gradient-to-br border p-5", scoreBg)}>
+          <div className="relative">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  {data.anomaly_score > 0.7 ? (
+                    <ShieldAlert className="w-5 h-5 text-red-400" />
+                  ) : data.anomaly_score > 0.3 ? (
+                    <AlertTriangle className="w-5 h-5 text-yellow-400" />
+                  ) : (
+                    <ShieldCheck className="w-5 h-5 text-green-400" />
+                  )}
+                  <p className="text-sm text-gray-400">Anomaly Score</p>
+                </div>
+                <p className={clsx("text-3xl font-bold", scoreColor)}>
+                  {(data.anomaly_score * 100).toFixed(0)}%
+                </p>
+                <p className={clsx("text-sm font-medium mt-1", scoreColor)}>{scoreLabel}</p>
+              </div>
+              <CircularProgress
+                percentage={data.anomaly_score * 100}
+                size={72}
+                strokeWidth={5}
+                color={data.anomaly_score > 0.7 ? '#ef4444' : data.anomaly_score > 0.3 ? '#eab308' : '#22c55e'}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Recommendation */}
+        <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Eye className="w-5 h-5 text-purple-400" />
+            <p className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Recommendation</p>
+          </div>
+          <p className="text-white leading-relaxed">{data.recommendation}</p>
+          <div className="mt-3 flex items-center gap-2">
+            <span className={clsx(
+              "px-2.5 py-1 rounded-full text-xs font-medium border",
+              data.is_profitable_pattern
+                ? "bg-green-500/20 text-green-400 border-green-500/30"
+                : "bg-gray-500/20 text-gray-400 border-gray-500/30"
+            )}>
+              {data.is_profitable_pattern ? 'Profitable Pattern' : 'Not Profitable'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Trading Profile</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Total Trades</p>
+            <p className="text-xl font-bold text-white">{data.stats.total_trades}</p>
+          </div>
+          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Win Rate</p>
+            <p className="text-xl font-bold text-white">{(data.stats.win_rate * 100).toFixed(1)}%</p>
+          </div>
+          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Avg ROI</p>
+            <p className={clsx("text-xl font-bold", data.stats.avg_roi >= 0 ? "text-green-400" : "text-red-400")}>
+              {data.stats.avg_roi >= 0 ? '+' : ''}{data.stats.avg_roi.toFixed(1)}%
+            </p>
+          </div>
+          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Markets Traded</p>
+            <p className="text-xl font-bold text-white">{data.stats.markets_traded ?? '-'}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Strategies Detected */}
+      {data.strategies_detected.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Detected Strategies</h3>
+          <div className="flex flex-wrap gap-2">
+            {data.strategies_detected.map((strategy, idx) => (
+              <span
+                key={idx}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm text-purple-300"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {strategy}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Anomalies Found */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+          Anomalies Detected ({data.anomalies.length})
+        </h3>
+        {data.anomalies.length === 0 ? (
+          <div className="text-center py-8 rounded-xl bg-green-500/5 border border-green-500/20">
+            <ShieldCheck className="w-10 h-10 text-green-400 mx-auto mb-3" />
+            <p className="text-green-400 font-medium">No anomalies detected</p>
+            <p className="text-xs text-gray-500 mt-1">This wallet shows normal trading patterns</p>
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
+            {data.anomalies.map((anomaly, idx) => (
+              <div
+                key={idx}
+                className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-4 hover:border-gray-700 transition-colors"
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className={clsx(
+                      "w-4 h-4",
+                      anomaly.severity === 'critical' ? 'text-red-400' :
+                      anomaly.severity === 'high' ? 'text-orange-400' :
+                      anomaly.severity === 'medium' ? 'text-yellow-400' : 'text-blue-400'
+                    )} />
+                    <span className="font-medium text-white text-sm">
+                      {anomaly.type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                    </span>
+                  </div>
+                  <span className={clsx(
+                    "px-2 py-0.5 rounded-full text-xs font-medium border",
+                    severityColor(anomaly.severity)
+                  )}>
+                    {anomaly.severity}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-400 mb-2">{anomaly.description}</p>
+                {anomaly.evidence && Object.keys(anomaly.evidence).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {Object.entries(anomaly.evidence).map(([key, value]) => (
+                      <span key={key} className="text-xs bg-black/30 rounded px-2 py-1 text-gray-500">
+                        {key.replace(/_/g, ' ')}: <span className="text-gray-300">
+                          {typeof value === 'number' ? value.toFixed(2) : String(value)}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
