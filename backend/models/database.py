@@ -438,7 +438,7 @@ def _get_column_default_sql(col):
         if isinstance(val, str):
             return f"'{val}'"
         if isinstance(val, enum.Enum):
-            return f"'{val.value}'"
+            return f"'{val.name}'"
     return None
 
 
@@ -457,6 +457,31 @@ def _get_column_type_sql(col):
         "ENUM": "VARCHAR",
     }
     return type_map.get(type_name, "VARCHAR")
+
+
+def _fix_enum_values(connection):
+    """Fix enum columns that were stored with .value instead of .name."""
+    # Map of (table, column) -> {wrong_value: correct_name}
+    enum_fixes = {
+        ("copy_trading_configs", "copy_mode"): {
+            "all_trades": "ALL_TRADES",
+            "arb_only": "ARB_ONLY",
+        },
+    }
+    inspector = sa_inspect(connection)
+    existing_tables = set(inspector.get_table_names())
+
+    for (table_name, col_name), value_map in enum_fixes.items():
+        if table_name not in existing_tables:
+            continue
+        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+        if col_name not in existing_cols:
+            continue
+        for wrong_val, correct_val in value_map.items():
+            connection.execute(
+                text(f"UPDATE {table_name} SET {col_name} = :correct WHERE {col_name} = :wrong"),
+                {"correct": correct_val, "wrong": wrong_val},
+            )
 
 
 def _migrate_schema(connection):
@@ -482,6 +507,8 @@ def _migrate_schema(connection):
 
             logger.info(f"Migrating: {stmt}")
             connection.execute(text(stmt))
+
+    _fix_enum_values(connection)
 
 
 async def init_database():
