@@ -62,7 +62,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
   const [minTrades, setMinTrades] = useState(10)
   const [minVolume, setMinVolume] = useState(0)
   const [maxVolume, setMaxVolume] = useState(0)
-  const [scanCount, setScanCount] = useState(100)
+  const [scanCount, setScanCount] = useState(200)
   const [resultLimit, setResultLimit] = useState(50)
 
   // Copy trade modal state
@@ -445,12 +445,12 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         onChange={(e) => setScanCount(Number(e.target.value))}
                         className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
                       >
-                        <option value={50}>50 traders</option>
                         <option value={100}>100 traders</option>
-                        <option value={150}>150 traders</option>
                         <option value={200}>200 traders</option>
                         <option value={300}>300 traders</option>
                         <option value={500}>500 traders</option>
+                        <option value={750}>750 traders</option>
+                        <option value={1000}>1000 traders</option>
                       </select>
                     </div>
                     <div>
@@ -473,7 +473,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 {/* Tip for high win rate searches */}
                 {currentDiscoverMode === 'winrate' && minWinRate >= 95 && (
                   <div className="text-xs text-yellow-500/80 flex items-center gap-1 pt-1">
-                    <span>Tip: For 95%+ win rates, increase Scan Count to find more traders. Higher scans take longer.</span>
+                    <span>Tip: For 95%+ win rates, increase Scan Count. Searches both PNL and VOL leaderboards (~2x the scan count).</span>
                   </div>
                 )}
               </div>
@@ -484,8 +484,8 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 <RefreshCw className="w-6 h-6 animate-spin text-gray-500" />
                 <span className="mt-2 text-gray-500">
                   {currentDiscoverMode === 'winrate'
-                    ? `Analyzing ${scanCount} traders for ${minWinRate}%+ win rate...`
-                    : 'Scanning Polymarket trades...'}
+                    ? `Deep scanning ~${scanCount * 2} wallets for ${minWinRate}%+ win rate with ${minTrades}+ closed positions...`
+                    : 'Verifying trader activity across leaderboard...'}
                 </span>
                 {currentDiscoverMode === 'winrate' && scanCount > 100 && (
                   <span className="text-xs text-gray-600 mt-1">
