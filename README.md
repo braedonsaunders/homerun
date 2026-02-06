@@ -425,12 +425,14 @@ frontend/
 
 ## Contributing
 
-PRs welcome. The project uses:
-- **Ruff** for Python linting and formatting
-- **TypeScript** strict mode for the frontend
-- **GitHub Actions CI** runs on all PRs
+PRs welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide covering:
 
-To contribute:
+- Development setup (backend + frontend)
+- Code standards (Ruff for Python, TypeScript strict mode)
+- How to add strategies, endpoints, and components
+- PR checklist and CI requirements
+
+Quick version:
 1. Fork the repo
 2. Create a feature branch
 3. Run `make dev` to test locally
@@ -438,6 +440,12 @@ To contribute:
 
 ---
 
+## Security
+
+Found a vulnerability? **Do not open a public issue.** See **[SECURITY.md](SECURITY.md)** for responsible disclosure instructions.
+
+---
+
 ## License
 
-MIT
+MIT License. See **[LICENSE](LICENSE)** for the full text.
