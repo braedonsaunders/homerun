@@ -2,11 +2,20 @@ name: Sloppy
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sloppy mode to run'
+        required: true
+        type: choice
+        options:
+          - scan
+          - fix
+        default: scan
 
 jobs:
   fix:
     name: Sloppy Fix
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'fix')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,7 +33,7 @@ jobs:
 
   scan:
     name: Sloppy Scan
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'scan'
     runs-on: ubuntu-latest
     permissions:
       contents: read
