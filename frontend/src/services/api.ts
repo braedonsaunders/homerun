@@ -81,6 +81,51 @@ export interface SimulationAccount {
   losing_trades: number
   win_rate: number
   open_positions: number
+  unrealized_pnl: number
+  book_value: number
+  market_value: number
+  created_at: string | null
+}
+
+export interface EquityPoint {
+  date: string
+  equity: number
+  pnl: number
+  cumulative_pnl: number
+  trade_count: number
+  trade_id?: string
+  status?: string
+}
+
+export interface EquityHistorySummary {
+  total_trades: number
+  winning_trades: number
+  losing_trades: number
+  open_trades: number
+  total_invested: number
+  total_returned: number
+  realized_pnl: number
+  unrealized_pnl: number
+  total_pnl: number
+  book_value: number
+  market_value: number
+  max_drawdown: number
+  max_drawdown_pct: number
+  profit_factor: number
+  best_trade: number
+  worst_trade: number
+  avg_win: number
+  avg_loss: number
+  win_rate: number
+  roi_percent: number
+}
+
+export interface EquityHistoryResponse {
+  account_id: string
+  initial_capital: number
+  current_capital: number
+  equity_points: EquityPoint[]
+  summary: EquityHistorySummary
 }
 
 export interface SimulationTrade {
@@ -392,6 +437,11 @@ export const executeOpportunity = async (
 
 export const getAccountPerformance = async (accountId: string) => {
   const { data } = await api.get(`/simulation/accounts/${accountId}/performance`)
+  return data
+}
+
+export const getAccountEquityHistory = async (accountId: string): Promise<EquityHistoryResponse> => {
+  const { data } = await api.get(`/simulation/accounts/${accountId}/equity-history`)
   return data
 }
 
