@@ -324,6 +324,31 @@ class OpportunityHistory(Base):
     )
 
 
+# ==================== OPPORTUNITY DECAY TRACKING ====================
+
+class OpportunityLifetime(Base):
+    """Tracks how long arbitrage opportunities survive before closing"""
+    __tablename__ = "opportunity_lifetimes"
+
+    id = Column(String, primary_key=True)
+    opportunity_id = Column(String, nullable=False)
+    strategy_type = Column(String, nullable=False)
+    roi_at_detection = Column(Float, nullable=True)
+    liquidity_at_detection = Column(Float, nullable=True)
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    lifetime_seconds = Column(Float, nullable=True)
+    close_reason = Column(String, nullable=True)  # "price_moved", "resolved", "unknown"
+
+    __table_args__ = (
+        Index("idx_lifetime_strategy", "strategy_type"),
+        Index("idx_lifetime_opportunity", "opportunity_id"),
+        Index("idx_lifetime_first_seen", "first_seen"),
+        Index("idx_lifetime_closed", "closed_at"),
+    )
+
+
 # ==================== ANOMALIES ====================
 
 class DetectedAnomaly(Base):
@@ -356,6 +381,60 @@ class DetectedAnomaly(Base):
         Index("idx_anomaly_wallet", "wallet_address"),
         Index("idx_anomaly_severity", "severity"),
     )
+
+
+# ==================== ML CLASSIFIER ====================
+
+class MLModelWeights(Base):
+    """Stored weights and metadata for the ML false-positive classifier"""
+    __tablename__ = "ml_model_weights"
+
+    id = Column(String, primary_key=True)
+    model_version = Column(Integer, nullable=False, default=1)
+    weights = Column(JSON, nullable=False)  # Model parameters (weights, bias, thresholds)
+    feature_names = Column(JSON, nullable=False)  # Ordered list of feature names
+    metrics = Column(JSON, nullable=True)  # accuracy, precision, recall, f1
+    training_samples = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+
+class MLPredictionLog(Base):
+    """Log of ML classifier predictions for auditing and retraining"""
+    __tablename__ = "ml_prediction_log"
+
+    id = Column(String, primary_key=True)
+    opportunity_id = Column(String, nullable=False)
+    strategy_type = Column(String, nullable=False)
+    features = Column(JSON, nullable=False)
+    probability = Column(Float, nullable=False)
+    recommendation = Column(String, nullable=False)  # execute, skip, review
+    confidence = Column(Float, nullable=False)
+    model_version = Column(Integer, nullable=True)
+    predicted_at = Column(DateTime, default=datetime.utcnow)
+
+    # Outcome tracking (filled in later)
+    actual_outcome = Column(Boolean, nullable=True)
+    actual_roi = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_ml_pred_opp", "opportunity_id"),
+        Index("idx_ml_pred_time", "predicted_at"),
+    )
+
+
+# ==================== PARAMETER OPTIMIZATION ====================
+
+class ParameterSet(Base):
+    """Stored parameter sets for hyperparameter optimization"""
+    __tablename__ = "parameter_sets"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    parameters = Column(JSON, nullable=False)
+    backtest_results = Column(JSON, nullable=True)
+    is_active = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ==================== SCANNER SETTINGS ====================

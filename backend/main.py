@@ -24,6 +24,8 @@ from services.anomaly_detector import anomaly_detector
 from services.trading import trading_service
 from services.auto_trader import auto_trader
 from services.maintenance import maintenance_service
+from services.notifier import notifier
+from services.opportunity_recorder import opportunity_recorder
 from models.database import init_database
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
@@ -88,6 +90,12 @@ async def lifespan(app: FastAPI):
             tasks.append(cleanup_task)
             logger.info("Background database cleanup enabled")
 
+        # Start Telegram notifier (hooks into scanner + auto_trader callbacks)
+        await notifier.start()
+
+        # Start opportunity recorder (hooks into scanner, tracks outcomes)
+        await opportunity_recorder.start()
+
         logger.info("All services started successfully")
 
         yield
@@ -105,6 +113,8 @@ async def lifespan(app: FastAPI):
         copy_trader.stop()
         auto_trader.stop()
         maintenance_service.stop()
+        notifier.stop()
+        opportunity_recorder.stop()
 
         for task in tasks:
             task.cancel()

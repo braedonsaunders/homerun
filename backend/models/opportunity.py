@@ -13,6 +13,7 @@ class StrategyType(str, Enum):
     MIRACLE = "miracle"  # Bet against impossible/absurd events
     COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
     SETTLEMENT_LAG = "settlement_lag"  # Exploit delayed price updates after outcome determined
+    CROSS_PLATFORM = "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
 
 
 class MispricingType(str, Enum):
