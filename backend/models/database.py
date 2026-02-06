@@ -1,11 +1,15 @@
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime, Text, JSON,
-    ForeignKey, Enum as SQLEnum, Index, create_engine
+    ForeignKey, Enum as SQLEnum, Index, create_engine, inspect as sa_inspect,
+    text
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 import enum
+import logging
+
+logger = logging.getLogger(__name__)
 
 from config import settings
 
@@ -421,10 +425,70 @@ AsyncSessionLocal = sessionmaker(
 )
 
 
+def _get_column_default_sql(col):
+    """Get SQL default value for a column."""
+    if col.default is not None:
+        val = col.default.arg
+        if callable(val):
+            return None
+        if isinstance(val, bool):
+            return "1" if val else "0"
+        if isinstance(val, (int, float)):
+            return str(val)
+        if isinstance(val, str):
+            return f"'{val}'"
+        if isinstance(val, enum.Enum):
+            return f"'{val.value}'"
+    return None
+
+
+def _get_column_type_sql(col):
+    """Get SQL type string for a column."""
+    type_obj = col.type
+    type_name = type_obj.__class__.__name__.upper()
+    type_map = {
+        "STRING": "VARCHAR",
+        "TEXT": "TEXT",
+        "INTEGER": "INTEGER",
+        "FLOAT": "FLOAT",
+        "BOOLEAN": "BOOLEAN",
+        "DATETIME": "DATETIME",
+        "JSON": "JSON",
+        "ENUM": "VARCHAR",
+    }
+    return type_map.get(type_name, "VARCHAR")
+
+
+def _migrate_schema(connection):
+    """Add missing columns to existing tables (SQLite ALTER TABLE ADD COLUMN)."""
+    inspector = sa_inspect(connection)
+    existing_tables = inspector.get_table_names()
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+
+        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing_cols:
+                continue
+
+            col_type = _get_column_type_sql(col)
+            default_sql = _get_column_default_sql(col)
+
+            stmt = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}"
+            if default_sql is not None:
+                stmt += f" DEFAULT {default_sql}"
+
+            logger.info(f"Migrating: {stmt}")
+            connection.execute(text(stmt))
+
+
 async def init_database():
-    """Initialize database tables"""
+    """Initialize database tables and migrate schema for existing databases."""
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_schema)
 
 
 async def get_db_session() -> AsyncSession:
