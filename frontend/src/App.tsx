@@ -38,7 +38,6 @@ import { useWebSocket } from './hooks/useWebSocket'
 import OpportunityCard from './components/OpportunityCard'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
-import AnomalyPanel from './components/AnomalyPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
 import PositionsPanel from './components/PositionsPanel'
@@ -588,15 +587,10 @@ function App() {
             <WalletTracker section="discover" discoverMode="winrate" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
           <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
-            <div className="space-y-6">
-              <WalletAnalysisPanel
-                initialWallet={walletToAnalyze}
-                onWalletAnalyzed={() => setWalletToAnalyze(null)}
-              />
-              <div className="border-t border-gray-800 pt-6">
-                <AnomalyPanel />
-              </div>
-            </div>
+            <WalletAnalysisPanel
+              initialWallet={walletToAnalyze}
+              onWalletAnalyzed={() => setWalletToAnalyze(null)}
+            />
           </div>
         </div>
 
