@@ -269,6 +269,7 @@ export const removeWallet = async (address: string) => {
 export interface RecentTradeFromWallet {
   id?: string
   market?: string
+  market_title?: string
   market_slug?: string
   outcome?: string
   side?: string
@@ -276,9 +277,12 @@ export interface RecentTradeFromWallet {
   price?: number
   cost?: number
   timestamp?: string
+  timestamp_iso?: string
   time?: string
+  match_time?: string
   created_at?: string
   transaction_hash?: string
+  asset_id?: string
   wallet_address: string
   wallet_label: string
 }

@@ -252,19 +252,28 @@ async def get_all_recent_trades(
             recent_trades = wallet.get("recent_trades", [])
 
             for trade in recent_trades:
-                # Parse timestamp and filter by cutoff
-                trade_time_str = trade.get("timestamp") or trade.get("time") or trade.get("created_at")
+                # Parse timestamp - check multiple field names
+                trade_time_str = (
+                    trade.get("match_time")
+                    or trade.get("timestamp")
+                    or trade.get("time")
+                    or trade.get("created_at")
+                    or trade.get("createdAt")
+                )
                 if trade_time_str:
                     try:
-                        # Handle different timestamp formats
-                        if "T" in str(trade_time_str):
-                            trade_time = datetime.fromisoformat(trade_time_str.replace("Z", "+00:00").replace("+00:00", ""))
+                        if isinstance(trade_time_str, (int, float)):
+                            trade_time = datetime.fromtimestamp(trade_time_str)
+                        elif "T" in str(trade_time_str) or "-" in str(trade_time_str):
+                            trade_time = datetime.fromisoformat(
+                                str(trade_time_str).replace("Z", "+00:00").replace("+00:00", "")
+                            )
                         else:
                             trade_time = datetime.fromtimestamp(float(trade_time_str))
 
                         if trade_time < cutoff_time:
                             continue
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OSError):
                         pass
 
                 # Add wallet info to the trade
@@ -275,15 +284,34 @@ async def get_all_recent_trades(
                 }
                 all_trades.append(enriched_trade)
 
-        # Sort by timestamp (most recent first)
+        # Enrich trades with market names and normalized timestamps
+        from services.polymarket import polymarket_client
+        all_trades = await polymarket_client.enrich_trades_with_market_info(all_trades)
+
+        # Sort by normalized timestamp (most recent first)
         def get_sort_key(t):
-            ts = t.get("timestamp") or t.get("time") or t.get("created_at") or ""
-            if isinstance(ts, str) and ts:
+            ts = t.get("timestamp_iso", "")
+            if ts:
                 try:
-                    if "T" in ts:
-                        return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
-                    return datetime.fromtimestamp(float(ts))
+                    return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
                 except (ValueError, TypeError):
+                    pass
+            # Fallback to raw timestamp fields
+            raw = (
+                t.get("match_time") or t.get("timestamp")
+                or t.get("time") or t.get("created_at") or ""
+            )
+            if isinstance(raw, str) and raw:
+                try:
+                    if "T" in raw or "-" in raw:
+                        return datetime.fromisoformat(raw.replace("Z", "+00:00").replace("+00:00", ""))
+                    return datetime.fromtimestamp(float(raw))
+                except (ValueError, TypeError, OSError):
+                    pass
+            elif isinstance(raw, (int, float)):
+                try:
+                    return datetime.fromtimestamp(raw)
+                except (ValueError, OSError):
                     pass
             return datetime.min
 
