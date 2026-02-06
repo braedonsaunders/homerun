@@ -44,28 +44,20 @@ class MutuallyExclusiveStrategy(BaseStrategy):
     EXCLUSIVE_PATTERNS = [
         # Political - RISKY: ignores third-party candidates!
         (["democrat", "biden", "harris", "democratic"], ["republican", "trump", "gop"]),
-
         # REMOVED: Too many false positives
         # (["yes", "will"], ["no", "won't", "will not"]),
-
         # Sports - RISKY: ignores draws/ties!
         (["home", "team a"], ["away", "team b"]),
-
         # REMOVED: Boundary case issues (exactly equal)
         # (["above", "over", "more than", "higher"], ["below", "under", "less than", "lower"]),
-
         # Time-based - RISKY: "on the date" could be neither before nor after
         # (["before", "by"], ["after", "not by"]),
-
         # Win/lose - RISKY: ignores draws
         (["win", "victory"], ["lose", "defeat"]),
     ]
 
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         opportunities = []
 
@@ -87,9 +79,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         return opportunities
 
     def _find_exclusive_pairs_in_event(
-        self,
-        event: Event,
-        prices: dict[str, dict]
+        self, event: Event, prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """Find mutually exclusive pairs within an event"""
         opportunities = []
@@ -111,9 +101,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         return opportunities
 
     def _find_exclusive_pairs_across_markets(
-        self,
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """Find mutually exclusive pairs across all markets"""
         opportunities = []
@@ -122,7 +110,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         high_volume = sorted(markets, key=lambda m: m.volume, reverse=True)[:100]
 
         for i, market_a in enumerate(high_volume):
-            for market_b in high_volume[i+1:]:
+            for market_b in high_volume[i + 1 :]:
                 if self._are_mutually_exclusive(market_a, market_b):
                     opp = self._check_pair(market_a, market_b, prices)
                     if opp:
@@ -142,14 +130,28 @@ class MutuallyExclusiveStrategy(BaseStrategy):
             b_matches_first = any(p in q_b for p in pattern_a)
 
             # Check if they're opposite patterns
-            if (a_matches_first and b_matches_second) or (a_matches_second and b_matches_first):
+            if (a_matches_first and b_matches_second) or (
+                a_matches_second and b_matches_first
+            ):
                 # Additional check: questions should be about the same topic
                 # Simple heuristic: share significant words
                 words_a = set(q_a.split())
                 words_b = set(q_b.split())
                 common = words_a & words_b
                 # Remove common stop words
-                stop_words = {"will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are"}
+                stop_words = {
+                    "will",
+                    "the",
+                    "a",
+                    "an",
+                    "in",
+                    "on",
+                    "by",
+                    "to",
+                    "be",
+                    "is",
+                    "are",
+                }
                 common = common - stop_words
 
                 if len(common) >= 2:
@@ -162,7 +164,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         market_a: Market,
         market_b: Market,
         prices: dict[str, dict],
-        event: Event = None
+        event: Event = None,
     ) -> ArbitrageOpportunity | None:
         """Check if a pair offers arbitrage opportunity"""
         # Get YES prices
@@ -197,15 +199,19 @@ class MutuallyExclusiveStrategy(BaseStrategy):
                 "outcome": "YES",
                 "market": market_a.question[:50],
                 "price": yes_a,
-                "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None
+                "token_id": market_a.clob_token_ids[0]
+                if market_a.clob_token_ids
+                else None,
             },
             {
                 "action": "BUY",
                 "outcome": "YES",
                 "market": market_b.question[:50],
                 "price": yes_b,
-                "token_id": market_b.clob_token_ids[0] if market_b.clob_token_ids else None
-            }
+                "token_id": market_b.clob_token_ids[0]
+                if market_b.clob_token_ids
+                else None,
+            },
         ]
 
         opp = self.create_opportunity(
@@ -214,16 +220,22 @@ class MutuallyExclusiveStrategy(BaseStrategy):
             total_cost=total_cost,
             markets=[market_a, market_b],
             positions=positions,
-            event=event
+            event=event,
         )
 
         # Add extra risk factors
         if opp:
-            opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - check for third-party outcomes")
+            opp.risk_factors.insert(
+                0, "⚠️ REQUIRES MANUAL VERIFICATION - check for third-party outcomes"
+            )
             # Warn about political markets
             q_combined = (market_a.question + market_b.question).lower()
-            if any(p in q_combined for p in ["democrat", "republican", "trump", "biden"]):
-                opp.risk_factors.insert(1, "Political market: Independent candidates could win")
+            if any(
+                p in q_combined for p in ["democrat", "republican", "trump", "biden"]
+            ):
+                opp.risk_factors.insert(
+                    1, "Political market: Independent candidates could win"
+                )
             if any(p in q_combined for p in ["win", "lose", "victory", "defeat"]):
                 opp.risk_factors.insert(1, "Win/lose market: Draw/tie outcome possible")
 

@@ -33,18 +33,13 @@ class BaseStrategy(ABC):
 
     @abstractmethod
     def detect(
-        self,
-        events: list[Event],
-        markets: list[Market],
-        prices: dict[str, dict]
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
     ) -> list[ArbitrageOpportunity]:
         """Detect arbitrage opportunities"""
         pass
 
     def calculate_risk_score(
-        self,
-        markets: list[Market],
-        resolution_date: Optional[datetime] = None
+        self, markets: list[Market], resolution_date: Optional[datetime] = None
     ) -> tuple[float, list[str]]:
         """Calculate risk score (0-1) and return risk factors"""
         score = 0.0
@@ -87,7 +82,7 @@ class BaseStrategy(ABC):
         total_cost: float,
         markets: list[Market],
         positions: list[dict],
-        event: Optional[Event] = None
+        event: Optional[Event] = None,
     ) -> Optional[ArbitrageOpportunity]:
         """Create an ArbitrageOpportunity if profitable"""
 
@@ -124,18 +119,21 @@ class BaseStrategy(ABC):
             roi_percent=roi,
             risk_score=risk_score,
             risk_factors=risk_factors,
-            markets=[{
-                "id": m.id,
-                "question": m.question,
-                "yes_price": m.yes_price,
-                "no_price": m.no_price,
-                "liquidity": m.liquidity
-            } for m in markets],
+            markets=[
+                {
+                    "id": m.id,
+                    "question": m.question,
+                    "yes_price": m.yes_price,
+                    "no_price": m.no_price,
+                    "liquidity": m.liquidity,
+                }
+                for m in markets
+            ],
             event_id=event.id if event else None,
             event_title=event.title if event else None,
             category=event.category if event else None,
             min_liquidity=min_liquidity,
             max_position_size=max_position,
             resolution_date=resolution_date,
-            positions_to_take=positions
+            positions_to_take=positions,
         )

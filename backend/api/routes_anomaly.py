@@ -27,6 +27,7 @@ class FindProfitableRequest(BaseModel):
 
 # ==================== WALLET ANALYSIS ====================
 
+
 @anomaly_router.post("/analyze")
 async def analyze_wallet(request: AnalyzeWalletRequest):
     """
@@ -50,13 +51,13 @@ async def analyze_wallet(request: AnalyzeWalletRequest):
             "max_roi": analysis.max_roi,
             "avg_hold_time_hours": analysis.avg_hold_time_hours,
             "trade_frequency_per_day": analysis.trade_frequency_per_day,
-            "markets_traded": analysis.markets_traded
+            "markets_traded": analysis.markets_traded,
         },
         "strategies_detected": analysis.strategies_detected,
         "anomaly_score": analysis.anomaly_score,
         "anomalies": analysis.anomalies,
         "is_profitable_pattern": analysis.is_profitable_pattern,
-        "recommendation": analysis.recommendation
+        "recommendation": analysis.recommendation,
     }
 
 
@@ -80,17 +81,18 @@ async def analyze_wallet_get(wallet_address: str):
             "max_roi": analysis.max_roi,
             "avg_hold_time_hours": analysis.avg_hold_time_hours,
             "trade_frequency_per_day": analysis.trade_frequency_per_day,
-            "markets_traded": analysis.markets_traded
+            "markets_traded": analysis.markets_traded,
         },
         "strategies_detected": analysis.strategies_detected,
         "anomaly_score": analysis.anomaly_score,
         "anomalies": analysis.anomalies,
         "is_profitable_pattern": analysis.is_profitable_pattern,
-        "recommendation": analysis.recommendation
+        "recommendation": analysis.recommendation,
     }
 
 
 # ==================== FIND PROFITABLE WALLETS ====================
+
 
 @anomaly_router.post("/find-profitable")
 async def find_profitable_wallets(request: FindProfitableRequest):
@@ -104,50 +106,59 @@ async def find_profitable_wallets(request: FindProfitableRequest):
         min_trades=request.min_trades,
         min_win_rate=request.min_win_rate,
         min_pnl=request.min_pnl,
-        max_anomaly_score=request.max_anomaly_score
+        max_anomaly_score=request.max_anomaly_score,
     )
 
     return {
         "count": len(wallets),
-        "wallets": [{
-            "address": w.address,
-            "win_rate": w.win_rate,
-            "total_pnl": w.total_pnl,
-            "avg_roi": w.avg_roi,
-            "strategies": w.strategies_detected,
-            "anomaly_score": w.anomaly_score,
-            "recommendation": w.recommendation
-        } for w in wallets]
+        "wallets": [
+            {
+                "address": w.address,
+                "win_rate": w.win_rate,
+                "total_pnl": w.total_pnl,
+                "avg_roi": w.avg_roi,
+                "strategies": w.strategies_detected,
+                "anomaly_score": w.anomaly_score,
+                "recommendation": w.recommendation,
+            }
+            for w in wallets
+        ],
     }
 
 
 # ==================== ANOMALIES ====================
 
+
 @anomaly_router.get("/anomalies")
 async def get_anomalies(
-    severity: Optional[str] = Query(default=None, description="Filter by severity: low, medium, high, critical"),
-    anomaly_type: Optional[str] = Query(default=None, description="Filter by anomaly type"),
-    limit: int = Query(default=100, ge=1, le=500)
+    severity: Optional[str] = Query(
+        default=None, description="Filter by severity: low, medium, high, critical"
+    ),
+    anomaly_type: Optional[str] = Query(
+        default=None, description="Filter by anomaly type"
+    ),
+    limit: int = Query(default=100, ge=1, le=500),
 ):
     """Get detected anomalies"""
     # Validate severity
     if severity and severity not in [s.value for s in Severity]:
-        raise HTTPException(status_code=400, detail=f"Invalid severity. Must be one of: {[s.value for s in Severity]}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid severity. Must be one of: {[s.value for s in Severity]}",
+        )
 
     # Validate anomaly type
     if anomaly_type and anomaly_type not in [t.value for t in AnomalyType]:
-        raise HTTPException(status_code=400, detail=f"Invalid anomaly type. Must be one of: {[t.value for t in AnomalyType]}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid anomaly type. Must be one of: {[t.value for t in AnomalyType]}",
+        )
 
     anomalies = await anomaly_detector.get_anomalies(
-        severity=severity,
-        anomaly_type=anomaly_type,
-        limit=limit
+        severity=severity, anomaly_type=anomaly_type, limit=limit
     )
 
-    return {
-        "count": len(anomalies),
-        "anomalies": anomalies
-    }
+    return {"count": len(anomalies), "anomalies": anomalies}
 
 
 @anomaly_router.get("/anomaly-types")
@@ -157,17 +168,26 @@ async def get_anomaly_types():
         "types": [
             {
                 "type": t.value,
-                "category": "statistical" if t.value in ["impossible_win_rate", "unusual_roi", "perfect_timing", "statistically_impossible"]
-                    else "pattern" if t.value in ["front_running", "wash_trading", "coordinated_trading"]
-                    else "behavioral"
+                "category": "statistical"
+                if t.value
+                in [
+                    "impossible_win_rate",
+                    "unusual_roi",
+                    "perfect_timing",
+                    "statistically_impossible",
+                ]
+                else "pattern"
+                if t.value in ["front_running", "wash_trading", "coordinated_trading"]
+                else "behavioral",
             }
             for t in AnomalyType
         ],
-        "severities": [s.value for s in Severity]
+        "severities": [s.value for s in Severity],
     }
 
 
 # ==================== QUICK CHECKS ====================
+
 
 @anomaly_router.get("/check/{wallet_address}")
 async def quick_check_wallet(wallet_address: str):
@@ -195,16 +215,16 @@ async def quick_check_wallet(wallet_address: str):
         "win_rate": analysis.win_rate,
         "total_pnl": analysis.total_pnl,
         "verdict": "AVOID" if is_suspicious else "OK",
-        "summary": analysis.recommendation
+        "summary": analysis.recommendation,
     }
 
 
 # ==================== WALLET TRADES & POSITIONS ====================
 
+
 @anomaly_router.get("/wallet/{wallet_address}/trades")
 async def get_wallet_trades(
-    wallet_address: str,
-    limit: int = Query(default=100, ge=1, le=500)
+    wallet_address: str, limit: int = Query(default=100, ge=1, le=500)
 ):
     """
     Get individual trades for a wallet.
@@ -226,24 +246,26 @@ async def get_wallet_trades(
         side = (trade.get("side", "") or "").upper()
         cost = size * price
 
-        enriched_trades.append({
-            "id": trade.get("id", trade.get("transactionHash", "")),
-            "market": trade.get("market", trade.get("condition_id", trade.get("asset", ""))),
-            "market_slug": trade.get("market_slug", trade.get("slug", "")),
-            "outcome": trade.get("outcome", trade.get("outcome_index", "")),
-            "side": side,
-            "size": size,
-            "price": price,
-            "cost": cost,
-            "timestamp": trade.get("timestamp", trade.get("created_at", "")),
-            "transaction_hash": trade.get("transactionHash", trade.get("transaction_hash", "")),
-        })
+        enriched_trades.append(
+            {
+                "id": trade.get("id", trade.get("transactionHash", "")),
+                "market": trade.get(
+                    "market", trade.get("condition_id", trade.get("asset", ""))
+                ),
+                "market_slug": trade.get("market_slug", trade.get("slug", "")),
+                "outcome": trade.get("outcome", trade.get("outcome_index", "")),
+                "side": side,
+                "size": size,
+                "price": price,
+                "cost": cost,
+                "timestamp": trade.get("timestamp", trade.get("created_at", "")),
+                "transaction_hash": trade.get(
+                    "transactionHash", trade.get("transaction_hash", "")
+                ),
+            }
+        )
 
-    return {
-        "wallet": address,
-        "total": len(enriched_trades),
-        "trades": enriched_trades
-    }
+    return {"wallet": address, "total": len(enriched_trades), "trades": enriched_trades}
 
 
 @anomaly_router.get("/wallet/{wallet_address}/positions")
@@ -262,6 +284,7 @@ async def get_wallet_positions(wallet_address: str):
     # Resolve market titles for positions missing them
     # Collect condition IDs that need lookup
     import asyncio
+
     condition_ids_to_lookup = set()
     for pos in positions:
         title = pos.get("title", "")
@@ -292,7 +315,9 @@ async def get_wallet_positions(wallet_address: str):
     for pos in positions:
         size = float(pos.get("size", 0) or 0)
         avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-        current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
+        current_price = float(
+            pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
+        )
 
         # Use API-provided values when available, fallback to manual calculation
         current_value = float(pos.get("currentValue", pos.get("current_value", 0)) or 0)
@@ -319,33 +344,37 @@ async def get_wallet_positions(wallet_address: str):
         if not title and condition_id:
             market_info = polymarket_client._market_cache.get(condition_id)
             if market_info:
-                title = market_info.get("groupItemTitle") or market_info.get("question", "")
+                title = market_info.get("groupItemTitle") or market_info.get(
+                    "question", ""
+                )
         market_slug = pos.get("market_slug", pos.get("slug", ""))
         if not market_slug and condition_id:
             market_info = polymarket_client._market_cache.get(condition_id)
             if market_info:
                 market_slug = market_info.get("slug", "")
 
-        enriched_positions.append({
-            "market": condition_id,
-            "title": title,
-            "market_slug": market_slug,
-            "outcome": pos.get("outcome", pos.get("outcome_index", "")),
-            "size": size,
-            "avg_price": avg_price,
-            "current_price": current_price,
-            "cost_basis": cost_basis,
-            "current_value": current_value,
-            "unrealized_pnl": unrealized_pnl,
-            "roi_percent": roi,
-        })
+        enriched_positions.append(
+            {
+                "market": condition_id,
+                "title": title,
+                "market_slug": market_slug,
+                "outcome": pos.get("outcome", pos.get("outcome_index", "")),
+                "size": size,
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "cost_basis": cost_basis,
+                "current_value": current_value,
+                "unrealized_pnl": unrealized_pnl,
+                "roi_percent": roi,
+            }
+        )
 
     return {
         "wallet": address,
         "total_positions": len(enriched_positions),
         "total_value": total_value,
         "total_unrealized_pnl": total_unrealized_pnl,
-        "positions": enriched_positions
+        "positions": enriched_positions,
     }
 
 
@@ -392,7 +421,9 @@ async def get_wallet_summary(wallet_address: str):
         if cv == 0 and iv == 0:
             size = float(pos.get("size", 0) or 0)
             avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-            current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
+            current_price = float(
+                pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
+            )
             cv = size * current_price
             iv = size * avg_price
 
@@ -418,5 +449,5 @@ async def get_wallet_summary(wallet_address: str):
             "unrealized_pnl": unrealized_pnl,
             "total_pnl": total_pnl,
             "roi_percent": roi,
-        }
+        },
     }

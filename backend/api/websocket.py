@@ -52,18 +52,23 @@ async def handle_websocket(websocket: WebSocket):
     await manager.connect(websocket)
 
     # Send current state
-    await manager.send_personal(websocket, {
-        "type": "init",
-        "data": {
-            "opportunities": [
-                o.model_dump() for o in scanner.get_opportunities()[:20]
-            ],
-            "scanner_status": {
-                "running": scanner.is_running,
-                "last_scan": (scanner.last_scan.isoformat() + "Z") if scanner.last_scan else None
-            }
-        }
-    })
+    await manager.send_personal(
+        websocket,
+        {
+            "type": "init",
+            "data": {
+                "opportunities": [
+                    o.model_dump() for o in scanner.get_opportunities()[:20]
+                ],
+                "scanner_status": {
+                    "running": scanner.is_running,
+                    "last_scan": (scanner.last_scan.isoformat() + "Z")
+                    if scanner.last_scan
+                    else None,
+                },
+            },
+        },
+    )
 
     try:
         while True:
@@ -74,10 +79,10 @@ async def handle_websocket(websocket: WebSocket):
             # Handle different message types
             if message.get("type") == "subscribe":
                 # Client wants to subscribe to specific updates
-                await manager.send_personal(websocket, {
-                    "type": "subscribed",
-                    "data": message.get("channels", [])
-                })
+                await manager.send_personal(
+                    websocket,
+                    {"type": "subscribed", "data": message.get("channels", [])},
+                )
 
             elif message.get("type") == "ping":
                 await manager.send_personal(websocket, {"type": "pong"})
@@ -85,13 +90,18 @@ async def handle_websocket(websocket: WebSocket):
             elif message.get("type") == "scan":
                 # Trigger manual scan
                 opportunities = await scanner.scan_once()
-                await manager.send_personal(websocket, {
-                    "type": "scan_complete",
-                    "data": {
-                        "count": len(opportunities),
-                        "opportunities": [o.model_dump() for o in opportunities[:20]]
-                    }
-                })
+                await manager.send_personal(
+                    websocket,
+                    {
+                        "type": "scan_complete",
+                        "data": {
+                            "count": len(opportunities),
+                            "opportunities": [
+                                o.model_dump() for o in opportunities[:20]
+                            ],
+                        },
+                    },
+                )
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -102,29 +112,25 @@ async def handle_websocket(websocket: WebSocket):
 
 async def broadcast_opportunities(opportunities):
     """Callback to broadcast new opportunities"""
-    await manager.broadcast({
-        "type": "opportunities_update",
-        "data": {
-            "count": len(opportunities),
-            "opportunities": [o.model_dump() for o in opportunities[:20]]
+    await manager.broadcast(
+        {
+            "type": "opportunities_update",
+            "data": {
+                "count": len(opportunities),
+                "opportunities": [o.model_dump() for o in opportunities[:20]],
+            },
         }
-    })
+    )
 
 
 async def broadcast_wallet_trade(trade):
     """Callback to broadcast new wallet trades"""
-    await manager.broadcast({
-        "type": "wallet_trade",
-        "data": trade
-    })
+    await manager.broadcast({"type": "wallet_trade", "data": trade})
 
 
 async def broadcast_scanner_status(status):
     """Callback to broadcast scanner status changes"""
-    await manager.broadcast({
-        "type": "scanner_status",
-        "data": status
-    })
+    await manager.broadcast({"type": "scanner_status", "data": status})
 
 
 # Register callbacks

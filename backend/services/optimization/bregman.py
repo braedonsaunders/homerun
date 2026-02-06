@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 try:
     from scipy.optimize import minimize  # noqa: F401
+
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
@@ -30,6 +31,7 @@ except ImportError:
 @dataclass
 class ProjectionResult:
     """Result of Bregman projection."""
+
     projected_prices: np.ndarray
     arbitrage_profit: float
     optimal_positions: list[dict]
@@ -83,9 +85,7 @@ class BregmanProjector:
         return prices / np.sum(prices)
 
     def project_binary_market(
-        self,
-        yes_price: float,
-        no_price: float
+        self, yes_price: float, no_price: float
     ) -> Tuple[float, float, float]:
         """
         Project binary market prices to arbitrage-free state.
@@ -107,9 +107,7 @@ class BregmanProjector:
         return float(projected[0]), float(projected[1]), profit
 
     def project_multi_outcome(
-        self,
-        prices: list[float],
-        constraint_type: str = "sum_to_one"
+        self, prices: list[float], constraint_type: str = "sum_to_one"
     ) -> ProjectionResult:
         """
         Project multi-outcome market prices to arbitrage-free state.
@@ -136,7 +134,7 @@ class BregmanProjector:
                 arbitrage_profit=profit,
                 optimal_positions=self._compute_positions(mu, theta),
                 converged=True,
-                iterations=1
+                iterations=1,
             )
 
         # Objective: minimize KL divergence D(μ||θ)
@@ -153,9 +151,7 @@ class BregmanProjector:
 
         # Constraints based on type
         if constraint_type == "sum_to_one":
-            constraints = [
-                {"type": "eq", "fun": lambda mu: np.sum(mu) - 1}
-            ]
+            constraints = [{"type": "eq", "fun": lambda mu: np.sum(mu) - 1}]
         elif constraint_type == "at_most_one":
             constraints = [
                 {"type": "ineq", "fun": lambda mu: 1 - np.sum(mu)}  # sum <= 1
@@ -173,7 +169,7 @@ class BregmanProjector:
             jac=gradient,
             constraints=constraints,
             bounds=bounds,
-            options={"maxiter": 1000, "ftol": 1e-10}
+            options={"maxiter": 1000, "ftol": 1e-10},
         )
 
         mu_star = result.x if result.success else mu0
@@ -184,7 +180,7 @@ class BregmanProjector:
             arbitrage_profit=profit,
             optimal_positions=self._compute_positions(mu_star, theta),
             converged=result.success,
-            iterations=result.nit if hasattr(result, 'nit') else 0
+            iterations=result.nit if hasattr(result, "nit") else 0,
         )
 
     def project_with_constraints(
@@ -193,7 +189,7 @@ class BregmanProjector:
         A_eq: Optional[np.ndarray] = None,
         b_eq: Optional[np.ndarray] = None,
         A_ineq: Optional[np.ndarray] = None,
-        b_ineq: Optional[np.ndarray] = None
+        b_ineq: Optional[np.ndarray] = None,
     ) -> ProjectionResult:
         """
         Project prices onto polytope defined by linear constraints.
@@ -220,7 +216,7 @@ class BregmanProjector:
                 arbitrage_profit=self.kl_divergence(mu, prices),
                 optimal_positions=self._compute_positions(mu, prices),
                 converged=False,
-                iterations=0
+                iterations=0,
             )
 
         theta = np.clip(prices, self.epsilon, 1 - self.epsilon)
@@ -239,17 +235,15 @@ class BregmanProjector:
 
         if A_eq is not None and b_eq is not None:
             for i in range(len(b_eq)):
-                constraints.append({
-                    "type": "eq",
-                    "fun": lambda mu, i=i: A_eq[i] @ mu - b_eq[i]
-                })
+                constraints.append(
+                    {"type": "eq", "fun": lambda mu, i=i: A_eq[i] @ mu - b_eq[i]}
+                )
 
         if A_ineq is not None and b_ineq is not None:
             for i in range(len(b_ineq)):
-                constraints.append({
-                    "type": "ineq",
-                    "fun": lambda mu, i=i: A_ineq[i] @ mu - b_ineq[i]
-                })
+                constraints.append(
+                    {"type": "ineq", "fun": lambda mu, i=i: A_ineq[i] @ mu - b_ineq[i]}
+                )
 
         bounds = [(self.epsilon, 1 - self.epsilon)] * n
         mu0 = theta / np.sum(theta)
@@ -261,7 +255,7 @@ class BregmanProjector:
             jac=gradient,
             constraints=constraints,
             bounds=bounds,
-            options={"maxiter": 1000, "ftol": 1e-10}
+            options={"maxiter": 1000, "ftol": 1e-10},
         )
 
         mu_star = result.x if result.success else mu0
@@ -272,13 +266,11 @@ class BregmanProjector:
             arbitrage_profit=profit,
             optimal_positions=self._compute_positions(mu_star, theta),
             converged=result.success,
-            iterations=result.nit if hasattr(result, 'nit') else 0
+            iterations=result.nit if hasattr(result, "nit") else 0,
         )
 
     def _compute_positions(
-        self,
-        projected: np.ndarray,
-        original: np.ndarray
+        self, projected: np.ndarray, original: np.ndarray
     ) -> list[dict]:
         """
         Compute optimal trading positions from projection.
@@ -297,14 +289,16 @@ class BregmanProjector:
             ratio = projected[i] / max(original[i], self.epsilon)
             shares = self.b * np.log(ratio) if ratio > 0 else 0
 
-            positions.append({
-                "index": i,
-                "action": "BUY" if shares > 0 else "SELL",
-                "shares": abs(float(shares)),
-                "price_change": float(direction[i]),
-                "from_price": float(original[i]),
-                "to_price": float(projected[i])
-            })
+            positions.append(
+                {
+                    "index": i,
+                    "action": "BUY" if shares > 0 else "SELL",
+                    "shares": abs(float(shares)),
+                    "price_change": float(direction[i]),
+                    "from_price": float(original[i]),
+                    "to_price": float(projected[i]),
+                }
+            )
 
         return positions
 
@@ -312,7 +306,7 @@ class BregmanProjector:
         self,
         current_prices: list[float],
         token_ids: list[str],
-        constraint_type: str = "sum_to_one"
+        constraint_type: str = "sum_to_one",
     ) -> dict:
         """
         Compute the optimal arbitrage trade for a market.
@@ -334,12 +328,14 @@ class BregmanProjector:
         executable = []
         for pos in result.optimal_positions:
             if pos["shares"] > 0.01:  # Filter dust
-                executable.append({
-                    "token_id": token_ids[pos["index"]],
-                    "action": pos["action"],
-                    "shares": pos["shares"],
-                    "price": pos["from_price"]
-                })
+                executable.append(
+                    {
+                        "token_id": token_ids[pos["index"]],
+                        "action": pos["action"],
+                        "shares": pos["shares"],
+                        "price": pos["from_price"],
+                    }
+                )
 
         return {
             "arbitrage_profit": result.arbitrage_profit,
@@ -347,7 +343,7 @@ class BregmanProjector:
             "converged": result.converged,
             "positions": executable,
             "total_cost": float(np.sum(current_prices)),
-            "projected_cost": float(np.sum(result.projected_prices))
+            "projected_cost": float(np.sum(result.projected_prices)),
         }
 
 

@@ -8,6 +8,7 @@ Covers:
 """
 
 import sys
+
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
@@ -22,6 +23,7 @@ from services.strategies.negrisk import NegRiskStrategy
 # ---------------------------------------------------------------------------
 # Fixtures: helper factories for building Market / Event test data
 # ---------------------------------------------------------------------------
+
 
 def make_market(
     market_id: str = "m1",
@@ -118,6 +120,7 @@ def make_event(
 # ===========================================================================
 # BasicArbStrategy tests
 # ===========================================================================
+
 
 class TestBasicArbStrategy:
     """Tests for BasicArbStrategy.detect()"""
@@ -326,6 +329,7 @@ class TestBasicArbStrategy:
 # NegRiskStrategy tests
 # ===========================================================================
 
+
 class TestNegRiskStrategy:
     """Tests for NegRiskStrategy.detect()"""
 
@@ -336,9 +340,15 @@ class TestNegRiskStrategy:
 
     def test_negrisk_event_with_sum_below_one(self):
         """NegRisk event: sum of YES prices < 1.0 should find opportunity."""
-        m1 = make_single_outcome_market(market_id="nr1", question="Candidate A?", yes_price=0.30)
-        m2 = make_single_outcome_market(market_id="nr2", question="Candidate B?", yes_price=0.35)
-        m3 = make_single_outcome_market(market_id="nr3", question="Candidate C?", yes_price=0.25)
+        m1 = make_single_outcome_market(
+            market_id="nr1", question="Candidate A?", yes_price=0.30
+        )
+        m2 = make_single_outcome_market(
+            market_id="nr2", question="Candidate B?", yes_price=0.35
+        )
+        m3 = make_single_outcome_market(
+            market_id="nr3", question="Candidate C?", yes_price=0.25
+        )
         event = make_event(
             event_id="e_nr",
             title="Who wins the election?",
@@ -401,7 +411,10 @@ class TestNegRiskStrategy:
         """Closed markets within event should be excluded from consideration."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30)
         m2 = make_single_outcome_market(
-            market_id="nr2", question="B?", yes_price=0.40, closed=True,
+            market_id="nr2",
+            question="B?",
+            yes_price=0.40,
+            closed=True,
         )
         m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.25)
         event = make_event(markets=[m1, m2, m3], neg_risk=True)
@@ -414,7 +427,10 @@ class TestNegRiskStrategy:
         """Inactive markets should be excluded."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30)
         m2 = make_single_outcome_market(
-            market_id="nr2", question="B?", yes_price=0.40, active=False,
+            market_id="nr2",
+            question="B?",
+            yes_price=0.40,
+            active=False,
         )
         m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.20)
         event = make_event(markets=[m1, m2, m3], neg_risk=True)
@@ -453,8 +469,12 @@ class TestNegRiskStrategy:
 
     def test_negrisk_all_active_markets_closed_returns_none(self):
         """If all markets in NegRisk event are closed, no opportunity."""
-        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30, closed=True)
-        m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.30, closed=True)
+        m1 = make_single_outcome_market(
+            market_id="nr1", question="A?", yes_price=0.30, closed=True
+        )
+        m2 = make_single_outcome_market(
+            market_id="nr2", question="B?", yes_price=0.30, closed=True
+        )
         event = make_event(markets=[m1, m2], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
@@ -463,9 +483,15 @@ class TestNegRiskStrategy:
 
     def test_multi_outcome_with_sum_below_one(self):
         """Non-negrisk event with >=3 exclusive outcomes, total YES < 1.0."""
-        m1 = make_single_outcome_market(market_id="mo1", question="Team Alpha wins?", yes_price=0.30)
-        m2 = make_single_outcome_market(market_id="mo2", question="Team Beta wins?", yes_price=0.30)
-        m3 = make_single_outcome_market(market_id="mo3", question="Team Gamma wins?", yes_price=0.30)
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team Alpha wins?", yes_price=0.30
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team Beta wins?", yes_price=0.30
+        )
+        m3 = make_single_outcome_market(
+            market_id="mo3", question="Team Gamma wins?", yes_price=0.30
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=False)
         # total = 0.90, above 0.85 threshold
         opps = self.strategy.detect(events=[event], markets=[], prices={})
@@ -475,9 +501,15 @@ class TestNegRiskStrategy:
 
     def test_multi_outcome_sum_too_low_rejected(self):
         """Multi-outcome with total < 0.7 suggests missing outcomes -> skip."""
-        m1 = make_single_outcome_market(market_id="mo1", question="Team Alpha wins?", yes_price=0.20)
-        m2 = make_single_outcome_market(market_id="mo2", question="Team Beta wins?", yes_price=0.20)
-        m3 = make_single_outcome_market(market_id="mo3", question="Team Gamma wins?", yes_price=0.20)
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team Alpha wins?", yes_price=0.20
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team Beta wins?", yes_price=0.20
+        )
+        m3 = make_single_outcome_market(
+            market_id="mo3", question="Team Gamma wins?", yes_price=0.20
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=False)
         # total = 0.60 < 0.7 threshold
         opps = self.strategy.detect(events=[event], markets=[], prices={})
@@ -485,9 +517,15 @@ class TestNegRiskStrategy:
 
     def test_multi_outcome_low_confidence_warning(self):
         """Multi-outcome with 0.7 <= total < 0.85 should get low-confidence warning."""
-        m1 = make_single_outcome_market(market_id="mo1", question="Team Alpha wins?", yes_price=0.25)
-        m2 = make_single_outcome_market(market_id="mo2", question="Team Beta wins?", yes_price=0.25)
-        m3 = make_single_outcome_market(market_id="mo3", question="Team Gamma wins?", yes_price=0.25)
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team Alpha wins?", yes_price=0.25
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team Beta wins?", yes_price=0.25
+        )
+        m3 = make_single_outcome_market(
+            market_id="mo3", question="Team Gamma wins?", yes_price=0.25
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=False)
         # total = 0.75, between 0.7 and 0.85
         opps = self.strategy.detect(events=[event], markets=[], prices={})
@@ -499,28 +537,48 @@ class TestNegRiskStrategy:
 
     def test_date_sweep_markets_filtered(self):
         """Markets with 'by <month>' keywords should be filtered out."""
-        m1 = make_single_outcome_market(market_id="ds1", question="Event by March?", yes_price=0.30)
-        m2 = make_single_outcome_market(market_id="ds2", question="Event by June?", yes_price=0.30)
-        m3 = make_single_outcome_market(market_id="ds3", question="Event by December?", yes_price=0.30)
+        m1 = make_single_outcome_market(
+            market_id="ds1", question="Event by March?", yes_price=0.30
+        )
+        m2 = make_single_outcome_market(
+            market_id="ds2", question="Event by June?", yes_price=0.30
+        )
+        m3 = make_single_outcome_market(
+            market_id="ds3", question="Event by December?", yes_price=0.30
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=False)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
     def test_independent_betting_markets_filtered(self):
         """Markets with spread/over-under keywords should be filtered out."""
-        m1 = make_single_outcome_market(market_id="ib1", question="Team A -1.5 spread?", yes_price=0.30)
-        m2 = make_single_outcome_market(market_id="ib2", question="Over/under 2.5 goals?", yes_price=0.30)
-        m3 = make_single_outcome_market(market_id="ib3", question="Both teams to score?", yes_price=0.30)
+        m1 = make_single_outcome_market(
+            market_id="ib1", question="Team A -1.5 spread?", yes_price=0.30
+        )
+        m2 = make_single_outcome_market(
+            market_id="ib2", question="Over/under 2.5 goals?", yes_price=0.30
+        )
+        m3 = make_single_outcome_market(
+            market_id="ib3", question="Both teams to score?", yes_price=0.30
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=False)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
 
     def test_mixed_exclusive_and_independent_skipped(self):
         """Event mixing exclusive and independent markets should be skipped."""
-        m1 = make_single_outcome_market(market_id="mx1", question="Team A wins?", yes_price=0.30)
-        m2 = make_single_outcome_market(market_id="mx2", question="Team B wins?", yes_price=0.30)
-        m3 = make_single_outcome_market(market_id="mx3", question="Over/under 2.5?", yes_price=0.30)
-        m4 = make_single_outcome_market(market_id="mx4", question="Draw?", yes_price=0.05)
+        m1 = make_single_outcome_market(
+            market_id="mx1", question="Team A wins?", yes_price=0.30
+        )
+        m2 = make_single_outcome_market(
+            market_id="mx2", question="Team B wins?", yes_price=0.30
+        )
+        m3 = make_single_outcome_market(
+            market_id="mx3", question="Over/under 2.5?", yes_price=0.30
+        )
+        m4 = make_single_outcome_market(
+            market_id="mx4", question="Draw?", yes_price=0.05
+        )
         event = make_event(markets=[m1, m2, m3, m4], neg_risk=False)
         # exclusive_markets != active_markets => skip
         opps = self.strategy.detect(events=[event], markets=[], prices={})
@@ -528,8 +586,12 @@ class TestNegRiskStrategy:
 
     def test_multi_outcome_requires_at_least_three_markets(self):
         """Non-negrisk events with < 3 active markets should not trigger multi-outcome."""
-        m1 = make_single_outcome_market(market_id="mo1", question="Team A wins?", yes_price=0.40)
-        m2 = make_single_outcome_market(market_id="mo2", question="Team B wins?", yes_price=0.40)
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team A wins?", yes_price=0.40
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team B wins?", yes_price=0.40
+        )
         event = make_event(markets=[m1, m2], neg_risk=False)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0
@@ -538,9 +600,15 @@ class TestNegRiskStrategy:
 
     def test_negrisk_varying_liquidity(self):
         """Max position should reflect the lowest liquidity among active markets."""
-        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30, liquidity=2000.0)
-        m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.30, liquidity=500.0)
-        m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.30, liquidity=8000.0)
+        m1 = make_single_outcome_market(
+            market_id="nr1", question="A?", yes_price=0.30, liquidity=2000.0
+        )
+        m2 = make_single_outcome_market(
+            market_id="nr2", question="B?", yes_price=0.30, liquidity=500.0
+        )
+        m3 = make_single_outcome_market(
+            market_id="nr3", question="C?", yes_price=0.30, liquidity=8000.0
+        )
         event = make_event(markets=[m1, m2, m3], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
@@ -557,7 +625,7 @@ class TestNegRiskStrategy:
         """
         markets = [
             make_single_outcome_market(
-                market_id=f"nr{i}", question=f"Candidate {chr(65+i)}?", yes_price=0.20
+                market_id=f"nr{i}", question=f"Candidate {chr(65 + i)}?", yes_price=0.20
             )
             for i in range(4)
         ]
@@ -580,6 +648,7 @@ class TestNegRiskStrategy:
 # ===========================================================================
 # BaseStrategy tests (via concrete implementations)
 # ===========================================================================
+
 
 class TestBaseStrategyRiskScore:
     """Test calculate_risk_score via BasicArbStrategy (concrete implementation)."""
@@ -754,8 +823,11 @@ class TestBaseStrategyCreateOpportunity:
         """Zero total cost => roi = 0 => below threshold => None."""
         market = make_market(liquidity=10000.0)
         result = self.strategy.create_opportunity(
-            title="Zero", description="", total_cost=0.0,
-            markets=[market], positions=[],
+            title="Zero",
+            description="",
+            total_cost=0.0,
+            markets=[market],
+            positions=[],
         )
         assert result is None
 
@@ -779,10 +851,15 @@ class TestBaseStrategyCreateOpportunity:
     def test_opportunity_resolution_date_from_market(self):
         """Resolution date should come from the first market's end_date."""
         end = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        market = make_market(yes_price=0.40, no_price=0.40, liquidity=10000.0, end_date=end)
+        market = make_market(
+            yes_price=0.40, no_price=0.40, liquidity=10000.0, end_date=end
+        )
         result = self.strategy.create_opportunity(
-            title="Test", description="", total_cost=0.80,
-            markets=[market], positions=[],
+            title="Test",
+            description="",
+            total_cost=0.80,
+            markets=[market],
+            positions=[],
         )
         assert result is not None
         assert result.resolution_date == end
@@ -797,8 +874,11 @@ class TestBaseStrategyCreateOpportunity:
             liquidity=10000.0,
         )
         result = self.strategy.create_opportunity(
-            title="Test", description="", total_cost=0.80,
-            markets=[market], positions=[],
+            title="Test",
+            description="",
+            total_cost=0.80,
+            markets=[market],
+            positions=[],
         )
         assert result is not None
         assert len(result.markets) == 1
@@ -813,8 +893,11 @@ class TestBaseStrategyCreateOpportunity:
         """Risk score on created opportunity should be between 0 and 1."""
         market = make_market(yes_price=0.40, no_price=0.40, liquidity=10000.0)
         result = self.strategy.create_opportunity(
-            title="Test", description="", total_cost=0.80,
-            markets=[market], positions=[],
+            title="Test",
+            description="",
+            total_cost=0.80,
+            markets=[market],
+            positions=[],
         )
         assert result is not None
         assert 0.0 <= result.risk_score <= 1.0

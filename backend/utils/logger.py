@@ -47,13 +47,7 @@ class ContextLogger:
     def _log(self, level: int, msg: str, **kwargs):
         extra_data = {**self._context, **kwargs}
         record = self.logger.makeRecord(
-            self.logger.name,
-            level,
-            "(unknown)",
-            0,
-            msg,
-            (),
-            None
+            self.logger.name, level, "(unknown)", 0, msg, (), None
         )
         record.extra_data = extra_data if extra_data else None
         self.logger.handle(record)
@@ -74,11 +68,7 @@ class ContextLogger:
         self._log(logging.CRITICAL, msg, **kwargs)
 
 
-def setup_logging(
-    level: str = "INFO",
-    json_format: bool = True,
-    log_file: str = None
-):
+def setup_logging(level: str = "INFO", json_format: bool = True, log_file: str = None):
     """Configure application logging"""
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level.upper()))
@@ -92,9 +82,7 @@ def setup_logging(
         console_handler.setFormatter(JSONFormatter())
     else:
         console_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-            )
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         )
     root_logger.addHandler(console_handler)
 

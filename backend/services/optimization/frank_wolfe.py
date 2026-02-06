@@ -29,6 +29,7 @@ import time
 
 try:
     import cvxpy as cp
+
     CVXPY_AVAILABLE = True
 except ImportError:
     CVXPY_AVAILABLE = False
@@ -37,6 +38,7 @@ except ImportError:
 @dataclass
 class InitFWResult:
     """Result of Algorithm 3: InitFW initialization."""
+
     active_vertices: List[np.ndarray]
     interior_point: np.ndarray
     settled_securities: dict[int, int]  # index -> 0 or 1
@@ -47,6 +49,7 @@ class InitFWResult:
 @dataclass
 class FrankWolfeResult:
     """Result of Frank-Wolfe optimization."""
+
     optimal_prices: np.ndarray
     arbitrage_profit: float
     guaranteed_profit: float  # D(μ̂||θ) - g(μ̂), always >= 0
@@ -105,7 +108,7 @@ class FrankWolfeSolver:
     def init_fw(
         self,
         n_securities: int,
-        ip_oracle: 'IPOracle',
+        ip_oracle: "IPOracle",
         settled: Optional[dict[int, int]] = None,
         epsilon: float = 1e-10,
     ) -> InitFWResult:
@@ -180,7 +183,9 @@ class FrankWolfeSolver:
                 interior_point[idx] = val
 
         # Verify interior point: all unsettled coords must be in (0, 1)
-        remaining_unsettled = [i for i in range(n_securities) if i not in extended_settled]
+        remaining_unsettled = [
+            i for i in range(n_securities) if i not in extended_settled
+        ]
         for i in remaining_unsettled:
             if interior_point[i] <= epsilon or interior_point[i] >= 1 - epsilon:
                 interior_point[i] = 0.5  # Safety clamp
@@ -267,16 +272,22 @@ class FrankWolfeSolver:
             return np.log(mu / theta) + 1
 
         # ---- Phase 2: Barrier Frank-Wolfe with Adaptive Contraction ----
-        mu = np.mean(active_set, axis=0) if len(active_set) > 1 else active_set[0].copy()
+        mu = (
+            np.mean(active_set, axis=0) if len(active_set) > 1 else active_set[0].copy()
+        )
         barrier_epsilon = self.epsilon
 
         gap_history: List[float] = []
         profit_history: List[float] = []
         epsilon_history: List[float] = []
         best_iterate_idx = 0
-        best_guaranteed_profit = -float('inf')
+        best_guaranteed_profit = -float("inf")
 
-        oracle_fn = ip_oracle if callable(ip_oracle) and not isinstance(ip_oracle, IPOracle) else ip_oracle
+        oracle_fn = (
+            ip_oracle
+            if callable(ip_oracle) and not isinstance(ip_oracle, IPOracle)
+            else ip_oracle
+        )
 
         for t in range(self.max_iterations):
             # Check time limit for forced interruption
@@ -287,7 +298,9 @@ class FrankWolfeSolver:
 
             # Contract iterate toward interior point (Barrier FW)
             # M' = (1 - ε)M + εu keeps all coords away from 0/1
-            mu_contracted = (1 - barrier_epsilon) * mu + barrier_epsilon * interior_point
+            mu_contracted = (
+                1 - barrier_epsilon
+            ) * mu + barrier_epsilon * interior_point
 
             # Compute gradient on contracted iterate
             grad = gradient(mu_contracted)
@@ -397,7 +410,7 @@ class FrankWolfeSolver:
         final_profit = final_divergence - final_gap
 
         # Use best iterate if it was better than the final one
-        if best_guaranteed_profit > final_profit and 'best_mu' in dir():
+        if best_guaranteed_profit > final_profit and "best_mu" in dir():
             mu = best_mu
             final_divergence = objective(mu)
             final_profit = best_guaranteed_profit
@@ -418,7 +431,9 @@ class FrankWolfeSolver:
             settled_securities=settled_securities,
         )
 
-    def should_execute_trade(self, result: FrankWolfeResult, execution_cost: float = 0.02) -> dict:
+    def should_execute_trade(
+        self, result: FrankWolfeResult, execution_cost: float = 0.02
+    ) -> dict:
         """
         Apply Proposition 4.1 to determine if a trade should execute.
 
@@ -430,7 +445,7 @@ class FrankWolfeSolver:
             dict with trade decision and reasoning
         """
         d = result.arbitrage_profit
-        g = result.gap_history[-1] if result.gap_history else float('inf')
+        g = result.gap_history[-1] if result.gap_history else float("inf")
         guaranteed = result.guaranteed_profit
 
         # Decision matrix from article Part III
@@ -472,7 +487,7 @@ class FrankWolfeSolver:
         active_set: List[np.ndarray],
         theta: np.ndarray,
         objective: Callable[[np.ndarray], float],
-        epsilon: float
+        epsilon: float,
     ) -> np.ndarray:
         """
         Solve convex optimization over convex hull of active vertices.
@@ -506,7 +521,7 @@ class FrankWolfeSolver:
             method="SLSQP",
             constraints=constraints,
             bounds=bounds,
-            options={"maxiter": 100}
+            options={"maxiter": 100},
         )
 
         if result.success:
@@ -532,7 +547,7 @@ class IPOracle:
         constraint_matrix: np.ndarray,
         constraint_bounds: np.ndarray,
         is_equality: Optional[np.ndarray] = None,
-        solver: str = "auto"
+        solver: str = "auto",
     ):
         """
         Args:
@@ -543,7 +558,11 @@ class IPOracle:
         """
         self.A = constraint_matrix
         self.b = constraint_bounds
-        self.is_eq = is_equality if is_equality is not None else np.zeros(len(constraint_bounds), dtype=bool)
+        self.is_eq = (
+            is_equality
+            if is_equality is not None
+            else np.zeros(len(constraint_bounds), dtype=bool)
+        )
 
         if solver == "auto":
             self.solver = "cvxpy" if CVXPY_AVAILABLE else "scipy"
@@ -586,7 +605,9 @@ class IPOracle:
         else:
             return self._check_feasibility_fallback(n, index, value)
 
-    def _check_feasibility_cvxpy(self, n: int, index: int, value: int) -> Optional[np.ndarray]:
+    def _check_feasibility_cvxpy(
+        self, n: int, index: int, value: int
+    ) -> Optional[np.ndarray]:
         """Check feasibility using CVXPY."""
         z = cp.Variable(n, boolean=True)
 
@@ -620,7 +641,9 @@ class IPOracle:
 
         return self._check_feasibility_fallback(n, index, value)
 
-    def _check_feasibility_fallback(self, n: int, index: int, value: int) -> Optional[np.ndarray]:
+    def _check_feasibility_fallback(
+        self, n: int, index: int, value: int
+    ) -> Optional[np.ndarray]:
         """Fallback feasibility check via enumeration or greedy."""
         if n <= 15:
             for i in range(2**n):
@@ -716,7 +739,7 @@ class IPOracle:
 
         if n <= 15:
             # Enumerate all 2^n combinations
-            best_cost = float('inf')
+            best_cost = float("inf")
             best_z = None
 
             for i in range(2**n):
@@ -781,9 +804,7 @@ def create_binary_market_oracle(n_outcomes: int) -> IPOracle:
 
 
 def create_cross_market_oracle(
-    n_a: int,
-    n_b: int,
-    dependencies: List[tuple]
+    n_a: int, n_b: int, dependencies: List[tuple]
 ) -> IPOracle:
     """
     Create IP oracle for cross-market arbitrage.
@@ -829,11 +850,7 @@ def create_cross_market_oracle(
         constraints.append(row)
         is_eq.append(False)
 
-    return IPOracle(
-        np.array(constraints),
-        np.array(bounds),
-        np.array(is_eq)
-    )
+    return IPOracle(np.array(constraints), np.array(bounds), np.array(is_eq))
 
 
 # Singleton solver with research-paper defaults

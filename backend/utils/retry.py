@@ -37,14 +37,10 @@ class RetryConfig:
         self.retryable_status_codes = retryable_status_codes
 
 
-def calculate_delay(
-    attempt: int,
-    config: RetryConfig
-) -> float:
+def calculate_delay(attempt: int, config: RetryConfig) -> float:
     """Calculate delay with exponential backoff and optional jitter"""
     delay = min(
-        config.base_delay * (config.exponential_base ** attempt),
-        config.max_delay
+        config.base_delay * (config.exponential_base**attempt), config.max_delay
     )
     if config.jitter:
         delay = delay * (0.5 + random.random())
@@ -85,7 +81,7 @@ def with_retry(config: RetryConfig = None):
                             "Non-retryable error",
                             function=func.__name__,
                             error=str(e),
-                            error_type=type(e).__name__
+                            error_type=type(e).__name__,
                         )
                         raise
 
@@ -97,7 +93,7 @@ def with_retry(config: RetryConfig = None):
                             attempt=attempt + 1,
                             max_attempts=config.max_attempts,
                             delay=delay,
-                            error=str(e)
+                            error=str(e),
                         )
                         await asyncio.sleep(delay)
                     else:
@@ -105,12 +101,13 @@ def with_retry(config: RetryConfig = None):
                             "All retry attempts exhausted",
                             function=func.__name__,
                             attempts=config.max_attempts,
-                            error=str(e)
+                            error=str(e),
                         )
 
             raise last_error
 
         return wrapper
+
     return decorator
 
 
@@ -140,7 +137,10 @@ class RetryableClient:
                     delay = calculate_delay(attempt, self.config)
 
                     # Special handling for rate limits
-                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                    if (
+                        isinstance(e, httpx.HTTPStatusError)
+                        and e.response.status_code == 429
+                    ):
                         retry_after = e.response.headers.get("Retry-After")
                         if retry_after:
                             delay = max(delay, float(retry_after))
@@ -151,7 +151,7 @@ class RetryableClient:
                         url=url,
                         attempt=attempt + 1,
                         delay=delay,
-                        error=str(e)
+                        error=str(e),
                     )
                     await asyncio.sleep(delay)
 

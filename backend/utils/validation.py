@@ -46,6 +46,7 @@ def validate_limit(value: int, max_limit: int = 1000) -> int:
 
 class WalletAddressParam(BaseModel):
     """Validated wallet address parameter"""
+
     address: str
 
     @field_validator("address")
@@ -56,12 +57,14 @@ class WalletAddressParam(BaseModel):
 
 class PaginationParams(BaseModel):
     """Validated pagination parameters"""
+
     limit: int = Field(default=50, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
 
 
 class OpportunityFilterParams(BaseModel):
     """Validated opportunity filter parameters"""
+
     min_profit: float = Field(default=0.0, ge=0.0, le=100.0)
     max_risk: float = Field(default=1.0, ge=0.0, le=1.0)
     min_liquidity: float = Field(default=0.0, ge=0.0)
@@ -70,6 +73,7 @@ class OpportunityFilterParams(BaseModel):
 
 class SimulationParams(BaseModel):
     """Validated simulation parameters"""
+
     initial_capital: float = Field(default=10000.0, ge=100.0, le=10000000.0)
     position_size_percent: float = Field(default=5.0, ge=0.1, le=100.0)
     max_positions: int = Field(default=10, ge=1, le=100)
@@ -78,6 +82,7 @@ class SimulationParams(BaseModel):
 
 class CopyTradingParams(BaseModel):
     """Validated copy trading parameters"""
+
     source_wallet: str
     enabled: bool = True
     copy_threshold_roi: float = Field(default=2.5, ge=0.0, le=100.0)

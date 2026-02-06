@@ -237,7 +237,8 @@ class OpportunityRecorder:
                 # Parse final outcome prices
                 try:
                     outcome_prices = [
-                        float(p) for p in json.loads(market_raw.get("outcomePrices", "[]"))
+                        float(p)
+                        for p in json.loads(market_raw.get("outcomePrices", "[]"))
                     ]
                 except (json.JSONDecodeError, TypeError):
                     outcome_prices = []
@@ -278,7 +279,9 @@ class OpportunityRecorder:
             # final prices would have delivered that.
             actual_payout = self._heuristic_payout(markets_data, final_prices)
 
-        actual_roi = ((actual_payout - total_cost) / total_cost * 100) if total_cost > 0 else 0.0
+        actual_roi = (
+            ((actual_payout - total_cost) / total_cost * 100) if total_cost > 0 else 0.0
+        )
         was_profitable = actual_payout > total_cost
 
         return (was_profitable, round(actual_roi, 4))
@@ -337,8 +340,12 @@ class OpportunityRecorder:
                 "resolved": resolved,
                 "profitable": profitable,
                 "unprofitable": unprofitable,
-                "true_positive_rate": round(tp_rate, 4) if tp_rate is not None else None,
-                "false_positive_rate": round(fp_rate, 4) if fp_rate is not None else None,
+                "true_positive_rate": round(tp_rate, 4)
+                if tp_rate is not None
+                else None,
+                "false_positive_rate": round(fp_rate, 4)
+                if fp_rate is not None
+                else None,
             }
 
         return out
@@ -402,12 +409,17 @@ class OpportunityRecorder:
                     func.date(OpportunityHistory.detected_at).label("day"),
                     func.avg(OpportunityHistory.actual_roi).label("avg_roi"),
                     func.count(OpportunityHistory.id).label("cnt"),
-                ).where(and_(*filters))
+                )
+                .where(and_(*filters))
                 .group_by(func.date(OpportunityHistory.detected_at))
                 .order_by(func.date(OpportunityHistory.detected_at))
             )
             buckets = [
-                {"date": str(r.day), "avg_roi": round(r.avg_roi, 4) if r.avg_roi else 0, "count": r.cnt}
+                {
+                    "date": str(r.day),
+                    "avg_roi": round(r.avg_roi, 4) if r.avg_roi else 0,
+                    "count": r.cnt,
+                }
                 for r in bucket_result.all()
             ]
 
@@ -425,8 +437,12 @@ class OpportunityRecorder:
             "count": agg_row.cnt or 0,
             "mean_roi": round(agg_row.mean, 4) if agg_row.mean is not None else None,
             "median_roi": median_roi,
-            "min_roi": round(agg_row.min_roi, 4) if agg_row.min_roi is not None else None,
-            "max_roi": round(agg_row.max_roi, 4) if agg_row.max_roi is not None else None,
+            "min_roi": round(agg_row.min_roi, 4)
+            if agg_row.min_roi is not None
+            else None,
+            "max_roi": round(agg_row.max_roi, 4)
+            if agg_row.max_roi is not None
+            else None,
             "buckets": buckets,
         }
 
@@ -446,9 +462,7 @@ class OpportunityRecorder:
             }
         """
         async with AsyncSessionLocal() as session:
-            total = await session.execute(
-                select(func.count(OpportunityHistory.id))
-            )
+            total = await session.execute(select(func.count(OpportunityHistory.id)))
             total_detected = total.scalar() or 0
 
             resolved = await session.execute(
@@ -474,9 +488,7 @@ class OpportunityRecorder:
 
         by_strategy = await self.get_strategy_accuracy()
         profitable_rate = (
-            round(total_profitable / total_resolved, 4)
-            if total_resolved > 0
-            else None
+            round(total_profitable / total_resolved, 4) if total_resolved > 0 else None
         )
 
         return {
@@ -532,9 +544,7 @@ class OpportunityRecorder:
             false_positives = fp.scalar() or 0
 
         fp_rate = (
-            round(false_positives / total_resolved, 4)
-            if total_resolved > 0
-            else None
+            round(false_positives / total_resolved, 4) if total_resolved > 0 else None
         )
 
         return {
@@ -690,7 +700,9 @@ class OpportunityRecorder:
             "fee": opp.fee,
             "net_profit": opp.net_profit,
             "risk_factors": opp.risk_factors,
-            "mispricing_type": opp.mispricing_type.value if opp.mispricing_type else None,
+            "mispricing_type": opp.mispricing_type.value
+            if opp.mispricing_type
+            else None,
             "category": opp.category,
             "min_liquidity": opp.min_liquidity,
             "max_position_size": opp.max_position_size,

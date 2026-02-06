@@ -19,7 +19,7 @@ from services.trading import (
     Position,
     OrderSide,
     OrderType,
-    OrderStatus
+    OrderStatus,
 )
 from utils.logger import get_logger
 
@@ -28,6 +28,7 @@ router = APIRouter(prefix="/trading", tags=["Trading"])
 
 
 # ==================== REQUEST/RESPONSE MODELS ====================
+
 
 class PlaceOrderRequest(BaseModel):
     token_id: str = Field(..., description="CLOB token ID")
@@ -72,7 +73,7 @@ class OrderResponse(BaseModel):
             clob_order_id=order.clob_order_id,
             error_message=order.error_message,
             market_question=order.market_question,
-            created_at=order.created_at
+            created_at=order.created_at,
         )
 
 
@@ -96,7 +97,7 @@ class PositionResponse(BaseModel):
             size=pos.size,
             average_cost=pos.average_cost,
             current_price=pos.current_price,
-            unrealized_pnl=pos.unrealized_pnl
+            unrealized_pnl=pos.unrealized_pnl,
         )
 
 
@@ -109,6 +110,7 @@ class TradingStatusResponse(BaseModel):
 
 
 # ==================== ENDPOINTS ====================
+
 
 @router.get("/status", response_model=TradingStatusResponse)
 async def get_trading_status():
@@ -128,15 +130,17 @@ async def get_trading_status():
             "daily_volume": stats.daily_volume,
             "daily_pnl": stats.daily_pnl,
             "open_positions": stats.open_positions,
-            "last_trade_at": stats.last_trade_at.isoformat() if stats.last_trade_at else None
+            "last_trade_at": stats.last_trade_at.isoformat()
+            if stats.last_trade_at
+            else None,
         },
         limits={
             "max_trade_size_usd": settings.MAX_TRADE_SIZE_USD,
             "max_daily_volume": settings.MAX_DAILY_TRADE_VOLUME,
             "max_open_positions": settings.MAX_OPEN_POSITIONS,
             "min_order_size_usd": settings.MIN_ORDER_SIZE_USD,
-            "max_slippage_percent": settings.MAX_SLIPPAGE_PERCENT
-        }
+            "max_slippage_percent": settings.MAX_SLIPPAGE_PERCENT,
+        },
     )
 
 
@@ -144,7 +148,10 @@ async def get_trading_status():
 async def initialize_trading():
     """Initialize the trading service with configured credentials"""
     if trading_service.is_ready():
-        return {"status": "already_initialized", "message": "Trading service already initialized"}
+        return {
+            "status": "already_initialized",
+            "message": "Trading service already initialized",
+        }
 
     success = await trading_service.initialize()
     if success:
@@ -152,7 +159,7 @@ async def initialize_trading():
     else:
         raise HTTPException(
             status_code=400,
-            detail="Failed to initialize trading. Check credentials and TRADING_ENABLED setting."
+            detail="Failed to initialize trading. Check credentials and TRADING_ENABLED setting.",
         )
 
 
@@ -174,7 +181,9 @@ async def place_order(request: PlaceOrderRequest):
     try:
         order_type = OrderType(request.order_type.upper())
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid order type. Must be GTC, FOK, or GTD")
+        raise HTTPException(
+            status_code=400, detail="Invalid order type. Must be GTC, FOK, or GTD"
+        )
 
     order = await trading_service.place_order(
         token_id=request.token_id,
@@ -182,7 +191,7 @@ async def place_order(request: PlaceOrderRequest):
         price=request.price,
         size=request.size,
         order_type=order_type,
-        market_question=request.market_question
+        market_question=request.market_question,
     )
 
     if order.status == OrderStatus.FAILED:
@@ -268,7 +277,7 @@ async def execute_opportunity(request: ExecuteOpportunityRequest):
     orders = await trading_service.execute_opportunity(
         opportunity_id=request.opportunity_id,
         positions=request.positions,
-        size_usd=request.size_usd
+        size_usd=request.size_usd,
     )
 
     failed_orders = [o for o in orders if o.status == OrderStatus.FAILED]
@@ -276,16 +285,17 @@ async def execute_opportunity(request: ExecuteOpportunityRequest):
         return {
             "status": "partial_failure",
             "message": f"{len(failed_orders)} of {len(orders)} orders failed",
-            "orders": [OrderResponse.from_order(o).dict() for o in orders]
+            "orders": [OrderResponse.from_order(o).dict() for o in orders],
         }
 
     return {
         "status": "success",
-        "orders": [OrderResponse.from_order(o).dict() for o in orders]
+        "orders": [OrderResponse.from_order(o).dict() for o in orders],
     }
 
 
 # ==================== SAFETY ENDPOINTS ====================
+
 
 @router.post("/emergency-stop")
 async def emergency_stop():
@@ -302,5 +312,5 @@ async def emergency_stop():
     return {
         "status": "emergency_stop_executed",
         "cancelled_orders": cancelled_count,
-        "message": "All open orders cancelled. Trading service remains active."
+        "message": "All open orders cancelled. Trading service remains active.",
     }

@@ -24,12 +24,14 @@ from enum import Enum
 # Try to import optimization libraries
 try:
     import cvxpy as cp
+
     CVXPY_AVAILABLE = True
 except ImportError:
     CVXPY_AVAILABLE = False
 
 try:
     from scipy.optimize import minimize  # noqa: F401
+
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
@@ -37,14 +39,16 @@ except ImportError:
 
 class DependencyType(str, Enum):
     """Types of logical dependencies between market outcomes."""
-    IMPLIES = "implies"      # A implies B: if A true, B must be true
-    EXCLUDES = "excludes"    # A excludes B: both cannot be true
+
+    IMPLIES = "implies"  # A implies B: if A true, B must be true
+    EXCLUDES = "excludes"  # A excludes B: both cannot be true
     CUMULATIVE = "cumulative"  # A true means all "by date" variants true
 
 
 @dataclass
 class Dependency:
     """Represents a logical dependency between two outcomes."""
+
     market_a_idx: int
     outcome_a_idx: int
     market_b_idx: int
@@ -56,6 +60,7 @@ class Dependency:
 @dataclass
 class ArbitrageResult:
     """Result of arbitrage detection via constraint solving."""
+
     arbitrage_found: bool
     profit: float
     optimal_outcome: Optional[np.ndarray]
@@ -95,7 +100,7 @@ class ConstraintSolver:
         prices: np.ndarray,
         constraint_matrix: np.ndarray,
         constraint_bounds: np.ndarray,
-        is_equality: Optional[np.ndarray] = None
+        is_equality: Optional[np.ndarray] = None,
     ) -> ArbitrageResult:
         """
         Check if prices admit arbitrage given constraints.
@@ -116,9 +121,13 @@ class ConstraintSolver:
             ArbitrageResult with arbitrage details
         """
         if self.solver == "cvxpy" and CVXPY_AVAILABLE:
-            return self._solve_cvxpy(prices, constraint_matrix, constraint_bounds, is_equality)
+            return self._solve_cvxpy(
+                prices, constraint_matrix, constraint_bounds, is_equality
+            )
         elif self.solver == "scipy" and SCIPY_AVAILABLE:
-            return self._solve_scipy(prices, constraint_matrix, constraint_bounds, is_equality)
+            return self._solve_scipy(
+                prices, constraint_matrix, constraint_bounds, is_equality
+            )
         else:
             return self._solve_fallback(prices, constraint_matrix, constraint_bounds)
 
@@ -127,7 +136,7 @@ class ConstraintSolver:
         prices: np.ndarray,
         A: np.ndarray,
         b: np.ndarray,
-        is_eq: Optional[np.ndarray]
+        is_eq: Optional[np.ndarray],
     ) -> ArbitrageResult:
         """Solve using CVXPY (supports Gurobi, GLPK, etc.)."""
         n = len(prices)
@@ -171,7 +180,7 @@ class ConstraintSolver:
                         optimal_outcome=z_star,
                         total_cost=optimal_value,
                         positions=self._build_positions(z_star, prices),
-                        solver_status=problem.status
+                        solver_status=problem.status,
                     )
 
             return ArbitrageResult(
@@ -180,7 +189,7 @@ class ConstraintSolver:
                 optimal_outcome=None,
                 total_cost=float(np.sum(prices)),
                 positions=[],
-                solver_status=problem.status
+                solver_status=problem.status,
             )
 
         except Exception as e:
@@ -190,7 +199,7 @@ class ConstraintSolver:
                 optimal_outcome=None,
                 total_cost=float(np.sum(prices)),
                 positions=[],
-                solver_status=f"error: {str(e)}"
+                solver_status=f"error: {str(e)}",
             )
 
     def _solve_scipy(
@@ -198,7 +207,7 @@ class ConstraintSolver:
         prices: np.ndarray,
         A: np.ndarray,
         b: np.ndarray,
-        is_eq: Optional[np.ndarray]
+        is_eq: Optional[np.ndarray],
     ) -> ArbitrageResult:
         """Solve using SciPy's MILP solver."""
         n = len(prices)
@@ -221,7 +230,7 @@ class ConstraintSolver:
                 c=prices,
                 constraints=constraints,
                 integrality=integrality,
-                bounds=bounds
+                bounds=bounds,
             )
 
             if result.success:
@@ -235,7 +244,7 @@ class ConstraintSolver:
                         optimal_outcome=z_star,
                         total_cost=optimal_value,
                         positions=self._build_positions(z_star, prices),
-                        solver_status="optimal"
+                        solver_status="optimal",
                     )
 
             return ArbitrageResult(
@@ -244,17 +253,16 @@ class ConstraintSolver:
                 optimal_outcome=None,
                 total_cost=float(np.sum(prices)),
                 positions=[],
-                solver_status=result.message if hasattr(result, 'message') else "unknown"
+                solver_status=result.message
+                if hasattr(result, "message")
+                else "unknown",
             )
 
         except Exception:
             return self._solve_fallback(prices, A, b)
 
     def _solve_fallback(
-        self,
-        prices: np.ndarray,
-        A: np.ndarray,
-        b: np.ndarray
+        self, prices: np.ndarray, A: np.ndarray, b: np.ndarray
     ) -> ArbitrageResult:
         """Fallback solver using simple enumeration for small problems."""
         n = len(prices)
@@ -267,10 +275,10 @@ class ConstraintSolver:
                 optimal_outcome=None,
                 total_cost=float(np.sum(prices)),
                 positions=[],
-                solver_status="fallback: problem too large"
+                solver_status="fallback: problem too large",
             )
 
-        best_cost = float('inf')
+        best_cost = float("inf")
         best_z = None
 
         # Enumerate all 2^n combinations
@@ -291,7 +299,7 @@ class ConstraintSolver:
                 optimal_outcome=best_z,
                 total_cost=best_cost,
                 positions=self._build_positions(best_z, prices),
-                solver_status="fallback: enumeration"
+                solver_status="fallback: enumeration",
             )
 
         return ArbitrageResult(
@@ -300,7 +308,7 @@ class ConstraintSolver:
             optimal_outcome=None,
             total_cost=float(np.sum(prices)),
             positions=[],
-            solver_status="fallback: no arbitrage found"
+            solver_status="fallback: no arbitrage found",
         )
 
     def _build_positions(self, z: np.ndarray, prices: np.ndarray) -> list[dict]:
@@ -308,18 +316,13 @@ class ConstraintSolver:
         positions = []
         for i in range(len(z)):
             if z[i] == 1:
-                positions.append({
-                    "index": i,
-                    "action": "BUY",
-                    "price": float(prices[i])
-                })
+                positions.append(
+                    {"index": i, "action": "BUY", "price": float(prices[i])}
+                )
         return positions
 
     def build_constraints_from_dependencies(
-        self,
-        n_outcomes_a: int,
-        n_outcomes_b: int,
-        dependencies: List[Dependency]
+        self, n_outcomes_a: int, n_outcomes_b: int, dependencies: List[Dependency]
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Build constraint matrix from logical dependencies.
@@ -391,17 +394,13 @@ class ConstraintSolver:
 
             constraints.append(row)
 
-        return (
-            np.array(constraints),
-            np.array(bounds),
-            np.array(is_equality)
-        )
+        return (np.array(constraints), np.array(bounds), np.array(is_equality))
 
     def detect_cross_market_arbitrage(
         self,
         prices_a: list[float],
         prices_b: list[float],
-        dependencies: List[Dependency]
+        dependencies: List[Dependency],
     ) -> ArbitrageResult:
         """
         Detect arbitrage across two dependent markets.
@@ -419,9 +418,7 @@ class ConstraintSolver:
         n_a = len(prices_a)
         n_b = len(prices_b)
 
-        A, b, is_eq = self.build_constraints_from_dependencies(
-            n_a, n_b, dependencies
-        )
+        A, b, is_eq = self.build_constraints_from_dependencies(n_a, n_b, dependencies)
 
         prices = np.concatenate([prices_a, prices_b])
 

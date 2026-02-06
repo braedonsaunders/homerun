@@ -34,6 +34,7 @@ MAX_MESSAGES_PER_MINUTE = 20
 
 # ── MarkdownV2 helpers ──────────────────────────────────────────────
 
+
 def _escape_md(text: str) -> str:
     """Escape special characters for Telegram MarkdownV2.
 
@@ -62,9 +63,11 @@ def _bold(text: str) -> str:
 
 # ── Daily stats accumulator ─────────────────────────────────────────
 
+
 @dataclass
 class DailyStats:
     """Tracks daily activity for the summary notification."""
+
     date: str = ""
     opportunities_detected: int = 0
     opportunities_acted_on: int = 0
@@ -93,6 +96,7 @@ class DailyStats:
 
 
 # ── Notifier service ────────────────────────────────────────────────
+
 
 class TelegramNotifier:
     """
@@ -191,15 +195,24 @@ class TelegramNotifier:
                 row = result.scalar_one_or_none()
 
                 if row:
-                    self._bot_token = row.telegram_bot_token or settings.TELEGRAM_BOT_TOKEN
+                    self._bot_token = (
+                        row.telegram_bot_token or settings.TELEGRAM_BOT_TOKEN
+                    )
                     self._chat_id = row.telegram_chat_id or settings.TELEGRAM_CHAT_ID
                     self._notifications_enabled = bool(row.notifications_enabled)
                     self._notify_on_opportunity = bool(row.notify_on_opportunity)
                     self._notify_on_trade = bool(row.notify_on_trade)
-                    self._notify_min_roi = float(row.notify_min_roi) if row.notify_min_roi is not None else 5.0
+                    self._notify_min_roi = (
+                        float(row.notify_min_roi)
+                        if row.notify_min_roi is not None
+                        else 5.0
+                    )
                     return
         except Exception as exc:
-            logger.warning("Could not load notifier settings from DB, using config.py", error=str(exc))
+            logger.warning(
+                "Could not load notifier settings from DB, using config.py",
+                error=str(exc),
+            )
 
         # Fallback to config.py
         self._bot_token = settings.TELEGRAM_BOT_TOKEN
@@ -268,12 +281,22 @@ class TelegramNotifier:
                     self._daily_stats.trades_lost += 1
 
                 roi = (pnl / trade.total_cost * 100) if trade.total_cost else 0.0
-                strategy_name = trade.strategy.value if hasattr(trade.strategy, "value") else str(trade.strategy)
+                strategy_name = (
+                    trade.strategy.value
+                    if hasattr(trade.strategy, "value")
+                    else str(trade.strategy)
+                )
 
-                if self._daily_stats.best_trade_roi is None or roi > self._daily_stats.best_trade_roi:
+                if (
+                    self._daily_stats.best_trade_roi is None
+                    or roi > self._daily_stats.best_trade_roi
+                ):
                     self._daily_stats.best_trade_roi = roi
                     self._daily_stats.best_trade_strategy = strategy_name
-                if self._daily_stats.worst_trade_roi is None or roi < self._daily_stats.worst_trade_roi:
+                if (
+                    self._daily_stats.worst_trade_roi is None
+                    or roi < self._daily_stats.worst_trade_roi
+                ):
                     self._daily_stats.worst_trade_roi = roi
                     self._daily_stats.worst_trade_strategy = strategy_name
 
@@ -290,7 +313,9 @@ class TelegramNotifier:
 
     async def notify_opportunity(self, opp) -> None:
         """Send a notification for a high-ROI opportunity."""
-        signal = "\u2705" if opp.roi_percent >= 10 else "\U0001f7e1"  # green check / yellow circle
+        signal = (
+            "\u2705" if opp.roi_percent >= 10 else "\U0001f7e1"
+        )  # green check / yellow circle
 
         strategy = _escape_md(opp.strategy.value.replace("_", " ").title())
         roi = _escape_md(f"{opp.roi_percent:.2f}%")
@@ -324,11 +349,19 @@ class TelegramNotifier:
 
     async def notify_trade_executed(self, trade, opp) -> None:
         """Send a notification when a trade is executed."""
-        mode_label = trade.mode.value if hasattr(trade.mode, "value") else str(trade.mode)
+        mode_label = (
+            trade.mode.value if hasattr(trade.mode, "value") else str(trade.mode)
+        )
         mode_upper = mode_label.upper()
-        signal = "\U0001f4b0" if mode_upper == "LIVE" else "\U0001f4dd"  # money bag / memo
+        signal = (
+            "\U0001f4b0" if mode_upper == "LIVE" else "\U0001f4dd"
+        )  # money bag / memo
 
-        strategy = _escape_md(trade.strategy.value if hasattr(trade.strategy, "value") else str(trade.strategy))
+        strategy = _escape_md(
+            trade.strategy.value
+            if hasattr(trade.strategy, "value")
+            else str(trade.strategy)
+        )
         roi = _escape_md(f"{opp.roi_percent:.2f}%")
         size = _escape_md(f"${trade.total_cost:.2f}")
         expected = _escape_md(f"${trade.expected_profit:.4f}")
@@ -381,7 +414,9 @@ class TelegramNotifier:
     async def notify_daily_summary(self) -> None:
         """Send the daily P&L summary."""
         stats = self._daily_stats
-        pnl_signal = "\U0001f4c8" if stats.total_pnl >= 0 else "\U0001f4c9"  # chart up / chart down
+        pnl_signal = (
+            "\U0001f4c8" if stats.total_pnl >= 0 else "\U0001f4c9"
+        )  # chart up / chart down
 
         lines = [
             f"{pnl_signal} {_bold('Daily Summary')} \\- {_escape_md(stats.date)}",
@@ -490,7 +525,9 @@ class TelegramNotifier:
             if resp.status_code == 429:
                 body = resp.json()
                 retry_after = body.get("parameters", {}).get("retry_after", 5)
-                logger.warning("Telegram rate limited, will retry", retry_after=retry_after)
+                logger.warning(
+                    "Telegram rate limited, will retry", retry_after=retry_after
+                )
                 await asyncio.sleep(retry_after)
                 # Re-queue the message
                 await self._message_queue.put(text)

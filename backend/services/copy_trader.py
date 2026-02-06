@@ -5,10 +5,16 @@ from typing import Optional
 from sqlalchemy import select, and_
 
 from models.database import (
-    CopyTradingConfig, CopyTradingMode, CopiedTrade,
-    TrackedWallet, SimulationAccount, SimulationPosition, SimulationTrade,
-    TradeStatus, PositionSide,
-    AsyncSessionLocal
+    CopyTradingConfig,
+    CopyTradingMode,
+    CopiedTrade,
+    TrackedWallet,
+    SimulationAccount,
+    SimulationPosition,
+    SimulationTrade,
+    TradeStatus,
+    PositionSide,
+    AsyncSessionLocal,
 )
 from models.opportunity import ArbitrageOpportunity
 from services.polymarket import polymarket_client
@@ -88,8 +94,7 @@ class CopyTradingService:
             wallet = await session.get(TrackedWallet, source_wallet.lower())
             if not wallet:
                 wallet = TrackedWallet(
-                    address=source_wallet.lower(),
-                    label="Copy Target"
+                    address=source_wallet.lower(), label="Copy Target"
                 )
                 session.add(wallet)
 
@@ -119,7 +124,9 @@ class CopyTradingService:
 
                 logger.info("Removed copy trading config", config_id=config_id)
 
-    async def get_configs(self, account_id: Optional[str] = None) -> list[CopyTradingConfig]:
+    async def get_configs(
+        self, account_id: Optional[str] = None
+    ) -> list[CopyTradingConfig]:
         """Get all copy trading configurations"""
         async with AsyncSessionLocal() as session:
             query = select(CopyTradingConfig)
@@ -138,9 +145,7 @@ class CopyTradingService:
                 await session.commit()
 
                 logger.info(
-                    "Updated copy trading config",
-                    config_id=config_id,
-                    enabled=enabled
+                    "Updated copy trading config", config_id=config_id, enabled=enabled
                 )
 
     async def update_config(self, config_id: str, **kwargs):
@@ -151,9 +156,16 @@ class CopyTradingService:
                 raise ValueError(f"Config not found: {config_id}")
 
             allowed_fields = {
-                "enabled", "copy_mode", "min_roi_threshold", "max_position_size",
-                "copy_delay_seconds", "slippage_tolerance", "proportional_sizing",
-                "proportional_multiplier", "copy_buys", "copy_sells",
+                "enabled",
+                "copy_mode",
+                "min_roi_threshold",
+                "max_position_size",
+                "copy_delay_seconds",
+                "slippage_tolerance",
+                "proportional_sizing",
+                "proportional_multiplier",
+                "copy_buys",
+                "copy_sells",
                 "market_categories",
             }
 
@@ -169,7 +181,11 @@ class CopyTradingService:
             # Update in-memory cache
             self._active_configs[config_id] = config
 
-            logger.info("Updated copy trading config", config_id=config_id, fields=list(kwargs.keys()))
+            logger.info(
+                "Updated copy trading config",
+                config_id=config_id,
+                fields=list(kwargs.keys()),
+            )
             return config
 
     # ==================== TRADE DETECTION ====================
@@ -219,13 +235,13 @@ class CopyTradingService:
 
         except Exception as e:
             logger.error(
-                "Error fetching trades for wallet",
-                wallet=wallet_address,
-                error=str(e)
+                "Error fetching trades for wallet", wallet=wallet_address, error=str(e)
             )
             return []
 
-    def _should_copy_trade(self, trade: dict, config: CopyTradingConfig) -> tuple[bool, str]:
+    def _should_copy_trade(
+        self, trade: dict, config: CopyTradingConfig
+    ) -> tuple[bool, str]:
         """Determine whether a trade should be copied based on config filters.
 
         Returns (should_copy, reason) tuple.
@@ -334,18 +350,38 @@ class CopyTradingService:
             account = await session.get(SimulationAccount, config.account_id)
             if not account:
                 return await self._record_copied_trade(
-                    config, trade_id, market_id, market_question, token_id,
-                    "BUY", outcome, source_price, source_size, source_timestamp,
-                    status="failed", error="Account not found",
+                    config,
+                    trade_id,
+                    market_id,
+                    market_question,
+                    token_id,
+                    "BUY",
+                    outcome,
+                    source_price,
+                    source_size,
+                    source_timestamp,
+                    status="failed",
+                    error="Account not found",
                 )
 
-            copy_size = self._calculate_copy_size(trade, config, account.current_capital)
+            copy_size = self._calculate_copy_size(
+                trade, config, account.current_capital
+            )
 
             if copy_size <= 0:
                 return await self._record_copied_trade(
-                    config, trade_id, market_id, market_question, token_id,
-                    "BUY", outcome, source_price, source_size, source_timestamp,
-                    status="skipped", error="Insufficient capital or zero size",
+                    config,
+                    trade_id,
+                    market_id,
+                    market_question,
+                    token_id,
+                    "BUY",
+                    outcome,
+                    source_price,
+                    source_size,
+                    source_timestamp,
+                    status="skipped",
+                    error="Insufficient capital or zero size",
                 )
 
         # Wait configured delay before executing
@@ -366,8 +402,16 @@ class CopyTradingService:
             slippage_pct = abs(current_price - source_price) / source_price * 100
             if slippage_pct > config.slippage_tolerance:
                 return await self._record_copied_trade(
-                    config, trade_id, market_id, market_question, token_id,
-                    "BUY", outcome, source_price, source_size, source_timestamp,
+                    config,
+                    trade_id,
+                    market_id,
+                    market_question,
+                    token_id,
+                    "BUY",
+                    outcome,
+                    source_price,
+                    source_size,
+                    source_timestamp,
                     status="skipped",
                     error=f"Slippage {slippage_pct:.1f}% exceeds tolerance {config.slippage_tolerance}%",
                 )
@@ -388,8 +432,16 @@ class CopyTradingService:
             )
 
             copied = await self._record_copied_trade(
-                config, trade_id, market_id, market_question, token_id,
-                "BUY", outcome, source_price, source_size, source_timestamp,
+                config,
+                trade_id,
+                market_id,
+                market_question,
+                token_id,
+                "BUY",
+                outcome,
+                source_price,
+                source_size,
+                source_timestamp,
                 status="executed",
                 executed_price=execution_price,
                 executed_size=copy_size,
@@ -428,9 +480,18 @@ class CopyTradingService:
                     await session.commit()
 
             return await self._record_copied_trade(
-                config, trade_id, market_id, market_question, token_id,
-                "BUY", outcome, source_price, source_size, source_timestamp,
-                status="failed", error=str(e),
+                config,
+                trade_id,
+                market_id,
+                market_question,
+                token_id,
+                "BUY",
+                outcome,
+                source_price,
+                source_size,
+                source_timestamp,
+                status="failed",
+                error=str(e),
             )
 
     async def _execute_copy_sell(
@@ -476,8 +537,16 @@ class CopyTradingService:
             )
 
             copied = await self._record_copied_trade(
-                config, trade_id, market_id, market_question, token_id,
-                "SELL", outcome, source_price, source_size, source_timestamp,
+                config,
+                trade_id,
+                market_id,
+                market_question,
+                token_id,
+                "SELL",
+                outcome,
+                source_price,
+                source_size,
+                source_timestamp,
                 status="executed",
                 executed_price=source_price,
                 executed_size=source_size,
@@ -516,9 +585,18 @@ class CopyTradingService:
                     await session.commit()
 
             return await self._record_copied_trade(
-                config, trade_id, market_id, market_question, token_id,
-                "SELL", outcome, source_price, source_size, source_timestamp,
-                status="failed", error=str(e),
+                config,
+                trade_id,
+                market_id,
+                market_question,
+                token_id,
+                "SELL",
+                outcome,
+                source_price,
+                source_size,
+                source_timestamp,
+                status="failed",
+                error=str(e),
             )
 
     # ==================== SIMULATION EXECUTION ====================
@@ -559,14 +637,16 @@ class CopyTradingService:
                 account_id=account_id,
                 opportunity_id=None,
                 strategy_type="copy_trading",
-                positions_data=[{
-                    "market": market_id,
-                    "market_question": market_question,
-                    "token_id": token_id,
-                    "outcome": outcome,
-                    "price": price,
-                    "size": size,
-                }],
+                positions_data=[
+                    {
+                        "market": market_id,
+                        "market_question": market_question,
+                        "token_id": token_id,
+                        "outcome": outcome,
+                        "price": price,
+                        "size": size,
+                    }
+                ],
                 total_cost=total_cost_with_slippage,
                 expected_profit=0.0,  # Unknown for copy trades
                 slippage=slippage,
@@ -647,7 +727,9 @@ class CopyTradingService:
             pnl = sell_value - entry_cost - fee
 
             # Close the position
-            position.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
+            position.status = (
+                TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
+            )
             position.current_price = sell_price
             position.unrealized_pnl = 0.0
 
@@ -674,7 +756,11 @@ class CopyTradingService:
                 )
                 sim_trade = trade_result.scalar_one_or_none()
                 if sim_trade:
-                    sim_trade.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
+                    sim_trade.status = (
+                        TradeStatus.RESOLVED_WIN
+                        if pnl > 0
+                        else TradeStatus.RESOLVED_LOSS
+                    )
                     sim_trade.actual_payout = sell_value - fee
                     sim_trade.actual_pnl = pnl
                     sim_trade.fees_paid = fee
@@ -857,7 +943,9 @@ class CopyTradingService:
                         side=side,
                         outcome=trade.get("outcome", ""),
                         source_price=float(trade.get("price", 0) or 0),
-                        source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
+                        source_size=float(
+                            trade.get("size", 0) or trade.get("amount", 0) or 0
+                        ),
                         source_timestamp=None,
                         status="skipped",
                         error=reason,
@@ -871,13 +959,17 @@ class CopyTradingService:
                         await self._record_copied_trade(
                             config,
                             source_trade_id=trade.get("id", ""),
-                            market_id=trade.get("market", trade.get("condition_id", "")),
+                            market_id=trade.get(
+                                "market", trade.get("condition_id", "")
+                            ),
                             market_question=trade.get("title", ""),
                             token_id=trade.get("asset", ""),
                             side=side,
                             outcome=trade.get("outcome", ""),
                             source_price=float(trade.get("price", 0) or 0),
-                            source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
+                            source_size=float(
+                                trade.get("size", 0) or trade.get("amount", 0) or 0
+                            ),
                             source_timestamp=None,
                             status="skipped",
                             error="No matching arbitrage opportunity",
@@ -888,13 +980,17 @@ class CopyTradingService:
                         await self._record_copied_trade(
                             config,
                             source_trade_id=trade.get("id", ""),
-                            market_id=trade.get("market", trade.get("condition_id", "")),
+                            market_id=trade.get(
+                                "market", trade.get("condition_id", "")
+                            ),
                             market_question=trade.get("title", ""),
                             token_id=trade.get("asset", ""),
                             side=side,
                             outcome=trade.get("outcome", ""),
                             source_price=float(trade.get("price", 0) or 0),
-                            source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
+                            source_size=float(
+                                trade.get("size", 0) or trade.get("amount", 0) or 0
+                            ),
                             source_timestamp=None,
                             status="skipped",
                             error=f"ROI {opp.roi_percent:.1f}% below threshold {config.min_roi_threshold}%",
@@ -968,7 +1064,8 @@ class CopyTradingService:
 
             success_rate = (
                 config.successful_copies / config.total_copied * 100
-                if config.total_copied > 0 else 0
+                if config.total_copied > 0
+                else 0
             )
 
             return {
@@ -994,7 +1091,7 @@ class CopyTradingService:
                     "copy_buys": config.copy_buys,
                     "copy_sells": config.copy_sells,
                     "market_categories": config.market_categories,
-                }
+                },
             }
 
     async def get_copied_trades(
@@ -1035,7 +1132,9 @@ class CopyTradingService:
                     "status": t.status,
                     "execution_mode": t.execution_mode,
                     "error_message": t.error_message,
-                    "source_timestamp": t.source_timestamp.isoformat() if t.source_timestamp else None,
+                    "source_timestamp": t.source_timestamp.isoformat()
+                    if t.source_timestamp
+                    else None,
                     "copied_at": t.copied_at.isoformat() if t.copied_at else None,
                     "executed_at": t.executed_at.isoformat() if t.executed_at else None,
                     "realized_pnl": t.realized_pnl,

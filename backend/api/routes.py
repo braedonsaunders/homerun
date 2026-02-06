@@ -10,16 +10,21 @@ router = APIRouter()
 
 # ==================== OPPORTUNITIES ====================
 
+
 @router.get("/opportunities", response_model=list[ArbitrageOpportunity])
 async def get_opportunities(
     min_profit: float = Query(0.0, description="Minimum profit percentage"),
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
-    strategy: Optional[StrategyType] = Query(None, description="Filter by strategy type"),
+    strategy: Optional[StrategyType] = Query(
+        None, description="Filter by strategy type"
+    ),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
-    category: Optional[str] = Query(None, description="Filter by category (e.g., politics, sports, crypto)"),
+    category: Optional[str] = Query(
+        None, description="Filter by category (e.g., politics, sports, crypto)"
+    ),
     limit: int = Query(50, description="Maximum results to return"),
-    offset: int = Query(0, description="Number of results to skip")
+    offset: int = Query(0, description="Number of results to skip"),
 ):
     """Get current arbitrage opportunities"""
     filter = OpportunityFilter(
@@ -27,7 +32,7 @@ async def get_opportunities(
         max_risk=max_risk,
         strategies=[strategy] if strategy else [],
         min_liquidity=min_liquidity,
-        category=category
+        category=category,
     )
 
     opportunities = scanner.get_opportunities(filter)
@@ -36,7 +41,8 @@ async def get_opportunities(
     if search:
         search_lower = search.lower()
         opportunities = [
-            opp for opp in opportunities
+            opp
+            for opp in opportunities
             if search_lower in opp.title.lower()
             or (opp.event_title and search_lower in opp.event_title.lower())
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
@@ -44,12 +50,13 @@ async def get_opportunities(
 
     # Apply pagination
     total = len(opportunities)
-    paginated = opportunities[offset:offset + limit]
+    paginated = opportunities[offset : offset + limit]
 
     # Return as response with total count header
     from fastapi.responses import JSONResponse
+
     # Use mode='json' to properly serialize datetime objects
-    response = JSONResponse(content=[o.model_dump(mode='json') for o in paginated])
+    response = JSONResponse(content=[o.model_dump(mode="json") for o in paginated])
     response.headers["X-Total-Count"] = str(total)
     return response
 
@@ -78,16 +85,17 @@ async def trigger_scan():
                     "id": o.id,
                     "strategy": o.strategy,
                     "title": o.title,
-                    "roi_percent": o.roi_percent
+                    "roi_percent": o.roi_percent,
                 }
                 for o in opportunities[:10]
-            ]
+            ],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== SCANNER STATUS ====================
+
 
 @router.get("/scanner/status")
 async def get_scanner_status():
@@ -118,6 +126,7 @@ async def set_scanner_interval(interval_seconds: int = Query(..., ge=10, le=3600
 
 # ==================== OPPORTUNITIES CLEANUP ====================
 
+
 @router.delete("/opportunities")
 async def clear_opportunities():
     """
@@ -130,14 +139,18 @@ async def clear_opportunities():
     return {
         "status": "success",
         "cleared_count": count,
-        "message": f"Cleared {count} opportunities. Next scan will repopulate."
+        "message": f"Cleared {count} opportunities. Next scan will repopulate.",
     }
 
 
 @router.post("/opportunities/cleanup")
 async def cleanup_opportunities(
-    remove_expired: bool = Query(True, description="Remove opportunities past resolution date"),
-    max_age_minutes: Optional[int] = Query(None, ge=1, le=1440, description="Remove opportunities older than X minutes")
+    remove_expired: bool = Query(
+        True, description="Remove opportunities past resolution date"
+    ),
+    max_age_minutes: Optional[int] = Query(
+        None, ge=1, le=1440, description="Remove opportunities older than X minutes"
+    ),
 ):
     """
     Clean up stale opportunities.
@@ -157,13 +170,11 @@ async def cleanup_opportunities(
 
     results["remaining_count"] = len(scanner.get_opportunities())
 
-    return {
-        "status": "success",
-        **results
-    }
+    return {"status": "success", **results}
 
 
 # ==================== WALLETS ====================
+
 
 @router.get("/wallets")
 async def get_tracked_wallets():
@@ -199,7 +210,9 @@ async def get_wallet_positions(address: str, include_prices: bool = True):
     """Get current positions for a wallet with optional current market prices"""
     try:
         if include_prices:
-            positions = await polymarket_client.get_wallet_positions_with_prices(address)
+            positions = await polymarket_client.get_wallet_positions_with_prices(
+                address
+            )
         else:
             positions = await polymarket_client.get_wallet_positions(address)
         return {"address": address, "positions": positions}
@@ -230,7 +243,9 @@ async def get_wallet_trades(address: str, limit: int = 100):
 @router.get("/wallets/recent-trades/all")
 async def get_all_recent_trades(
     limit: int = Query(100, ge=1, le=500, description="Maximum trades to return"),
-    hours: int = Query(24, ge=1, le=168, description="Only show trades from last N hours")
+    hours: int = Query(
+        24, ge=1, le=168, description="Only show trades from last N hours"
+    ),
 ):
     """
     Get recent trades from all tracked wallets, aggregated and sorted by timestamp.
@@ -267,7 +282,9 @@ async def get_all_recent_trades(
                             trade_time = datetime.fromtimestamp(trade_time_str)
                         elif "T" in str(trade_time_str) or "-" in str(trade_time_str):
                             trade_time = datetime.fromisoformat(
-                                str(trade_time_str).replace("Z", "+00:00").replace("+00:00", "")
+                                str(trade_time_str)
+                                .replace("Z", "+00:00")
+                                .replace("+00:00", "")
                             )
                         else:
                             trade_time = datetime.fromtimestamp(float(trade_time_str))
@@ -288,6 +305,7 @@ async def get_all_recent_trades(
 
         # Enrich trades with market names and normalized timestamps
         from services.polymarket import polymarket_client
+
         all_trades = await polymarket_client.enrich_trades_with_market_info(all_trades)
 
         # Sort by normalized timestamp (most recent first)
@@ -295,18 +313,25 @@ async def get_all_recent_trades(
             ts = t.get("timestamp_iso", "")
             if ts:
                 try:
-                    return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
+                    return datetime.fromisoformat(
+                        ts.replace("Z", "+00:00").replace("+00:00", "")
+                    )
                 except (ValueError, TypeError):
                     pass
             # Fallback to raw timestamp fields
             raw = (
-                t.get("match_time") or t.get("timestamp")
-                or t.get("time") or t.get("created_at") or ""
+                t.get("match_time")
+                or t.get("timestamp")
+                or t.get("time")
+                or t.get("created_at")
+                or ""
             )
             if isinstance(raw, str) and raw:
                 try:
                     if "T" in raw or "-" in raw:
-                        return datetime.fromisoformat(raw.replace("Z", "+00:00").replace("+00:00", ""))
+                        return datetime.fromisoformat(
+                            raw.replace("Z", "+00:00").replace("+00:00", "")
+                        )
                     return datetime.fromtimestamp(float(raw))
                 except (ValueError, TypeError, OSError):
                     pass
@@ -326,7 +351,7 @@ async def get_all_recent_trades(
             "trades": all_trades,
             "total": len(all_trades),
             "tracked_wallets": len(wallets),
-            "hours_window": hours
+            "hours_window": hours,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -334,18 +359,13 @@ async def get_all_recent_trades(
 
 # ==================== MARKETS ====================
 
+
 @router.get("/markets")
-async def get_markets(
-    active: bool = True,
-    limit: int = 100,
-    offset: int = 0
-):
+async def get_markets(active: bool = True, limit: int = 100, offset: int = 0):
     """Get markets from Polymarket"""
     try:
         markets = await polymarket_client.get_markets(
-            active=active,
-            limit=limit,
-            offset=offset
+            active=active, limit=limit, offset=offset
         )
         return [m.model_dump() for m in markets]
     except Exception as e:
@@ -353,17 +373,11 @@ async def get_markets(
 
 
 @router.get("/events")
-async def get_events(
-    closed: bool = False,
-    limit: int = 100,
-    offset: int = 0
-):
+async def get_events(closed: bool = False, limit: int = 100, offset: int = 0):
     """Get events from Polymarket"""
     try:
         events = await polymarket_client.get_events(
-            closed=closed,
-            limit=limit,
-            offset=offset
+            closed=closed, limit=limit, offset=offset
         )
         return [e.model_dump() for e in events]
     except Exception as e:
@@ -372,27 +386,30 @@ async def get_events(
 
 # ==================== STRATEGY INFO ====================
 
+
 @router.get("/strategies")
 async def get_strategies():
     """Get information about available strategies"""
     return [
-        {
-            "type": s.strategy_type.value,
-            "name": s.name,
-            "description": s.description
-        }
+        {"type": s.strategy_type.value, "name": s.name, "description": s.description}
         for s in scanner.strategies
     ]
 
 
 # ==================== TRADER DISCOVERY ====================
 
+
 @router.get("/discover/leaderboard")
 async def get_leaderboard(
     limit: int = Query(50, ge=1, le=50),
-    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    time_period: str = Query(
+        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
+    ),
     order_by: str = Query("PNL", description="Sort by: PNL (profit) or VOL (volume)"),
-    category: str = Query("OVERALL", description="Category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE")
+    category: str = Query(
+        "OVERALL",
+        description="Category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE",
+    ),
 ):
     """
     Get Polymarket leaderboard - top traders by profit or volume.
@@ -404,10 +421,7 @@ async def get_leaderboard(
     """
     try:
         leaderboard = await polymarket_client.get_leaderboard(
-            limit=limit,
-            time_period=time_period,
-            order_by=order_by,
-            category=category
+            limit=limit, time_period=time_period, order_by=order_by, category=category
         )
         return leaderboard
     except Exception as e:
@@ -418,9 +432,11 @@ async def get_leaderboard(
 async def discover_top_traders(
     limit: int = Query(50, ge=1, le=50),
     min_trades: int = Query(10, ge=1),
-    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    time_period: str = Query(
+        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
+    ),
     order_by: str = Query("PNL", description="Sort by: PNL or VOL"),
-    category: str = Query("OVERALL", description="Market category filter")
+    category: str = Query("OVERALL", description="Market category filter"),
 ):
     """
     Discover top traders by analyzing recent trade activity.
@@ -432,7 +448,7 @@ async def discover_top_traders(
             min_trades=min_trades,
             time_period=time_period,
             order_by=order_by,
-            category=category
+            category=category,
         )
         return traders
     except Exception as e:
@@ -441,14 +457,27 @@ async def discover_top_traders(
 
 @router.get("/discover/by-win-rate")
 async def discover_by_win_rate(
-    min_win_rate: float = Query(70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"),
+    min_win_rate: float = Query(
+        70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"
+    ),
     min_trades: int = Query(10, ge=1, description="Minimum number of closed positions"),
     limit: int = Query(100, ge=1, le=500, description="Max results to return"),
-    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
+    time_period: str = Query(
+        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
+    ),
     category: str = Query("OVERALL", description="Market category filter"),
-    min_volume: float = Query(0, ge=0, description="Minimum trading volume (0 = no minimum)"),
-    max_volume: float = Query(0, ge=0, description="Maximum trading volume (0 = no maximum)"),
-    scan_count: int = Query(500, ge=10, le=1050, description="Number of traders to scan per leaderboard sort (searches both PNL and VOL)")
+    min_volume: float = Query(
+        0, ge=0, description="Minimum trading volume (0 = no minimum)"
+    ),
+    max_volume: float = Query(
+        0, ge=0, description="Maximum trading volume (0 = no maximum)"
+    ),
+    scan_count: int = Query(
+        500,
+        ge=10,
+        le=1050,
+        description="Number of traders to scan per leaderboard sort (searches both PNL and VOL)",
+    ),
 ):
     """
     Discover traders with high win rates.
@@ -473,7 +502,7 @@ async def discover_by_win_rate(
             category=category,
             min_volume=min_volume,
             max_volume=max_volume,
-            scan_count=scan_count
+            scan_count=scan_count,
         )
         return traders
     except Exception as e:
@@ -483,7 +512,9 @@ async def discover_by_win_rate(
 @router.get("/discover/wallet/{address}/win-rate")
 async def get_wallet_win_rate(
     address: str,
-    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL")
+    time_period: str = Query(
+        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
+    ),
 ):
     """
     Calculate win rate for a specific wallet.
@@ -517,7 +548,9 @@ async def get_wallet_win_rate(
 @router.get("/discover/wallet/{address}")
 async def analyze_wallet_pnl(
     address: str,
-    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL")
+    time_period: str = Query(
+        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
+    ),
 ):
     """
     Analyze a wallet's profit and loss, trade history, and patterns.
@@ -534,7 +567,7 @@ async def analyze_and_track_wallet(
     address: str,
     label: Optional[str] = None,
     auto_copy: bool = False,
-    simulation_account_id: Optional[str] = None
+    simulation_account_id: Optional[str] = None,
 ):
     """
     Analyze a wallet and optionally add it for tracking/copy trading.
@@ -557,7 +590,7 @@ async def analyze_and_track_wallet(
             "label": wallet_label,
             "analysis": pnl,
             "tracking": True,
-            "copy_trading": False
+            "copy_trading": False,
         }
 
         # Optionally set up copy trading
@@ -572,7 +605,7 @@ async def analyze_and_track_wallet(
                     source_wallet=address,
                     account_id=simulation_account_id,
                     min_roi_threshold=2.0,
-                    max_position_size=100.0
+                    max_position_size=100.0,
                 )
                 result["copy_trading"] = True
                 result["copy_account_id"] = simulation_account_id

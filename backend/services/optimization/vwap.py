@@ -17,6 +17,7 @@ from dataclasses import dataclass
 @dataclass
 class OrderBookLevel:
     """Single level in order book."""
+
     price: float
     size: float  # In shares
 
@@ -24,6 +25,7 @@ class OrderBookLevel:
 @dataclass
 class OrderBook:
     """Complete order book for a token."""
+
     bids: list[OrderBookLevel]  # Sorted descending by price
     asks: list[OrderBookLevel]  # Sorted ascending by price
 
@@ -47,6 +49,7 @@ class OrderBook:
 @dataclass
 class VWAPResult:
     """Result of VWAP calculation."""
+
     vwap: float
     total_available: float  # USD value available at this VWAP
     slippage_bps: float  # Slippage from mid in basis points
@@ -73,11 +76,7 @@ class VWAPCalculator:
         """
         self.min_profit_threshold = min_profit_threshold
 
-    def calculate_buy_vwap(
-        self,
-        order_book: OrderBook,
-        size_usd: float
-    ) -> VWAPResult:
+    def calculate_buy_vwap(self, order_book: OrderBook, size_usd: float) -> VWAPResult:
         """
         Calculate VWAP for buying a given USD amount.
 
@@ -97,7 +96,7 @@ class VWAPCalculator:
                 total_available=0,
                 slippage_bps=0,
                 levels_consumed=0,
-                fill_probability=0
+                fill_probability=0,
             )
 
         remaining_usd = size_usd
@@ -131,7 +130,7 @@ class VWAPCalculator:
                 total_available=0,
                 slippage_bps=0,
                 levels_consumed=0,
-                fill_probability=0
+                fill_probability=0,
             )
 
         vwap = total_cost / total_shares
@@ -150,13 +149,11 @@ class VWAPCalculator:
             total_available=total_cost,
             slippage_bps=slippage_bps,
             levels_consumed=levels_consumed,
-            fill_probability=fill_probability
+            fill_probability=fill_probability,
         )
 
     def calculate_sell_vwap(
-        self,
-        order_book: OrderBook,
-        size_shares: float
+        self, order_book: OrderBook, size_shares: float
     ) -> VWAPResult:
         """
         Calculate VWAP for selling a given number of shares.
@@ -169,7 +166,7 @@ class VWAPCalculator:
                 total_available=0,
                 slippage_bps=0,
                 levels_consumed=0,
-                fill_probability=0
+                fill_probability=0,
             )
 
         remaining_shares = size_shares
@@ -198,7 +195,7 @@ class VWAPCalculator:
                 total_available=0,
                 slippage_bps=0,
                 levels_consumed=0,
-                fill_probability=0
+                fill_probability=0,
             )
 
         vwap = total_proceeds / total_shares_sold
@@ -208,14 +205,16 @@ class VWAPCalculator:
         mid = (best_ask + best_bid) / 2 if (best_ask + best_bid) > 0 else vwap
         slippage_bps = ((mid - vwap) / mid * 10000) if mid > 0 else 0
 
-        fill_probability = min(1.0, total_shares_sold / size_shares) if size_shares > 0 else 1.0
+        fill_probability = (
+            min(1.0, total_shares_sold / size_shares) if size_shares > 0 else 1.0
+        )
 
         return VWAPResult(
             vwap=vwap,
             total_available=total_proceeds,
             slippage_bps=slippage_bps,
             levels_consumed=levels_consumed,
-            fill_probability=fill_probability
+            fill_probability=fill_probability,
         )
 
     def estimate_arbitrage_profit(
@@ -223,7 +222,7 @@ class VWAPCalculator:
         yes_book: OrderBook,
         no_book: OrderBook,
         size_usd: float,
-        fee_rate: float = 0.02
+        fee_rate: float = 0.02,
     ) -> dict:
         """
         Estimate realistic arbitrage profit accounting for order book depth.
@@ -250,10 +249,7 @@ class VWAPCalculator:
         total_vwap_cost = yes_vwap.vwap + no_vwap.vwap
 
         # Minimum achievable position (limited by liquidity)
-        achievable_usd = min(
-            yes_vwap.total_available,
-            no_vwap.total_available
-        )
+        achievable_usd = min(yes_vwap.total_available, no_vwap.total_available)
 
         # Joint fill probability
         fill_probability = yes_vwap.fill_probability * no_vwap.fill_probability
@@ -283,9 +279,9 @@ class VWAPCalculator:
 
         # Research paper threshold: only count if profit > $0.05 margin
         is_profitable = (
-            net_profit > self.min_profit_threshold and
-            fill_probability > 0.5 and
-            total_vwap_cost < 0.95  # 5% safety margin
+            net_profit > self.min_profit_threshold
+            and fill_probability > 0.5
+            and total_vwap_cost < 0.95  # 5% safety margin
         )
 
         return {
@@ -320,11 +316,11 @@ class VWAPCalculator:
     def get_spread_bps(self, order_book: OrderBook) -> float:
         """Get bid-ask spread in basis points."""
         if not order_book.bids or not order_book.asks:
-            return float('inf')
+            return float("inf")
 
         mid = self.get_mid_price(order_book)
         if mid <= 0:
-            return float('inf')
+            return float("inf")
 
         spread = order_book.asks[0].price - order_book.bids[0].price
         return (spread / mid) * 10000

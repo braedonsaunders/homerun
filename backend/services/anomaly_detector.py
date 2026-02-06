@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from sqlalchemy import select
 
-from models.database import (
-    TrackedWallet, DetectedAnomaly, AsyncSessionLocal
-)
+from models.database import TrackedWallet, DetectedAnomaly, AsyncSessionLocal
 from services.polymarket import polymarket_client
 from utils.logger import get_logger
 
@@ -43,6 +41,7 @@ class Severity(str, Enum):
 @dataclass
 class WalletAnalysis:
     """Analysis results for a wallet"""
+
     address: str
     total_trades: int
     win_rate: float
@@ -62,6 +61,7 @@ class WalletAnalysis:
 @dataclass
 class Anomaly:
     """Detected anomaly"""
+
     type: AnomalyType
     severity: Severity
     score: float
@@ -105,7 +105,7 @@ class AnomalyDetector:
                 anomaly_score=0,
                 anomalies=[],
                 is_profitable_pattern=False,
-                recommendation="Insufficient data for analysis"
+                recommendation="Insufficient data for analysis",
             )
 
         # Calculate basic stats (pass positions for unrealized PnL calculation)
@@ -141,15 +141,18 @@ class AnomalyDetector:
             markets_traded=stats["unique_markets"],
             strategies_detected=strategies,
             anomaly_score=anomaly_score,
-            anomalies=[{
-                "type": a.type.value,
-                "severity": a.severity.value,
-                "score": a.score,
-                "description": a.description,
-                "evidence": a.evidence
-            } for a in anomalies],
+            anomalies=[
+                {
+                    "type": a.type.value,
+                    "severity": a.severity.value,
+                    "score": a.score,
+                    "description": a.description,
+                    "evidence": a.evidence,
+                }
+                for a in anomalies
+            ],
             is_profitable_pattern=is_profitable,
-            recommendation=recommendation
+            recommendation=recommendation,
         )
 
         # Save analysis to database
@@ -161,12 +164,14 @@ class AnomalyDetector:
             trades=stats["total_trades"],
             win_rate=stats["win_rate"],
             anomaly_score=anomaly_score,
-            anomalies_found=len(anomalies)
+            anomalies_found=len(anomalies),
         )
 
         return analysis
 
-    def _calculate_trade_stats(self, trades: list[dict], positions: list[dict] = None) -> dict:
+    def _calculate_trade_stats(
+        self, trades: list[dict], positions: list[dict] = None
+    ) -> dict:
         """Calculate trading statistics from raw Polymarket trade data"""
         if not trades:
             return {}
@@ -184,7 +189,9 @@ class AnomalyDetector:
             size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
             price = float(trade.get("price", 0) or 0)
             side = (trade.get("side", "") or "").upper()
-            market_id = trade.get("market", trade.get("condition_id", trade.get("asset", "")))
+            market_id = trade.get(
+                "market", trade.get("condition_id", trade.get("asset", ""))
+            )
             outcome = trade.get("outcome", trade.get("outcome_index", ""))
 
             if market_id:
@@ -197,22 +204,30 @@ class AnomalyDetector:
 
             if side == "BUY":
                 total_invested += cost
-                market_positions[market_id]["buys"].append({
-                    "size": size,
-                    "price": price,
-                    "cost": cost,
-                    "outcome": outcome,
-                    "timestamp": trade.get("timestamp", trade.get("created_at", ""))
-                })
+                market_positions[market_id]["buys"].append(
+                    {
+                        "size": size,
+                        "price": price,
+                        "cost": cost,
+                        "outcome": outcome,
+                        "timestamp": trade.get(
+                            "timestamp", trade.get("created_at", "")
+                        ),
+                    }
+                )
             elif side == "SELL":
                 total_returned += cost
-                market_positions[market_id]["sells"].append({
-                    "size": size,
-                    "price": price,
-                    "cost": cost,
-                    "outcome": outcome,
-                    "timestamp": trade.get("timestamp", trade.get("created_at", ""))
-                })
+                market_positions[market_id]["sells"].append(
+                    {
+                        "size": size,
+                        "price": price,
+                        "cost": cost,
+                        "outcome": outcome,
+                        "timestamp": trade.get(
+                            "timestamp", trade.get("created_at", "")
+                        ),
+                    }
+                )
 
         # Calculate realized PnL from completed trades
         realized_pnl = total_returned - total_invested
@@ -269,15 +284,23 @@ class AnomalyDetector:
             if first_trade and last_trade:
                 try:
                     if isinstance(first_trade, str):
-                        first_trade = datetime.fromisoformat(first_trade.replace("Z", "+00:00"))
+                        first_trade = datetime.fromisoformat(
+                            first_trade.replace("Z", "+00:00")
+                        )
                     if isinstance(last_trade, str):
-                        last_trade = datetime.fromisoformat(last_trade.replace("Z", "+00:00"))
+                        last_trade = datetime.fromisoformat(
+                            last_trade.replace("Z", "+00:00")
+                        )
                     days = max((last_trade - first_trade).days, 1)
                 except Exception:
                     days = 30
 
         # Calculate ROI
-        avg_roi = sum(rois) / len(rois) if rois else (total_pnl / total_invested * 100 if total_invested > 0 else 0)
+        avg_roi = (
+            sum(rois) / len(rois)
+            if rois
+            else (total_pnl / total_invested * 100 if total_invested > 0 else 0)
+        )
         max_roi = max(rois) if rois else avg_roi
         min_roi = min(rois) if rois else avg_roi
 
@@ -300,7 +323,7 @@ class AnomalyDetector:
             "unique_markets": len(markets),
             "days_active": days,
             "closed_positions": closed_markets,
-            "open_positions": len(positions)
+            "open_positions": len(positions),
         }
 
     def _detect_statistical_anomalies(self, trades: list, stats: dict) -> list[Anomaly]:
@@ -318,49 +341,59 @@ class AnomalyDetector:
             z_score = (actual_wins - expected_wins) / std if std > 0 else 0
 
             if z_score > 4:  # Extremely unlikely by chance
-                anomalies.append(Anomaly(
-                    type=AnomalyType.IMPOSSIBLE_WIN_RATE,
-                    severity=Severity.CRITICAL if stats["win_rate"] > 0.98 else Severity.HIGH,
-                    score=min(z_score / 10, 1.0),
-                    description=f"Win rate of {stats['win_rate']*100:.1f}% over {n} trades is statistically impossible",
-                    evidence={
-                        "win_rate": stats["win_rate"],
-                        "total_trades": n,
-                        "z_score": z_score,
-                        "probability": f"1 in {10**int(z_score):,}"
-                    }
-                ))
+                anomalies.append(
+                    Anomaly(
+                        type=AnomalyType.IMPOSSIBLE_WIN_RATE,
+                        severity=Severity.CRITICAL
+                        if stats["win_rate"] > 0.98
+                        else Severity.HIGH,
+                        score=min(z_score / 10, 1.0),
+                        description=f"Win rate of {stats['win_rate'] * 100:.1f}% over {n} trades is statistically impossible",
+                        evidence={
+                            "win_rate": stats["win_rate"],
+                            "total_trades": n,
+                            "z_score": z_score,
+                            "probability": f"1 in {10 ** int(z_score):,}",
+                        },
+                    )
+                )
 
         # 2. Unusual ROI distribution
         if stats["roi_std"] > 0 and stats["avg_roi"] > 0:
             # Check if average ROI is unusually high
             # Normal arbitrage ROI is 2-5%
             if stats["avg_roi"] > 20:  # 20% average ROI is suspicious
-                anomalies.append(Anomaly(
-                    type=AnomalyType.UNUSUAL_ROI,
-                    severity=Severity.HIGH if stats["avg_roi"] > 50 else Severity.MEDIUM,
-                    score=min(stats["avg_roi"] / 100, 1.0),
-                    description=f"Average ROI of {stats['avg_roi']:.1f}% is unusually high",
-                    evidence={
-                        "avg_roi": stats["avg_roi"],
-                        "max_roi": stats["max_roi"],
-                        "std_dev": stats["roi_std"]
-                    }
-                ))
+                anomalies.append(
+                    Anomaly(
+                        type=AnomalyType.UNUSUAL_ROI,
+                        severity=Severity.HIGH
+                        if stats["avg_roi"] > 50
+                        else Severity.MEDIUM,
+                        score=min(stats["avg_roi"] / 100, 1.0),
+                        description=f"Average ROI of {stats['avg_roi']:.1f}% is unusually high",
+                        evidence={
+                            "avg_roi": stats["avg_roi"],
+                            "max_roi": stats["max_roi"],
+                            "std_dev": stats["roi_std"],
+                        },
+                    )
+                )
 
         # 3. No losing trades
         if stats["losses"] == 0 and stats["total_trades"] >= 20:
-            anomalies.append(Anomaly(
-                type=AnomalyType.STATISTICALLY_IMPOSSIBLE,
-                severity=Severity.CRITICAL,
-                score=1.0,
-                description=f"Zero losses over {stats['total_trades']} trades is statistically impossible",
-                evidence={
-                    "wins": stats["wins"],
-                    "losses": 0,
-                    "total_trades": stats["total_trades"]
-                }
-            ))
+            anomalies.append(
+                Anomaly(
+                    type=AnomalyType.STATISTICALLY_IMPOSSIBLE,
+                    severity=Severity.CRITICAL,
+                    score=1.0,
+                    description=f"Zero losses over {stats['total_trades']} trades is statistically impossible",
+                    evidence={
+                        "wins": stats["wins"],
+                        "losses": 0,
+                        "total_trades": stats["total_trades"],
+                    },
+                )
+            )
 
         return anomalies
 
@@ -383,7 +416,7 @@ class AnomalyDetector:
                 # Sort by timestamp
                 sorted_trades = sorted(
                     market_trade_list,
-                    key=lambda t: t.get("timestamp", t.get("created_at", ""))
+                    key=lambda t: t.get("timestamp", t.get("created_at", "")),
                 )
 
                 for i in range(len(sorted_trades) - 1):
@@ -396,16 +429,18 @@ class AnomalyDetector:
 
                     if side1 and side2 and side1 != side2:
                         # This could be wash trading
-                        anomalies.append(Anomaly(
-                            type=AnomalyType.WASH_TRADING,
-                            severity=Severity.MEDIUM,
-                            score=0.6,
-                            description="Rapid buy/sell pattern detected in market",
-                            evidence={
-                                "market_id": market_id,
-                                "trade_count": len(market_trade_list)
-                            }
-                        ))
+                        anomalies.append(
+                            Anomaly(
+                                type=AnomalyType.WASH_TRADING,
+                                severity=Severity.MEDIUM,
+                                score=0.6,
+                                description="Rapid buy/sell pattern detected in market",
+                                evidence={
+                                    "market_id": market_id,
+                                    "trade_count": len(market_trade_list),
+                                },
+                            )
+                        )
                         break
 
         # 2. Check for arbitrage-only pattern (sign of sophisticated bot)
@@ -420,17 +455,19 @@ class AnomalyDetector:
                     arbitrage_indicators += 1
 
         if arbitrage_indicators / len(trades) > 0.8:  # 80% look like arb trades
-            anomalies.append(Anomaly(
-                type=AnomalyType.ARBITRAGE_ONLY,
-                severity=Severity.LOW,
-                score=0.4,
-                description="Wallet appears to only execute arbitrage strategies",
-                evidence={
-                    "arbitrage_trades": arbitrage_indicators,
-                    "total_trades": len(trades),
-                    "ratio": arbitrage_indicators / len(trades)
-                }
-            ))
+            anomalies.append(
+                Anomaly(
+                    type=AnomalyType.ARBITRAGE_ONLY,
+                    severity=Severity.LOW,
+                    score=0.4,
+                    description="Wallet appears to only execute arbitrage strategies",
+                    evidence={
+                        "arbitrage_trades": arbitrage_indicators,
+                        "total_trades": len(trades),
+                        "ratio": arbitrage_indicators / len(trades),
+                    },
+                )
+            )
 
         return anomalies
 
@@ -491,17 +528,14 @@ class AnomalyDetector:
             Severity.LOW: 0.2,
             Severity.MEDIUM: 0.4,
             Severity.HIGH: 0.7,
-            Severity.CRITICAL: 1.0
+            Severity.CRITICAL: 1.0,
         }
 
         total_score = sum(a.score * weights[a.severity] for a in anomalies)
         return min(total_score / len(anomalies), 1.0)
 
     def _is_profitable_pattern(
-        self,
-        stats: dict,
-        anomalies: list[Anomaly],
-        strategies: list[str]
+        self, stats: dict, anomalies: list[Anomaly], strategies: list[str]
     ) -> bool:
         """Determine if this wallet has a profitable pattern worth following"""
         # Must have positive returns
@@ -513,7 +547,10 @@ class AnomalyDetector:
             return False
 
         # Should be using arbitrage strategies
-        if not any(s in strategies for s in ["basic_arbitrage", "negrisk_date_sweep", "automated_trading"]):
+        if not any(
+            s in strategies
+            for s in ["basic_arbitrage", "negrisk_date_sweep", "automated_trading"]
+        ):
             return False
 
         # Should not have critical anomalies
@@ -524,10 +561,7 @@ class AnomalyDetector:
         return True
 
     def _generate_recommendation(
-        self,
-        stats: dict,
-        anomalies: list[Anomaly],
-        is_profitable: bool
+        self, stats: dict, anomalies: list[Anomaly], is_profitable: bool
     ) -> str:
         """Generate recommendation for this wallet"""
         if not stats.get("total_trades"):
@@ -543,7 +577,7 @@ class AnomalyDetector:
             return f"CAUTION - High severity anomalies: {', '.join(a.type.value for a in high)}"
 
         if is_profitable:
-            return f"CONSIDER COPYING - Profitable pattern with {stats['win_rate']*100:.1f}% win rate, {stats['avg_roi']:.1f}% avg ROI"
+            return f"CONSIDER COPYING - Profitable pattern with {stats['win_rate'] * 100:.1f}% win rate, {stats['avg_roi']:.1f}% avg ROI"
 
         if stats["win_rate"] > 0.6 and stats["total_pnl"] > 0:
             return "MONITOR - Shows potential but needs more data"
@@ -573,12 +607,16 @@ class AnomalyDetector:
             wallet.avg_roi = analysis.avg_roi
             wallet.anomaly_score = analysis.anomaly_score
             wallet.is_flagged = analysis.anomaly_score > 0.7
-            wallet.flag_reasons = [a["type"] for a in analysis.anomalies if a["severity"] in ["high", "critical"]]
+            wallet.flag_reasons = [
+                a["type"]
+                for a in analysis.anomalies
+                if a["severity"] in ["high", "critical"]
+            ]
             wallet.last_analyzed_at = datetime.utcnow()
             wallet.analysis_data = {
                 "strategies": analysis.strategies_detected,
                 "recommendation": analysis.recommendation,
-                "is_profitable_pattern": analysis.is_profitable_pattern
+                "is_profitable_pattern": analysis.is_profitable_pattern,
             }
 
             # Save anomalies
@@ -590,7 +628,7 @@ class AnomalyDetector:
                     wallet_address=analysis.address,
                     description=anomaly_data["description"],
                     evidence=anomaly_data["evidence"],
-                    score=anomaly_data["score"]
+                    score=anomaly_data["score"],
                 )
                 session.add(anomaly)
 
@@ -601,7 +639,7 @@ class AnomalyDetector:
         min_trades: int = 50,
         min_win_rate: float = 0.6,
         min_pnl: float = 1000.0,
-        max_anomaly_score: float = 0.5
+        max_anomaly_score: float = 0.5,
     ) -> list[WalletAnalysis]:
         """Find wallets with profitable patterns that aren't suspicious"""
         async with AsyncSessionLocal() as session:
@@ -611,7 +649,7 @@ class AnomalyDetector:
                     TrackedWallet.win_rate >= min_win_rate,
                     TrackedWallet.total_pnl >= min_pnl,
                     TrackedWallet.anomaly_score <= max_anomaly_score,
-                    not TrackedWallet.is_flagged
+                    not TrackedWallet.is_flagged,
                 )
             )
             wallets = list(result.scalars().all())
@@ -628,7 +666,7 @@ class AnomalyDetector:
         self,
         severity: Optional[str] = None,
         anomaly_type: Optional[str] = None,
-        limit: int = 100
+        limit: int = 100,
     ) -> list[dict]:
         """Get detected anomalies"""
         async with AsyncSessionLocal() as session:
@@ -644,16 +682,19 @@ class AnomalyDetector:
             result = await session.execute(query)
             anomalies = list(result.scalars().all())
 
-            return [{
-                "id": a.id,
-                "type": a.anomaly_type,
-                "severity": a.severity,
-                "wallet": a.wallet_address,
-                "market": a.market_id,
-                "description": a.description,
-                "score": a.score,
-                "detected_at": a.detected_at.isoformat()
-            } for a in anomalies]
+            return [
+                {
+                    "id": a.id,
+                    "type": a.anomaly_type,
+                    "severity": a.severity,
+                    "wallet": a.wallet_address,
+                    "market": a.market_id,
+                    "description": a.description,
+                    "score": a.score,
+                    "detected_at": a.detected_at.isoformat(),
+                }
+                for a in anomalies
+            ]
 
 
 # Singleton instance

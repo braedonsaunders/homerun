@@ -11,6 +11,7 @@ logger = get_logger("rate_limiter")
 @dataclass
 class RateLimitConfig:
     """Rate limit configuration for an API endpoint"""
+
     requests_per_window: int
     window_seconds: float = 10.0
     burst_limit: Optional[int] = None  # Max burst if different from rate
@@ -19,6 +20,7 @@ class RateLimitConfig:
 @dataclass
 class TokenBucket:
     """Token bucket for rate limiting"""
+
     capacity: float
     tokens: float
     refill_rate: float  # tokens per second
@@ -74,9 +76,7 @@ class RateLimiter:
             capacity = config.burst_limit or config.requests_per_window
             refill_rate = config.requests_per_window / config.window_seconds
             self._buckets[endpoint] = TokenBucket(
-                capacity=capacity,
-                tokens=capacity,
-                refill_rate=refill_rate
+                capacity=capacity, tokens=capacity, refill_rate=refill_rate
             )
         return self._buckets[endpoint]
 
@@ -98,9 +98,7 @@ class RateLimiter:
 
             if wait_time > 0:
                 logger.debug(
-                    "Rate limit wait",
-                    endpoint=endpoint,
-                    wait_seconds=wait_time
+                    "Rate limit wait", endpoint=endpoint, wait_seconds=wait_time
                 )
                 await asyncio.sleep(wait_time)
                 bucket.refill()
@@ -124,7 +122,9 @@ class RateLimiter:
                 "available_tokens": bucket.tokens,
                 "capacity": bucket.capacity,
                 "refill_rate": bucket.refill_rate,
-                "limit": f"{config.requests_per_window}/{config.window_seconds}s" if config else "default"
+                "limit": f"{config.requests_per_window}/{config.window_seconds}s"
+                if config
+                else "default",
             }
         return status
 

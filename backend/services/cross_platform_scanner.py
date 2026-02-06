@@ -12,8 +12,8 @@ from utils.logger import get_logger
 logger = get_logger("cross_platform_scanner")
 
 # Fee schedules (conservative estimates)
-POLYMARKET_FEE = 0.02   # 2 % winner-take fee
-KALSHI_FEE = 0.07       # 7 % Kalshi fee on winnings (per their fee schedule)
+POLYMARKET_FEE = 0.02  # 2 % winner-take fee
+KALSHI_FEE = 0.07  # 7 % Kalshi fee on winnings (per their fee schedule)
 
 
 class CrossPlatformScanner:
@@ -36,13 +36,56 @@ class CrossPlatformScanner:
     #  Text normalisation and similarity
     # ------------------------------------------------------------------ #
 
-    _STOP_WORDS = frozenset({
-        "the", "a", "an", "is", "are", "was", "were", "will", "be", "to",
-        "of", "in", "on", "at", "by", "for", "and", "or", "not", "with",
-        "it", "this", "that", "from", "as", "if", "do", "does", "did",
-        "has", "have", "had", "but", "so", "than", "when", "what", "which",
-        "who", "whom", "how", "no", "yes", "before", "after", "between",
-    })
+    _STOP_WORDS = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "will",
+            "be",
+            "to",
+            "of",
+            "in",
+            "on",
+            "at",
+            "by",
+            "for",
+            "and",
+            "or",
+            "not",
+            "with",
+            "it",
+            "this",
+            "that",
+            "from",
+            "as",
+            "if",
+            "do",
+            "does",
+            "did",
+            "has",
+            "have",
+            "had",
+            "but",
+            "so",
+            "than",
+            "when",
+            "what",
+            "which",
+            "who",
+            "whom",
+            "how",
+            "no",
+            "yes",
+            "before",
+            "after",
+            "between",
+        }
+    )
 
     @classmethod
     def _tokenize(cls, text: str) -> set[str]:
@@ -208,16 +251,16 @@ class CrossPlatformScanner:
             # (description, cost_platform_a, cost_platform_b, fee_on_a_win, fee_on_b_win, label)
             (
                 "Buy YES on Polymarket + NO on Kalshi",
-                p_yes,   # cost if Poly YES wins
-                k_no,    # cost if Kalshi NO wins
+                p_yes,  # cost if Poly YES wins
+                k_no,  # cost if Kalshi NO wins
                 poly_fee,
                 kalshi_fee,
                 "poly_yes_kalshi_no",
             ),
             (
                 "Buy NO on Polymarket + YES on Kalshi",
-                p_no,    # cost if Poly NO wins
-                k_yes,   # cost if Kalshi YES wins
+                p_no,  # cost if Poly NO wins
+                k_yes,  # cost if Kalshi YES wins
                 poly_fee,
                 kalshi_fee,
                 "poly_no_kalshi_yes",
@@ -362,9 +405,7 @@ class CrossPlatformScanner:
                     # Optionally also check market-level title similarity
                     # for multi-market events so we pair the right legs.
                     if len(poly_markets) > 1 and len(kalshi_markets) > 1:
-                        mkt_sim = self._title_similarity(
-                            p_mkt.question, k_mkt.question
-                        )
+                        mkt_sim = self._title_similarity(p_mkt.question, k_mkt.question)
                         if mkt_sim < 0.35:
                             continue
 
@@ -387,6 +428,7 @@ class CrossPlatformScanner:
 # ------------------------------------------------------------------ #
 #  Module-level helpers
 # ------------------------------------------------------------------ #
+
 
 def _earliest_end_date(event: Event) -> Optional[datetime]:
     """Return the earliest end_date across all markets in an event."""
