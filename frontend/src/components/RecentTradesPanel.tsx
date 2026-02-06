@@ -11,7 +11,9 @@ import {
   ChevronDown,
   ChevronUp,
   Zap,
-  Filter
+  Filter,
+  DollarSign,
+  Hash
 } from 'lucide-react'
 import clsx from 'clsx'
 import { getRecentTradesFromWallets, RecentTradeFromWallet } from '../services/api'
@@ -46,29 +48,96 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
     setExpandedTrades(newExpanded)
   }
 
-  const formatTimestamp = (trade: RecentTradeFromWallet) => {
-    const ts = trade.timestamp || trade.time || trade.created_at
-    if (!ts) return 'Unknown'
+  const parseTimestamp = (trade: RecentTradeFromWallet): Date | null => {
+    // Prefer the normalized ISO timestamp from the backend
+    const candidates = [
+      trade.timestamp_iso,
+      trade.match_time,
+      trade.timestamp,
+      trade.time,
+      trade.created_at,
+    ]
 
-    try {
-      const date = new Date(ts)
-      const now = new Date()
-      const diffMs = now.getTime() - date.getTime()
-      const diffMins = Math.floor(diffMs / 60000)
-      const diffHours = Math.floor(diffMins / 60)
-
-      if (diffMins < 1) return 'Just now'
-      if (diffMins < 60) return `${diffMins}m ago`
-      if (diffHours < 24) return `${diffHours}h ago`
-      return date.toLocaleDateString()
-    } catch {
-      return 'Unknown'
+    for (const ts of candidates) {
+      if (!ts) continue
+      try {
+        // If it's a string containing date separators, parse as ISO
+        if (typeof ts === 'string' && (ts.includes('T') || ts.includes('-'))) {
+          const date = new Date(ts)
+          if (!isNaN(date.getTime()) && date.getFullYear() > 2000) return date
+        }
+        // If it's a numeric string or number, treat as Unix seconds
+        const num = Number(ts)
+        if (!isNaN(num) && num > 0) {
+          // If the number is too small to be milliseconds (before year 2001 in ms),
+          // it's likely seconds
+          const ms = num < 4102444800 ? num * 1000 : num
+          const date = new Date(ms)
+          if (!isNaN(date.getTime()) && date.getFullYear() > 2000) return date
+        }
+      } catch {
+        continue
+      }
     }
+    return null
+  }
+
+  const formatTimestamp = (trade: RecentTradeFromWallet) => {
+    const date = parseTimestamp(trade)
+    if (!date) return 'Unknown'
+
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMins / 60)
+
+    if (diffMs < 0) return 'Just now' // future timestamp (clock skew)
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffHours < 48) return 'Yesterday'
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  }
+
+  const formatFullTimestamp = (trade: RecentTradeFromWallet) => {
+    const date = parseTimestamp(trade)
+    if (!date) return 'Unknown'
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
   }
 
   const getTradeId = (trade: RecentTradeFromWallet, index: number) => {
     return trade.id || trade.transaction_hash || `trade-${index}`
   }
+
+  const getMarketName = (trade: RecentTradeFromWallet) => {
+    return trade.market_title || trade.market || 'Unknown Market'
+  }
+
+  const isConditionId = (value: string) => {
+    return value.startsWith('0x') && value.length > 20
+  }
+
+  const formatCurrency = (value: number) => {
+    if (value >= 1000) return `$${(value / 1000).toFixed(1)}k`
+    if (value >= 100) return `$${value.toFixed(0)}`
+    return `$${value.toFixed(2)}`
+  }
+
+  const totalVolume = filteredTrades.reduce((sum, t) => {
+    const size = t.size ?? 0
+    const price = t.price ?? 0
+    return sum + size * price
+  }, 0)
+
+  const buyCount = filteredTrades.filter(t => t.side?.toUpperCase() === 'BUY').length
+  const sellCount = filteredTrades.filter(t => t.side?.toUpperCase() === 'SELL').length
 
   return (
     <div className="space-y-4">
@@ -128,10 +197,29 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
             <option value="SELL">Sells only</option>
           </select>
         </div>
-        <div className="ml-auto text-sm text-gray-500">
-          {filteredTrades.length} trades found
-        </div>
       </div>
+
+      {/* Summary Stats */}
+      {filteredTrades.length > 0 && (
+        <div className="grid grid-cols-4 gap-3">
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+            <p className="text-xs text-gray-500">Total Trades</p>
+            <p className="text-lg font-semibold text-white">{filteredTrades.length}</p>
+          </div>
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+            <p className="text-xs text-gray-500">Volume</p>
+            <p className="text-lg font-semibold text-white">{formatCurrency(totalVolume)}</p>
+          </div>
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+            <p className="text-xs text-green-500">Buys</p>
+            <p className="text-lg font-semibold text-green-400">{buyCount}</p>
+          </div>
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+            <p className="text-xs text-red-500">Sells</p>
+            <p className="text-lg font-semibold text-red-400">{sellCount}</p>
+          </div>
+        </div>
+      )}
 
       {/* Trades List */}
       {isLoading ? (
@@ -149,40 +237,49 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {filteredTrades.map((trade, index) => {
             const tradeId = getTradeId(trade, index)
             const isExpanded = expandedTrades.has(tradeId)
             const isBuy = trade.side?.toUpperCase() === 'BUY'
+            const marketName = getMarketName(trade)
+            const hasRealMarketName = trade.market_title && !isConditionId(trade.market_title)
+            const cost = trade.cost ?? (trade.size ?? 0) * (trade.price ?? 0)
 
             return (
               <div
                 key={tradeId}
                 className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden hover:border-gray-700 transition-colors"
               >
-                {/* Trade Header */}
+                {/* Trade Row */}
                 <div
-                  className="p-4 cursor-pointer"
+                  className="p-3 cursor-pointer"
                   onClick={() => toggleExpanded(tradeId)}
                 >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        {/* Side Badge */}
+                  <div className="flex items-center gap-3">
+                    {/* Side indicator */}
+                    <div className={clsx(
+                      "flex-shrink-0 w-1 h-12 rounded-full",
+                      isBuy ? "bg-green-500" : "bg-red-500"
+                    )} />
+
+                    {/* Main content */}
+                    <div className="flex-1 min-w-0">
+                      {/* Top row: side badge, market name, time */}
+                      <div className="flex items-center gap-2 mb-1">
                         <span className={clsx(
-                          "flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium",
+                          "flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold",
                           isBuy
-                            ? "bg-green-500/10 text-green-400 border border-green-500/20"
-                            : "bg-red-500/10 text-red-400 border border-red-500/20"
+                            ? "bg-green-500/10 text-green-400"
+                            : "bg-red-500/10 text-red-400"
                         )}>
                           {isBuy ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                           {trade.side?.toUpperCase() || 'TRADE'}
                         </span>
 
-                        {/* Outcome Badge */}
                         {trade.outcome && (
                           <span className={clsx(
-                            "px-2 py-0.5 rounded text-xs font-medium",
+                            "px-1.5 py-0.5 rounded text-xs font-medium",
                             trade.outcome === 'Yes'
                               ? "bg-blue-500/10 text-blue-400"
                               : "bg-purple-500/10 text-purple-400"
@@ -191,57 +288,63 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           </span>
                         )}
 
-                        {/* Time */}
-                        <span className="flex items-center gap-1 text-xs text-gray-500">
+                        <span className="flex items-center gap-1 text-xs text-gray-500 ml-auto flex-shrink-0">
                           <Clock className="w-3 h-3" />
                           {formatTimestamp(trade)}
                         </span>
                       </div>
 
-                      {/* Market */}
-                      <h3 className="font-medium text-white text-sm">
-                        {trade.market || 'Unknown Market'}
+                      {/* Market name */}
+                      <h3 className={clsx(
+                        "font-medium text-sm truncate",
+                        hasRealMarketName ? "text-white" : "text-gray-500"
+                      )}>
+                        {hasRealMarketName ? marketName : (
+                          isConditionId(marketName) ? `Market ${marketName.slice(0, 10)}...` : marketName
+                        )}
                       </h3>
 
-                      {/* Wallet Info */}
-                      <div className="flex items-center gap-2 mt-2">
-                        <Wallet className="w-3 h-3 text-gray-500" />
+                      {/* Wallet */}
+                      <div className="flex items-center gap-2 mt-1">
+                        <Wallet className="w-3 h-3 text-gray-600" />
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
                             onNavigateToWallet?.(trade.wallet_address)
                           }}
-                          className="text-xs text-orange-400 hover:text-orange-300 hover:underline"
+                          className="text-xs text-orange-400 hover:text-orange-300 hover:underline truncate"
                         >
                           {trade.wallet_label}
                         </button>
-                        <span className="text-xs text-gray-600 font-mono">
-                          {trade.wallet_address.slice(0, 6)}...{trade.wallet_address.slice(-4)}
-                        </span>
                       </div>
                     </div>
 
-                    {/* Price & Size */}
-                    <div className="text-right">
-                      <div className="text-lg font-bold text-white">
-                        ${(trade.price ?? 0).toFixed(2)}
+                    {/* Price info */}
+                    <div className="flex-shrink-0 text-right">
+                      <div className="flex items-center gap-1 justify-end">
+                        <span className="text-xs text-gray-500">@</span>
+                        <span className={clsx(
+                          "text-sm font-semibold",
+                          isBuy ? "text-green-400" : "text-red-400"
+                        )}>
+                          {((trade.price ?? 0) * 100).toFixed(1)}c
+                        </span>
                       </div>
-                      <p className="text-xs text-gray-500">
-                        {(trade.size ?? 0).toFixed(2)} shares
+                      <p className="text-xs text-gray-400">
+                        {(trade.size ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} shares
                       </p>
-                      {trade.cost !== undefined && (
-                        <p className="text-xs text-gray-500">
-                          ${trade.cost.toFixed(2)} total
-                        </p>
-                      )}
+                      <p className="text-xs text-gray-500">
+                        <DollarSign className="w-3 h-3 inline" />
+                        {cost.toFixed(2)}
+                      </p>
                     </div>
 
                     {/* Expand Icon */}
-                    <div className="self-center">
+                    <div className="flex-shrink-0 self-center">
                       {isExpanded ? (
-                        <ChevronUp className="w-5 h-5 text-gray-500" />
+                        <ChevronUp className="w-4 h-4 text-gray-600" />
                       ) : (
-                        <ChevronDown className="w-5 h-5 text-gray-500" />
+                        <ChevronDown className="w-4 h-4 text-gray-600" />
                       )}
                     </div>
                   </div>
@@ -250,21 +353,28 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                 {/* Expanded Details */}
                 {isExpanded && (
                   <div className="border-t border-gray-800 p-4 bg-[#0f0f0f]">
-                    <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                       <div>
-                        <p className="text-gray-500">Price</p>
-                        <p className="font-mono text-white">${(trade.price ?? 0).toFixed(4)}</p>
+                        <p className="text-gray-500 text-xs">Price</p>
+                        <p className="font-mono text-white">
+                          ${(trade.price ?? 0).toFixed(4)}
+                          <span className="text-gray-500 ml-1">
+                            ({((trade.price ?? 0) * 100).toFixed(1)}c)
+                          </span>
+                        </p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Size</p>
-                        <p className="font-mono text-white">{(trade.size ?? 0).toFixed(4)} shares</p>
+                        <p className="text-gray-500 text-xs">Shares</p>
+                        <p className="font-mono text-white">
+                          {(trade.size ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Total Cost</p>
-                        <p className="font-mono text-white">${(trade.cost ?? 0).toFixed(4)}</p>
+                        <p className="text-gray-500 text-xs">Total Cost</p>
+                        <p className="font-mono text-white">${cost.toFixed(2)}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Outcome</p>
+                        <p className="text-gray-500 text-xs">Outcome</p>
                         <p className={clsx(
                           "font-medium",
                           trade.outcome === 'Yes' ? 'text-green-400' : 'text-red-400'
@@ -272,10 +382,26 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           {trade.outcome || 'N/A'}
                         </p>
                       </div>
+                      <div>
+                        <p className="text-gray-500 text-xs">Time</p>
+                        <p className="font-mono text-gray-300 text-xs">{formatFullTimestamp(trade)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500 text-xs">Wallet</p>
+                        <p className="font-mono text-gray-300 text-xs">
+                          {trade.wallet_address.slice(0, 6)}...{trade.wallet_address.slice(-4)}
+                        </p>
+                      </div>
+                      {trade.market && isConditionId(trade.market) && (
+                        <div className="col-span-2">
+                          <p className="text-gray-500 text-xs">Condition ID</p>
+                          <p className="font-mono text-gray-400 text-xs truncate">{trade.market}</p>
+                        </div>
+                      )}
                     </div>
 
                     {/* Actions */}
-                    <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-800">
+                    <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
                       {trade.market_slug && (
                         <a
                           href={`https://polymarket.com/event/${trade.market_slug}`}
@@ -295,7 +421,18 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
                         >
                           <ExternalLink className="w-3 h-3" />
-                          View Transaction
+                          Transaction
+                        </a>
+                      )}
+                      {trade.wallet_address && (
+                        <a
+                          href={`https://polygonscan.com/address/${trade.wallet_address}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                        >
+                          <Hash className="w-3 h-3" />
+                          Wallet
                         </a>
                       )}
                     </div>

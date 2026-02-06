@@ -16,6 +16,7 @@ class PolymarketClient:
         self.clob_url = settings.CLOB_API_URL
         self.data_url = settings.DATA_API_URL
         self._client: Optional[httpx.AsyncClient] = None
+        self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -126,6 +127,108 @@ class PolymarketClient:
         if data:
             return Event.from_gamma_response(data[0])
         return None
+
+    async def get_market_by_condition_id(self, condition_id: str) -> Optional[dict]:
+        """Look up a market by condition_id, using cache when available."""
+        if condition_id in self._market_cache:
+            return self._market_cache[condition_id]
+
+        try:
+            client = await self._get_client()
+            response = await client.get(
+                f"{self.gamma_url}/markets",
+                params={"condition_id": condition_id, "limit": 1}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data and len(data) > 0:
+                market_data = data[0]
+                info = {
+                    "question": market_data.get("question", ""),
+                    "slug": market_data.get("slug", ""),
+                    "groupItemTitle": market_data.get("groupItemTitle", ""),
+                }
+                self._market_cache[condition_id] = info
+                return info
+        except Exception as e:
+            print(f"Market lookup failed for {condition_id}: {e}")
+
+        return None
+
+    async def enrich_trades_with_market_info(self, trades: list[dict]) -> list[dict]:
+        """
+        Enrich a list of trades with market question/title and slug.
+        Batches lookups and uses cache to minimize API calls.
+        """
+        # Collect unique condition_ids that need lookup
+        unknown_ids = set()
+        for trade in trades:
+            condition_id = trade.get("market", "")
+            if condition_id and condition_id not in self._market_cache:
+                unknown_ids.add(condition_id)
+
+        # Batch lookup unknown condition_ids with concurrency limit
+        if unknown_ids:
+            semaphore = asyncio.Semaphore(5)
+
+            async def lookup(cid: str):
+                async with semaphore:
+                    await self.get_market_by_condition_id(cid)
+
+            await asyncio.gather(*[lookup(cid) for cid in unknown_ids])
+
+        # Enrich trades
+        enriched = []
+        for trade in trades:
+            condition_id = trade.get("market", "")
+            market_info = self._market_cache.get(condition_id)
+
+            enriched_trade = {**trade}
+            if market_info:
+                enriched_trade["market_title"] = market_info.get("question", "")
+                enriched_trade["market_slug"] = market_info.get("slug", "")
+                # Use groupItemTitle if available (for multi-outcome markets)
+                if market_info.get("groupItemTitle"):
+                    enriched_trade["market_title"] = market_info["groupItemTitle"]
+            else:
+                enriched_trade["market_title"] = ""
+                enriched_trade["market_slug"] = ""
+
+            # Normalize timestamp to ISO format
+            ts = (
+                trade.get("match_time")
+                or trade.get("timestamp")
+                or trade.get("time")
+                or trade.get("created_at")
+                or trade.get("createdAt")
+            )
+            if ts:
+                try:
+                    if isinstance(ts, (int, float)):
+                        # Unix timestamp in seconds
+                        enriched_trade["timestamp_iso"] = datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                    elif isinstance(ts, str):
+                        if "T" in ts or "-" in ts:
+                            # Already ISO format
+                            enriched_trade["timestamp_iso"] = ts
+                        else:
+                            # Numeric string (unix seconds)
+                            enriched_trade["timestamp_iso"] = datetime.utcfromtimestamp(float(ts)).isoformat() + "Z"
+                except (ValueError, TypeError, OSError):
+                    enriched_trade["timestamp_iso"] = ""
+            else:
+                enriched_trade["timestamp_iso"] = ""
+
+            # Compute total cost if missing
+            if "cost" not in enriched_trade or enriched_trade.get("cost") is None:
+                size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+                price = float(trade.get("price", 0) or 0)
+                enriched_trade["cost"] = size * price
+
+            enriched.append(enriched_trade)
+
+        return enriched
 
     # ==================== CLOB API ====================
 
