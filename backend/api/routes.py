@@ -451,25 +451,33 @@ async def discover_by_win_rate(
 
 
 @router.get("/discover/wallet/{address}/win-rate")
-async def get_wallet_win_rate(address: str):
+async def get_wallet_win_rate(
+    address: str,
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL")
+):
     """
     Calculate win rate for a specific wallet.
     Analyzes trade history to determine wins vs losses.
     """
     try:
-        win_rate_data = await polymarket_client.calculate_wallet_win_rate(address)
+        win_rate_data = await polymarket_client.calculate_wallet_win_rate(
+            address, time_period=time_period
+        )
         return win_rate_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/discover/wallet/{address}")
-async def analyze_wallet_pnl(address: str):
+async def analyze_wallet_pnl(
+    address: str,
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL")
+):
     """
     Analyze a wallet's profit and loss, trade history, and patterns.
     """
     try:
-        pnl = await polymarket_client.get_wallet_pnl(address)
+        pnl = await polymarket_client.get_wallet_pnl(address, time_period=time_period)
         return pnl
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
