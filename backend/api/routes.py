@@ -487,9 +487,25 @@ async def get_wallet_win_rate(
 ):
     """
     Calculate win rate for a specific wallet.
-    Analyzes trade history to determine wins vs losses.
+    Uses closed-positions data (same method as Discover page) for consistency.
+    Falls back to full trade analysis if closed-positions data is unavailable.
     """
     try:
+        # Primary: Use fast method (closed-positions) for consistency with discover page
+        fast_result = await polymarket_client.calculate_win_rate_fast(
+            address, min_positions=1
+        )
+        if fast_result:
+            return {
+                "address": address,
+                "win_rate": fast_result["win_rate"],
+                "wins": fast_result["wins"],
+                "losses": fast_result["losses"],
+                "total_markets": fast_result["closed_positions"],
+                "trade_count": fast_result["closed_positions"],
+            }
+
+        # Fallback: Full trade analysis if no closed positions found
         win_rate_data = await polymarket_client.calculate_wallet_win_rate(
             address, time_period=time_period
         )

@@ -62,12 +62,14 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
+  const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
   const queryClient = useQueryClient()
 
   // Callback for navigating to wallet analysis from WalletTracker
-  const handleAnalyzeWallet = (address: string) => {
+  const handleAnalyzeWallet = (address: string, username?: string) => {
     setWalletToAnalyze(address)
+    setWalletUsername(username || null)
     setActiveTab('wallets')
     setWalletsSubTab('analysis')
   }
@@ -589,7 +591,8 @@ function App() {
           <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
             <WalletAnalysisPanel
               initialWallet={walletToAnalyze}
-              onWalletAnalyzed={() => setWalletToAnalyze(null)}
+              initialUsername={walletUsername}
+              onWalletAnalyzed={() => { setWalletToAnalyze(null); setWalletUsername(null) }}
             />
           </div>
         </div>
