@@ -26,6 +26,7 @@ jobs:
         with:
           mode: fix
           agent: claude
+          verbose: 'true'
           timeout: 30m
           max-cost: '$5.00'
         env:
