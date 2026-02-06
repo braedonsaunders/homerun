@@ -160,6 +160,7 @@ export interface WalletTrade {
 
 export interface WalletPosition {
   market: string
+  title: string
   market_slug: string
   outcome: string
   size: number

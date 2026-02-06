@@ -259,6 +259,31 @@ async def get_wallet_positions(wallet_address: str):
     # Use enriched positions with current market prices from CLOB API
     positions = await polymarket_client.get_wallet_positions_with_prices(address)
 
+    # Resolve market titles for positions missing them
+    # Collect condition IDs that need lookup
+    import asyncio
+    condition_ids_to_lookup = set()
+    for pos in positions:
+        title = pos.get("title", "")
+        if not title:
+            cid = (
+                pos.get("conditionId", "")
+                or pos.get("condition_id", "")
+                or pos.get("market", "")
+            )
+            if cid:
+                condition_ids_to_lookup.add(cid)
+
+    # Batch lookup market titles
+    if condition_ids_to_lookup:
+        semaphore = asyncio.Semaphore(5)
+
+        async def lookup(cid: str):
+            async with semaphore:
+                await polymarket_client.get_market_by_condition_id(cid)
+
+        await asyncio.gather(*[lookup(cid) for cid in condition_ids_to_lookup])
+
     # Enrich positions with calculated fields
     enriched_positions = []
     total_value = 0.0
@@ -283,10 +308,28 @@ async def get_wallet_positions(wallet_address: str):
         total_value += current_value
         total_unrealized_pnl += unrealized_pnl
 
+        # Resolve market title from API data or Gamma cache
+        condition_id = (
+            pos.get("conditionId", "")
+            or pos.get("condition_id", "")
+            or pos.get("market", "")
+            or pos.get("asset", "")
+        )
+        title = pos.get("title", "")
+        if not title and condition_id:
+            market_info = polymarket_client._market_cache.get(condition_id)
+            if market_info:
+                title = market_info.get("groupItemTitle") or market_info.get("question", "")
+        market_slug = pos.get("market_slug", pos.get("slug", ""))
+        if not market_slug and condition_id:
+            market_info = polymarket_client._market_cache.get(condition_id)
+            if market_info:
+                market_slug = market_info.get("slug", "")
+
         enriched_positions.append({
-            "market": pos.get("market", pos.get("condition_id", pos.get("asset", ""))),
-            "title": pos.get("title", ""),
-            "market_slug": pos.get("market_slug", pos.get("slug", "")),
+            "market": condition_id,
+            "title": title,
+            "market_slug": market_slug,
             "outcome": pos.get("outcome", pos.get("outcome_index", "")),
             "size": size,
             "avg_price": avg_price,
