@@ -25,11 +25,12 @@ interface Props {
 export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
   const [hoursFilter, setHoursFilter] = useState(24)
   const [sideFilter, setSideFilter] = useState<'all' | 'BUY' | 'SELL'>('all')
+  const [tradeLimit, setTradeLimit] = useState(100)
   const [expandedTrades, setExpandedTrades] = useState<Set<string>>(new Set())
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ['recent-trades-from-wallets', hoursFilter],
-    queryFn: () => getRecentTradesFromWallets({ limit: 100, hours: hoursFilter }),
+    queryKey: ['recent-trades-from-wallets', hoursFilter, tradeLimit],
+    queryFn: () => getRecentTradesFromWallets({ limit: tradeLimit, hours: hoursFilter }),
     refetchInterval: 30000,
   })
 
@@ -197,6 +198,19 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
             <option value="SELL">Sells only</option>
           </select>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-500">Show:</span>
+          <select
+            value={tradeLimit}
+            onChange={(e) => setTradeLimit(Number(e.target.value))}
+            className="bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
+          >
+            <option value={50}>50 trades</option>
+            <option value={100}>100 trades</option>
+            <option value={200}>200 trades</option>
+            <option value={500}>500 trades</option>
+          </select>
+        </div>
       </div>
 
       {/* Summary Stats */}
@@ -314,8 +328,13 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           }}
                           className="text-xs text-orange-400 hover:text-orange-300 hover:underline truncate"
                         >
-                          {trade.wallet_label}
+                          {trade.wallet_username || trade.wallet_label}
                         </button>
+                        {trade.wallet_username && trade.wallet_username !== trade.wallet_label && (
+                          <span className="text-xs text-gray-600 font-mono">
+                            {trade.wallet_address.slice(0, 6)}...{trade.wallet_address.slice(-4)}
+                          </span>
+                        )}
                       </div>
                     </div>
 

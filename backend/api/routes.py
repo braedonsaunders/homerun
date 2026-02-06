@@ -229,7 +229,7 @@ async def get_wallet_trades(address: str, limit: int = 100):
 
 @router.get("/wallets/recent-trades/all")
 async def get_all_recent_trades(
-    limit: int = Query(50, ge=1, le=200, description="Maximum trades to return"),
+    limit: int = Query(100, ge=1, le=500, description="Maximum trades to return"),
     hours: int = Query(24, ge=1, le=168, description="Only show trades from last N hours")
 ):
     """
@@ -249,6 +249,7 @@ async def get_all_recent_trades(
         for wallet in wallets:
             wallet_address = wallet.get("address", "")
             wallet_label = wallet.get("label", wallet_address[:10] + "...")
+            wallet_username = wallet.get("username") or ""
             recent_trades = wallet.get("recent_trades", [])
 
             for trade in recent_trades:
@@ -281,6 +282,7 @@ async def get_all_recent_trades(
                     **trade,
                     "wallet_address": wallet_address,
                     "wallet_label": wallet_label,
+                    "wallet_username": wallet_username,
                 }
                 all_trades.append(enriched_trade)
 
