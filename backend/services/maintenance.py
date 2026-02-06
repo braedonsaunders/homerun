@@ -5,11 +5,9 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 """
 
 import asyncio
-import uuid
 from datetime import datetime, timedelta
 from typing import Optional
-from sqlalchemy import select, delete, func, and_, or_
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete, func, and_
 
 from models.database import (
     SimulationTrade, SimulationPosition, WalletTrade,
@@ -74,7 +72,7 @@ class MaintenanceService:
             )
             resolved_anomalies = await session.execute(
                 select(func.count(DetectedAnomaly.id)).where(
-                    DetectedAnomaly.is_resolved == True
+                    DetectedAnomaly.is_resolved
                 )
             )
 
@@ -302,7 +300,7 @@ class MaintenanceService:
             conditions = [DetectedAnomaly.detected_at < cutoff_date]
 
             if resolved_only:
-                conditions.append(DetectedAnomaly.is_resolved == True)
+                conditions.append(DetectedAnomaly.is_resolved)
 
             result = await session.execute(
                 delete(DetectedAnomaly).where(and_(*conditions))
@@ -348,7 +346,7 @@ class MaintenanceService:
                         SimulationTrade.account_id == account_id
                     )
                 )
-                opportunity_ids = [t[0] for t in trades.all() if t[0]]
+                [t[0] for t in trades.all() if t[0]]
 
                 # Delete positions
                 positions_result = await session.execute(

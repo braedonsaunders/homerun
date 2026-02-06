@@ -13,11 +13,11 @@ can act on the fastest-closing opportunities first.
 import uuid
 import asyncio
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, List, Set
 
 import numpy as np
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from models.database import AsyncSessionLocal, OpportunityLifetime
 from models.opportunity import ArbitrageOpportunity

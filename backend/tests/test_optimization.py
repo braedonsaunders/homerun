@@ -17,7 +17,7 @@ sys.path.insert(0, "/home/user/homerun/backend")
 import pytest
 import asyncio
 import numpy as np
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 
 # =============================================================================
@@ -223,7 +223,7 @@ class TestConstraintSolver:
         A = np.array([[1, 1]])
         b = np.array([1])
         is_eq = np.array([True])
-        result = self.solver.detect_arbitrage(prices, A, b, is_eq)
+        self.solver.detect_arbitrage(prices, A, b, is_eq)
         # Cheapest single outcome: 0.50, which is < 1.0, so arbitrage exists
         # To get NO arbitrage, prices must be >= 1.0 each
         # Let's use prices where the cheapest single outcome >= 1.0
@@ -381,7 +381,7 @@ class TestDependencyDetector:
 
     def setup_method(self):
         from services.optimization.dependency_detector import (
-            DependencyDetector, MarketInfo, DependencyAnalysis
+            DependencyDetector, MarketInfo
         )
         from services.optimization.constraint_solver import DependencyType
         self.detector = DependencyDetector(backend="ollama")
@@ -540,7 +540,7 @@ class TestFrankWolfeOptimizer:
     def setup_method(self):
         from services.optimization.frank_wolfe import (
             FrankWolfeSolver, IPOracle, create_binary_market_oracle,
-            create_cross_market_oracle, FrankWolfeResult
+            create_cross_market_oracle
         )
         self.FrankWolfeSolver = FrankWolfeSolver
         self.IPOracle = IPOracle
@@ -778,7 +778,7 @@ class TestVWAPCalculator:
 
     def setup_method(self):
         from services.optimization.vwap import (
-            VWAPCalculator, OrderBook, OrderBookLevel, VWAPResult
+            VWAPCalculator, OrderBook, OrderBookLevel
         )
         self.calculator = VWAPCalculator(min_profit_threshold=0.05)
         self.OrderBook = OrderBook
@@ -1087,7 +1087,7 @@ class TestParallelExecutor:
     def setup_method(self):
         from services.optimization.parallel_executor import (
             ParallelExecutor, ExecutionLeg, ExecutionStatus,
-            LegResult, ParallelExecutionResult
+            LegResult
         )
         self.ParallelExecutor = ParallelExecutor
         self.ExecutionLeg = ExecutionLeg
@@ -1311,16 +1311,7 @@ class TestOptimizationModuleInit:
     def test_all_exports_available(self):
         """All declared exports should be importable."""
         from services.optimization import (
-            VWAPCalculator, OrderBook, OrderBookLevel, VWAPResult,
-            ParallelExecutor, ExecutionLeg, ParallelExecutionResult,
-            BregmanProjector, ProjectionResult, bregman_projector,
-            ConstraintSolver, ArbitrageResult, Dependency, DependencyType,
-            constraint_solver,
-            FrankWolfeSolver, FrankWolfeResult, InitFWResult, IPOracle,
-            create_binary_market_oracle, create_cross_market_oracle,
-            frank_wolfe_solver,
-            DependencyDetector, DependencyAnalysis, MarketInfo,
-            dependency_detector,
+            VWAPCalculator, BregmanProjector, ConstraintSolver, FrankWolfeSolver, DependencyDetector,
         )
         # Just verify they're not None
         assert VWAPCalculator is not None

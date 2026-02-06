@@ -22,7 +22,6 @@ import asyncio
 import re
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
-from enum import Enum
 
 try:
     import httpx
@@ -159,7 +158,7 @@ Return valid JSON only:
         try:
             response = await self._call_llm(prompt)
             return self._parse_response(response, market_a, market_b)
-        except Exception as e:
+        except Exception:
             # Return heuristic result on failure
             return heuristic_result
 
@@ -412,7 +411,7 @@ Return valid JSON only:
                 raw_response=response
             )
 
-        except Exception as e:
+        except Exception:
             return DependencyAnalysis(
                 dependencies=[],
                 valid_combinations=len(market_a.outcomes) * len(market_b.outcomes),

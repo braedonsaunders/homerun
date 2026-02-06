@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Callable, List
 
 from config import settings
-from models import Market, Event, ArbitrageOpportunity, OpportunityFilter
+from models import ArbitrageOpportunity, OpportunityFilter
 from models.database import AsyncSessionLocal, ScannerSettings
 from services.polymarket import polymarket_client
 from services.strategies import (

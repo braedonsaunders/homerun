@@ -17,8 +17,7 @@ Setup:
 """
 
 import asyncio
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
@@ -441,7 +440,6 @@ class TradingService:
         Returns:
             List of orders placed
         """
-        import asyncio
 
         # Pre-validate all positions before any execution
         valid_positions = []

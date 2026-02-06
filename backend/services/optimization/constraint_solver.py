@@ -29,7 +29,7 @@ except ImportError:
     CVXPY_AVAILABLE = False
 
 try:
-    from scipy.optimize import linprog, milp, LinearConstraint, Bounds
+    from scipy.optimize import minimize  # noqa: F401
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
@@ -153,10 +153,10 @@ class ConstraintSolver:
             # Try Gurobi first, fall back to GLPK
             try:
                 problem.solve(solver=cp.GUROBI, verbose=False)
-            except:
+            except Exception:
                 try:
                     problem.solve(solver=cp.GLPK_MI, verbose=False)
-                except:
+                except Exception:
                     problem.solve(verbose=False)
 
             if problem.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
@@ -247,7 +247,7 @@ class ConstraintSolver:
                 solver_status=result.message if hasattr(result, 'message') else "unknown"
             )
 
-        except Exception as e:
+        except Exception:
             return self._solve_fallback(prices, A, b)
 
     def _solve_fallback(

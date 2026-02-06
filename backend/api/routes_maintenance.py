@@ -195,7 +195,7 @@ async def delete_trades(request: DeleteTradesRequest):
             # Convert status strings to enums
             try:
                 status_enums = [TradeStatus(s) for s in request.statuses]
-            except ValueError as e:
+            except ValueError:
                 valid_statuses = [s.value for s in TradeStatus]
                 raise HTTPException(
                     status_code=400,

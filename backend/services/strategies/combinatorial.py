@@ -21,7 +21,6 @@ This strategy:
 4. If cost < $1, arbitrage exists with profit = $1 - cost
 """
 
-import asyncio
 from typing import Optional
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from .base import BaseStrategy
@@ -34,7 +33,6 @@ try:
     from services.optimization import (
         constraint_solver,
         dependency_detector,
-        bregman_projector,
         MarketInfo,
         Dependency,
         DependencyType
@@ -45,7 +43,7 @@ except ImportError:
     logger.warning("Optimization module not available, combinatorial strategy limited")
 
 try:
-    import numpy as np
+    import numpy  # noqa: F401
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
@@ -209,8 +207,8 @@ class CombinatorialStrategy(BaseStrategy):
         q_b = market_b.question.lower()
 
         # Extract outcomes
-        outcomes_a = ["YES", "NO"] if len(market_a.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_a.outcome_prices))]
-        outcomes_b = ["YES", "NO"] if len(market_b.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_b.outcome_prices))]
+        ["YES", "NO"] if len(market_a.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_a.outcome_prices))]
+        ["YES", "NO"] if len(market_b.outcome_prices) == 2 else [f"Outcome {i}" for i in range(len(market_b.outcome_prices))]
 
         # Heuristic: Check for implies relationships
         # Pattern: Specific candidate implies party win
@@ -250,7 +248,7 @@ class CombinatorialStrategy(BaseStrategy):
                     market_b_idx=1,
                     outcome_b_idx=0,
                     dep_type=DependencyType.IMPLIES,
-                    reason=f"Specific outcome implies general"
+                    reason="Specific outcome implies general"
                 ))
 
         # Heuristic: Check for exclusion relationships

@@ -1,7 +1,6 @@
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Set
 import json
-import asyncio
 
 from services import scanner, wallet_tracker
 

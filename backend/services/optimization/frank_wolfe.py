@@ -23,8 +23,8 @@ Improvements from Kroer et al. Part 2:
 """
 
 import numpy as np
-from typing import Callable, Optional, List, Tuple, Set
-from dataclasses import dataclass, field
+from typing import Callable, Optional, List
+from dataclasses import dataclass
 import time
 
 try:

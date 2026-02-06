@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 from pathlib import Path
-import os
 
 # Get the directory where this config file is located (backend/)
 _BACKEND_DIR = Path(__file__).parent.resolve()

@@ -4,7 +4,7 @@ sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import json
 
 from models.market import Market, Event, Token
@@ -12,7 +12,6 @@ from models.opportunity import (
     ArbitrageOpportunity,
     StrategyType,
     MispricingType,
-    OpportunityFilter,
 )
 
 

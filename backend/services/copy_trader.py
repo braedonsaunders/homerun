@@ -3,19 +3,16 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     CopyTradingConfig, CopyTradingMode, CopiedTrade,
-    TrackedWallet, WalletTrade,
-    SimulationAccount, SimulationPosition, SimulationTrade,
+    TrackedWallet, SimulationAccount, SimulationPosition, SimulationTrade,
     TradeStatus, PositionSide,
     AsyncSessionLocal
 )
 from models.opportunity import ArbitrageOpportunity
 from services.polymarket import polymarket_client
 from services.scanner import scanner
-from services.simulation import simulation_service
 from utils.logger import get_logger
 
 logger = get_logger("copy_trader")
@@ -706,7 +703,7 @@ class CopyTradingService:
 
         token_id = trade.get("asset", trade.get("assetId", ""))
         source_price = float(trade.get("price", 0) or 0)
-        source_size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
+        float(trade.get("size", 0) or trade.get("amount", 0) or 0)
 
         if not token_id or source_price <= 0:
             return None
@@ -924,7 +921,7 @@ class CopyTradingService:
                 # Get all enabled configs from DB (fresh read each cycle)
                 async with AsyncSessionLocal() as session:
                     result = await session.execute(
-                        select(CopyTradingConfig).where(CopyTradingConfig.enabled == True)
+                        select(CopyTradingConfig).where(CopyTradingConfig.enabled)
                     )
                     configs = list(result.scalars().all())
 

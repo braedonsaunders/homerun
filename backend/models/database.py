@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime, Text, JSON,
-    ForeignKey, Enum as SQLEnum, Index, create_engine, inspect as sa_inspect,
+    ForeignKey, Enum as SQLEnum, Index, inspect as sa_inspect,
     text
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -9,9 +9,9 @@ from datetime import datetime
 import enum
 import logging
 
-logger = logging.getLogger(__name__)
-
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 

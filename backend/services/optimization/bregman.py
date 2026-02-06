@@ -21,7 +21,7 @@ from typing import Optional, Tuple
 from dataclasses import dataclass
 
 try:
-    from scipy.optimize import minimize, LinearConstraint
+    from scipy.optimize import minimize  # noqa: F401
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False

@@ -14,10 +14,9 @@ sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
 from models.market import Market, Event, Token
-from models.opportunity import ArbitrageOpportunity, StrategyType, MispricingType
+from models.opportunity import StrategyType, MispricingType
 from services.strategies.mutually_exclusive import MutuallyExclusiveStrategy
 from services.strategies.contradiction import ContradictionStrategy
 from services.strategies.must_happen import MustHappenStrategy

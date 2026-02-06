@@ -10,8 +10,6 @@ import sys
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import math
-import asyncio
-import uuid
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -22,12 +20,10 @@ import pytest
 # ---------------------------------------------------------------------------
 from services.auto_trader import (
     AutoTrader,
-    AutoTraderConfig,
     AutoTraderMode,
-    AutoTraderStats,
     TradeRecord,
 )
-from models.opportunity import ArbitrageOpportunity, StrategyType, MispricingType
+from models.opportunity import ArbitrageOpportunity, StrategyType
 
 # ---------------------------------------------------------------------------
 # Simulation imports
