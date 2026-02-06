@@ -16,12 +16,10 @@ import {
   AlertTriangle,
   ArrowUpRight,
   ArrowDownRight,
-  Calendar,
   ChevronDown,
   ChevronUp,
   BookOpen,
   PieChart,
-  ExternalLink,
   ArrowLeft,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -34,9 +32,7 @@ import {
   getAccountEquityHistory,
   getOpportunities,
   SimulationAccount,
-  SimulationTrade,
   Opportunity,
-  EquityHistoryResponse,
 } from '../services/api'
 import TradeExecutionModal from './TradeExecutionModal'
 
@@ -749,7 +745,6 @@ function AccountCard({
   onSelect: () => void
   onDelete: () => void
 }) {
-  const pnlColor = account.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'
   const roiColor = account.roi_percent >= 0 ? 'text-green-400' : 'text-red-400'
   const totalPnl = account.total_pnl + (account.unrealized_pnl || 0)
 

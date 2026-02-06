@@ -11,6 +11,7 @@ import {
   UserPlus,
   Activity,
   Filter,
+  Search,
   Trophy,
   Target,
   X,

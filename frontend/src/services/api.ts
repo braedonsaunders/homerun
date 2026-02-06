@@ -795,6 +795,7 @@ export interface AutoTraderStatus {
     max_daily_loss_usd: number
     circuit_breaker_losses: number
     require_confirmation: boolean
+    paper_account_capital?: number
   }
   stats: {
     total_trades: number
