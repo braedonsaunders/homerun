@@ -3,7 +3,6 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy import select
 
-from config import settings
 from services.polymarket import polymarket_client
 from models.database import TrackedWallet, AsyncSessionLocal
 

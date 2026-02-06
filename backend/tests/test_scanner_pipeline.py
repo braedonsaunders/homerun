@@ -5,9 +5,9 @@ sys.path.insert(0, "/home/user/homerun/backend")
 import pytest
 import asyncio
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from models.market import Market, Event, Token
+from models.market import Market
 from models.opportunity import (
     ArbitrageOpportunity,
     StrategyType,

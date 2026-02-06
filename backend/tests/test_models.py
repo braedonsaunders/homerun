@@ -3,8 +3,7 @@ import sys
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import json
-import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from models.market import Market, Event, Token
 from models.opportunity import (

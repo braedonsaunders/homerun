@@ -23,7 +23,6 @@ Detection approach:
 """
 
 from typing import Optional
-from datetime import datetime, timezone
 from models import Market, Event, ArbitrageOpportunity, StrategyType, MispricingType
 from .base import BaseStrategy, utcnow, make_aware
 from utils.logger import get_logger

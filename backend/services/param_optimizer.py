@@ -11,18 +11,16 @@ Replays historical opportunity data from OpportunityHistory to evaluate
 different parameter configurations and find optimal settings.
 """
 
-import asyncio
 import itertools
 import math
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Optional
 
 import numpy as np
 from sqlalchemy import select, update, delete
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import AsyncSessionLocal, OpportunityHistory, ParameterSet
 from utils.logger import get_logger
@@ -587,7 +585,7 @@ class ParameterOptimizer:
         """Load the currently active parameter set."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(ParameterSet).where(ParameterSet.is_active == True)
+                select(ParameterSet).where(ParameterSet.is_active)
             )
             row = result.scalar_one_or_none()
             if row is None:

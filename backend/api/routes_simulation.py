@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 
 from services.simulation import simulation_service
 from services.scanner import scanner
-from utils.validation import validate_positive_number
 
 simulation_router = APIRouter()
 

@@ -18,9 +18,7 @@ from api.routes_auto_trader import router as auto_trader_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from services import scanner, wallet_tracker, polymarket_client
-from services.simulation import simulation_service
 from services.copy_trader import copy_trader
-from services.anomaly_detector import anomaly_detector
 from services.trading import trading_service
 from services.auto_trader import auto_trader
 from services.maintenance import maintenance_service

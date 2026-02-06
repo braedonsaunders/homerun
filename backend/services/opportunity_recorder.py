@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func, and_, case
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import AsyncSessionLocal, OpportunityHistory
 from models.opportunity import ArbitrageOpportunity

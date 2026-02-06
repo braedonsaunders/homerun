@@ -12,7 +12,6 @@ sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
 
 from models.market import Market, Event, Token
 from models.opportunity import ArbitrageOpportunity, StrategyType

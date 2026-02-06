@@ -1,14 +1,13 @@
 import uuid
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
-    TrackedWallet, WalletTrade, DetectedAnomaly, AsyncSessionLocal
+    TrackedWallet, DetectedAnomaly, AsyncSessionLocal
 )
 from services.polymarket import polymarket_client
 from utils.logger import get_logger
@@ -274,7 +273,7 @@ class AnomalyDetector:
                     if isinstance(last_trade, str):
                         last_trade = datetime.fromisoformat(last_trade.replace("Z", "+00:00"))
                     days = max((last_trade - first_trade).days, 1)
-                except:
+                except Exception:
                     days = 30
 
         # Calculate ROI
@@ -401,7 +400,7 @@ class AnomalyDetector:
                             type=AnomalyType.WASH_TRADING,
                             severity=Severity.MEDIUM,
                             score=0.6,
-                            description=f"Rapid buy/sell pattern detected in market",
+                            description="Rapid buy/sell pattern detected in market",
                             evidence={
                                 "market_id": market_id,
                                 "trade_count": len(market_trade_list)
@@ -440,14 +439,12 @@ class AnomalyDetector:
         anomalies = []
 
         # Check for perfect timing (always buying at lows, selling at highs)
-        optimal_entries = 0
         for trade in trades:
             # This would require price history comparison
             # For now, use proxy: check if entry price is significantly better than average
             pass
 
         # Check for trades just before major price moves (insider pattern)
-        pre_move_trades = 0
         for trade in trades:
             # Would need to compare with subsequent price action
             pass
@@ -614,7 +611,7 @@ class AnomalyDetector:
                     TrackedWallet.win_rate >= min_win_rate,
                     TrackedWallet.total_pnl >= min_pnl,
                     TrackedWallet.anomaly_score <= max_anomaly_score,
-                    TrackedWallet.is_flagged == False
+                    not TrackedWallet.is_flagged
                 )
             )
             wallets = list(result.scalars().all())

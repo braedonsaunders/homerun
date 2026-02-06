@@ -10,9 +10,7 @@ On cold start (no training data), returns neutral predictions (probability=0.5).
 """
 
 import uuid
-import json
-import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import numpy as np

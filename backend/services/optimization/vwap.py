@@ -12,7 +12,6 @@ Based on methodology from "Unravelling the Probabilistic Forest" paper:
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

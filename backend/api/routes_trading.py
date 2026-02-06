@@ -7,7 +7,7 @@ IMPORTANT: These endpoints execute real trades with real money.
 Ensure TRADING_ENABLED=true and proper credentials are configured.
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
@@ -17,7 +17,6 @@ from services.trading import (
     trading_service,
     Order,
     Position,
-    TradingStats,
     OrderSide,
     OrderType,
     OrderStatus

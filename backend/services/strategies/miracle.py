@@ -27,7 +27,7 @@ The strategy:
 """
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
