@@ -1,8 +1,6 @@
 name: Sloppy
 on:
   pull_request:
-  schedule:
-    - cron: '0 6 * * 1'
   workflow_dispatch:
     inputs:
       mode:
@@ -17,7 +15,7 @@ on:
 jobs:
   scan:
     name: Sloppy Scan
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'scan')
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'scan')
     runs-on: ubuntu-latest
     permissions:
       contents: read
