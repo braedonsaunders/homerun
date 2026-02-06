@@ -44,17 +44,37 @@ async def create_simulation_account(request: CreateAccountRequest):
 
 @simulation_router.get("/accounts")
 async def list_simulation_accounts():
-    """List all simulation accounts"""
+    """List all simulation accounts with full stats"""
     accounts = await simulation_service.get_all_accounts()
-    return [{
-        "id": acc.id,
-        "name": acc.name,
-        "initial_capital": acc.initial_capital,
-        "current_capital": acc.current_capital,
-        "total_pnl": acc.total_pnl,
-        "total_trades": acc.total_trades,
-        "win_rate": acc.winning_trades / acc.total_trades * 100 if acc.total_trades > 0 else 0
-    } for acc in accounts]
+    result = []
+    for acc in accounts:
+        positions = await simulation_service.get_open_positions(acc.id)
+        roi = (acc.current_capital - acc.initial_capital) / acc.initial_capital * 100 if acc.initial_capital > 0 else 0
+        win_rate = acc.winning_trades / acc.total_trades * 100 if acc.total_trades > 0 else 0
+        # Calculate unrealized P&L from open positions
+        unrealized_pnl = sum(p.unrealized_pnl for p in positions)
+        # Book value = sum of entry costs of open positions
+        book_value = sum(p.entry_cost for p in positions)
+        # Market value = sum of current value of open positions
+        market_value = sum(p.quantity * (p.current_price or p.entry_price) for p in positions)
+        result.append({
+            "id": acc.id,
+            "name": acc.name,
+            "initial_capital": acc.initial_capital,
+            "current_capital": acc.current_capital,
+            "total_pnl": acc.total_pnl,
+            "total_trades": acc.total_trades,
+            "winning_trades": acc.winning_trades,
+            "losing_trades": acc.losing_trades,
+            "win_rate": win_rate,
+            "roi_percent": roi,
+            "open_positions": len(positions),
+            "unrealized_pnl": unrealized_pnl,
+            "book_value": book_value,
+            "market_value": market_value,
+            "created_at": acc.created_at.isoformat() if acc.created_at else None,
+        })
+    return result
 
 
 @simulation_router.get("/accounts/{account_id}")
@@ -94,6 +114,118 @@ async def get_account_positions(account_id: str):
         "opened_at": pos.opened_at.isoformat(),
         "status": pos.status.value
     } for pos in positions]
+
+
+@simulation_router.get("/accounts/{account_id}/equity-history")
+async def get_equity_history(account_id: str):
+    """Get equity curve data for an account over time"""
+    account = await simulation_service.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    trades = await simulation_service.get_trade_history(account_id, 10000)
+    positions = await simulation_service.get_open_positions(account_id)
+
+    # Build equity curve from trades (oldest first)
+    sorted_trades = sorted(trades, key=lambda t: t.executed_at)
+    equity_points = []
+    cumulative_pnl = 0.0
+    total_invested = 0.0
+    total_returned = 0.0
+
+    # Starting point
+    equity_points.append({
+        "date": account.created_at.isoformat() if account.created_at else sorted_trades[0].executed_at.isoformat() if sorted_trades else None,
+        "equity": account.initial_capital,
+        "pnl": 0.0,
+        "cumulative_pnl": 0.0,
+        "trade_count": 0,
+    })
+
+    for i, trade in enumerate(sorted_trades):
+        total_invested += trade.total_cost
+        if trade.actual_pnl is not None:
+            cumulative_pnl += trade.actual_pnl
+        if trade.actual_payout is not None:
+            total_returned += trade.actual_payout
+
+        equity_points.append({
+            "date": trade.executed_at.isoformat(),
+            "equity": account.initial_capital + cumulative_pnl,
+            "pnl": trade.actual_pnl or 0,
+            "cumulative_pnl": cumulative_pnl,
+            "trade_count": i + 1,
+            "trade_id": trade.id,
+            "status": trade.status.value,
+        })
+
+        # If trade was resolved, add resolution point
+        if trade.resolved_at and trade.resolved_at != trade.executed_at:
+            equity_points.append({
+                "date": trade.resolved_at.isoformat(),
+                "equity": account.initial_capital + cumulative_pnl,
+                "pnl": 0,
+                "cumulative_pnl": cumulative_pnl,
+                "trade_count": i + 1,
+            })
+
+    # Calculate max drawdown
+    peak = account.initial_capital
+    max_drawdown = 0
+    max_drawdown_pct = 0
+    for point in equity_points:
+        if point["equity"] > peak:
+            peak = point["equity"]
+        dd = peak - point["equity"]
+        if dd > max_drawdown:
+            max_drawdown = dd
+            max_drawdown_pct = (dd / peak) * 100 if peak > 0 else 0
+
+    # Calculate profit factor
+    gains = sum(t.actual_pnl for t in trades if t.actual_pnl and t.actual_pnl > 0)
+    losses_abs = abs(sum(t.actual_pnl for t in trades if t.actual_pnl and t.actual_pnl < 0))
+    profit_factor = gains / losses_abs if losses_abs > 0 else 0
+
+    # Best/worst trades
+    resolved = [t for t in trades if t.actual_pnl is not None]
+    best_trade = max((t.actual_pnl for t in resolved), default=0)
+    worst_trade = min((t.actual_pnl for t in resolved), default=0)
+    avg_win = gains / account.winning_trades if account.winning_trades > 0 else 0
+    avg_loss = losses_abs / account.losing_trades if account.losing_trades > 0 else 0
+
+    # Unrealized P&L
+    unrealized_pnl = sum(p.unrealized_pnl for p in positions)
+    book_value = sum(p.entry_cost for p in positions)
+    market_value = sum(p.quantity * (p.current_price or p.entry_price) for p in positions)
+
+    return {
+        "account_id": account_id,
+        "initial_capital": account.initial_capital,
+        "current_capital": account.current_capital,
+        "equity_points": equity_points,
+        "summary": {
+            "total_trades": account.total_trades,
+            "winning_trades": account.winning_trades,
+            "losing_trades": account.losing_trades,
+            "open_trades": len([t for t in trades if t.status.value == "open"]),
+            "total_invested": total_invested,
+            "total_returned": total_returned,
+            "realized_pnl": account.total_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl": account.total_pnl + unrealized_pnl,
+            "book_value": book_value,
+            "market_value": market_value,
+            "max_drawdown": max_drawdown,
+            "max_drawdown_pct": max_drawdown_pct,
+            "profit_factor": profit_factor,
+            "best_trade": best_trade,
+            "worst_trade": worst_trade,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "win_rate": account.winning_trades / account.total_trades * 100 if account.total_trades > 0 else 0,
+            "roi_percent": (account.current_capital - account.initial_capital) / account.initial_capital * 100 if account.initial_capital > 0 else 0,
+        }
+    }
 
 
 @simulation_router.get("/accounts/{account_id}/trades")
