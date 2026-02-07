@@ -87,6 +87,46 @@ class AutoTraderConfigRequest(BaseModel):
         None, ge=0, description="Minimum market trading volume in USD"
     )
 
+    # AI: Resolution analysis gate
+    ai_resolution_gate: Optional[bool] = Field(
+        None, description="Require AI resolution analysis before trading (cached per market, 24h TTL)"
+    )
+    ai_max_resolution_risk: Optional[float] = Field(
+        None, ge=0, le=1, description="Block trades if resolution risk exceeds this"
+    )
+    ai_min_resolution_clarity: Optional[float] = Field(
+        None, ge=0, le=1, description="Block trades if resolution clarity is below this"
+    )
+    ai_resolution_block_avoid: Optional[bool] = Field(
+        None, description="Hard block when resolution analysis recommends 'avoid'"
+    )
+    ai_resolution_model: Optional[str] = Field(
+        None, description="LLM model for resolution analysis (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+    )
+    ai_skip_on_analysis_failure: Optional[bool] = Field(
+        None, description="If true, skip trade when analysis fails. If false, allow trade through (fail-open)."
+    )
+
+    # AI: Opportunity judge position sizing
+    ai_position_sizing: Optional[bool] = Field(
+        None, description="Use AI judge score to scale position sizes"
+    )
+    ai_min_score_to_trade: Optional[float] = Field(
+        None, ge=0, le=1, description="Hard floor: skip if AI overall_score below this (0 = disabled)"
+    )
+    ai_score_size_multiplier: Optional[bool] = Field(
+        None, description="Scale position size by AI score (0.8 score = 80% size)"
+    )
+    ai_score_boost_threshold: Optional[float] = Field(
+        None, ge=0, le=1, description="Boost size when AI score exceeds this"
+    )
+    ai_score_boost_multiplier: Optional[float] = Field(
+        None, ge=1.0, le=3.0, description="Multiplier for high-confidence AI trades"
+    )
+    ai_judge_model: Optional[str] = Field(
+        None, description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+    )
+
 
 class AutoTraderStatusResponse(BaseModel):
     mode: str
@@ -258,6 +298,44 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
     # Volume
     if config.min_volume_usd is not None:
         updates["min_volume_usd"] = config.min_volume_usd
+
+    # AI: Resolution analysis gate
+    if config.ai_resolution_gate is not None:
+        updates["ai_resolution_gate"] = config.ai_resolution_gate
+
+    if config.ai_max_resolution_risk is not None:
+        updates["ai_max_resolution_risk"] = config.ai_max_resolution_risk
+
+    if config.ai_min_resolution_clarity is not None:
+        updates["ai_min_resolution_clarity"] = config.ai_min_resolution_clarity
+
+    if config.ai_resolution_block_avoid is not None:
+        updates["ai_resolution_block_avoid"] = config.ai_resolution_block_avoid
+
+    if config.ai_resolution_model is not None:
+        updates["ai_resolution_model"] = config.ai_resolution_model
+
+    if config.ai_skip_on_analysis_failure is not None:
+        updates["ai_skip_on_analysis_failure"] = config.ai_skip_on_analysis_failure
+
+    # AI: Opportunity judge position sizing
+    if config.ai_position_sizing is not None:
+        updates["ai_position_sizing"] = config.ai_position_sizing
+
+    if config.ai_min_score_to_trade is not None:
+        updates["ai_min_score_to_trade"] = config.ai_min_score_to_trade
+
+    if config.ai_score_size_multiplier is not None:
+        updates["ai_score_size_multiplier"] = config.ai_score_size_multiplier
+
+    if config.ai_score_boost_threshold is not None:
+        updates["ai_score_boost_threshold"] = config.ai_score_boost_threshold
+
+    if config.ai_score_boost_multiplier is not None:
+        updates["ai_score_boost_multiplier"] = config.ai_score_boost_multiplier
+
+    if config.ai_judge_model is not None:
+        updates["ai_judge_model"] = config.ai_judge_model
 
     auto_trader.configure(**updates)
 
