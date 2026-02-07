@@ -64,7 +64,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
   const [minTrades, setMinTrades] = useState(10)
   const [minVolume, setMinVolume] = useState(0)
   const [maxVolume, setMaxVolume] = useState(0)
-  const [scanCount, setScanCount] = useState(500)
+  const [scanCount, setScanCount] = useState(200)
   const [resultLimit, setResultLimit] = useState(100)
 
   // Copy trade modal state
