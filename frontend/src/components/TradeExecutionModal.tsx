@@ -12,7 +12,10 @@ import {
   ChevronUp,
   CheckCircle2,
   Info,
-  RefreshCw
+  RefreshCw,
+  Brain,
+  Shield,
+  Sparkles,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -20,6 +23,7 @@ import {
   getSimulationAccounts,
   executeOpportunity,
   executeOpportunityLive,
+  getOpportunityAISummary,
 } from '../services/api'
 
 interface TradeExecutionModalProps {
@@ -191,6 +195,9 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
               ))}
             </div>
           </div>
+
+          {/* AI Trade Advisor */}
+          <AITradeAdvisor opportunity={opportunity} />
 
           {/* Mode Toggle */}
           <div>
@@ -461,6 +468,124 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// AI Trade Advisor - pre-trade intelligence briefing
+function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
+  const [showDetails, setShowDetails] = useState(false)
+
+  const { data: aiSummary, isLoading } = useQuery({
+    queryKey: ['ai-trade-advisor', opportunity.id],
+    queryFn: () => getOpportunityAISummary(opportunity.id),
+    staleTime: 60000,
+  })
+
+  const judgment = aiSummary?.judgment
+  const resolutions = aiSummary?.resolution_analyses || []
+  const hasData = judgment || resolutions.length > 0
+
+  // Compute overall signal
+  const getSignal = () => {
+    if (!judgment) return null
+    if (judgment.overall_score >= 0.65) return { label: 'GO', color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20' }
+    if (judgment.overall_score >= 0.45) return { label: 'REVIEW', color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/20' }
+    return { label: 'CAUTION', color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20' }
+  }
+  const signal = getSignal()
+
+  return (
+    <div className={clsx(
+      'rounded-xl border transition-colors',
+      hasData
+        ? signal?.bg || 'bg-purple-500/5 border-purple-500/20'
+        : 'bg-[#111] border-gray-800'
+    )}>
+      <button
+        onClick={() => setShowDetails(!showDetails)}
+        className="w-full flex items-center gap-3 px-4 py-3"
+      >
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center flex-shrink-0">
+          <Sparkles className="w-4 h-4 text-purple-400" />
+        </div>
+        <div className="flex-1 text-left">
+          <p className="text-xs font-medium text-gray-300">AI Trade Advisor</p>
+          {isLoading ? (
+            <p className="text-[10px] text-gray-500 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" /> Checking intelligence...
+            </p>
+          ) : hasData ? (
+            <p className="text-[10px] text-gray-500">
+              {signal && <span className={clsx('font-bold mr-1', signal.color)}>{signal.label}</span>}
+              {judgment && <span>Score: {(judgment.overall_score * 100).toFixed(0)}/100</span>}
+              {resolutions.length > 0 && <span> | Resolution: {resolutions[0].recommendation}</span>}
+            </p>
+          ) : (
+            <p className="text-[10px] text-gray-500">No cached AI analysis. Expand for details.</p>
+          )}
+        </div>
+        {hasData && (
+          signal?.label === 'GO' ? (
+            <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+          ) : signal?.label === 'CAUTION' ? (
+            <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
+          ) : (
+            <Info className="w-5 h-5 text-yellow-400 flex-shrink-0" />
+          )
+        )}
+        {showDetails ? (
+          <ChevronUp className="w-4 h-4 text-gray-500 flex-shrink-0" />
+        ) : (
+          <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+        )}
+      </button>
+
+      {showDetails && hasData && (
+        <div className="px-4 pb-3 space-y-2">
+          {judgment && (
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { label: 'Profit', value: judgment.profit_viability },
+                { label: 'Resolution', value: judgment.resolution_safety },
+                { label: 'Execution', value: judgment.execution_feasibility },
+                { label: 'Efficiency', value: judgment.market_efficiency },
+              ].map((item) => {
+                const color = item.value >= 0.7 ? 'text-green-400' : item.value >= 0.4 ? 'text-yellow-400' : 'text-red-400'
+                return (
+                  <div key={item.label} className="text-center bg-black/20 rounded-lg py-1.5">
+                    <p className="text-[10px] text-gray-500">{item.label}</p>
+                    <p className={clsx('text-sm font-bold', color)}>
+                      {(item.value * 100).toFixed(0)}
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {judgment?.reasoning && (
+            <p className="text-xs text-gray-400 bg-black/20 rounded-lg p-2">
+              {judgment.reasoning}
+            </p>
+          )}
+          {resolutions.map((r: any, i: number) => (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <Shield className="w-3 h-3 text-gray-500" />
+              <span className={clsx(
+                'px-1.5 py-0.5 rounded font-medium',
+                r.recommendation === 'safe' ? 'bg-green-500/10 text-green-400' :
+                r.recommendation === 'caution' ? 'bg-yellow-500/10 text-yellow-400' :
+                'bg-red-500/10 text-red-400'
+              )}>
+                {r.recommendation}
+              </span>
+              <span className="text-gray-500">
+                Clarity: {(r.clarity_score * 100).toFixed(0)}% | Risk: {(r.risk_score * 100).toFixed(0)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   TrendingUp,
@@ -23,7 +23,9 @@ import {
   BarChart3,
   Trophy,
   Users,
-  Brain
+  Brain,
+  Sparkles,
+  Command,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -48,6 +50,8 @@ import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
 import SettingsPanel from './components/SettingsPanel'
 import AIPanel from './components/AIPanel'
+import AICopilotPanel from './components/AICopilotPanel'
+import AICommandBar from './components/AICommandBar'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
@@ -69,7 +73,40 @@ function App() {
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
   const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
+  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
+  const [commandBarOpen, setCommandBarOpen] = useState(false)
   const queryClient = useQueryClient()
+
+  // Cmd+K to open command bar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCommandBarOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // Open copilot with context
+  const handleOpenCopilot = useCallback((contextType?: string, contextId?: string, label?: string) => {
+    setCopilotContext({ type: contextType, id: contextId, label })
+    setCopilotOpen(true)
+  }, [])
+
+  // Open copilot from opportunity card
+  const handleOpenCopilotForOpportunity = useCallback((opp: Opportunity) => {
+    handleOpenCopilot('opportunity', opp.id, opp.title)
+  }, [handleOpenCopilot])
+
+  // Navigate to AI tab with specific section
+  const handleNavigateToAI = useCallback((section: string) => {
+    setActiveTab('ai')
+    // Dispatch event for the AI panel to pick up the section
+    window.dispatchEvent(new CustomEvent('navigate-ai-section', { detail: section }))
+  }, [])
 
   // Callback for navigating to wallet analysis from WalletTracker
   const handleAnalyzeWallet = (address: string, username?: string) => {
@@ -212,6 +249,33 @@ function App() {
                   )}
                 </button>
               </div>
+
+              {/* AI Command Bar Toggle */}
+              <button
+                onClick={() => setCommandBarOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border border-purple-500/20 transition-colors"
+                title="AI Command Bar (Cmd+K)"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">AI</span>
+                <kbd className="hidden sm:inline px-1.5 py-0.5 bg-purple-500/10 rounded text-[10px] text-purple-400 border border-purple-500/20">
+                  <Command className="w-2.5 h-2.5 inline" />K
+                </kbd>
+              </button>
+
+              {/* AI Copilot Toggle */}
+              <button
+                onClick={() => setCopilotOpen(!copilotOpen)}
+                className={clsx(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border",
+                  copilotOpen
+                    ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                    : "bg-[#1a1a1a] text-gray-400 hover:text-purple-400 border-gray-800 hover:border-purple-500/30"
+                )}
+                title="AI Copilot"
+              >
+                <Bot className="w-3.5 h-3.5" />
+              </button>
 
               {/* Scan Button */}
               <button
@@ -455,7 +519,12 @@ function App() {
               <>
                 <div className="space-y-4">
                   {opportunities.map((opp) => (
-                    <OpportunityCard key={opp.id} opportunity={opp} onExecute={setExecutingOpportunity} />
+                    <OpportunityCard
+                      key={opp.id}
+                      opportunity={opp}
+                      onExecute={setExecutingOpportunity}
+                      onOpenCopilot={handleOpenCopilotForOpportunity}
+                    />
                   ))}
                 </div>
 
@@ -640,6 +709,23 @@ function App() {
           onClose={() => setExecutingOpportunity(null)}
         />
       )}
+
+      {/* AI Copilot Panel (floating) */}
+      <AICopilotPanel
+        isOpen={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        contextType={copilotContext.type}
+        contextId={copilotContext.id}
+        contextLabel={copilotContext.label}
+      />
+
+      {/* AI Command Bar (Cmd+K) */}
+      <AICommandBar
+        isOpen={commandBarOpen}
+        onClose={() => setCommandBarOpen(false)}
+        onNavigateToAI={handleNavigateToAI}
+        onOpenCopilot={handleOpenCopilot}
+      />
     </div>
   )
 }

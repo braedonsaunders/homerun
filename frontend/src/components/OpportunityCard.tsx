@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ChevronDown,
   ChevronUp,
@@ -7,10 +8,15 @@ import {
   DollarSign,
   Target,
   ExternalLink,
-  Play
+  Play,
+  Brain,
+  Shield,
+  RefreshCw,
+  Sparkles,
+  MessageCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { Opportunity } from '../services/api'
+import { Opportunity, judgeOpportunity, getOpportunityAISummary } from '../services/api'
 
 const STRATEGY_COLORS: Record<string, string> = {
   basic: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
@@ -28,19 +34,51 @@ const STRATEGY_NAMES: Record<string, string> = {
   must_happen: 'Must-Happen',
 }
 
+const RECOMMENDATION_COLORS: Record<string, string> = {
+  strong_execute: 'bg-green-500/20 text-green-400 border-green-500/30',
+  execute: 'bg-green-500/15 text-green-400 border-green-500/20',
+  review: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
+  skip: 'bg-red-500/15 text-red-400 border-red-500/20',
+  strong_skip: 'bg-red-500/20 text-red-400 border-red-500/30',
+  safe: 'bg-green-500/15 text-green-400 border-green-500/20',
+  caution: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
+  avoid: 'bg-red-500/15 text-red-400 border-red-500/20',
+}
+
 interface Props {
   opportunity: Opportunity
   onExecute?: (opportunity: Opportunity) => void
+  onOpenCopilot?: (opportunity: Opportunity) => void
 }
 
-export default function OpportunityCard({ opportunity, onExecute }: Props) {
+export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const [showAIInsights, setShowAIInsights] = useState(false)
 
   const riskColor = opportunity.risk_score < 0.3
     ? 'text-green-400'
     : opportunity.risk_score < 0.6
       ? 'text-yellow-400'
       : 'text-red-400'
+
+  // Fetch AI summary when card expands
+  const { data: aiSummary, isLoading: aiSummaryLoading } = useQuery({
+    queryKey: ['ai-opportunity-summary', opportunity.id],
+    queryFn: () => getOpportunityAISummary(opportunity.id),
+    enabled: expanded,
+    staleTime: 60000,
+  })
+
+  // Judge opportunity mutation
+  const judgeMutation = useMutation({
+    mutationFn: async () => {
+      const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
+      return data
+    },
+  })
+
+  const judgment = judgeMutation.data || aiSummary?.judgment
+  const resolutions = aiSummary?.resolution_analyses || []
 
   return (
     <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
@@ -60,6 +98,26 @@ export default function OpportunityCard({ opportunity, onExecute }: Props) {
               </span>
               {opportunity.event_title && (
                 <span className="text-xs text-gray-500">{opportunity.event_title}</span>
+              )}
+              {/* AI Score Badge - shows inline when available */}
+              {judgment && (
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs font-medium border flex items-center gap-1',
+                  RECOMMENDATION_COLORS[judgment.recommendation] || 'bg-gray-500/10 text-gray-400'
+                )}>
+                  <Brain className="w-3 h-3" />
+                  {(judgment.overall_score * 100).toFixed(0)}
+                </span>
+              )}
+              {/* Resolution Safety Badge */}
+              {resolutions.length > 0 && (
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs font-medium border flex items-center gap-1',
+                  RECOMMENDATION_COLORS[resolutions[0].recommendation] || 'bg-gray-500/10 text-gray-400'
+                )}>
+                  <Shield className="w-3 h-3" />
+                  {resolutions[0].recommendation}
+                </span>
               )}
             </div>
             <h3 className="font-medium text-white">{opportunity.title}</h3>
@@ -112,6 +170,160 @@ export default function OpportunityCard({ opportunity, onExecute }: Props) {
       {/* Expanded Details */}
       {expanded && (
         <div className="border-t border-gray-800 p-4 space-y-4">
+          {/* AI Actions Bar */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                judgeMutation.mutate()
+              }}
+              disabled={judgeMutation.isPending}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                judgeMutation.isPending
+                  ? 'bg-gray-800 text-gray-600 border-gray-700 cursor-not-allowed'
+                  : 'bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20'
+              )}
+            >
+              {judgeMutation.isPending ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Brain className="w-3.5 h-3.5" />
+              )}
+              AI Judge
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowAIInsights(!showAIInsights)
+              }}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                showAIInsights
+                  ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                  : 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
+              )}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              AI Insights
+            </button>
+            {onOpenCopilot && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenCopilot(opportunity)
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
+              >
+                <MessageCircle className="w-3.5 h-3.5" />
+                Ask AI
+              </button>
+            )}
+            {aiSummaryLoading && (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-gray-500 ml-auto" />
+            )}
+          </div>
+
+          {/* AI Insights Panel */}
+          {showAIInsights && (judgment || resolutions.length > 0) && (
+            <div className="bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/20 rounded-xl p-4 space-y-3">
+              <h4 className="text-sm font-medium text-purple-400 flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                AI Intelligence
+              </h4>
+
+              {judgment && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className={clsx(
+                      'px-2 py-1 rounded-lg text-xs font-bold border',
+                      RECOMMENDATION_COLORS[judgment.recommendation]
+                    )}>
+                      {judgment.recommendation?.replace('_', ' ').toUpperCase()}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      Overall: {(judgment.overall_score * 100).toFixed(0)}/100
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <ScoreMini label="Profit" value={judgment.profit_viability} />
+                    <ScoreMini label="Resolution" value={judgment.resolution_safety} />
+                    <ScoreMini label="Execution" value={judgment.execution_feasibility} />
+                    <ScoreMini label="Efficiency" value={judgment.market_efficiency} />
+                  </div>
+                  {judgment.reasoning && (
+                    <p className="text-xs text-gray-400 bg-[#1a1a1a] p-2 rounded-lg">
+                      {judgment.reasoning}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {resolutions.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-purple-500/10">
+                  <p className="text-xs text-gray-500 font-medium">Resolution Analysis</p>
+                  {resolutions.map((r: any, i: number) => (
+                    <div key={i} className="bg-[#1a1a1a] rounded-lg p-2 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-3 h-3 text-gray-500" />
+                        <span className={clsx(
+                          'px-1.5 py-0.5 rounded text-[10px] font-medium border',
+                          RECOMMENDATION_COLORS[r.recommendation]
+                        )}>
+                          {r.recommendation}
+                        </span>
+                        <span className="text-[10px] text-gray-600">
+                          Clarity: {(r.clarity_score * 100).toFixed(0)} | Risk: {(r.risk_score * 100).toFixed(0)}
+                        </span>
+                      </div>
+                      {r.summary && (
+                        <p className="text-xs text-gray-400">{r.summary}</p>
+                      )}
+                      {r.ambiguities?.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {r.ambiguities.slice(0, 3).map((a: string, j: number) => (
+                            <span key={j} className="text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">
+                              {a.length > 60 ? a.slice(0, 60) + '...' : a}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!judgment && resolutions.length === 0 && (
+                <p className="text-xs text-gray-500">
+                  No AI analysis cached. Click "AI Judge" to run a fresh analysis.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Judgment result inline (when just triggered) */}
+          {judgeMutation.data && !showAIInsights && (
+            <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-3">
+              <div className="flex items-center gap-2 text-sm">
+                <Brain className="w-4 h-4 text-purple-400" />
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs font-medium border',
+                  RECOMMENDATION_COLORS[judgeMutation.data.recommendation]
+                )}>
+                  {judgeMutation.data.recommendation?.replace('_', ' ')}
+                </span>
+                <span className="text-gray-400">
+                  Score: {(judgeMutation.data.overall_score * 100).toFixed(0)}/100
+                </span>
+              </div>
+            </div>
+          )}
+          {judgeMutation.error && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-xs text-red-400">
+              AI Judge error: {(judgeMutation.error as Error).message}
+            </div>
+          )}
+
           {/* Positions to Take */}
           <div>
             <h4 className="text-sm font-medium text-gray-400 mb-2">Positions to Take</h4>
@@ -233,6 +445,18 @@ export default function OpportunityCard({ opportunity, onExecute }: Props) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function ScoreMini({ label, value }: { label: string; value: number }) {
+  const color = value >= 0.7 ? 'text-green-400' : value >= 0.4 ? 'text-yellow-400' : 'text-red-400'
+  return (
+    <div className="text-center">
+      <p className="text-[10px] text-gray-500">{label}</p>
+      <p className={clsx('text-sm font-bold', color)}>
+        {typeof value === 'number' ? (value * 100).toFixed(0) : 'N/A'}
+      </p>
     </div>
   )
 }
