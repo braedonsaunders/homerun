@@ -175,6 +175,15 @@ class ArbitrageScanner:
             self._opportunities = all_opportunities
             self._last_scan = datetime.utcnow()
 
+            # AI Intelligence: Score top opportunities (non-blocking)
+            try:
+                from services.ai import get_llm_manager
+                manager = get_llm_manager()
+                if manager.is_available():
+                    asyncio.create_task(self._ai_score_opportunities(all_opportunities))
+            except Exception:
+                pass  # AI scoring is non-critical
+
             # Notify callbacks
             for callback in self._scan_callbacks:
                 try:
@@ -190,6 +199,30 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
             raise
+
+    async def _ai_score_opportunities(self, opportunities: list):
+        """Score top opportunities using AI (runs in background)."""
+        try:
+            from services.ai.opportunity_judge import opportunity_judge
+
+            # Only score top 5 opportunities with ROI > 3% to manage costs
+            top_opps = [o for o in opportunities if o.roi_percent > 3.0][:5]
+            if not top_opps:
+                return
+
+            for opp in top_opps:
+                try:
+                    result = await opportunity_judge.judge_opportunity(opp)
+                    print(
+                        f"  AI Judge: {opp.title[:50]}... "
+                        f"\u2192 {result.get('recommendation', 'unknown')} "
+                        f"(score: {result.get('overall_score', 0):.2f})"
+                    )
+                except Exception as e:
+                    print(f"  AI Judge error for {opp.id}: {e}")
+
+        except Exception as e:
+            print(f"  AI scoring error: {e}")
 
     async def _scan_loop(self):
         """Internal scan loop"""

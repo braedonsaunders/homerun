@@ -17,6 +17,7 @@ from api.routes_trading import router as trading_router
 from api.routes_auto_trader import router as auto_trader_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
+from api.routes_ai import router as ai_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.copy_trader import copy_trader
 from services.trading import trading_service
@@ -89,6 +90,23 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             logger.warning(f"Market cache load failed (non-critical): {e}")
+
+        # Initialize AI intelligence layer
+        try:
+            from services.ai import initialize_ai
+            from services.ai.skills.loader import skill_loader
+            llm_manager = await initialize_ai()
+            skill_loader.discover()
+            if llm_manager.is_available():
+                logger.info(
+                    "AI intelligence layer initialized",
+                    providers=list(llm_manager._providers.keys()),
+                    skills=len(skill_loader.list_skills()),
+                )
+            else:
+                logger.info("AI intelligence layer initialized (no providers configured)")
+        except Exception as e:
+            logger.warning(f"AI initialization failed (non-critical): {e}")
 
         # Add any preconfigured wallets
         for wallet in settings.TRACKED_WALLETS:
@@ -231,6 +249,7 @@ app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
+app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 
 
 # WebSocket endpoint
@@ -268,6 +287,16 @@ async def readiness_check():
         "checks": checks,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+def _get_ai_status() -> dict:
+    """Get AI status for health check."""
+    try:
+        from services.ai import get_llm_manager
+        manager = get_llm_manager()
+        return {"enabled": manager.is_available()}
+    except Exception:
+        return {"enabled": False}
 
 
 @app.get("/health/detailed")
@@ -309,6 +338,7 @@ async def detailed_health_check():
                 if settings.AUTO_CLEANUP_ENABLED
                 else None,
             },
+            "ai_intelligence": _get_ai_status(),
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {
