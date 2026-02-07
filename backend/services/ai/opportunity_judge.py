@@ -282,6 +282,7 @@ class OpportunityJudge:
 
             # 2. Call LLM with structured output
             manager = get_llm_manager()
+            resolved_model = model or manager._default_model
             from services.ai.llm_provider import LLMMessage
 
             messages = [
@@ -292,7 +293,7 @@ class OpportunityJudge:
             llm_response = await manager.structured_output(
                 messages=messages,
                 schema=OPPORTUNITY_JUDGMENT_SCHEMA,
-                model=model or "gpt-4o-mini",
+                model=resolved_model,
                 purpose="opportunity_judge",
             )
 
@@ -321,7 +322,7 @@ class OpportunityJudge:
                 "risk_factors": judgment.get("risk_factors", []),
                 "ml_agreement": ml_agreement,
                 "session_id": session_id,
-                "model_used": model or "gpt-4o-mini",
+                "model_used": resolved_model,
                 "judged_at": started_at.isoformat(),
             }
 
@@ -331,7 +332,7 @@ class OpportunityJudge:
                 opportunity=opportunity,
                 ml_prediction=ml_prediction,
                 session_id=session_id,
-                model_used=model or "gpt-4o-mini",
+                model_used=resolved_model,
                 started_at=started_at,
             )
 
@@ -384,7 +385,7 @@ class OpportunityJudge:
         -------
         List of judgment dicts in the same order as the input.
         """
-        batch_model = model or "gpt-4o-mini"
+        batch_model = model
 
         tasks = [
             self.judge_opportunity(

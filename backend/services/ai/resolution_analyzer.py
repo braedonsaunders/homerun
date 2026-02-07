@@ -17,7 +17,7 @@ Inspired by virattt/dexter's autonomous research agent pattern.
 from __future__ import annotations
 
 import asyncio
-import json
+
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -320,16 +320,13 @@ class ResolutionAnalyzer:
             llm_response = await manager.structured_output(
                 messages=messages,
                 schema=RESOLUTION_ANALYSIS_SCHEMA,
-                model=model or "gpt-4o-mini",
+                model=model,
                 purpose="resolution_analysis",
             )
 
-            # Parse the structured response
-            if llm_response.content:
-                try:
-                    analysis = json.loads(llm_response.content)
-                except json.JSONDecodeError:
-                    analysis = self._fallback_analysis("LLM returned invalid JSON")
+            # structured_output() returns a dict directly
+            if llm_response:
+                analysis = llm_response
             else:
                 analysis = self._fallback_analysis("LLM returned empty response")
 
@@ -349,7 +346,7 @@ class ResolutionAnalyzer:
                 "resolution_likelihood": analysis.get("resolution_likelihood", {}),
                 "summary": analysis["summary"],
                 "session_id": session_id,
-                "model_used": model or "gpt-4o-mini",
+                "model_used": model,
                 "analyzed_at": started_at.isoformat(),
             }
 
@@ -360,7 +357,7 @@ class ResolutionAnalyzer:
                 description=description,
                 resolution_source=resolution_source,
                 session_id=session_id,
-                model_used=model or "gpt-4o-mini",
+                model_used=model,
                 started_at=started_at,
             )
 

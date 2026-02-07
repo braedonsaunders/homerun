@@ -143,7 +143,7 @@ class NewsSentimentAnalyzer:
                 await self._scratchpad.create_session(
                     session_type="news_sentiment",
                     query=query,
-                    model=model or "gpt-4o-mini",
+                    model=model,
                 )
             except Exception:
                 pass  # Scratchpad is optional; don't fail if DB models missing
@@ -325,7 +325,7 @@ class NewsSentimentAnalyzer:
                     LLMMessage(role="user", content=user_content),
                 ],
                 schema=SENTIMENT_SCHEMA,
-                model=model or "gpt-4o-mini",
+                model=model,
                 purpose="news_sentiment",
             )
             return result

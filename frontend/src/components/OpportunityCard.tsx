@@ -12,7 +12,6 @@ import {
   Brain,
   Shield,
   RefreshCw,
-  Sparkles,
   MessageCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -175,13 +174,17 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                judgeMutation.mutate()
+                const opening = !showAIInsights
+                setShowAIInsights(opening)
+                if (opening && !judgment && !judgeMutation.isPending) {
+                  judgeMutation.mutate()
+                }
               }}
-              disabled={judgeMutation.isPending}
+              disabled={judgeMutation.isPending && !showAIInsights}
               className={clsx(
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
-                judgeMutation.isPending
-                  ? 'bg-gray-800 text-gray-600 border-gray-700 cursor-not-allowed'
+                showAIInsights
+                  ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
                   : 'bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20'
               )}
             >
@@ -190,22 +193,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               ) : (
                 <Brain className="w-3.5 h-3.5" />
               )}
-              AI Judge
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowAIInsights(!showAIInsights)
-              }}
-              className={clsx(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
-                showAIInsights
-                  ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                  : 'bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20'
-              )}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              AI Insights
+              AI Analysis
             </button>
             {onOpenCopilot && (
               <button
@@ -224,13 +212,41 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             )}
           </div>
 
-          {/* AI Insights Panel */}
+          {/* AI Analysis Panel */}
           {showAIInsights && (
             <div className="bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/20 rounded-xl p-4 space-y-3">
-              <h4 className="text-sm font-medium text-purple-400 flex items-center gap-2">
-                <Sparkles className="w-4 h-4" />
-                AI Intelligence
-              </h4>
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-purple-400 flex items-center gap-2">
+                  <Brain className="w-4 h-4" />
+                  AI Analysis
+                </h4>
+                {judgment && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      judgeMutation.mutate()
+                    }}
+                    disabled={judgeMutation.isPending}
+                    className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-purple-400 transition-colors"
+                  >
+                    <RefreshCw className={clsx("w-3 h-3", judgeMutation.isPending && "animate-spin")} />
+                    Re-analyze
+                  </button>
+                )}
+              </div>
+
+              {judgeMutation.isPending && !judgment && (
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  Running AI analysis...
+                </div>
+              )}
+
+              {judgeMutation.error && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-xs text-red-400">
+                  Analysis failed: {(judgeMutation.error as Error).message}
+                </div>
+              )}
 
               {judgment && (
                 <div className="space-y-2">
@@ -292,35 +308,6 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                   ))}
                 </div>
               )}
-
-              {!judgment && resolutions.length === 0 && (
-                <p className="text-xs text-gray-500">
-                  No AI analysis cached. Click "AI Judge" to run a fresh analysis.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Judgment result inline (when just triggered) */}
-          {judgeMutation.data && !showAIInsights && (
-            <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-3">
-              <div className="flex items-center gap-2 text-sm">
-                <Brain className="w-4 h-4 text-purple-400" />
-                <span className={clsx(
-                  'px-2 py-0.5 rounded text-xs font-medium border',
-                  RECOMMENDATION_COLORS[judgeMutation.data.recommendation]
-                )}>
-                  {judgeMutation.data.recommendation?.replace('_', ' ')}
-                </span>
-                <span className="text-gray-400">
-                  Score: {(judgeMutation.data.overall_score * 100).toFixed(0)}/100
-                </span>
-              </div>
-            </div>
-          )}
-          {judgeMutation.error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-xs text-red-400">
-              AI Judge error: {(judgeMutation.error as Error).message}
             </div>
           )}
 
