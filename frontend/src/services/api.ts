@@ -904,6 +904,9 @@ export interface LLMSettings {
   provider: string
   openai_api_key: string | null
   anthropic_api_key: string | null
+  google_api_key: string | null
+  xai_api_key: string | null
+  deepseek_api_key: string | null
   model: string | null
 }
 
@@ -993,6 +996,31 @@ export const updateTradingSettings = async (settings: Partial<TradingSettingsCon
 
 export const updateMaintenanceSettings = async (settings: Partial<MaintenanceSettings>): Promise<{ status: string; message: string }> => {
   const { data } = await api.put('/settings/maintenance', settings)
+  return data
+}
+
+export interface LLMModelOption {
+  id: string
+  name: string
+}
+
+export interface LLMModelsResponse {
+  models: Record<string, LLMModelOption[]>
+}
+
+export interface RefreshModelsResponse {
+  status: string
+  message: string
+  models: Record<string, LLMModelOption[]>
+}
+
+export const getLLMModels = async (provider?: string): Promise<LLMModelsResponse> => {
+  const { data } = await api.get('/settings/llm/models', { params: provider ? { provider } : undefined })
+  return data
+}
+
+export const refreshLLMModels = async (provider?: string): Promise<RefreshModelsResponse> => {
+  const { data } = await api.post('/settings/llm/models/refresh', null, { params: provider ? { provider } : undefined })
   return data
 }
 

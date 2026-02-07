@@ -553,6 +553,30 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# ==================== LLM MODELS CACHE ====================
+
+
+class LLMModelCache(Base):
+    """Cached list of available models from each LLM provider.
+
+    Models are fetched from provider APIs and stored here for quick
+    lookup in the UI dropdown. Can be refreshed on demand.
+    """
+
+    __tablename__ = "llm_model_cache"
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek
+    model_id = Column(String, nullable=False)  # The model identifier used in API calls
+    display_name = Column(String, nullable=True)  # Human-readable name
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_llm_model_provider", "provider"),
+        Index("idx_llm_model_id", "provider", "model_id", unique=True),
+    )
+
+
 # ==================== AI INTELLIGENCE LAYER ====================
 
 
