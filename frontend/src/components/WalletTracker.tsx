@@ -738,7 +738,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         </div>
                       ) : (
                         <p className="text-xs text-yellow-500 mt-2">
-                          No paper accounts available. Create one in the Simulation panel first.
+                          No paper accounts available. Create one in the Accounts tab first.
                         </p>
                       )}
                     </div>
@@ -760,7 +760,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         Track this trader and receive alerts for live copy trading. Uses real money.
                       </p>
                       <p className="text-xs text-yellow-500 mt-2">
-                        Configure live copy trading in the Trading panel after tracking.
+                        Configure live copy trading in the Trading tab after tracking.
                       </p>
                     </div>
                   </div>

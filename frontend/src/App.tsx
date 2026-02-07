@@ -40,6 +40,7 @@ import OpportunityCard from './components/OpportunityCard'
 import TradeExecutionModal from './components/TradeExecutionModal'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
+import LiveAccountPanel from './components/LiveAccountPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
 import PositionsPanel from './components/PositionsPanel'
@@ -48,16 +49,16 @@ import RecentTradesPanel from './components/RecentTradesPanel'
 import SettingsPanel from './components/SettingsPanel'
 import AIPanel from './components/AIPanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'ai' | 'settings'
-type TradingSubTab = 'auto' | 'paper'
-type WalletsSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
+type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
+type AccountsSubTab = 'paper' | 'live'
+type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
 
 const ITEMS_PER_PAGE = 20
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
-  const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
-  const [walletsSubTab, setWalletsSubTab] = useState<WalletsSubTab>('leaderboard')
+  const [accountsSubTab, setAccountsSubTab] = useState<AccountsSubTab>('paper')
+  const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('leaderboard')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
@@ -74,8 +75,8 @@ function App() {
   const handleAnalyzeWallet = (address: string, username?: string) => {
     setWalletToAnalyze(address)
     setWalletUsername(username || null)
-    setActiveTab('wallets')
-    setWalletsSubTab('analysis')
+    setActiveTab('traders')
+    setTradersSubTab('analysis')
   }
 
   // WebSocket for real-time updates
@@ -284,10 +285,16 @@ function App() {
               label="Trading"
             />
             <TabButton
-              active={activeTab === 'wallets'}
-              onClick={() => setActiveTab('wallets')}
+              active={activeTab === 'accounts'}
+              onClick={() => setActiveTab('accounts')}
               icon={<Wallet className="w-4 h-4" />}
-              label="Wallets"
+              label="Accounts"
+            />
+            <TabButton
+              active={activeTab === 'traders'}
+              onClick={() => setActiveTab('traders')}
+              icon={<Users className="w-4 h-4" />}
+              label="Traders"
             />
             <TabButton
               active={activeTab === 'positions'}
@@ -353,8 +360,8 @@ function App() {
               <RecentTradesPanel
                 onNavigateToWallet={(address) => {
                   setWalletToAnalyze(address)
-                  setActiveTab('wallets')
-                  setWalletsSubTab('analysis')
+                  setActiveTab('traders')
+                  setTradersSubTab('analysis')
                 }}
               />
             ) : (
@@ -497,53 +504,58 @@ function App() {
           </div>
         )}
 
-        {/* Trading Tab with Subtabs */}
+        {/* Trading Tab - Auto Trading */}
         <div className={activeTab === 'trading' ? '' : 'hidden'}>
-          {/* Trading Subtabs Navigation */}
+          <TradingPanel />
+        </div>
+
+        {/* Accounts Tab with Paper/Live Subtabs */}
+        <div className={activeTab === 'accounts' ? '' : 'hidden'}>
+          {/* Accounts Subtabs Navigation */}
           <div className="flex items-center gap-2 mb-6">
             <button
-              onClick={() => setTradingSubTab('auto')}
+              onClick={() => setAccountsSubTab('paper')}
               className={clsx(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-                tradingSubTab === 'auto'
-                  ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
-              )}
-            >
-              <Bot className="w-4 h-4" />
-              Auto Trading
-            </button>
-            <button
-              onClick={() => setTradingSubTab('paper')}
-              className={clsx(
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-                tradingSubTab === 'paper'
+                accountsSubTab === 'paper'
                   ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
             >
               <PlayCircle className="w-4 h-4" />
-              Paper Trading
+              Paper Accounts
+            </button>
+            <button
+              onClick={() => setAccountsSubTab('live')}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                accountsSubTab === 'live'
+                  ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                  : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
+              )}
+            >
+              <DollarSign className="w-4 h-4" />
+              Live Account
             </button>
           </div>
-          {/* Trading Subtab Content */}
-          <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
-            <TradingPanel />
-          </div>
-          <div className={tradingSubTab === 'paper' ? '' : 'hidden'}>
+          {/* Accounts Subtab Content */}
+          <div className={accountsSubTab === 'paper' ? '' : 'hidden'}>
             <SimulationPanel />
+          </div>
+          <div className={accountsSubTab === 'live' ? '' : 'hidden'}>
+            <LiveAccountPanel />
           </div>
         </div>
 
-        {/* Wallets Tab with Subtabs */}
-        <div className={activeTab === 'wallets' ? '' : 'hidden'}>
-          {/* Wallets Subtabs Navigation */}
+        {/* Traders Tab with Subtabs */}
+        <div className={activeTab === 'traders' ? '' : 'hidden'}>
+          {/* Traders Subtabs Navigation */}
           <div className="flex items-center gap-2 mb-6">
             <button
-              onClick={() => setWalletsSubTab('tracked')}
+              onClick={() => setTradersSubTab('tracked')}
               className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'tracked'
+                tradersSubTab === 'tracked'
                   ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
@@ -552,10 +564,10 @@ function App() {
               Tracked
             </button>
             <button
-              onClick={() => setWalletsSubTab('leaderboard')}
+              onClick={() => setTradersSubTab('leaderboard')}
               className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'leaderboard'
+                tradersSubTab === 'leaderboard'
                   ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
@@ -564,10 +576,10 @@ function App() {
               Leaderboard
             </button>
             <button
-              onClick={() => setWalletsSubTab('discover')}
+              onClick={() => setTradersSubTab('discover')}
               className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'discover'
+                tradersSubTab === 'discover'
                   ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
@@ -576,10 +588,10 @@ function App() {
               Discover
             </button>
             <button
-              onClick={() => setWalletsSubTab('analysis')}
+              onClick={() => setTradersSubTab('analysis')}
               className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                walletsSubTab === 'analysis'
+                tradersSubTab === 'analysis'
                   ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
                   : "bg-[#1a1a1a] text-gray-400 hover:text-white border border-gray-800"
               )}
@@ -588,17 +600,17 @@ function App() {
               Analysis
             </button>
           </div>
-          {/* Wallets Subtab Content */}
-          <div className={walletsSubTab === 'tracked' ? '' : 'hidden'}>
+          {/* Traders Subtab Content */}
+          <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
             <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
-          <div className={walletsSubTab === 'leaderboard' ? '' : 'hidden'}>
+          <div className={tradersSubTab === 'leaderboard' ? '' : 'hidden'}>
             <WalletTracker section="discover" discoverMode="leaderboard" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
-          <div className={walletsSubTab === 'discover' ? '' : 'hidden'}>
+          <div className={tradersSubTab === 'discover' ? '' : 'hidden'}>
             <WalletTracker section="discover" discoverMode="winrate" onAnalyzeWallet={handleAnalyzeWallet} />
           </div>
-          <div className={walletsSubTab === 'analysis' ? '' : 'hidden'}>
+          <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
             <WalletAnalysisPanel
               initialWallet={walletToAnalyze}
               initialUsername={walletUsername}
