@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   RefreshCw,
@@ -35,12 +35,26 @@ import {
   getResearchSessions,
   getResearchSession,
   getAIUsage,
+  searchMarkets,
+  MarketSearchResult,
 } from '../services/api'
 
 type AISection = 'status' | 'resolution' | 'judgments' | 'market' | 'news' | 'skills' | 'sessions' | 'usage'
 
 export default function AIPanel() {
   const [activeSection, setActiveSection] = useState<AISection>('status')
+
+  // Listen for navigation events from command bar
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const section = (e as CustomEvent).detail as AISection
+      if (section) {
+        setActiveSection(section)
+      }
+    }
+    window.addEventListener('navigate-ai-section', handler)
+    return () => window.removeEventListener('navigate-ai-section', handler)
+  }, [])
 
   return (
     <div>
@@ -230,6 +244,70 @@ function ResolutionSection() {
   const [resolutionSource, setResolutionSource] = useState('')
   const [endDate, setEndDate] = useState('')
   const [outcomes, setOutcomes] = useState('')
+  const [marketSearch, setMarketSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<MarketSearchResult[]>([])
+  const [showSearchResults, setShowSearchResults] = useState(false)
+  const searchRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+
+  // Listen for market-selected events from command bar
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as MarketSearchResult
+      if (detail) {
+        setMarketId(detail.market_id)
+        setQuestion(detail.question)
+        setMarketSearch(detail.question)
+        setShowSearchResults(false)
+      }
+    }
+    window.addEventListener('market-selected', handler)
+    return () => window.removeEventListener('market-selected', handler)
+  }, [])
+
+  // Click outside to close search dropdown
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowSearchResults(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  // Debounced market search
+  const doSearch = useCallback(async (query: string) => {
+    if (query.length < 2) {
+      setSearchResults([])
+      return
+    }
+    try {
+      const data = await searchMarkets(query, 8)
+      setSearchResults(data.results)
+    } catch {
+      setSearchResults([])
+    }
+  }, [])
+
+  useEffect(() => {
+    if (marketSearch.length >= 2) {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => doSearch(marketSearch), 300)
+    } else {
+      setSearchResults([])
+    }
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [marketSearch, doSearch])
+
+  const selectMarket = (m: MarketSearchResult) => {
+    setMarketId(m.market_id)
+    setQuestion(m.question)
+    setMarketSearch(m.question)
+    setShowSearchResults(false)
+  }
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
@@ -253,18 +331,64 @@ function ResolutionSection() {
           Resolution Criteria Analysis
         </h3>
         <p className="text-sm text-gray-500 mb-4">
-          Analyze how a market will resolve, identify ambiguities and edge cases.
+          Search for a market below or type a question to analyze resolution criteria.
         </p>
 
         <div className="space-y-3">
+          {/* Smart Market Search */}
+          <div ref={searchRef} className="relative">
+            <label className="block text-xs text-gray-500 mb-1">
+              <Search className="w-3 h-3 inline mr-1" />
+              Search Markets (type to find - no manual IDs needed)
+            </label>
+            <input
+              type="text"
+              value={marketSearch}
+              onChange={(e) => {
+                setMarketSearch(e.target.value)
+                setShowSearchResults(true)
+              }}
+              onFocus={() => searchResults.length > 0 && setShowSearchResults(true)}
+              placeholder="e.g., Bitcoin, Fed rate, Trump, Super Bowl..."
+              className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+            />
+            {showSearchResults && searchResults.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-[#0f0f0f] border border-gray-700 rounded-xl shadow-2xl max-h-64 overflow-y-auto">
+                {searchResults.map((m) => (
+                  <button
+                    key={m.market_id}
+                    onClick={() => selectMarket(m)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[#1a1a1a] transition-colors border-b border-gray-800 last:border-0"
+                  >
+                    <p className="text-sm text-white truncate">{m.question}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {m.event_title && <span>{m.event_title} | </span>}
+                      {m.category && <span className="capitalize">{m.category} | </span>}
+                      YES: ${m.yes_price?.toFixed(2)} | Liq: ${m.liquidity?.toFixed(0)}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {marketId && (
+            <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-2 flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-purple-400 flex-shrink-0" />
+              <span className="text-xs text-purple-400 truncate">
+                Market selected: {marketId.slice(0, 20)}...
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Market ID *</label>
+              <label className="block text-xs text-gray-500 mb-1">Market ID</label>
               <input
                 type="text"
                 value={marketId}
                 onChange={(e) => setMarketId(e.target.value)}
-                placeholder="e.g., 0x1234..."
+                placeholder="Auto-filled from search above"
                 className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
               />
             </div>
@@ -285,7 +409,7 @@ function ResolutionSection() {
               type="text"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="e.g., Will Bitcoin reach $100k by end of 2025?"
+              placeholder="Auto-filled from search, or type manually"
               className="w-full bg-[#1a1a1a] border border-gray-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
             />
           </div>

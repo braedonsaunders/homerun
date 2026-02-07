@@ -9,6 +9,9 @@ Provides endpoints for:
 - Skill management
 - Research session history
 - LLM usage stats
+- AI chat / copilot
+- Market search (for smart autocomplete)
+- Opportunity AI summaries
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -282,3 +285,206 @@ async def get_ai_status():
             "skills_available": 0,
             "usage": None,
         }
+
+
+# === Market Search (for smart autocomplete) ===
+
+
+@router.get("/ai/markets/search")
+async def search_markets(
+    q: str = Query(..., min_length=1, description="Search query for market titles"),
+    limit: int = Query(10, le=50),
+):
+    """Search available markets by question text for autocomplete.
+
+    Returns markets from the scanner's current market pool, allowing users
+    to find markets without needing to manually look up IDs.
+    """
+    from services import scanner
+
+    opportunities = scanner.get_opportunities()
+    seen_ids = set()
+    results = []
+    q_lower = q.lower()
+
+    # Collect unique markets from all opportunities
+    for opp in opportunities:
+        for m in opp.markets:
+            mid = m.get("id", "")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            question = m.get("question", "")
+            if q_lower in question.lower() or q_lower in mid.lower():
+                results.append(
+                    {
+                        "market_id": mid,
+                        "question": question,
+                        "yes_price": m.get("yes_price"),
+                        "no_price": m.get("no_price"),
+                        "liquidity": m.get("liquidity"),
+                        "event_title": opp.event_title,
+                        "category": opp.category,
+                    }
+                )
+                if len(results) >= limit:
+                    break
+        if len(results) >= limit:
+            break
+
+    return {"results": results, "total": len(results)}
+
+
+# === Opportunity AI Summary ===
+
+
+@router.get("/ai/opportunity/{opportunity_id}/summary")
+async def get_opportunity_ai_summary(opportunity_id: str):
+    """Get a quick AI intelligence summary for a specific opportunity.
+
+    Returns cached judgment + resolution analysis if available,
+    or triggers a quick analysis if not cached.
+    """
+    from services import scanner
+
+    opps = scanner.get_opportunities()
+    opp = next((o for o in opps if o.id == opportunity_id), None)
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    summary = {
+        "opportunity_id": opportunity_id,
+        "judgment": None,
+        "resolution_analyses": [],
+    }
+
+    # Try to get cached judgment
+    try:
+        from services.ai.opportunity_judge import opportunity_judge
+
+        history = await opportunity_judge.get_judgment_history(
+            opportunity_id=opportunity_id, limit=1
+        )
+        if history and len(history) > 0:
+            summary["judgment"] = history[0]
+    except Exception as e:
+        logger.debug(f"No cached judgment for {opportunity_id}: {e}")
+
+    # Try to get cached resolution analyses for each market
+    try:
+        from services.ai.resolution_analyzer import resolution_analyzer
+
+        for m in opp.markets:
+            mid = m.get("id", "")
+            if mid:
+                cached = await resolution_analyzer.get_cached_analysis(mid)
+                if cached:
+                    summary["resolution_analyses"].append(cached)
+    except Exception as e:
+        logger.debug(f"No cached resolution for {opportunity_id}: {e}")
+
+    return summary
+
+
+# === AI Chat / Copilot ===
+
+
+class AIChatRequest(BaseModel):
+    message: str
+    context_type: Optional[str] = None  # "opportunity", "market", "general"
+    context_id: Optional[str] = None  # opportunity_id or market_id
+    history: list[dict] = []  # prior messages [{role, content}]
+    model: Optional[str] = None
+
+
+@router.post("/ai/chat")
+async def ai_chat(request: AIChatRequest):
+    """Conversational AI copilot for the trading platform.
+
+    Context-aware chat that understands the current page/opportunity
+    the user is viewing and can answer questions, analyze markets,
+    and provide trading recommendations.
+    """
+    try:
+        from services.ai import get_llm_manager
+
+        manager = get_llm_manager()
+        if not manager.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail="No AI provider configured. Add an API key in Settings.",
+            )
+
+        # Build context
+        context_parts = []
+
+        if request.context_type == "opportunity" and request.context_id:
+            from services import scanner
+
+            opps = scanner.get_opportunities()
+            opp = next((o for o in opps if o.id == request.context_id), None)
+            if opp:
+                context_parts.append(
+                    f"The user is currently viewing this arbitrage opportunity:\n"
+                    f"Title: {opp.title}\n"
+                    f"Strategy: {opp.strategy}\n"
+                    f"ROI: {opp.roi_percent:.2f}%\n"
+                    f"Net Profit: ${opp.net_profit:.4f}\n"
+                    f"Risk Score: {opp.risk_score:.2f}\n"
+                    f"Risk Factors: {', '.join(opp.risk_factors)}\n"
+                    f"Markets: {', '.join(m.get('question', '') for m in opp.markets)}\n"
+                    f"Event: {opp.event_title or 'N/A'}\n"
+                    f"Category: {opp.category or 'N/A'}\n"
+                    f"Total Cost: ${opp.total_cost:.4f}\n"
+                    f"Max Position Size: ${opp.max_position_size:.2f}\n"
+                )
+
+        if request.context_type == "market" and request.context_id:
+            context_parts.append(
+                f"The user is viewing market ID: {request.context_id}"
+            )
+
+        system_prompt = (
+            "You are the AI copilot for Homerun, a Polymarket prediction market "
+            "arbitrage trading platform. You help traders understand opportunities, "
+            "analyze resolution criteria, assess risk, and make trading decisions.\n\n"
+            "Key knowledge:\n"
+            "- Polymarket uses UMA's Optimistic Oracle for resolution\n"
+            "- 2% fee on net winnings\n"
+            "- Strategies: basic arb, NegRisk, mutually exclusive, contradiction, "
+            "must-happen, settlement lag\n"
+            "- Risk factors: resolution ambiguity, liquidity, correlation, timing\n\n"
+            "Be concise, specific, and data-driven. When the user asks about a "
+            "specific opportunity, reference its actual data. Flag risks clearly.\n"
+        )
+
+        if context_parts:
+            system_prompt += "\nCurrent context:\n" + "\n".join(context_parts)
+
+        # Build messages
+        messages = []
+        for msg in request.history[-10:]:  # Keep last 10 messages
+            messages.append(
+                {"role": msg.get("role", "user"), "content": msg.get("content", "")}
+            )
+        messages.append({"role": "user", "content": request.message})
+
+        response = await manager.chat(
+            messages=messages,
+            system=system_prompt,
+            model=request.model,
+            max_tokens=1024,
+            purpose="ai_chat",
+        )
+
+        return {
+            "response": response.get("content", ""),
+            "model": response.get("model", ""),
+            "tokens_used": response.get("usage", {}),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI chat failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

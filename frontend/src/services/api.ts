@@ -1050,4 +1050,70 @@ export const getResearchSessions = (params?: any) => api.get('/ai/sessions', { p
 export const getResearchSession = (sessionId: string) => api.get(`/ai/sessions/${sessionId}`)
 export const getAIUsage = () => api.get('/ai/usage')
 
+// ==================== AI DEEP INTEGRATION ====================
+
+export interface MarketSearchResult {
+  market_id: string
+  question: string
+  yes_price: number | null
+  no_price: number | null
+  liquidity: number | null
+  event_title: string | null
+  category: string | null
+}
+
+export const searchMarkets = async (q: string, limit = 10): Promise<{ results: MarketSearchResult[]; total: number }> => {
+  const { data } = await api.get('/ai/markets/search', { params: { q, limit } })
+  return data
+}
+
+export interface OpportunityAISummary {
+  opportunity_id: string
+  judgment: {
+    overall_score: number
+    profit_viability: number
+    resolution_safety: number
+    execution_feasibility: number
+    market_efficiency: number
+    recommendation: string
+    reasoning: string
+  } | null
+  resolution_analyses: Array<{
+    market_id: string
+    clarity_score: number
+    risk_score: number
+    confidence: number
+    recommendation: string
+    summary: string
+    ambiguities: string[]
+    edge_cases: string[]
+  }>
+}
+
+export const getOpportunityAISummary = async (opportunityId: string): Promise<OpportunityAISummary> => {
+  const { data } = await api.get(`/ai/opportunity/${opportunityId}/summary`)
+  return data
+}
+
+export interface AIChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface AIChatResponse {
+  response: string
+  model: string
+  tokens_used: Record<string, number>
+}
+
+export const sendAIChat = async (params: {
+  message: string
+  context_type?: string
+  context_id?: string
+  history?: AIChatMessage[]
+}): Promise<AIChatResponse> => {
+  const { data } = await api.post('/ai/chat', params)
+  return data
+}
+
 export default api
