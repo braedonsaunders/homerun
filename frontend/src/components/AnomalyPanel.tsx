@@ -10,7 +10,7 @@ import {
   AlertOctagon,
   Info
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import {
   analyzeWallet,
   getAnomalies,
@@ -57,7 +57,7 @@ export default function AnomalyPanel() {
       </div>
 
       {/* Search */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <h3 className="font-medium mb-3 flex items-center gap-2">
           <Shield className="w-4 h-4" />
           Check Wallet for Anomalies
@@ -69,7 +69,7 @@ export default function AnomalyPanel() {
             onChange={(e) => setSearchAddress(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="Enter wallet address (0x...)"
-            className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 font-mono text-sm"
+            className="flex-1 bg-muted border border-border rounded-lg px-4 py-2 font-mono text-sm"
           />
           <button
             onClick={handleAnalyze}
@@ -92,7 +92,7 @@ export default function AnomalyPanel() {
       )}
 
       {/* Recent Anomalies */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-medium flex items-center gap-2">
             <AlertOctagon className="w-4 h-4" />
@@ -121,7 +121,7 @@ export default function AnomalyPanel() {
       </div>
 
       {/* Anomaly Types Info */}
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+      <div className="bg-card border border-border rounded-lg p-4">
         <h3 className="font-medium mb-4 flex items-center gap-2">
           <Info className="w-4 h-4" />
           What We Detect
@@ -169,7 +169,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
   const VerdictIcon = verdict.icon
 
   return (
-    <div className={clsx(
+    <div className={cn(
       "border rounded-lg p-4",
       verdict.color === 'red' && "bg-red-500/5 border-red-500/30",
       verdict.color === 'orange' && "bg-orange-500/5 border-orange-500/30",
@@ -182,7 +182,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
           <p className="font-mono text-sm text-gray-400">Wallet Scanned</p>
           <p className="font-mono font-medium">{analysis.wallet}</p>
         </div>
-        <div className={clsx(
+        <div className={cn(
           "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium",
           verdict.color === 'red' && "bg-red-500/20 text-red-400",
           verdict.color === 'orange' && "bg-orange-500/20 text-orange-400",
@@ -202,7 +202,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
         </div>
         <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
           <div
-            className={clsx(
+            className={cn(
               "h-full transition-all",
               analysis.anomaly_score >= 0.7 && "bg-red-500",
               analysis.anomaly_score >= 0.5 && analysis.anomaly_score < 0.7 && "bg-orange-500",
@@ -215,7 +215,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       </div>
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-[#1a1a1a] rounded-lg">
+      <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-muted rounded-lg">
         <div className="text-center">
           <p className="text-xs text-gray-500">Trades</p>
           <p className="font-mono font-medium">{analysis.stats.total_trades}</p>
@@ -226,7 +226,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
         </div>
         <div className="text-center">
           <p className="text-xs text-gray-500">Total PnL</p>
-          <p className={clsx(
+          <p className={cn(
             "font-mono font-medium",
             analysis.stats.total_pnl >= 0 ? "text-green-400" : "text-red-400"
           )}>
@@ -259,8 +259,8 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
           <p className="text-xs text-gray-500 mb-2">Anomalies Detected ({analysis.anomalies.length})</p>
           <div className="space-y-2">
             {analysis.anomalies.map((anomaly, idx) => (
-              <div key={idx} className="flex items-start gap-2 p-2 bg-[#1a1a1a] rounded">
-                <AlertTriangle className={clsx(
+              <div key={idx} className="flex items-start gap-2 p-2 bg-muted rounded">
+                <AlertTriangle className={cn(
                   "w-4 h-4 mt-0.5 flex-shrink-0",
                   anomaly.severity === 'critical' ? 'text-red-500' :
                   anomaly.severity === 'high' ? 'text-orange-500' :
@@ -269,7 +269,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
                 )} />
                 <div>
                   <p className="text-sm text-gray-300">{anomaly.description}</p>
-                  <span className={clsx(
+                  <span className={cn(
                     "text-xs px-1.5 py-0.5 rounded mt-1 inline-block",
                     anomaly.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                     anomaly.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
@@ -286,7 +286,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       )}
 
       {/* Recommendation */}
-      <div className={clsx(
+      <div className={cn(
         "p-3 rounded-lg",
         isRisky ? "bg-red-500/10" :
         isSafe ? "bg-green-500/10" :
@@ -309,9 +309,9 @@ function AnomalyRow({ anomaly }: { anomaly: any }) {
   const config = severityConfig[anomaly.severity] || severityConfig.low
 
   return (
-    <div className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
+    <div className="flex items-center justify-between bg-muted rounded-lg p-3">
       <div className="flex items-center gap-3">
-        <AlertTriangle className={clsx("w-4 h-4", config.icon)} />
+        <AlertTriangle className={cn("w-4 h-4", config.icon)} />
         <div>
           <p className="text-sm font-medium">{anomaly.type.replace(/_/g, ' ')}</p>
           <p className="text-xs text-gray-500 font-mono">
@@ -320,7 +320,7 @@ function AnomalyRow({ anomaly }: { anomaly: any }) {
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <span className={clsx("px-2 py-0.5 rounded text-xs", config.bg, config.text)}>
+        <span className={cn("px-2 py-0.5 rounded text-xs", config.bg, config.text)}>
           {anomaly.severity}
         </span>
         <span className="text-xs text-gray-500">
@@ -339,7 +339,7 @@ function AnomalyTypeCard({ title, items, severity }: { title: string; items: str
   }
 
   return (
-    <div className={clsx("border rounded-lg p-3", colors[severity])}>
+    <div className={cn("border rounded-lg p-3", colors[severity])}>
       <h4 className="font-medium text-sm mb-2">{title}</h4>
       <ul className="space-y-1">
         {items.map((item, idx) => (

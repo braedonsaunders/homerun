@@ -28,7 +28,12 @@ import {
   Shield,
   Cpu,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
+import { Card, CardContent } from './ui/card'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { Separator } from './ui/separator'
 import {
   getAutoTraderStatus,
   startAutoTrader,
@@ -371,10 +376,10 @@ export default function TradingPanel() {
       <div className="flex items-center justify-center py-20">
         <div className="flex flex-col items-center gap-3">
           <div className="relative">
-            <div className="w-12 h-12 rounded-full border-2 border-gray-700 border-t-green-500 animate-spin" />
+            <div className="w-12 h-12 rounded-full border-2 border-border border-t-green-500 animate-spin" />
             <Cpu className="w-5 h-5 text-green-500 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
           </div>
-          <p className="text-sm text-gray-500">Initializing trading engine...</p>
+          <p className="text-sm text-muted-foreground">Initializing trading engine...</p>
         </div>
       </div>
     )
@@ -386,23 +391,23 @@ export default function TradingPanel() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           {/* Status Indicator */}
-          <div className={clsx(
+          <div className={cn(
             "flex items-center gap-2.5 px-4 py-2.5 rounded-xl border transition-all",
             status?.running
               ? status?.config.mode === 'live'
                 ? "bg-green-500/5 border-green-500/30"
                 : "bg-blue-500/5 border-blue-500/30"
-              : "bg-gray-800/50 border-gray-700/50"
+              : "bg-gray-800/50 border-border/50"
           )}>
             <div className="relative">
-              <div className={clsx(
+              <div className={cn(
                 "w-2.5 h-2.5 rounded-full",
                 status?.running
                   ? status?.config.mode === 'live' ? "bg-green-500" : "bg-blue-500"
                   : "bg-gray-500"
               )} />
               {status?.running && (
-                <div className={clsx(
+                <div className={cn(
                   "absolute inset-0 w-2.5 h-2.5 rounded-full animate-ping",
                   status?.config.mode === 'live' ? "bg-green-500/40" : "bg-blue-500/40"
                 )} />
@@ -415,7 +420,7 @@ export default function TradingPanel() {
                   : 'OFFLINE'
                 }
               </p>
-              <p className="text-[10px] text-gray-500 mt-0.5">
+              <p className="text-[10px] text-muted-foreground mt-0.5">
                 {stats?.opportunities_seen || 0} scanned
               </p>
             </div>
@@ -426,12 +431,13 @@ export default function TradingPanel() {
             <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl animate-pulse">
               <AlertTriangle className="w-4 h-4 text-yellow-500" />
               <span className="text-yellow-500 text-xs font-medium">CIRCUIT BREAKER</span>
-              <button
+              <Button
+                variant="ghost"
                 onClick={() => resetCircuitMutation.mutate()}
-                className="px-2 py-0.5 bg-yellow-500/20 hover:bg-yellow-500/30 rounded text-[10px] text-yellow-400 font-medium"
+                className="px-2 py-0.5 bg-yellow-500/20 hover:bg-yellow-500/30 rounded text-[10px] text-yellow-400 font-medium h-auto"
               >
                 Reset
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -439,78 +445,82 @@ export default function TradingPanel() {
         <div className="flex items-center gap-2">
           {/* Start/Stop Controls */}
           {status?.running ? (
-            <button
+            <Button
+              variant="secondary"
               onClick={() => stopMutation.mutate()}
               disabled={stopMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors"
+              className="gap-2"
             >
               <Square className="w-3.5 h-3.5" />
               Stop
-            </button>
+            </Button>
           ) : (
             <>
               <div className="relative" ref={accountPickerRef}>
-                <button
+                <Button
+                  variant="ghost"
                   onClick={() => setShowAccountPicker(prev => !prev)}
                   disabled={startMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition-colors border border-blue-500/20"
+                  className="gap-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg h-auto px-4 py-2 text-sm font-medium border border-blue-500/20"
                 >
                   <Play className="w-3.5 h-3.5" />
                   Paper
                   <ChevronDown className="w-3 h-3" />
-                </button>
+                </Button>
                 {showAccountPicker && (
-                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
-                    <div className="px-3 py-2 border-b border-gray-700">
-                      <span className="text-xs font-medium text-gray-400">Select Paper Account</span>
+                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-gray-800 border border-border rounded-lg shadow-xl overflow-hidden">
+                    <div className="px-3 py-2 border-b border-border">
+                      <span className="text-xs font-medium text-muted-foreground">Select Paper Account</span>
                     </div>
                     <div className="max-h-48 overflow-y-auto">
                       {simulationAccounts.map(acc => (
                         <button
                           key={acc.id}
                           onClick={() => startMutation.mutate({ mode: 'paper', accountId: acc.id })}
-                          className="w-full text-left px-3 py-2 hover:bg-gray-700/50 transition-colors border-b border-gray-700/50 last:border-b-0"
+                          className="w-full text-left px-3 py-2 hover:bg-gray-700/50 transition-colors border-b border-border/50 last:border-b-0"
                         >
                           <div className="text-sm text-gray-200">{acc.name}</div>
-                          <div className="text-xs text-gray-500">${acc.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital</div>
+                          <div className="text-xs text-muted-foreground">${acc.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital</div>
                         </button>
                       ))}
                     </div>
                     <button
                       onClick={() => startMutation.mutate({ mode: 'paper' })}
-                      className="w-full text-left px-3 py-2 hover:bg-blue-500/10 transition-colors border-t border-gray-700 text-blue-400 text-sm"
+                      className="w-full text-left px-3 py-2 hover:bg-blue-500/10 transition-colors border-t border-border text-blue-400 text-sm"
                     >
                       + New Account
                     </button>
                   </div>
                 )}
               </div>
-              <button
+              <Button
+                variant="ghost"
                 onClick={() => {
                   if (confirm('Enable LIVE trading? This will use REAL MONEY.')) {
                     startMutation.mutate({ mode: 'live' })
                   }
                 }}
                 disabled={startMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg text-sm font-medium transition-colors border border-green-500/20"
+                className="gap-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg h-auto px-4 py-2 text-sm font-medium border border-green-500/20"
               >
                 <Zap className="w-3.5 h-3.5" />
                 Live
-              </button>
+              </Button>
             </>
           )}
 
           {/* Emergency Stop */}
-          <button
+          <Button
+            variant="ghost"
             onClick={() => {
               if (confirm('EMERGENCY STOP - Cancel all orders and stop trading?')) {
                 emergencyStopMutation.mutate()
               }
             }}
-            className="flex items-center gap-1.5 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm transition-colors border border-red-500/20"
+            className="gap-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg h-auto px-3 py-2 text-sm border border-red-500/20"
           >
             <ShieldAlert className="w-3.5 h-3.5" />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -521,12 +531,12 @@ export default function TradingPanel() {
         <div className="col-span-12 lg:col-span-7 space-y-4">
 
           {/* Live Feed */}
-          <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800/60">
+          <Card className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
               <div className="flex items-center gap-2">
-                <Radio className={clsx("w-4 h-4", status?.running ? "text-green-500 animate-pulse" : "text-gray-500")} />
+                <Radio className={cn("w-4 h-4", status?.running ? "text-green-500 animate-pulse" : "text-muted-foreground")} />
                 <h3 className="text-sm font-semibold">Live Activity</h3>
-                <span className="text-[10px] text-gray-600 font-mono">{feedEvents.length} events</span>
+                <span className="text-[10px] text-muted-foreground font-mono">{feedEvents.length} events</span>
               </div>
               <div className="flex items-center gap-2">
                 {status?.running && (
@@ -538,61 +548,62 @@ export default function TradingPanel() {
               </div>
             </div>
 
-            <div ref={feedRef} className="h-[420px] overflow-y-auto scrollbar-thin">
-              {feedEvents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-gray-600">
-                  <Activity className="w-8 h-8 mb-2 opacity-30" />
-                  <p className="text-sm">Waiting for activity...</p>
-                  <p className="text-xs text-gray-700 mt-1">Start the auto trader to see live events</p>
-                </div>
-              ) : (
-                <div className="divide-y divide-gray-800/30">
-                  {feedEvents.map((event, idx) => (
-                    <FeedEventRow key={event.id} event={event} isNew={idx === 0} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+            <CardContent className="p-0">
+              <div ref={feedRef} className="h-[420px] overflow-y-auto scrollbar-thin">
+                {feedEvents.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                    <Activity className="w-8 h-8 mb-2 opacity-30" />
+                    <p className="text-sm">Waiting for activity...</p>
+                    <p className="text-xs text-gray-700 mt-1">Start the auto trader to see live events</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border/30">
+                    {feedEvents.map((event, idx) => (
+                      <FeedEventRow key={event.id} event={event} isNew={idx === 0} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Dashboard Tabs */}
-          <div className="flex bg-[#0d0d0d] rounded-xl p-1 border border-gray-800/60 w-fit">
-            {([
-              { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
-              { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
-              { key: 'orders', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
-            ] as { key: DashboardTab; label: string; icon: React.ReactNode }[]).map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setDashboardTab(tab.key)}
-                className={clsx(
-                  "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                  dashboardTab === tab.key ? "bg-green-500/15 text-green-400 shadow-sm shadow-green-500/5" : "text-gray-500 hover:text-gray-300"
-                )}
-              >
-                {tab.icon}
-                {tab.label}
-                {tab.key === 'holdings' && livePositions.length > 0 && (
-                  <span className="ml-1 px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded-full text-[10px] font-mono">
-                    {livePositions.length}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          <Tabs value={dashboardTab} onValueChange={(v) => setDashboardTab(v as DashboardTab)} className="w-fit">
+            <TabsList className="bg-background rounded-xl p-1 border border-border/60 h-auto">
+              {([
+                { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+                { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
+                { key: 'orders', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
+              ] as { key: DashboardTab; label: string; icon: React.ReactNode }[]).map(tab => (
+                <TabsTrigger
+                  key={tab.key}
+                  value={tab.key}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium data-[state=active]:bg-green-500/15 data-[state=active]:text-green-400 data-[state=active]:shadow-sm data-[state=active]:shadow-green-500/5 text-muted-foreground"
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {tab.key === 'holdings' && livePositions.length > 0 && (
+                    <Badge className="ml-1 px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded-full text-[10px] font-mono border-0">
+                      {livePositions.length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
 
           {/* Tab Content */}
           {dashboardTab === 'overview' && (
             <div className="space-y-4">
               {/* Equity Curve */}
-              <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-5">
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-sm font-semibold flex items-center gap-2">
                     <BarChart3 className="w-4 h-4 text-green-500" />
                     Cumulative P&L
                   </h4>
                   {performanceMetrics && (
-                    <span className={clsx(
+                    <span className={cn(
                       "text-sm font-mono font-bold",
                       performanceMetrics.totalPnl >= 0 ? "text-green-400" : "text-red-400"
                     )}>
@@ -605,16 +616,16 @@ export default function TradingPanel() {
                     <PnlChart points={performanceMetrics.equityPoints} />
                   </div>
                 ) : (
-                  <div className="text-center py-12 text-gray-600">
+                  <div className="text-center py-12 text-muted-foreground">
                     <BarChart3 className="w-10 h-10 mx-auto mb-2 opacity-20" />
                     <p className="text-sm">Start trading to see your equity curve</p>
                   </div>
                 )}
-              </div>
+              </Card>
 
               {/* Strategy Performance */}
               {performanceMetrics && Object.keys(performanceMetrics.byStrategy).length > 0 && (
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-5">
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
                   <h4 className="text-sm font-semibold flex items-center gap-2 mb-3">
                     <PieChart className="w-4 h-4 text-indigo-500" />
                     Strategy Breakdown
@@ -627,10 +638,10 @@ export default function TradingPanel() {
                         const maxPnl = Math.max(...Object.values(performanceMetrics.byStrategy).map(d => Math.abs(d.pnl)), 1)
                         const barWidth = Math.abs(data.pnl) / maxPnl * 100
                         return (
-                          <div key={strategy} className="group relative bg-[#111] rounded-lg p-3 overflow-hidden">
+                          <div key={strategy} className="group relative bg-card rounded-lg p-3 overflow-hidden">
                             {/* Background bar */}
                             <div
-                              className={clsx(
+                              className={cn(
                                 "absolute inset-y-0 left-0 opacity-[0.07] transition-all",
                                 data.pnl >= 0 ? "bg-green-500" : "bg-red-500"
                               )}
@@ -638,50 +649,50 @@ export default function TradingPanel() {
                             />
                             <div className="relative flex items-center justify-between">
                               <div className="flex items-center gap-3">
-                                <div className={clsx("w-1.5 h-8 rounded-full", data.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
+                                <div className={cn("w-1.5 h-8 rounded-full", data.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
                                 <div>
                                   <p className="font-medium text-sm">{strategy}</p>
-                                  <p className="text-[11px] text-gray-500">
+                                  <p className="text-[11px] text-muted-foreground">
                                     {data.trades} trades | {winRate.toFixed(0)}% WR | ${data.cost.toFixed(2)} invested
                                   </p>
                                 </div>
                               </div>
                               <div className="text-right">
-                                <p className={clsx("font-mono font-semibold text-sm", data.pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                                <p className={cn("font-mono font-semibold text-sm", data.pnl >= 0 ? "text-green-400" : "text-red-400")}>
                                   {data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(2)}
                                 </p>
-                                <p className="text-[11px] text-gray-500 font-mono">{data.wins}W / {data.losses}L</p>
+                                <p className="text-[11px] text-muted-foreground font-mono">{data.wins}W / {data.losses}L</p>
                               </div>
                             </div>
                           </div>
                         )
                       })}
                   </div>
-                </div>
+                </Card>
               )}
 
               {/* Best/Worst + Daily */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 {performanceMetrics && (
                   <>
-                    <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Best Trade</p>
+                    <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Best Trade</p>
                       <p className="text-lg font-mono font-bold text-green-400">+${performanceMetrics.bestTrade.toFixed(2)}</p>
-                    </div>
-                    <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Worst Trade</p>
+                    </Card>
+                    <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Worst Trade</p>
                       <p className="text-lg font-mono font-bold text-red-400">${performanceMetrics.worstTrade.toFixed(2)}</p>
-                    </div>
+                    </Card>
                   </>
                 )}
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Executed Today</p>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Executed Today</p>
                   <p className="text-lg font-mono font-bold">{stats?.opportunities_executed || 0}</p>
-                </div>
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Skipped Today</p>
-                  <p className="text-lg font-mono font-bold text-gray-500">{stats?.opportunities_skipped || 0}</p>
-                </div>
+                </Card>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Skipped Today</p>
+                  <p className="text-lg font-mono font-bold text-muted-foreground">{stats?.opportunities_skipped || 0}</p>
+                </Card>
               </div>
             </div>
           )}
@@ -690,13 +701,13 @@ export default function TradingPanel() {
             <div className="space-y-3">
               {/* Wallet Info */}
               {tradingStatus && (
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-4">
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <Wallet className="w-5 h-5 text-purple-400" />
                       <div>
                         <p className="text-sm font-medium">Trading Wallet</p>
-                        <p className="text-xs text-gray-500 font-mono">
+                        <p className="text-xs text-muted-foreground font-mono">
                           {tradingStatus.wallet_address
                             ? `${tradingStatus.wallet_address.slice(0, 10)}...${tradingStatus.wallet_address.slice(-8)}`
                             : 'Not connected'}
@@ -705,43 +716,43 @@ export default function TradingPanel() {
                     </div>
                     <div className="flex items-center gap-6">
                       <div className="text-right">
-                        <p className="text-[10px] text-gray-500 uppercase">USDC</p>
+                        <p className="text-[10px] text-muted-foreground uppercase">USDC</p>
                         <p className="font-mono font-bold">${balance?.balance?.toFixed(2) || '0.00'}</p>
                       </div>
-                      <div className={clsx(
-                        "px-2 py-1 rounded-lg text-[10px] font-medium",
-                        tradingStatus.initialized ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-gray-400"
+                      <Badge className={cn(
+                        "rounded-lg text-[10px] font-medium border-0",
+                        tradingStatus.initialized ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
                       )}>
                         {tradingStatus.initialized ? 'Connected' : 'Offline'}
-                      </div>
+                      </Badge>
                     </div>
                   </div>
-                </div>
+                </Card>
               )}
 
               {/* Holdings Summary */}
               <div className="grid grid-cols-3 gap-3">
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Positions</p>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Positions</p>
                   <p className="text-xl font-mono font-bold">{livePositions.length}</p>
-                </div>
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Cost Basis</p>
+                </Card>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Cost Basis</p>
                   <p className="text-xl font-mono font-bold">${positionsCostBasis.toFixed(2)}</p>
-                </div>
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-3">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Market Value</p>
+                </Card>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Market Value</p>
                   <p className="text-xl font-mono font-bold">${positionsTotalValue.toFixed(2)}</p>
-                </div>
+                </Card>
               </div>
 
               {/* Positions */}
               {livePositions.length === 0 ? (
-                <div className="text-center py-12 bg-[#0d0d0d] border border-gray-800/60 rounded-xl">
+                <Card className="text-center py-12 bg-background border-border/60 rounded-xl shadow-none">
                   <Briefcase className="w-10 h-10 text-gray-700 mx-auto mb-2" />
-                  <p className="text-gray-500 text-sm">No open positions</p>
+                  <p className="text-muted-foreground text-sm">No open positions</p>
                   <p className="text-xs text-gray-700">Start trading to see holdings</p>
-                </div>
+                </Card>
               ) : (
                 <div className="space-y-2">
                   {livePositions.map((pos: TradingPosition, idx: number) => {
@@ -750,52 +761,53 @@ export default function TradingPanel() {
                     const pnlPct = costBasis > 0 ? (pos.unrealized_pnl / costBasis) * 100 : 0
                     const isExpanded = expandedPositions.has(idx)
                     return (
-                      <div key={idx} className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl overflow-hidden transition-all">
-                        <button
+                      <Card key={idx} className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden transition-all">
+                        <Button
+                          variant="ghost"
                           onClick={() => togglePosition(idx)}
-                          className="w-full flex items-center justify-between p-3.5 hover:bg-[#111] transition-colors"
+                          className="w-full flex items-center justify-between p-3.5 h-auto rounded-none hover:bg-card"
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            <div className={clsx(
-                              "w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0",
+                            <Badge className={cn(
+                              "w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0 border-0",
                               pos.outcome.toLowerCase() === 'yes'
                                 ? "bg-green-500/15 text-green-400"
                                 : "bg-red-500/15 text-red-400"
                             )}>
                               {pos.outcome.toUpperCase().slice(0, 1)}
-                            </div>
+                            </Badge>
                             <div className="text-left min-w-0">
                               <p className="text-sm font-medium truncate">{pos.market_question}</p>
-                              <p className="text-[11px] text-gray-500 font-mono">
+                              <p className="text-[11px] text-muted-foreground font-mono">
                                 {pos.size.toFixed(2)} shares @ ${pos.average_cost.toFixed(4)}
                               </p>
                             </div>
                           </div>
                           <div className="flex items-center gap-4 shrink-0">
                             <div className="text-right">
-                              <p className={clsx("font-mono font-semibold text-sm", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                              <p className={cn("font-mono font-semibold text-sm", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
                                 {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
                               </p>
-                              <p className={clsx("text-[11px] font-mono", pnlPct >= 0 ? "text-green-400/60" : "text-red-400/60")}>
+                              <p className={cn("text-[11px] font-mono", pnlPct >= 0 ? "text-green-400/60" : "text-red-400/60")}>
                                 {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
                               </p>
                             </div>
-                            {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+                            {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
                           </div>
-                        </button>
+                        </Button>
                         {isExpanded && (
-                          <div className="px-4 pb-3 pt-0 border-t border-gray-800/40">
+                          <div className="px-4 pb-3 pt-0 border-t border-border/40">
                             <div className="grid grid-cols-4 gap-3 pt-3">
                               <div>
-                                <p className="text-[10px] text-gray-500">Current Price</p>
+                                <p className="text-[10px] text-muted-foreground">Current Price</p>
                                 <p className="font-mono text-sm">${pos.current_price.toFixed(4)}</p>
                               </div>
                               <div>
-                                <p className="text-[10px] text-gray-500">Cost Basis</p>
+                                <p className="text-[10px] text-muted-foreground">Cost Basis</p>
                                 <p className="font-mono text-sm">${costBasis.toFixed(2)}</p>
                               </div>
                               <div>
-                                <p className="text-[10px] text-gray-500">Market Value</p>
+                                <p className="text-[10px] text-muted-foreground">Market Value</p>
                                 <p className="font-mono text-sm">${mktValue.toFixed(2)}</p>
                               </div>
                               <div>
@@ -813,17 +825,17 @@ export default function TradingPanel() {
                             </div>
                           </div>
                         )}
-                      </div>
+                      </Card>
                     )
                   })}
 
                   {/* Totals */}
-                  <div className="flex items-center justify-between px-4 py-3 bg-[#0d0d0d] border border-gray-800/60 rounded-xl">
-                    <span className="text-sm text-gray-400 font-medium">Total Unrealized P&L</span>
-                    <span className={clsx("font-mono font-bold", positionsUnrealizedPnl >= 0 ? "text-green-400" : "text-red-400")}>
+                  <Card className="flex items-center justify-between px-4 py-3 bg-background border-border/60 rounded-xl shadow-none">
+                    <span className="text-sm text-muted-foreground font-medium">Total Unrealized P&L</span>
+                    <span className={cn("font-mono font-bold", positionsUnrealizedPnl >= 0 ? "text-green-400" : "text-red-400")}>
                       {positionsUnrealizedPnl >= 0 ? '+' : ''}${positionsUnrealizedPnl.toFixed(2)}
                     </span>
-                  </div>
+                  </Card>
                 </div>
               )}
             </div>
@@ -836,89 +848,92 @@ export default function TradingPanel() {
                 <select
                   value={tradeFilter}
                   onChange={(e) => setTradeFilter(e.target.value)}
-                  className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                  className="bg-card border border-border rounded-lg px-3 py-2 text-sm"
                 >
                   <option value="all">All Trades</option>
                   <option value="open">Open</option>
                   <option value="wins">Wins</option>
                   <option value="losses">Losses</option>
                 </select>
-                <div className="flex items-center gap-1 text-xs text-gray-500">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   {(['date', 'pnl', 'cost'] as const).map(s => (
-                    <button
+                    <Button
                       key={s}
+                      variant="ghost"
                       onClick={() => {
                         if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
                         else { setTradeSort(s); setTradeSortDir('desc') }
                       }}
-                      className={clsx(
-                        "px-2 py-1 rounded-md transition-colors",
+                      className={cn(
+                        "px-2 py-1 h-auto rounded-md text-xs",
                         tradeSort === s ? "bg-green-500/15 text-green-400" : "hover:bg-gray-800"
                       )}
                     >
                       {s.charAt(0).toUpperCase() + s.slice(1)}
                       {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-3 h-3 inline ml-0.5" /> : <ChevronUp className="w-3 h-3 inline ml-0.5" />)}
-                    </button>
+                    </Button>
                   ))}
                 </div>
-                <span className="text-[11px] text-gray-600 ml-auto font-mono">{processedTrades.length} trades</span>
+                <span className="text-[11px] text-muted-foreground ml-auto font-mono">{processedTrades.length} trades</span>
               </div>
 
               {/* Trades */}
               {processedTrades.length === 0 ? (
-                <div className="text-center py-12 bg-[#0d0d0d] border border-gray-800/60 rounded-xl">
-                  <p className="text-gray-500 text-sm">No trades found</p>
-                </div>
+                <Card className="text-center py-12 bg-background border-border/60 rounded-xl shadow-none">
+                  <p className="text-muted-foreground text-sm">No trades found</p>
+                </Card>
               ) : (
-                <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl overflow-hidden">
-                  <div className="max-h-[500px] overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-[#0d0d0d] z-10">
-                        <tr className="border-b border-gray-800/60 text-gray-500 text-[11px] uppercase tracking-wider">
-                          <th className="text-left px-4 py-2.5">Date</th>
-                          <th className="text-left px-3 py-2.5">Strategy</th>
-                          <th className="text-center px-3 py-2.5">Mode</th>
-                          <th className="text-right px-3 py-2.5">Cost</th>
-                          <th className="text-center px-3 py-2.5">Status</th>
-                          <th className="text-right px-4 py-2.5">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {processedTrades.map((trade) => (
-                          <tr key={trade.id} className="border-b border-gray-800/30 hover:bg-[#111] transition-colors">
-                            <td className="px-4 py-2.5">
-                              <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
-                              <p className="font-mono text-[10px] text-gray-600">{new Date(trade.executed_at).toLocaleTimeString()}</p>
-                            </td>
-                            <td className="px-3 py-2.5 font-medium text-sm">{trade.strategy}</td>
-                            <td className="text-center px-3 py-2.5">
-                              <span className={clsx(
-                                "px-2 py-0.5 rounded-md text-[10px] font-semibold",
-                                trade.mode === 'live' ? "bg-green-500/15 text-green-400" :
-                                trade.mode === 'paper' ? "bg-blue-500/15 text-blue-400" : "bg-gray-500/15 text-gray-400"
-                              )}>
-                                {trade.mode.toUpperCase()}
-                              </span>
-                            </td>
-                            <td className="text-right px-3 py-2.5 font-mono text-sm">${trade.total_cost.toFixed(2)}</td>
-                            <td className="text-center px-3 py-2.5">
-                              <StatusBadge status={trade.status} />
-                            </td>
-                            <td className="text-right px-4 py-2.5">
-                              {trade.actual_profit !== null ? (
-                                <span className={clsx("font-mono font-semibold", (trade.actual_profit || 0) >= 0 ? "text-green-400" : "text-red-400")}>
-                                  {(trade.actual_profit || 0) >= 0 ? '+' : ''}${(trade.actual_profit || 0).toFixed(2)}
-                                </span>
-                              ) : (
-                                <span className="text-gray-500 font-mono text-xs">+${trade.expected_profit.toFixed(2)} exp</span>
-                              )}
-                            </td>
+                <Card className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden">
+                  <CardContent className="p-0">
+                    <div className="max-h-[500px] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-background z-10">
+                          <tr className="border-b border-border/60 text-muted-foreground text-[11px] uppercase tracking-wider">
+                            <th className="text-left px-4 py-2.5">Date</th>
+                            <th className="text-left px-3 py-2.5">Strategy</th>
+                            <th className="text-center px-3 py-2.5">Mode</th>
+                            <th className="text-right px-3 py-2.5">Cost</th>
+                            <th className="text-center px-3 py-2.5">Status</th>
+                            <th className="text-right px-4 py-2.5">P&L</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                        </thead>
+                        <tbody>
+                          {processedTrades.map((trade) => (
+                            <tr key={trade.id} className="border-b border-border/30 hover:bg-card transition-colors">
+                              <td className="px-4 py-2.5">
+                                <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
+                                <p className="font-mono text-[10px] text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
+                              </td>
+                              <td className="px-3 py-2.5 font-medium text-sm">{trade.strategy}</td>
+                              <td className="text-center px-3 py-2.5">
+                                <Badge className={cn(
+                                  "rounded-md text-[10px] font-semibold border-0",
+                                  trade.mode === 'live' ? "bg-green-500/15 text-green-400" :
+                                  trade.mode === 'paper' ? "bg-blue-500/15 text-blue-400" : "bg-gray-500/15 text-muted-foreground"
+                                )}>
+                                  {trade.mode.toUpperCase()}
+                                </Badge>
+                              </td>
+                              <td className="text-right px-3 py-2.5 font-mono text-sm">${trade.total_cost.toFixed(2)}</td>
+                              <td className="text-center px-3 py-2.5">
+                                <StatusBadge status={trade.status} />
+                              </td>
+                              <td className="text-right px-4 py-2.5">
+                                {trade.actual_profit !== null ? (
+                                  <span className={cn("font-mono font-semibold", (trade.actual_profit || 0) >= 0 ? "text-green-400" : "text-red-400")}>
+                                    {(trade.actual_profit || 0) >= 0 ? '+' : ''}${(trade.actual_profit || 0).toFixed(2)}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground font-mono text-xs">+${trade.expected_profit.toFixed(2)} exp</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}
@@ -928,8 +943,8 @@ export default function TradingPanel() {
         <div className="col-span-12 lg:col-span-5 space-y-3">
 
           {/* Key Stats - Vertical Stack with Sparklines */}
-          <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-4 space-y-1">
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+          <Card className="bg-background border-border/60 rounded-xl shadow-none p-4 space-y-1">
+            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
               <Crosshair className="w-3 h-3" /> Key Metrics
             </h4>
 
@@ -952,7 +967,7 @@ export default function TradingPanel() {
               value={`${((stats?.win_rate || 0) * 100).toFixed(1)}%`}
               icon={<Award className="w-3.5 h-3.5" />}
               sub={`${stats?.winning_trades || 0}W / ${stats?.losing_trades || 0}L`}
-              valueColor={(stats?.win_rate || 0) >= 0.5 ? 'text-green-400' : (stats?.win_rate || 0) > 0 ? 'text-yellow-400' : 'text-gray-400'}
+              valueColor={(stats?.win_rate || 0) >= 0.5 ? 'text-green-400' : (stats?.win_rate || 0) > 0 ? 'text-yellow-400' : 'text-muted-foreground'}
             />
             <MetricRow
               label="Total Trades"
@@ -970,12 +985,12 @@ export default function TradingPanel() {
               value={`$${(stats?.total_invested || 0).toFixed(2)}`}
               icon={<Briefcase className="w-3.5 h-3.5" />}
             />
-          </div>
+          </Card>
 
           {/* Advanced Metrics */}
           {performanceMetrics && (
-            <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-4 space-y-1">
-              <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+            <Card className="bg-background border-border/60 rounded-xl shadow-none p-4 space-y-1">
+              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
                 <Flame className="w-3 h-3" /> Advanced
               </h4>
               <MetricRow
@@ -1013,78 +1028,78 @@ export default function TradingPanel() {
                 valueColor={positionsUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}
                 icon={positionsUnrealizedPnl >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
               />
-            </div>
+            </Card>
           )}
 
           {/* System Health */}
-          <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-4">
-            <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+          <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
+            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
               <Shield className="w-3 h-3" /> System
             </h4>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Engine</span>
-                <span className={clsx("text-xs font-mono font-medium", status?.running ? "text-green-400" : "text-gray-500")}>
+                <span className="text-xs text-muted-foreground">Engine</span>
+                <span className={cn("text-xs font-mono font-medium", status?.running ? "text-green-400" : "text-muted-foreground")}>
                   {status?.running ? 'ACTIVE' : 'STOPPED'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Mode</span>
-                <span className={clsx("text-xs font-mono font-medium",
+                <span className="text-xs text-muted-foreground">Mode</span>
+                <span className={cn("text-xs font-mono font-medium",
                   config?.mode === 'live' ? "text-green-400" :
-                  config?.mode === 'paper' ? "text-blue-400" : "text-gray-500"
+                  config?.mode === 'paper' ? "text-blue-400" : "text-muted-foreground"
                 )}>
                   {config?.mode?.toUpperCase() || 'DISABLED'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Circuit Breaker</span>
-                <span className={clsx("text-xs font-mono font-medium",
-                  stats?.circuit_breaker_active ? "text-yellow-400" : "text-gray-500"
+                <span className="text-xs text-muted-foreground">Circuit Breaker</span>
+                <span className={cn("text-xs font-mono font-medium",
+                  stats?.circuit_breaker_active ? "text-yellow-400" : "text-muted-foreground"
                 )}>
                   {stats?.circuit_breaker_active ? 'TRIGGERED' : 'OK'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Consecutive Losses</span>
-                <span className={clsx("text-xs font-mono font-medium",
-                  (stats?.consecutive_losses || 0) >= 3 ? "text-orange-400" : "text-gray-400"
+                <span className="text-xs text-muted-foreground">Consecutive Losses</span>
+                <span className={cn("text-xs font-mono font-medium",
+                  (stats?.consecutive_losses || 0) >= 3 ? "text-orange-400" : "text-muted-foreground"
                 )}>
                   {stats?.consecutive_losses || 0} / {config?.circuit_breaker_losses || '?'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Last Trade</span>
-                <span className="text-xs font-mono text-gray-500">
+                <span className="text-xs text-muted-foreground">Last Trade</span>
+                <span className="text-xs font-mono text-muted-foreground">
                   {stats?.last_trade_at ? timeAgo(new Date(stats.last_trade_at)) : 'Never'}
                 </span>
               </div>
               {tradingStatus && (
                 <>
-                  <div className="border-t border-gray-800/40 my-2" />
+                  <Separator className="my-2" />
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">Wallet</span>
-                    <span className={clsx("text-xs font-mono font-medium",
-                      tradingStatus.initialized ? "text-green-400" : "text-gray-500"
+                    <span className="text-xs text-muted-foreground">Wallet</span>
+                    <span className={cn("text-xs font-mono font-medium",
+                      tradingStatus.initialized ? "text-green-400" : "text-muted-foreground"
                     )}>
                       {tradingStatus.initialized ? 'CONNECTED' : 'OFFLINE'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">Balance</span>
-                    <span className="text-xs font-mono text-gray-400">
+                    <span className="text-xs text-muted-foreground">Balance</span>
+                    <span className="text-xs font-mono text-muted-foreground">
                       ${balance?.balance?.toFixed(2) || '0.00'} USDC
                     </span>
                   </div>
                 </>
               )}
             </div>
-          </div>
+          </Card>
 
           {/* Live Positions mini-list (always visible) */}
           {livePositions.length > 0 && dashboardTab !== 'holdings' && (
-            <div className="bg-[#0d0d0d] border border-gray-800/60 rounded-xl p-4">
-              <h4 className="text-[10px] text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+            <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
+              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
                 <Briefcase className="w-3 h-3" /> Open Positions
                 <span className="ml-auto text-green-400 font-mono">{livePositions.length}</span>
               </h4>
@@ -1092,15 +1107,15 @@ export default function TradingPanel() {
                 {livePositions.slice(0, 5).map((pos: TradingPosition, idx: number) => (
                   <div key={idx} className="flex items-center justify-between py-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      <div className={clsx(
-                        "w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold shrink-0",
+                      <Badge className={cn(
+                        "w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold shrink-0 border-0",
                         pos.outcome.toLowerCase() === 'yes' ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
                       )}>
                         {pos.outcome[0].toUpperCase()}
-                      </div>
-                      <p className="text-xs truncate text-gray-400">{pos.market_question}</p>
+                      </Badge>
+                      <p className="text-xs truncate text-muted-foreground">{pos.market_question}</p>
                     </div>
-                    <span className={clsx(
+                    <span className={cn(
                       "text-xs font-mono font-medium shrink-0 ml-2",
                       pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
                     )}>
@@ -1109,15 +1124,16 @@ export default function TradingPanel() {
                   </div>
                 ))}
                 {livePositions.length > 5 && (
-                  <button
+                  <Button
+                    variant="ghost"
                     onClick={() => setDashboardTab('holdings')}
-                    className="text-xs text-gray-500 hover:text-gray-300 w-full text-center pt-1"
+                    className="text-xs text-muted-foreground hover:text-gray-300 w-full h-auto pt-1 justify-center"
                   >
                     +{livePositions.length - 5} more...
-                  </button>
+                  </Button>
                 )}
               </div>
-            </div>
+            </Card>
           )}
         </div>
       </div>
@@ -1149,7 +1165,7 @@ function FeedEventRow({ event, isNew }: { event: FeedEvent; isNew: boolean }) {
   }
 
   return (
-    <div className={clsx(
+    <div className={cn(
       "flex items-start gap-3 px-4 py-2.5 border-l-2 transition-all",
       borderColorMap[event.icon],
       isNew && "bg-white/[0.02]"
@@ -1159,21 +1175,21 @@ function FeedEventRow({ event, isNew }: { event: FeedEvent; isNew: boolean }) {
         <div className="flex items-center gap-2">
           <p className="text-sm font-medium truncate">{event.title}</p>
           {event.value && (
-            <span className={clsx("text-xs font-mono font-semibold shrink-0", event.valueColor || 'text-gray-400')}>
+            <span className={cn("text-xs font-mono font-semibold shrink-0", event.valueColor || 'text-muted-foreground')}>
               {event.value}
             </span>
           )}
         </div>
-        <p className="text-[11px] text-gray-500 truncate">{event.detail}</p>
+        <p className="text-[11px] text-muted-foreground truncate">{event.detail}</p>
       </div>
-      <span className="text-[10px] text-gray-600 font-mono shrink-0 mt-0.5">
+      <span className="text-[10px] text-muted-foreground font-mono shrink-0 mt-0.5">
         {formatFeedTime(event.timestamp)}
       </span>
     </div>
   )
 }
 
-function MetricRow({ label, value, valueColor = 'text-white', icon, sub, sparkData }: {
+function MetricRow({ label, value, valueColor = 'text-foreground', icon, sub, sparkData }: {
   label: string
   value: string
   valueColor?: string
@@ -1182,17 +1198,17 @@ function MetricRow({ label, value, valueColor = 'text-white', icon, sub, sparkDa
   sparkData?: number[]
 }) {
   return (
-    <div className="flex items-center justify-between py-2 border-b border-gray-800/20 last:border-0">
+    <div className="flex items-center justify-between py-2 border-b border-border/20 last:border-0">
       <div className="flex items-center gap-2">
-        <span className="text-gray-500">{icon}</span>
+        <span className="text-muted-foreground">{icon}</span>
         <div>
-          <p className="text-xs text-gray-400">{label}</p>
-          {sub && <p className="text-[10px] text-gray-600">{sub}</p>}
+          <p className="text-xs text-muted-foreground">{label}</p>
+          {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
         </div>
       </div>
       <div className="flex items-center gap-2">
         {sparkData && sparkData.length > 2 && <MiniSparkline data={sparkData} />}
-        <p className={clsx("text-sm font-mono font-semibold", valueColor)}>{value}</p>
+        <p className={cn("text-sm font-mono font-semibold", valueColor)}>{value}</p>
       </div>
     </div>
   )
@@ -1236,12 +1252,12 @@ function StatusBadge({ status }: { status: string }) {
     pending: 'bg-yellow-500/15 text-yellow-400',
     executed: 'bg-blue-500/15 text-blue-400',
     failed: 'bg-red-500/15 text-red-400',
-    shadow: 'bg-gray-500/15 text-gray-400',
+    shadow: 'bg-gray-500/15 text-muted-foreground',
   }
   return (
-    <span className={clsx("px-2 py-0.5 rounded-md text-[10px] font-semibold", colors[status] || 'bg-gray-500/15 text-gray-400')}>
+    <Badge className={cn("px-2 py-0.5 rounded-md text-[10px] font-semibold border-0", colors[status] || 'bg-gray-500/15 text-muted-foreground')}>
       {status.replace('_', ' ').toUpperCase()}
-    </span>
+    </Badge>
   )
 }
 
@@ -1305,14 +1321,14 @@ function PnlChart({ points }: { points: { date: string; equity: number }[] }) {
         />
       </svg>
 
-      <div className="absolute top-1 left-2 text-[10px] font-mono text-gray-600">
+      <div className="absolute top-1 left-2 text-[10px] font-mono text-muted-foreground">
         ${maxVal.toFixed(0)}
       </div>
-      <div className="absolute bottom-1 left-2 text-[10px] font-mono text-gray-600">
+      <div className="absolute bottom-1 left-2 text-[10px] font-mono text-muted-foreground">
         ${minVal.toFixed(0)}
       </div>
       <div className="absolute bottom-1 right-2 flex items-center gap-2">
-        <span className={clsx("text-xs font-mono font-semibold", isProfitable ? 'text-green-400' : 'text-red-400')}>
+        <span className={cn("text-xs font-mono font-semibold", isProfitable ? 'text-green-400' : 'text-red-400')}>
           {isProfitable ? '+' : ''}${lastEquity.toFixed(2)}
         </span>
       </div>

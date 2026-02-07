@@ -22,7 +22,12 @@ import {
   PieChart,
   ArrowLeft,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
+import { Card, CardContent } from './ui/card'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
+import { Input } from './ui/input'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import {
   getSimulationAccounts,
   createSimulationAccount,
@@ -160,64 +165,64 @@ export default function SimulationPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold">Paper Trading Simulation</h2>
-          <p className="text-sm text-gray-500">Practice trading without risking real money</p>
+          <p className="text-sm text-muted-foreground">Practice trading without risking real money</p>
         </div>
-        <button
+        <Button
           onClick={() => setShowCreateForm(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-sm font-medium"
+          className="gap-2"
         >
           <Plus className="w-4 h-4" />
           New Account
-        </button>
+        </Button>
       </div>
 
       {/* Create Account Form */}
       {showCreateForm && (
-        <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+        <Card className="bg-card border-border rounded-lg shadow-none p-4">
           <h3 className="font-medium mb-4">Create Simulation Account</h3>
           <div className="flex gap-4">
-            <input
+            <Input
               type="text"
               value={newAccountName}
               onChange={(e) => setNewAccountName(e.target.value)}
               placeholder="Account name"
-              className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2"
+              className="flex-1"
             />
-            <input
+            <Input
               type="number"
               value={newAccountCapital}
               onChange={(e) => setNewAccountCapital(Number(e.target.value))}
               placeholder="Initial capital"
-              className="w-40 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2"
+              className="w-40"
             />
-            <button
+            <Button
               onClick={() => createMutation.mutate()}
               disabled={!newAccountName || createMutation.isPending}
-              className="px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg font-medium disabled:opacity-50"
+              className="bg-green-500 hover:bg-green-600"
             >
               Create
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
               onClick={() => setShowCreateForm(false)}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg"
             >
               Cancel
-            </button>
+            </Button>
           </div>
-        </div>
+        </Card>
       )}
 
       {/* Accounts List */}
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
         </div>
       ) : accounts.length === 0 ? (
-        <div className="text-center py-12 bg-[#141414] border border-gray-800 rounded-lg">
-          <DollarSign className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-          <p className="text-gray-400">No simulation accounts yet</p>
-          <p className="text-sm text-gray-600">Create one to start paper trading</p>
-        </div>
+        <Card className="text-center py-12 bg-card border-border shadow-none">
+          <DollarSign className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+          <p className="text-muted-foreground">No simulation accounts yet</p>
+          <p className="text-sm text-muted-foreground">Create one to start paper trading</p>
+        </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {accounts.map((account) => (
@@ -241,30 +246,32 @@ export default function SimulationPanel() {
           {/* Dashboard Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button
+              <Button
+                variant="ghost"
                 onClick={() => setSelectedAccount(null)}
-                className="p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+                className="p-1.5 h-auto"
               >
-                <ArrowLeft className="w-5 h-5 text-gray-400" />
-              </button>
+                <ArrowLeft className="w-5 h-5 text-muted-foreground" />
+              </Button>
               <div>
                 <h3 className="text-lg font-bold">{selectedAccountData.name}</h3>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                   Created {selectedAccountData.created_at ? new Date(selectedAccountData.created_at).toLocaleDateString() : 'N/A'}
                 </p>
               </div>
             </div>
-            <button
+            <Button
+              variant="ghost"
               onClick={() => {
                 queryClient.invalidateQueries({ queryKey: ['account-equity', selectedAccount] })
                 queryClient.invalidateQueries({ queryKey: ['account-trades', selectedAccount] })
                 queryClient.invalidateQueries({ queryKey: ['account-positions', selectedAccount] })
               }}
-              className="flex items-center gap-2 px-3 py-1.5 bg-[#1a1a1a] hover:bg-gray-700 rounded-lg text-xs"
+              className="gap-2 bg-muted hover:bg-muted/80 rounded-lg h-auto px-3 py-1.5 text-xs"
             >
               <RefreshCw className="w-3 h-3" />
               Refresh
-            </button>
+            </Button>
           </div>
 
           {/* Key Metrics Row */}
@@ -272,7 +279,7 @@ export default function SimulationPanel() {
             <MiniStat
               label="Initial Capital"
               value={`$${selectedAccountData.initial_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              icon={<DollarSign className="w-4 h-4 text-gray-400" />}
+              icon={<DollarSign className="w-4 h-4 text-muted-foreground" />}
             />
             <MiniStat
               label="Current Capital"
@@ -340,43 +347,42 @@ export default function SimulationPanel() {
                 label="Avg Win / Loss"
                 value={`$${summary.avg_win.toFixed(2)}`}
                 subtitle={`/ -$${summary.avg_loss.toFixed(2)}`}
-                icon={<Activity className="w-4 h-4 text-gray-400" />}
+                icon={<Activity className="w-4 h-4 text-muted-foreground" />}
               />
             </div>
           )}
 
           {/* Tab Navigation */}
-          <div className="flex bg-[#141414] rounded-lg p-1 border border-gray-800 w-fit">
-            {([
-              { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
-              { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
-              { key: 'trades', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
-              { key: 'execute', label: 'Execute', icon: <Play className="w-3.5 h-3.5" /> },
-            ] as { key: DetailTab; label: string; icon: React.ReactNode }[]).map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setDetailTab(tab.key)}
-                className={clsx(
-                  "flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-colors",
-                  detailTab === tab.key ? "bg-blue-500 text-white" : "text-gray-400 hover:text-white"
-                )}
-              >
-                {tab.icon}
-                {tab.label}
-                {tab.key === 'holdings' && positions.length > 0 && (
-                  <span className="ml-1 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs">
-                    {positions.length}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as DetailTab)} className="w-fit">
+            <TabsList className="bg-card rounded-lg p-1 border border-border h-auto">
+              {([
+                { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+                { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
+                { key: 'trades', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
+                { key: 'execute', label: 'Execute', icon: <Play className="w-3.5 h-3.5" /> },
+              ] as { key: DetailTab; label: string; icon: React.ReactNode }[]).map(tab => (
+                <TabsTrigger
+                  key={tab.key}
+                  value={tab.key}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium data-[state=active]:bg-blue-500 data-[state=active]:text-foreground text-muted-foreground"
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {tab.key === 'holdings' && positions.length > 0 && (
+                    <Badge className="ml-1 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs border-0">
+                      {positions.length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
 
           {/* Tab Content */}
           {detailTab === 'overview' && (
             <div className="space-y-4">
               {/* Equity Curve */}
-              <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
+              <Card className="bg-card border-border shadow-none p-6">
                 <h4 className="font-semibold mb-4 flex items-center gap-2">
                   <BarChart3 className="w-5 h-5 text-blue-500" />
                   Account Equity Over Time
@@ -389,15 +395,15 @@ export default function SimulationPanel() {
                     />
                   </div>
                 ) : (
-                  <div className="text-center py-8 text-gray-500">
+                  <div className="text-center py-8 text-muted-foreground">
                     Execute some trades to see your equity curve
                   </div>
                 )}
-              </div>
+              </Card>
 
               {/* Strategy Breakdown */}
               {Object.keys(strategyBreakdown).length > 0 && (
-                <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
+                <Card className="bg-card border-border shadow-none p-6">
                   <h4 className="font-semibold mb-4 flex items-center gap-2">
                     <PieChart className="w-5 h-5 text-indigo-500" />
                     Performance by Strategy
@@ -408,44 +414,44 @@ export default function SimulationPanel() {
                       .map(([strategy, stats]) => {
                         const winRate = (stats.wins + stats.losses) > 0 ? (stats.wins / (stats.wins + stats.losses)) * 100 : 0
                         return (
-                          <div key={strategy} className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
+                          <div key={strategy} className="flex items-center justify-between bg-muted rounded-lg p-3">
                             <div className="flex items-center gap-3">
-                              <div className={clsx("w-2 h-2 rounded-full", stats.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
+                              <div className={cn("w-2 h-2 rounded-full", stats.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
                               <div>
                                 <p className="font-medium text-sm">{strategy}</p>
-                                <p className="text-xs text-gray-500">
+                                <p className="text-xs text-muted-foreground">
                                   {stats.trades} trades | {winRate.toFixed(0)}% win rate | Cost: ${stats.cost.toFixed(2)}
                                 </p>
                               </div>
                             </div>
                             <div className="text-right">
-                              <p className={clsx("font-mono font-medium", stats.pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                              <p className={cn("font-mono font-medium", stats.pnl >= 0 ? "text-green-400" : "text-red-400")}>
                                 {stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}
                               </p>
-                              <p className="text-xs text-gray-500">{stats.wins}W / {stats.losses}L</p>
+                              <p className="text-xs text-muted-foreground">{stats.wins}W / {stats.losses}L</p>
                             </div>
                           </div>
                         )
                       })}
                   </div>
-                </div>
+                </Card>
               )}
 
               {/* Best/Worst Trades */}
               {summary && (summary.best_trade !== 0 || summary.worst_trade !== 0) && (
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-                    <p className="text-xs text-gray-500 mb-1">Best Trade</p>
+                  <Card className="bg-card border-border shadow-none p-4">
+                    <p className="text-xs text-muted-foreground mb-1">Best Trade</p>
                     <p className="text-xl font-mono font-bold text-green-400">
                       +${summary.best_trade.toFixed(2)}
                     </p>
-                  </div>
-                  <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-                    <p className="text-xs text-gray-500 mb-1">Worst Trade</p>
+                  </Card>
+                  <Card className="bg-card border-border shadow-none p-4">
+                    <p className="text-xs text-muted-foreground mb-1">Worst Trade</p>
                     <p className="text-xl font-mono font-bold text-red-400">
                       ${summary.worst_trade.toFixed(2)}
                     </p>
-                  </div>
+                  </Card>
                 </div>
               )}
             </div>
@@ -455,104 +461,106 @@ export default function SimulationPanel() {
             <div className="space-y-4">
               {/* Holdings Summary */}
               <div className="grid grid-cols-3 gap-4">
-                <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Open Positions</p>
+                <Card className="bg-card border-border shadow-none p-4">
+                  <p className="text-xs text-muted-foreground mb-1">Open Positions</p>
                   <p className="text-2xl font-mono font-bold">{positions.length}</p>
-                </div>
-                <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Book Value (Cost Basis)</p>
+                </Card>
+                <Card className="bg-card border-border shadow-none p-4">
+                  <p className="text-xs text-muted-foreground mb-1">Book Value (Cost Basis)</p>
                   <p className="text-2xl font-mono font-bold">
                     ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
                   </p>
-                </div>
-                <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
-                  <p className="text-xs text-gray-500 mb-1">Market Value</p>
+                </Card>
+                <Card className="bg-card border-border shadow-none p-4">
+                  <p className="text-xs text-muted-foreground mb-1">Market Value</p>
                   <p className="text-2xl font-mono font-bold">
                     ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
                   </p>
-                </div>
+                </Card>
               </div>
 
               {/* Positions Table */}
               {positions.length === 0 ? (
-                <div className="text-center py-8 bg-[#141414] border border-gray-800 rounded-lg">
-                  <Briefcase className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                  <p className="text-gray-400">No open positions</p>
-                  <p className="text-sm text-gray-600">Execute opportunities to open positions</p>
-                </div>
+                <Card className="text-center py-8 bg-card border-border shadow-none">
+                  <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                  <p className="text-muted-foreground">No open positions</p>
+                  <p className="text-sm text-muted-foreground">Execute opportunities to open positions</p>
+                </Card>
               ) : (
-                <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-800 text-gray-500 text-xs">
-                        <th className="text-left px-4 py-3">Market</th>
-                        <th className="text-center px-3 py-3">Side</th>
-                        <th className="text-right px-3 py-3">Qty</th>
-                        <th className="text-right px-3 py-3">Entry Price</th>
-                        <th className="text-right px-3 py-3">Curr Price</th>
-                        <th className="text-right px-3 py-3">Cost Basis</th>
-                        <th className="text-right px-3 py-3">Mkt Value</th>
-                        <th className="text-right px-4 py-3">Unrealized P&L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map((pos: SimulationPosition) => {
-                        const currPrice = pos.current_price || pos.entry_price
-                        const mktValue = pos.quantity * currPrice
-                        const pnlPct = pos.entry_cost > 0 ? (pos.unrealized_pnl / pos.entry_cost) * 100 : 0
-                        return (
-                          <tr key={pos.id} className="border-b border-gray-800/50 hover:bg-[#1a1a1a] transition-colors">
-                            <td className="px-4 py-3">
-                              <p className="font-medium text-sm line-clamp-1">{pos.market_question}</p>
-                              <p className="text-xs text-gray-500">{pos.opened_at ? new Date(pos.opened_at).toLocaleDateString() : ''}</p>
-                            </td>
-                            <td className="text-center px-3 py-3">
-                              <span className={clsx(
-                                "px-2 py-0.5 rounded text-xs font-medium",
-                                pos.side === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-                              )}>
-                                {pos.side.toUpperCase()}
-                              </span>
-                            </td>
-                            <td className="text-right px-3 py-3 font-mono">{pos.quantity.toFixed(2)}</td>
-                            <td className="text-right px-3 py-3 font-mono">${pos.entry_price.toFixed(4)}</td>
-                            <td className="text-right px-3 py-3 font-mono">${currPrice.toFixed(4)}</td>
-                            <td className="text-right px-3 py-3 font-mono">${pos.entry_cost.toFixed(2)}</td>
-                            <td className="text-right px-3 py-3 font-mono">${mktValue.toFixed(2)}</td>
-                            <td className="text-right px-4 py-3">
-                              <span className={clsx("font-mono font-medium", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
-                              </span>
-                              <span className={clsx("text-xs ml-1", pnlPct >= 0 ? "text-green-400/70" : "text-red-400/70")}>
-                                ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
-                              </span>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t border-gray-700 font-medium">
-                        <td className="px-4 py-3 text-gray-400" colSpan={5}>Totals</td>
-                        <td className="text-right px-3 py-3 font-mono">
-                          ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
-                        </td>
-                        <td className="text-right px-3 py-3 font-mono">
-                          ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
-                        </td>
-                        <td className="text-right px-4 py-3">
-                          <span className={clsx(
-                            "font-mono font-medium",
-                            positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? "text-green-400" : "text-red-400"
-                          )}>
-                            {positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? '+' : ''}
-                            ${positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0).toFixed(2)}
-                          </span>
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+                <Card className="bg-card border-border shadow-none overflow-hidden">
+                  <CardContent className="p-0">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border text-muted-foreground text-xs">
+                          <th className="text-left px-4 py-3">Market</th>
+                          <th className="text-center px-3 py-3">Side</th>
+                          <th className="text-right px-3 py-3">Qty</th>
+                          <th className="text-right px-3 py-3">Entry Price</th>
+                          <th className="text-right px-3 py-3">Curr Price</th>
+                          <th className="text-right px-3 py-3">Cost Basis</th>
+                          <th className="text-right px-3 py-3">Mkt Value</th>
+                          <th className="text-right px-4 py-3">Unrealized P&L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {positions.map((pos: SimulationPosition) => {
+                          const currPrice = pos.current_price || pos.entry_price
+                          const mktValue = pos.quantity * currPrice
+                          const pnlPct = pos.entry_cost > 0 ? (pos.unrealized_pnl / pos.entry_cost) * 100 : 0
+                          return (
+                            <tr key={pos.id} className="border-b border-border/50 hover:bg-muted transition-colors">
+                              <td className="px-4 py-3">
+                                <p className="font-medium text-sm line-clamp-1">{pos.market_question}</p>
+                                <p className="text-xs text-muted-foreground">{pos.opened_at ? new Date(pos.opened_at).toLocaleDateString() : ''}</p>
+                              </td>
+                              <td className="text-center px-3 py-3">
+                                <Badge className={cn(
+                                  "rounded text-xs font-medium border-0",
+                                  pos.side === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                                )}>
+                                  {pos.side.toUpperCase()}
+                                </Badge>
+                              </td>
+                              <td className="text-right px-3 py-3 font-mono">{pos.quantity.toFixed(2)}</td>
+                              <td className="text-right px-3 py-3 font-mono">${pos.entry_price.toFixed(4)}</td>
+                              <td className="text-right px-3 py-3 font-mono">${currPrice.toFixed(4)}</td>
+                              <td className="text-right px-3 py-3 font-mono">${pos.entry_cost.toFixed(2)}</td>
+                              <td className="text-right px-3 py-3 font-mono">${mktValue.toFixed(2)}</td>
+                              <td className="text-right px-4 py-3">
+                                <span className={cn("font-mono font-medium", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                                  {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
+                                </span>
+                                <span className={cn("text-xs ml-1", pnlPct >= 0 ? "text-green-400/70" : "text-red-400/70")}>
+                                  ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
+                                </span>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-border font-medium">
+                          <td className="px-4 py-3 text-muted-foreground" colSpan={5}>Totals</td>
+                          <td className="text-right px-3 py-3 font-mono">
+                            ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
+                          </td>
+                          <td className="text-right px-3 py-3 font-mono">
+                            ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
+                          </td>
+                          <td className="text-right px-4 py-3">
+                            <span className={cn(
+                              "font-mono font-medium",
+                              positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? "text-green-400" : "text-red-400"
+                            )}>
+                              {positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? '+' : ''}
+                              ${positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0).toFixed(2)}
+                            </span>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}
@@ -564,7 +572,7 @@ export default function SimulationPanel() {
                 <select
                   value={tradeFilter}
                   onChange={(e) => setTradeFilter(e.target.value)}
-                  className="bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
                 >
                   <option value="all">All Trades</option>
                   <option value="open">Open</option>
@@ -572,118 +580,122 @@ export default function SimulationPanel() {
                   <option value="resolved_loss">Losses</option>
                   <option value="pending">Pending</option>
                 </select>
-                <div className="flex items-center gap-1 text-xs text-gray-500">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   Sort:
                   {(['date', 'pnl', 'cost'] as const).map(s => (
-                    <button
+                    <Button
                       key={s}
+                      variant="ghost"
                       onClick={() => {
                         if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
                         else { setTradeSort(s); setTradeSortDir('desc') }
                       }}
-                      className={clsx(
-                        "px-2 py-1 rounded",
+                      className={cn(
+                        "px-2 py-1 h-auto rounded text-xs",
                         tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-gray-800"
                       )}
                     >
                       {s.charAt(0).toUpperCase() + s.slice(1)}
                       {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-3 h-3 inline ml-0.5" /> : <ChevronUp className="w-3 h-3 inline ml-0.5" />)}
-                    </button>
+                    </Button>
                   ))}
                 </div>
-                <span className="text-xs text-gray-500 ml-auto">{processedTrades.length} trades</span>
+                <span className="text-xs text-muted-foreground ml-auto">{processedTrades.length} trades</span>
               </div>
 
               {/* Trades Table */}
               {processedTrades.length === 0 ? (
-                <div className="text-center py-8 bg-[#141414] border border-gray-800 rounded-lg">
-                  <p className="text-gray-400">No trades found</p>
-                </div>
+                <Card className="text-center py-8 bg-card border-border shadow-none">
+                  <p className="text-muted-foreground">No trades found</p>
+                </Card>
               ) : (
-                <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
-                  <div className="max-h-[600px] overflow-y-auto">
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-[#141414]">
-                        <tr className="border-b border-gray-800 text-gray-500 text-xs">
-                          <th className="text-left px-4 py-3">Date</th>
-                          <th className="text-left px-3 py-3">Strategy</th>
-                          <th className="text-right px-3 py-3">Cost</th>
-                          <th className="text-right px-3 py-3">Expected</th>
-                          <th className="text-right px-3 py-3">Slippage</th>
-                          <th className="text-center px-3 py-3">Status</th>
-                          <th className="text-right px-3 py-3">Payout</th>
-                          <th className="text-right px-4 py-3">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {processedTrades.map((trade) => (
-                          <tr key={trade.id} className="border-b border-gray-800/50 hover:bg-[#1a1a1a] transition-colors">
-                            <td className="px-4 py-3">
-                              <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
-                              <p className="font-mono text-xs text-gray-500">{new Date(trade.executed_at).toLocaleTimeString()}</p>
-                            </td>
-                            <td className="px-3 py-3">
-                              <p className="font-medium">{trade.strategy_type}</p>
-                              {trade.copied_from && <p className="text-xs text-gray-500">Copied</p>}
-                            </td>
-                            <td className="text-right px-3 py-3 font-mono">${trade.total_cost.toFixed(2)}</td>
-                            <td className="text-right px-3 py-3 font-mono text-gray-400">${trade.expected_profit.toFixed(2)}</td>
-                            <td className="text-right px-3 py-3 font-mono text-gray-500">${trade.slippage.toFixed(4)}</td>
-                            <td className="text-center px-3 py-3">
-                              <StatusBadge status={trade.status} />
-                            </td>
-                            <td className="text-right px-3 py-3 font-mono">
-                              {trade.actual_payout != null ? `$${trade.actual_payout.toFixed(2)}` : '-'}
-                            </td>
-                            <td className="text-right px-4 py-3">
-                              {trade.actual_pnl != null ? (
-                                <span className={clsx("font-mono font-medium", trade.actual_pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                  {trade.actual_pnl >= 0 ? '+' : ''}${trade.actual_pnl.toFixed(2)}
-                                </span>
-                              ) : (
-                                <span className="text-gray-500 font-mono">-</span>
-                              )}
-                            </td>
+                <Card className="bg-card border-border shadow-none overflow-hidden">
+                  <CardContent className="p-0">
+                    <div className="max-h-[600px] overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-card">
+                          <tr className="border-b border-border text-muted-foreground text-xs">
+                            <th className="text-left px-4 py-3">Date</th>
+                            <th className="text-left px-3 py-3">Strategy</th>
+                            <th className="text-right px-3 py-3">Cost</th>
+                            <th className="text-right px-3 py-3">Expected</th>
+                            <th className="text-right px-3 py-3">Slippage</th>
+                            <th className="text-center px-3 py-3">Status</th>
+                            <th className="text-right px-3 py-3">Payout</th>
+                            <th className="text-right px-4 py-3">P&L</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                        </thead>
+                        <tbody>
+                          {processedTrades.map((trade) => (
+                            <tr key={trade.id} className="border-b border-border/50 hover:bg-muted transition-colors">
+                              <td className="px-4 py-3">
+                                <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
+                                <p className="font-mono text-xs text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
+                              </td>
+                              <td className="px-3 py-3">
+                                <p className="font-medium">{trade.strategy_type}</p>
+                                {trade.copied_from && <p className="text-xs text-muted-foreground">Copied</p>}
+                              </td>
+                              <td className="text-right px-3 py-3 font-mono">${trade.total_cost.toFixed(2)}</td>
+                              <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.expected_profit.toFixed(2)}</td>
+                              <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.slippage.toFixed(4)}</td>
+                              <td className="text-center px-3 py-3">
+                                <StatusBadge status={trade.status} />
+                              </td>
+                              <td className="text-right px-3 py-3 font-mono">
+                                {trade.actual_payout != null ? `$${trade.actual_payout.toFixed(2)}` : '-'}
+                              </td>
+                              <td className="text-right px-4 py-3">
+                                {trade.actual_pnl != null ? (
+                                  <span className={cn("font-mono font-medium", trade.actual_pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                                    {trade.actual_pnl >= 0 ? '+' : ''}${trade.actual_pnl.toFixed(2)}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground font-mono">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}
 
           {detailTab === 'execute' && (
-            <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+            <Card className="bg-card border-border shadow-none p-4">
               <h4 className="font-medium mb-4">Execute Opportunity</h4>
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {opportunities.length === 0 ? (
-                  <p className="text-gray-500 text-center py-4">No opportunities available. Run a scan first.</p>
+                  <p className="text-muted-foreground text-center py-4">No opportunities available. Run a scan first.</p>
                 ) : (
                   opportunities.slice(0, 10).map((opp) => (
                     <div
                       key={opp.id}
-                      className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3 hover:bg-[#222] transition-colors"
+                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-[#222] transition-colors"
                     >
                       <div className="flex-1">
                         <p className="text-sm font-medium line-clamp-1">{opp.title}</p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-muted-foreground">
                           ROI: <span className="text-green-400">{opp.roi_percent.toFixed(2)}%</span> | Cost: ${opp.total_cost.toFixed(4)} | Risk: {opp.risk_score.toFixed(2)}
                         </p>
                       </div>
-                      <button
+                      <Button
+                        variant="ghost"
                         onClick={() => setExecutingOpportunity(opp)}
-                        className="flex items-center gap-1 px-3 py-1.5 bg-green-500/20 text-green-400 rounded-lg text-sm hover:bg-green-500/30 ml-3"
+                        className="gap-1 bg-green-500/20 text-green-400 hover:bg-green-500/30 ml-3 h-auto px-3 py-1.5 text-sm rounded-lg"
                       >
                         <Play className="w-3 h-3" />
                         Execute
-                      </button>
+                      </Button>
                     </div>
                   ))
                 )}
               </div>
-            </div>
+            </Card>
           )}
         </div>
       )}
@@ -705,27 +717,27 @@ export default function SimulationPanel() {
       {/* Delete Confirmation Modal */}
       {accountToDelete && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1a] border border-gray-800 rounded-lg p-6 max-w-md mx-4">
+          <Card className="bg-muted border-border shadow-none p-6 max-w-md mx-4">
             <h3 className="text-lg font-medium mb-2">Delete Account</h3>
-            <p className="text-gray-400 mb-4">
+            <p className="text-muted-foreground mb-4">
               Are you sure you want to delete "{accountToDelete.name}"? This will also delete all trades and positions associated with this account. This action cannot be undone.
             </p>
             <div className="flex gap-3 justify-end">
-              <button
+              <Button
+                variant="secondary"
                 onClick={() => setAccountToDelete(null)}
-                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="destructive"
                 onClick={() => deleteMutation.mutate(accountToDelete.id)}
                 disabled={deleteMutation.isPending}
-                className="px-4 py-2 bg-red-500 hover:bg-red-600 rounded-lg disabled:opacity-50"
               >
                 {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
-              </button>
+              </Button>
             </div>
-          </div>
+          </Card>
         </div>
       )}
     </div>
@@ -749,11 +761,11 @@ function AccountCard({
   const totalPnl = account.total_pnl + (account.unrealized_pnl || 0)
 
   return (
-    <div
+    <Card
       onClick={onSelect}
-      className={clsx(
-        "bg-[#141414] border rounded-lg p-4 cursor-pointer transition-colors",
-        isSelected ? "border-blue-500" : "border-gray-800 hover:border-gray-700"
+      className={cn(
+        "bg-card cursor-pointer transition-colors shadow-none p-4",
+        isSelected ? "border-blue-500" : "border-border hover:border-border"
       )}
     >
       <div className="flex items-center justify-between mb-3">
@@ -765,7 +777,7 @@ function AccountCard({
               e.stopPropagation()
               onDelete()
             }}
-            className="p-1 text-gray-500 hover:text-red-400 rounded transition-colors"
+            className="p-1 text-muted-foreground hover:text-red-400 rounded transition-colors"
             title="Delete account"
           >
             <Trash2 className="w-4 h-4" />
@@ -775,41 +787,41 @@ function AccountCard({
 
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
-          <p className="text-gray-500">Capital</p>
+          <p className="text-muted-foreground">Capital</p>
           <p className="font-mono">${(account.current_capital ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
         </div>
         <div>
-          <p className="text-gray-500">Total P&L</p>
-          <p className={clsx("font-mono", totalPnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+          <p className="text-muted-foreground">Total P&L</p>
+          <p className={cn("font-mono", totalPnl >= 0 ? 'text-green-400' : 'text-red-400')}>
             {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
           </p>
         </div>
         <div>
-          <p className="text-gray-500">ROI</p>
-          <p className={clsx("font-mono", roiColor)}>
+          <p className="text-muted-foreground">ROI</p>
+          <p className={cn("font-mono", roiColor)}>
             {(account.roi_percent ?? 0) >= 0 ? '+' : ''}{(account.roi_percent ?? 0).toFixed(2)}%
           </p>
         </div>
         <div>
-          <p className="text-gray-500">Win Rate</p>
+          <p className="text-muted-foreground">Win Rate</p>
           <p className="font-mono">{(account.win_rate ?? 0).toFixed(1)}%</p>
         </div>
       </div>
 
       {/* Progress bar for capital */}
-      <div className="mt-3 pt-3 border-t border-gray-800">
-        <div className="flex justify-between text-xs text-gray-500 mb-1">
+      <div className="mt-3 pt-3 border-t border-border">
+        <div className="flex justify-between text-xs text-muted-foreground mb-1">
           <span>{account.total_trades ?? 0} trades</span>
           <span>{account.open_positions ?? 0} open</span>
         </div>
         <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
           <div
-            className={clsx("h-full rounded-full transition-all", account.roi_percent >= 0 ? "bg-green-500" : "bg-red-500")}
+            className={cn("h-full rounded-full transition-all", account.roi_percent >= 0 ? "bg-green-500" : "bg-red-500")}
             style={{ width: `${Math.min(Math.max(50 + account.roi_percent / 2, 5), 100)}%` }}
           />
         </div>
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -818,7 +830,7 @@ function MiniStat({
   value,
   icon,
   subtitle,
-  valueColor = 'text-white'
+  valueColor = 'text-foreground'
 }: {
   label: string
   value: string
@@ -827,14 +839,14 @@ function MiniStat({
   valueColor?: string
 }) {
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+    <Card className="bg-card border-border shadow-none p-3">
       <div className="flex items-center gap-2 mb-1">
         {icon}
-        <p className="text-xs text-gray-500">{label}</p>
+        <p className="text-xs text-muted-foreground">{label}</p>
       </div>
-      <p className={clsx("text-lg font-semibold font-mono", valueColor)}>{value}</p>
-      {subtitle && <p className="text-xs text-gray-500">{subtitle}</p>}
-    </div>
+      <p className={cn("text-lg font-semibold font-mono", valueColor)}>{value}</p>
+      {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+    </Card>
   )
 }
 
@@ -844,13 +856,13 @@ function StatusBadge({ status }: { status: string }) {
     resolved_win: 'bg-green-500/20 text-green-400',
     resolved_loss: 'bg-red-500/20 text-red-400',
     pending: 'bg-yellow-500/20 text-yellow-400',
-    cancelled: 'bg-gray-500/20 text-gray-400',
+    cancelled: 'bg-gray-500/20 text-muted-foreground',
     failed: 'bg-red-500/20 text-red-400'
   }
   return (
-    <span className={clsx("px-2 py-0.5 rounded text-xs font-medium", colors[status] || 'bg-gray-500/20 text-gray-400')}>
+    <Badge className={cn("px-2 py-0.5 rounded text-xs font-medium border-0", colors[status] || 'bg-gray-500/20 text-muted-foreground')}>
       {status.replace('_', ' ').toUpperCase()}
-    </span>
+    </Badge>
   )
 }
 
@@ -918,21 +930,21 @@ function EquityChart({
       </svg>
 
       {/* Labels */}
-      <div className="absolute top-1 left-2 text-xs text-gray-500">
+      <div className="absolute top-1 left-2 text-xs text-muted-foreground">
         ${maxVal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
       </div>
-      <div className="absolute bottom-1 left-2 text-xs text-gray-500">
+      <div className="absolute bottom-1 left-2 text-xs text-muted-foreground">
         ${minVal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
       </div>
       <div className="absolute bottom-1 right-2 flex items-center gap-2 text-xs">
         <span className={isProfitable ? 'text-green-400' : 'text-red-400'}>
           ${lastEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </span>
-        <span className="text-gray-500">
+        <span className="text-muted-foreground">
           ({isProfitable ? '+' : ''}{((lastEquity - initialCapital) / initialCapital * 100).toFixed(2)}%)
         </span>
       </div>
-      <div className="absolute top-1 right-2 text-xs text-gray-600">
+      <div className="absolute top-1 right-2 text-xs text-muted-foreground">
         {points.length > 0 && new Date(points[0].date).toLocaleDateString()} - {points.length > 0 && new Date(points[points.length - 1].date).toLocaleDateString()}
       </div>
     </div>
