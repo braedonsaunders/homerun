@@ -37,10 +37,14 @@ class AutoTraderConfigRequest(BaseModel):
 
     # Settlement time filters
     max_end_date_days: Optional[int] = Field(
-        None, ge=1, description="Max days until settlement (skip markets further out). Set to null to disable."
+        None,
+        ge=1,
+        description="Max days until settlement (skip markets further out). Set to null to disable.",
     )
     min_end_date_days: Optional[int] = Field(
-        None, ge=0, description="Min days until settlement (skip markets settling too soon)"
+        None,
+        ge=0,
+        description="Min days until settlement (skip markets settling too soon)",
     )
     prefer_near_settlement: Optional[bool] = Field(
         None, description="Boost score for markets settling sooner"
@@ -48,10 +52,14 @@ class AutoTraderConfigRequest(BaseModel):
 
     # Opportunity prioritization
     priority_method: Optional[str] = Field(
-        None, description="How to rank opportunities: 'roi', 'annualized_roi', or 'composite'"
+        None,
+        description="How to rank opportunities: 'roi', 'annualized_roi', or 'composite'",
     )
     settlement_weight: Optional[float] = Field(
-        None, ge=0, le=1, description="Weight for settlement proximity in composite score"
+        None,
+        ge=0,
+        le=1,
+        description="Weight for settlement proximity in composite score",
     )
     roi_weight: Optional[float] = Field(
         None, ge=0, le=1, description="Weight for ROI in composite score"
@@ -76,7 +84,8 @@ class AutoTraderConfigRequest(BaseModel):
         None, description="Categories to exclude (e.g. ['Politics', 'Sports'])"
     )
     excluded_keywords: Optional[list[str]] = Field(
-        None, description="Keywords to exclude from titles/descriptions (e.g. ['presidential', '2028'])"
+        None,
+        description="Keywords to exclude from titles/descriptions (e.g. ['presidential', '2028'])",
     )
     excluded_event_slugs: Optional[list[str]] = Field(
         None, description="Event slugs to exclude (partial match)"
@@ -89,7 +98,8 @@ class AutoTraderConfigRequest(BaseModel):
 
     # AI: Resolution analysis gate
     ai_resolution_gate: Optional[bool] = Field(
-        None, description="Require AI resolution analysis before trading (cached per market, 24h TTL)"
+        None,
+        description="Require AI resolution analysis before trading (cached per market, 24h TTL)",
     )
     ai_max_resolution_risk: Optional[float] = Field(
         None, ge=0, le=1, description="Block trades if resolution risk exceeds this"
@@ -101,10 +111,12 @@ class AutoTraderConfigRequest(BaseModel):
         None, description="Hard block when resolution analysis recommends 'avoid'"
     )
     ai_resolution_model: Optional[str] = Field(
-        None, description="LLM model for resolution analysis (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+        None,
+        description="LLM model for resolution analysis (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')",
     )
     ai_skip_on_analysis_failure: Optional[bool] = Field(
-        None, description="If true, skip trade when analysis fails. If false, allow trade through (fail-open)."
+        None,
+        description="If true, skip trade when analysis fails. If false, allow trade through (fail-open).",
     )
 
     # AI: Opportunity judge position sizing
@@ -112,7 +124,10 @@ class AutoTraderConfigRequest(BaseModel):
         None, description="Use AI judge score to scale position sizes"
     )
     ai_min_score_to_trade: Optional[float] = Field(
-        None, ge=0, le=1, description="Hard floor: skip if AI overall_score below this (0 = disabled)"
+        None,
+        ge=0,
+        le=1,
+        description="Hard floor: skip if AI overall_score below this (0 = disabled)",
     )
     ai_score_size_multiplier: Optional[bool] = Field(
         None, description="Scale position size by AI score (0.8 score = 80% size)"
@@ -124,7 +139,8 @@ class AutoTraderConfigRequest(BaseModel):
         None, ge=1.0, le=3.0, description="Multiplier for high-confidence AI trades"
     )
     ai_judge_model: Optional[str] = Field(
-        None, description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+        None,
+        description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')",
     )
 
 

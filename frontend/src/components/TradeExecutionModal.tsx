@@ -13,7 +13,6 @@ import {
   CheckCircle2,
   Info,
   RefreshCw,
-  Brain,
   Shield,
   Sparkles,
 } from 'lucide-react'
