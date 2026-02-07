@@ -8,13 +8,11 @@ Columns: timestamp,context,token_id,side,whale_shares,bot_shares,
 whale_price,bot_price,status,fill_percent,slippage_bps,opportunity_id,strategy
 """
 
-import os
 import csv
 import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 from utils.logger import get_logger
 
 logger = get_logger("csv_trade_logger")

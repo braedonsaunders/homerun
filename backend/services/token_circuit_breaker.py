@@ -1,9 +1,9 @@
 import uuid
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, JSON, Index
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, JSON, Index
 
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger

@@ -22,7 +22,8 @@ import {
   Briefcase,
   BarChart3,
   Trophy,
-  Users
+  Users,
+  Brain
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -45,8 +46,9 @@ import PositionsPanel from './components/PositionsPanel'
 import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
 import SettingsPanel from './components/SettingsPanel'
+import AIPanel from './components/AIPanel'
 
-type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'settings'
+type Tab = 'opportunities' | 'trading' | 'wallets' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradingSubTab = 'auto' | 'paper'
 type WalletsSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
 
@@ -298,6 +300,12 @@ function App() {
               onClick={() => setActiveTab('performance')}
               icon={<BarChart3 className="w-4 h-4" />}
               label="Performance"
+            />
+            <TabButton
+              active={activeTab === 'ai'}
+              onClick={() => setActiveTab('ai')}
+              icon={<Brain className="w-4 h-4" />}
+              label="AI"
             />
             <TabButton
               active={activeTab === 'settings'}
@@ -604,6 +612,9 @@ function App() {
         </div>
         <div className={activeTab === 'performance' ? '' : 'hidden'}>
           <PerformancePanel />
+        </div>
+        <div className={activeTab === 'ai' ? '' : 'hidden'}>
+          <AIPanel />
         </div>
         <div className={activeTab === 'settings' ? '' : 'hidden'}>
           <SettingsPanel />

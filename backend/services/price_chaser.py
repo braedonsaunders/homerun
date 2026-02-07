@@ -16,7 +16,7 @@ All retry attempts are logged to the database for post-hoc analysis.
 import asyncio
 import uuid
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, JSON, Index

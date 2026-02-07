@@ -505,6 +505,18 @@ class AppSettings(Base):
     anthropic_api_key = Column(String, nullable=True)
     llm_provider = Column(String, default="none")  # none, openai, anthropic
     llm_model = Column(String, nullable=True)
+    google_api_key = Column(String, nullable=True)
+    xai_api_key = Column(String, nullable=True)
+    deepseek_api_key = Column(String, nullable=True)
+
+    # AI Feature Settings
+    ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
+    ai_resolution_analysis = Column(Boolean, default=True)  # Auto-analyze resolution criteria
+    ai_opportunity_scoring = Column(Boolean, default=True)  # LLM-as-judge scoring
+    ai_news_sentiment = Column(Boolean, default=True)  # News/sentiment analysis
+    ai_max_monthly_spend = Column(Float, default=50.0)  # Monthly LLM cost cap
+    ai_default_model = Column(String, default="gpt-4o-mini")  # Default model for AI tasks
+    ai_premium_model = Column(String, default="gpt-4o")  # Model for high-value analysis
 
     # Notification Settings
     telegram_bot_token = Column(String, nullable=True)
@@ -535,6 +547,246 @@ class AppSettings(Base):
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ==================== AI INTELLIGENCE LAYER ====================
+
+
+class ResearchSession(Base):
+    """Tracks a complete AI research session (e.g., one resolution analysis run).
+
+    Each session represents a single research task executed by the AI system,
+    including all LLM calls, tool invocations, and the final result.
+    """
+
+    __tablename__ = "research_sessions"
+
+    id = Column(String, primary_key=True)
+    session_type = Column(String, nullable=False)  # "resolution_analysis", "opportunity_judge", "market_analysis", "news_sentiment"
+    query = Column(Text, nullable=False)  # The question/task being researched
+    opportunity_id = Column(String, nullable=True)  # Link to opportunity if applicable
+    market_id = Column(String, nullable=True)
+
+    # Status
+    status = Column(String, default="running")  # running, completed, failed, timeout
+    result = Column(JSON, nullable=True)  # Final structured result
+    error = Column(Text, nullable=True)
+
+    # Agent metrics
+    iterations = Column(Integer, default=0)
+    tools_called = Column(Integer, default=0)
+
+    # Token usage
+    total_input_tokens = Column(Integer, default=0)
+    total_output_tokens = Column(Integer, default=0)
+    total_cost_usd = Column(Float, default=0.0)
+    model_used = Column(String, nullable=True)
+
+    # Timing
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    entries = relationship("ScratchpadEntry", back_populates="session", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_research_type", "session_type"),
+        Index("idx_research_opp", "opportunity_id"),
+        Index("idx_research_market", "market_id"),
+        Index("idx_research_started", "started_at"),
+    )
+
+
+class ScratchpadEntry(Base):
+    """Individual step in a research session.
+
+    Replaces Dexter's JSONL scratchpad with a structured database table.
+    Each entry represents a single thinking step, tool call, or observation
+    within a research session.
+    """
+
+    __tablename__ = "scratchpad_entries"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey("research_sessions.id"), nullable=False)
+    sequence = Column(Integer, nullable=False)  # Order within session
+
+    # Entry content
+    entry_type = Column(String, nullable=False)  # "thinking", "tool_call", "tool_result", "observation", "answer"
+    tool_name = Column(String, nullable=True)  # Which tool was called
+    input_data = Column(JSON, nullable=True)  # Tool input or thinking content
+    output_data = Column(JSON, nullable=True)  # Tool output or result
+
+    # Token tracking
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ResearchSession", back_populates="entries")
+
+    __table_args__ = (
+        Index("idx_scratchpad_session", "session_id"),
+        Index("idx_scratchpad_type", "entry_type"),
+    )
+
+
+class ResolutionAnalysis(Base):
+    """Cached resolution criteria analysis for a market.
+
+    Stores LLM-generated analysis of a market's resolution rules,
+    including clarity scores, identified ambiguities, edge cases,
+    and a recommendation on whether to trade the market.
+    """
+
+    __tablename__ = "resolution_analyses"
+
+    id = Column(String, primary_key=True)
+    market_id = Column(String, nullable=False, index=True)
+    condition_id = Column(String, nullable=True)
+
+    # Market info
+    question = Column(Text, nullable=False)
+    resolution_source = Column(Text, nullable=True)
+    resolution_rules = Column(Text, nullable=True)
+
+    # Analysis results
+    clarity_score = Column(Float, nullable=True)  # 0-1: how clear/unambiguous the resolution criteria are
+    risk_score = Column(Float, nullable=True)  # 0-1: risk of unexpected resolution
+    confidence = Column(Float, nullable=True)  # 0-1: confidence in the analysis
+
+    # Detailed findings
+    ambiguities = Column(JSON, nullable=True)  # List of identified ambiguities
+    edge_cases = Column(JSON, nullable=True)  # Potential edge cases
+    key_dates = Column(JSON, nullable=True)  # Important dates for resolution
+    resolution_likelihood = Column(JSON, nullable=True)  # Likelihood assessment per outcome
+    summary = Column(Text, nullable=True)  # Human-readable summary
+    recommendation = Column(String, nullable=True)  # "safe", "caution", "avoid"
+
+    # Metadata
+    session_id = Column(String, ForeignKey("research_sessions.id"), nullable=True)
+    model_used = Column(String, nullable=True)
+    analyzed_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)  # When to re-analyze
+
+    __table_args__ = (
+        Index("idx_resolution_market", "market_id"),
+        Index("idx_resolution_analyzed", "analyzed_at"),
+    )
+
+
+class OpportunityJudgment(Base):
+    """LLM-as-judge scores for arbitrage opportunities.
+
+    Stores multi-dimensional scoring from the LLM judge, including
+    profit viability, resolution safety, execution feasibility,
+    and comparison with the ML classifier's assessment.
+    """
+
+    __tablename__ = "opportunity_judgments"
+
+    id = Column(String, primary_key=True)
+    opportunity_id = Column(String, nullable=False)
+    strategy_type = Column(String, nullable=False)
+
+    # Scores (0.0 to 1.0)
+    overall_score = Column(Float, nullable=False)  # Composite score
+    profit_viability = Column(Float, nullable=True)  # Will the profit materialize?
+    resolution_safety = Column(Float, nullable=True)  # Will it resolve as expected?
+    execution_feasibility = Column(Float, nullable=True)  # Can we execute at these prices?
+    market_efficiency = Column(Float, nullable=True)  # Is this a real inefficiency or noise?
+
+    # LLM reasoning
+    reasoning = Column(Text, nullable=True)  # Full chain-of-thought
+    recommendation = Column(String, nullable=False)  # "strong_execute", "execute", "review", "skip", "strong_skip"
+    risk_factors = Column(JSON, nullable=True)
+
+    # Comparison with ML classifier
+    ml_probability = Column(Float, nullable=True)  # ML classifier's probability
+    ml_recommendation = Column(String, nullable=True)  # ML classifier's recommendation
+    agreement = Column(Boolean, nullable=True)  # Do ML and LLM agree?
+
+    # Metadata
+    session_id = Column(String, ForeignKey("research_sessions.id"), nullable=True)
+    model_used = Column(String, nullable=True)
+    judged_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_judgment_opp", "opportunity_id"),
+        Index("idx_judgment_strategy", "strategy_type"),
+        Index("idx_judgment_score", "overall_score"),
+    )
+
+
+class SkillExecution(Base):
+    """Tracks individual skill executions within the AI system.
+
+    Skills are reusable analysis workflows (e.g., resolution analysis,
+    news lookup) that can be composed into larger research sessions.
+    """
+
+    __tablename__ = "skill_executions"
+
+    id = Column(String, primary_key=True)
+    skill_name = Column(String, nullable=False)
+    session_id = Column(String, ForeignKey("research_sessions.id"), nullable=True)
+
+    # Input/output
+    input_context = Column(JSON, nullable=True)
+    output_result = Column(JSON, nullable=True)
+
+    # Status
+    status = Column(String, default="running")  # running, completed, failed
+    error = Column(Text, nullable=True)
+
+    # Timing
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_skill_name", "skill_name"),
+        Index("idx_skill_session", "session_id"),
+    )
+
+
+class LLMUsageLog(Base):
+    """Tracks LLM API usage for cost management and observability.
+
+    Every LLM API call is logged here with token counts, costs,
+    latency, and error information. Used for spend tracking,
+    rate limiting, and debugging.
+    """
+
+    __tablename__ = "llm_usage_log"
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek
+    model = Column(String, nullable=False)
+
+    # Usage
+    input_tokens = Column(Integer, nullable=False)
+    output_tokens = Column(Integer, nullable=False)
+    cost_usd = Column(Float, nullable=False)
+
+    # Context
+    purpose = Column(String, nullable=True)  # "resolution_analysis", "opportunity_judge", etc.
+    session_id = Column(String, nullable=True)
+
+    # Timing
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    latency_ms = Column(Integer, nullable=True)
+
+    # Error tracking
+    success = Column(Boolean, default=True)
+    error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_llm_usage_provider", "provider"),
+        Index("idx_llm_usage_model", "model"),
+        Index("idx_llm_usage_time", "requested_at"),
+        Index("idx_llm_usage_purpose", "purpose"),
+    )
 
 
 # ==================== DATABASE SETUP ====================

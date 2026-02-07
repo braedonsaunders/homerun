@@ -1,9 +1,6 @@
-import uuid
-import asyncio
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Optional
-from sqlalchemy import Column, String, Float, Boolean, DateTime, Integer, Index
+from sqlalchemy import Column, String, Boolean, DateTime, Integer, Index
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger
 

@@ -11,7 +11,7 @@ Inspired by terauss/Polymarket-Copy-Trading-Bot architecture.
 import asyncio
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 

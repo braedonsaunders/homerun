@@ -1006,4 +1006,20 @@ export const testTelegramConnection = async (): Promise<{ status: string; messag
   return data
 }
 
+// ==================== AI INTELLIGENCE ====================
+
+export const getAIStatus = () => api.get('/ai/status')
+export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data)
+export const getResolutionAnalysis = (marketId: string) => api.get(`/ai/resolution/${marketId}`)
+export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data)
+export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history', { params })
+export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')
+export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data)
+export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data)
+export const listSkills = () => api.get('/ai/skills')
+export const executeSkill = (data: any) => api.post('/ai/skills/execute', data)
+export const getResearchSessions = (params?: any) => api.get('/ai/sessions', { params })
+export const getResearchSession = (sessionId: string) => api.get(`/ai/sessions/${sessionId}`)
+export const getAIUsage = () => api.get('/ai/usage')
+
 export default api
