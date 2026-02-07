@@ -46,18 +46,21 @@ _HTTP_TIMEOUT = 15  # seconds
 def _get_resolution_analyzer():
     """Lazy-import the resolution analyzer singleton."""
     from services.ai.resolution_analyzer import resolution_analyzer
+
     return resolution_analyzer
 
 
 def _get_news_sentiment_analyzer():
     """Lazy-import the news sentiment analyzer singleton."""
     from services.ai.news_sentiment import news_sentiment_analyzer
+
     return news_sentiment_analyzer
 
 
 def _get_agent_helpers():
     """Lazy-import Agent framework types and runner."""
     from services.ai.agent import AgentTool, run_agent_to_completion
+
     return AgentTool, run_agent_to_completion
 
 
@@ -180,121 +183,131 @@ class MarketAnalyzer:
         tools: list = []
 
         # Tool 1: Fetch market details from Polymarket
-        tools.append(AgentTool(
-            name="get_market_details",
-            description=(
-                "Fetch detailed information about a Polymarket market "
-                "including question, description, resolution rules, current "
-                "prices, volume, and liquidity."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "market_id": {
-                        "type": "string",
-                        "description": "The market's condition ID",
+        tools.append(
+            AgentTool(
+                name="get_market_details",
+                description=(
+                    "Fetch detailed information about a Polymarket market "
+                    "including question, description, resolution rules, current "
+                    "prices, volume, and liquidity."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "market_id": {
+                            "type": "string",
+                            "description": "The market's condition ID",
+                        },
                     },
+                    "required": ["market_id"],
                 },
-                "required": ["market_id"],
-            },
-            handler=self._tool_get_market_details,
-            max_calls=3,
-        ))
+                handler=self._tool_get_market_details,
+                max_calls=3,
+            )
+        )
 
         # Tool 2: Search for related news
-        tools.append(AgentTool(
-            name="search_news",
-            description=(
-                "Search for recent news articles related to a topic or "
-                "market question. Returns headlines, summaries, and "
-                "sentiment analysis."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for news",
+        tools.append(
+            AgentTool(
+                name="search_news",
+                description=(
+                    "Search for recent news articles related to a topic or "
+                    "market question. Returns headlines, summaries, and "
+                    "sentiment analysis."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for news",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum results to return",
+                            "default": 5,
+                        },
                     },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 5,
-                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
-            },
-            handler=self._tool_search_news,
-            max_calls=3,
-        ))
+                handler=self._tool_search_news,
+                max_calls=3,
+            )
+        )
 
         # Tool 3: Analyze resolution criteria
-        tools.append(AgentTool(
-            name="analyze_resolution",
-            description=(
-                "Deep analysis of a market's resolution criteria, checking "
-                "for ambiguities, edge cases, and risks."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "market_id": {"type": "string"},
-                    "question": {"type": "string"},
-                    "description": {"type": "string", "default": ""},
-                    "resolution_source": {"type": "string", "default": ""},
+        tools.append(
+            AgentTool(
+                name="analyze_resolution",
+                description=(
+                    "Deep analysis of a market's resolution criteria, checking "
+                    "for ambiguities, edge cases, and risks."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "market_id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "description": {"type": "string", "default": ""},
+                        "resolution_source": {"type": "string", "default": ""},
+                    },
+                    "required": ["market_id", "question"],
                 },
-                "required": ["market_id", "question"],
-            },
-            handler=self._tool_analyze_resolution,
-            max_calls=2,
-        ))
+                handler=self._tool_analyze_resolution,
+                max_calls=2,
+            )
+        )
 
         # Tool 4: Check order book depth
-        tools.append(AgentTool(
-            name="check_orderbook",
-            description=(
-                "Check the order book depth and liquidity for a market's "
-                "tokens. Returns bid/ask spreads and available liquidity "
-                "at different price levels."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "token_id": {
-                        "type": "string",
-                        "description": "The token ID to check",
+        tools.append(
+            AgentTool(
+                name="check_orderbook",
+                description=(
+                    "Check the order book depth and liquidity for a market's "
+                    "tokens. Returns bid/ask spreads and available liquidity "
+                    "at different price levels."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "token_id": {
+                            "type": "string",
+                            "description": "The token ID to check",
+                        },
                     },
+                    "required": ["token_id"],
                 },
-                "required": ["token_id"],
-            },
-            handler=self._tool_check_orderbook,
-            max_calls=4,
-        ))
+                handler=self._tool_check_orderbook,
+                max_calls=4,
+            )
+        )
 
         # Tool 5: Find related markets
-        tools.append(AgentTool(
-            name="find_related_markets",
-            description=(
-                "Find other Polymarket markets related to the same event "
-                "or topic. Useful for cross-market analysis and correlation "
-                "detection."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "event_id": {
-                        "type": "string",
-                        "description": "Event ID to find related markets",
-                    },
-                    "search_query": {
-                        "type": "string",
-                        "description": "Text search for related markets",
+        tools.append(
+            AgentTool(
+                name="find_related_markets",
+                description=(
+                    "Find other Polymarket markets related to the same event "
+                    "or topic. Useful for cross-market analysis and correlation "
+                    "detection."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "event_id": {
+                            "type": "string",
+                            "description": "Event ID to find related markets",
+                        },
+                        "search_query": {
+                            "type": "string",
+                            "description": "Text search for related markets",
+                        },
                     },
                 },
-            },
-            handler=self._tool_find_related_markets,
-            max_calls=2,
-        ))
+                handler=self._tool_find_related_markets,
+                max_calls=2,
+            )
+        )
 
         return tools
 
@@ -374,7 +387,9 @@ class MarketAnalyzer:
         except ImportError:
             # news_sentiment module not available -- do a basic RSS fetch
             logger.warning("NewsSentimentAnalyzer not available, using basic RSS fetch")
-            return await self._basic_news_search(args.get("query", ""), args.get("max_results", 5))
+            return await self._basic_news_search(
+                args.get("query", ""), args.get("max_results", 5)
+            )
 
         except Exception as exc:
             logger.error("search_news failed: %s", exc)
@@ -414,7 +429,9 @@ class MarketAnalyzer:
                     params={"token_id": token_id},
                 )
                 if resp.status_code != 200:
-                    return {"error": f"Order book request failed (HTTP {resp.status_code})"}
+                    return {
+                        "error": f"Order book request failed (HTTP {resp.status_code})"
+                    }
 
                 book = resp.json()
                 bids = book.get("bids", [])
@@ -434,21 +451,21 @@ class MarketAnalyzer:
                 best_bid = max((b["price"] for b in bid_levels), default=0.0)
                 best_ask = min((a["price"] for a in ask_levels), default=1.0)
                 spread = best_ask - best_bid if best_ask > best_bid else 0.0
-                mid_price = (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 0.0
+                mid_price = (
+                    (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 0.0
+                )
 
-                total_bid_liquidity = sum(
-                    b["price"] * b["size"] for b in bid_levels
-                )
-                total_ask_liquidity = sum(
-                    a["price"] * a["size"] for a in ask_levels
-                )
+                total_bid_liquidity = sum(b["price"] * b["size"] for b in bid_levels)
+                total_ask_liquidity = sum(a["price"] * a["size"] for a in ask_levels)
 
                 return {
                     "token_id": token_id,
                     "best_bid": best_bid,
                     "best_ask": best_ask,
                     "spread": round(spread, 4),
-                    "spread_percent": round(spread / mid_price * 100, 2) if mid_price > 0 else 0.0,
+                    "spread_percent": round(spread / mid_price * 100, 2)
+                    if mid_price > 0
+                    else 0.0,
                     "mid_price": round(mid_price, 4),
                     "bid_levels": bid_levels[:5],  # Return top 5 for context
                     "ask_levels": ask_levels[:5],
@@ -479,15 +496,17 @@ class MarketAnalyzer:
                     )
                     if resp.status_code == 200:
                         for m in resp.json():
-                            results.append({
-                                "condition_id": m.get("conditionId", ""),
-                                "question": m.get("question", ""),
-                                "outcome_prices": m.get("outcomePrices", []),
-                                "volume": m.get("volume", 0),
-                                "liquidity": m.get("liquidity", 0),
-                                "active": m.get("active", False),
-                                "slug": m.get("slug", ""),
-                            })
+                            results.append(
+                                {
+                                    "condition_id": m.get("conditionId", ""),
+                                    "question": m.get("question", ""),
+                                    "outcome_prices": m.get("outcomePrices", []),
+                                    "volume": m.get("volume", 0),
+                                    "liquidity": m.get("liquidity", 0),
+                                    "active": m.get("active", False),
+                                    "slug": m.get("slug", ""),
+                                }
+                            )
 
                 # Strategy 2: Text search for related markets
                 if search_query:
@@ -582,17 +601,21 @@ class MarketAnalyzer:
         ]
 
         if market_question:
-            prompt_parts.extend([
-                "",
-                f"MARKET QUESTION: {market_question}",
-            ])
+            prompt_parts.extend(
+                [
+                    "",
+                    f"MARKET QUESTION: {market_question}",
+                ]
+            )
 
         if context:
-            prompt_parts.extend([
-                "",
-                "ADDITIONAL CONTEXT:",
-                json.dumps(context, indent=2, default=str),
-            ])
+            prompt_parts.extend(
+                [
+                    "",
+                    "ADDITIONAL CONTEXT:",
+                    json.dumps(context, indent=2, default=str),
+                ]
+            )
 
         return "\n".join(prompt_parts)
 
@@ -619,9 +642,7 @@ class MarketAnalyzer:
 
         # Gather market details if we have a market_id
         if market_id:
-            market_data = await self._tool_get_market_details(
-                {"market_id": market_id}
-            )
+            market_data = await self._tool_get_market_details({"market_id": market_id})
             if "error" not in market_data:
                 data_gathered["market_details"] = market_data
                 tools_used.append("get_market_details")
@@ -692,17 +713,22 @@ class MarketAnalyzer:
                     headers={"User-Agent": "Mozilla/5.0"},
                 )
                 if response.status_code != 200:
-                    return {"articles": [], "error": f"RSS fetch failed (HTTP {response.status_code})"}
+                    return {
+                        "articles": [],
+                        "error": f"RSS fetch failed (HTTP {response.status_code})",
+                    }
 
                 root = ElementTree.fromstring(response.text)
                 articles = []
                 for item in root.findall(".//item")[:max_results]:
-                    articles.append({
-                        "title": item.findtext("title", ""),
-                        "url": item.findtext("link", ""),
-                        "published": item.findtext("pubDate", ""),
-                        "source": item.findtext("source", ""),
-                    })
+                    articles.append(
+                        {
+                            "title": item.findtext("title", ""),
+                            "url": item.findtext("link", ""),
+                            "published": item.findtext("pubDate", ""),
+                            "source": item.findtext("source", ""),
+                        }
+                    )
 
                 return {
                     "query": query,

@@ -27,7 +27,9 @@ from config import settings as app_settings
 
 logger = get_logger("copy_trader")
 
-MIN_WHALE_SHARES = app_settings.MIN_WHALE_SHARES  # Ignore noise trades below this threshold
+MIN_WHALE_SHARES = (
+    app_settings.MIN_WHALE_SHARES
+)  # Ignore noise trades below this threshold
 MIN_CASH_VALUE = 1.01  # Minimum cash value for order execution
 
 
@@ -444,27 +446,47 @@ class CopyTradingService:
             is_tripped, trip_reason = token_circuit_breaker.is_tripped(token_id)
             if is_tripped:
                 return await self._record_copied_trade(
-                    config, trade_id, market_id, market_question, token_id,
-                    "BUY", outcome, source_price, source_size, source_timestamp,
-                    status="skipped", error=f"Token tripped: {trip_reason}",
+                    config,
+                    trade_id,
+                    market_id,
+                    market_question,
+                    token_id,
+                    "BUY",
+                    outcome,
+                    source_price,
+                    source_size,
+                    source_timestamp,
+                    status="skipped",
+                    error=f"Token tripped: {trip_reason}",
                 )
 
         # Depth check before executing
         if token_id:
             try:
                 depth_result = await depth_analyzer.check_depth(
-                    token_id=token_id, side="BUY", target_price=source_price,
+                    token_id=token_id,
+                    side="BUY",
+                    target_price=source_price,
                     required_size_usd=source_price * copy_size,
                     trade_context="copy_trader",
                 )
                 if not depth_result.has_sufficient_depth:
                     token_circuit_breaker.trip_token(
-                        token_id, "insufficient_depth_copy",
+                        token_id,
+                        "insufficient_depth_copy",
                         {"available": depth_result.available_depth_usd},
                     )
                     return await self._record_copied_trade(
-                        config, trade_id, market_id, market_question, token_id,
-                        "BUY", outcome, source_price, source_size, source_timestamp,
+                        config,
+                        trade_id,
+                        market_id,
+                        market_question,
+                        token_id,
+                        "BUY",
+                        outcome,
+                        source_price,
+                        source_size,
+                        source_timestamp,
                         status="skipped",
                         error=f"Insufficient depth: ${depth_result.available_depth_usd:.0f}",
                     )
@@ -473,9 +495,7 @@ class CopyTradingService:
 
         # Record trade in token circuit breaker for trip detection
         if token_id:
-            token_circuit_breaker.record_trade(
-                token_id, copy_size, source_price, "BUY"
-            )
+            token_circuit_breaker.record_trade(token_id, copy_size, source_price, "BUY")
 
         # Wait configured delay before executing
         if config.copy_delay_seconds > 0:
@@ -1168,6 +1188,7 @@ class CopyTradingService:
         # Start WebSocket monitor for real-time trade detection
         try:
             from services.wallet_ws_monitor import wallet_ws_monitor
+
             for config in configs:
                 wallet_ws_monitor.add_wallet(config.source_wallet)
             wallet_ws_monitor.add_callback(self._on_realtime_trade)

@@ -20,9 +20,22 @@ logger = get_logger("csv_trade_logger")
 DEFAULT_CSV_PATH = Path(__file__).parent.parent / "data" / "trades.csv"
 
 CSV_COLUMNS = [
-    "timestamp", "context", "token_id", "side", "whale_shares", "bot_shares",
-    "whale_price", "bot_price", "status", "fill_percent", "slippage_bps",
-    "opportunity_id", "strategy", "tier", "category", "total_ms",
+    "timestamp",
+    "context",
+    "token_id",
+    "side",
+    "whale_shares",
+    "bot_shares",
+    "whale_price",
+    "bot_price",
+    "status",
+    "fill_percent",
+    "slippage_bps",
+    "opportunity_id",
+    "strategy",
+    "tier",
+    "category",
+    "total_ms",
 ]
 
 
@@ -36,7 +49,9 @@ class TradeLogEntry:
     bot_shares: float = 0.0
     whale_price: float = 0.0
     bot_price: float = 0.0
-    status: str = ""  # SUCCESS, EXEC_FAIL, CB_BLOCKED, SKIPPED_SMALL, PROB_SKIP, DEPTH_BLOCKED
+    status: str = (
+        ""  # SUCCESS, EXEC_FAIL, CB_BLOCKED, SKIPPED_SMALL, PROB_SKIP, DEPTH_BLOCKED
+    )
     fill_percent: float = 0.0
     slippage_bps: float = 0.0
     opportunity_id: str = ""
@@ -68,22 +83,48 @@ class CSVTradeLogger:
                 self._ensure_file()
                 with open(self._path, "a", newline="") as f:
                     writer = csv.writer(f)
-                    writer.writerow([
-                        entry.timestamp, entry.context, entry.token_id, entry.side,
-                        entry.whale_shares, entry.bot_shares, entry.whale_price,
-                        entry.bot_price, entry.status, entry.fill_percent,
-                        entry.slippage_bps, entry.opportunity_id, entry.strategy,
-                        entry.tier, entry.category, entry.total_ms,
-                    ])
+                    writer.writerow(
+                        [
+                            entry.timestamp,
+                            entry.context,
+                            entry.token_id,
+                            entry.side,
+                            entry.whale_shares,
+                            entry.bot_shares,
+                            entry.whale_price,
+                            entry.bot_price,
+                            entry.status,
+                            entry.fill_percent,
+                            entry.slippage_bps,
+                            entry.opportunity_id,
+                            entry.strategy,
+                            entry.tier,
+                            entry.category,
+                            entry.total_ms,
+                        ]
+                    )
             except Exception as e:
                 logger.error("CSV write failed", error=str(e))
 
-    async def log_quick(self, context: str, token_id: str, side: str, status: str,
-                        bot_shares: float = 0, bot_price: float = 0, **kwargs):
+    async def log_quick(
+        self,
+        context: str,
+        token_id: str,
+        side: str,
+        status: str,
+        bot_shares: float = 0,
+        bot_price: float = 0,
+        **kwargs,
+    ):
         entry = TradeLogEntry(
             timestamp=datetime.utcnow().isoformat() + "Z",
-            context=context, token_id=token_id, side=side, status=status,
-            bot_shares=bot_shares, bot_price=bot_price, **kwargs,
+            context=context,
+            token_id=token_id,
+            side=side,
+            status=status,
+            bot_shares=bot_shares,
+            bot_price=bot_price,
+            **kwargs,
         )
         await self.log_trade(entry)
 

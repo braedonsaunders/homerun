@@ -43,6 +43,7 @@ CLOB_AUTH_MESSAGE = "This message attests that I control the given wallet"
 
 class StoredCredential(Base):
     """CLOB API credentials stored in database."""
+
     __tablename__ = "stored_credentials"
 
     id = Column(String, primary_key=True)
@@ -72,6 +73,7 @@ class CredentialManager:
         """Derive wallet address from private key."""
         try:
             from eth_account import Account
+
             account = Account.from_key(private_key)
             return account.address
         except Exception as e:
@@ -126,7 +128,9 @@ class CredentialManager:
             logger.error("EIP-712 signing failed", error=str(e))
             raise
 
-    async def generate_credentials(self, private_key: str, clob_url: str = "https://clob.polymarket.com") -> ClobCredentials:
+    async def generate_credentials(
+        self, private_key: str, clob_url: str = "https://clob.polymarket.com"
+    ) -> ClobCredentials:
         """
         Generate CLOB API credentials from a private key.
 
@@ -151,6 +155,7 @@ class CredentialManager:
         signature, timestamp, nonce = self._sign_clob_auth(private_key, address)
 
         import httpx
+
         headers = {
             "POLY_ADDRESS": address,
             "POLY_SIGNATURE": signature,
@@ -200,11 +205,15 @@ class CredentialManager:
                     return creds
             except Exception as e:
                 logger.error("Failed to derive API key", error=str(e))
-                raise RuntimeError(f"Could not generate or derive CLOB credentials: {e}")
+                raise RuntimeError(
+                    f"Could not generate or derive CLOB credentials: {e}"
+                )
 
         raise RuntimeError("Failed to obtain CLOB API credentials")
 
-    async def get_or_generate(self, private_key: str, clob_url: str = "https://clob.polymarket.com") -> ClobCredentials:
+    async def get_or_generate(
+        self, private_key: str, clob_url: str = "https://clob.polymarket.com"
+    ) -> ClobCredentials:
         """Get cached credentials or generate new ones."""
         address = self._get_wallet_address(private_key)
 
@@ -256,13 +265,15 @@ class CredentialManager:
                 for old in result.scalars().all():
                     old.is_active = False
 
-                session.add(StoredCredential(
-                    id=str(uuid.uuid4()),
-                    wallet_address=creds.wallet_address,
-                    api_key=creds.api_key,
-                    api_secret=creds.api_secret,
-                    api_passphrase=creds.api_passphrase,
-                ))
+                session.add(
+                    StoredCredential(
+                        id=str(uuid.uuid4()),
+                        wallet_address=creds.wallet_address,
+                        api_key=creds.api_key,
+                        api_secret=creds.api_secret,
+                        api_passphrase=creds.api_passphrase,
+                    )
+                )
                 await session.commit()
         except Exception as e:
             logger.error("Failed to save credentials to DB", error=str(e))

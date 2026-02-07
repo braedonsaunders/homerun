@@ -7,6 +7,7 @@ of full skill instructions.
 
 Inspired by virattt/dexter's three-tier skill system.
 """
+
 import logging
 import yaml
 from pathlib import Path
@@ -69,7 +70,9 @@ class SkillLoader:
         self._scan_directory(self._project_dir, "project")
 
         self._discovered = True
-        logger.info(f"Discovered {len(self._skills)} skills: {list(self._skills.keys())}")
+        logger.info(
+            f"Discovered {len(self._skills)} skills: {list(self._skills.keys())}"
+        )
 
     def _scan_directory(self, directory: Path, tier: str):
         """Scan a directory for .md skill files."""
@@ -179,7 +182,11 @@ class SkillLoader:
 
         try:
             # Build query from context
-            query = context.get("query", f"Execute the {name} analysis workflow.") if context else f"Execute the {name} analysis workflow."
+            query = (
+                context.get("query", f"Execute the {name} analysis workflow.")
+                if context
+                else f"Execute the {name} analysis workflow."
+            )
 
             # Run agent with skill instructions as system prompt
             result = await run_agent_to_completion(
@@ -195,13 +202,16 @@ class SkillLoader:
             # Update execution
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import select
+
                 stmt = select(SkillExecution).where(SkillExecution.id == execution_id)
                 row = (await session.execute(stmt)).scalar_one_or_none()
                 if row:
                     row.status = "completed"
                     row.output_result = result
                     row.completed_at = datetime.utcnow()
-                    row.duration_seconds = (datetime.utcnow() - started_at).total_seconds()
+                    row.duration_seconds = (
+                        datetime.utcnow() - started_at
+                    ).total_seconds()
                     if "session_id" in result:
                         row.session_id = result["session_id"]
                     await session.commit()
@@ -212,13 +222,16 @@ class SkillLoader:
             # Update execution with error
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import select
+
                 stmt = select(SkillExecution).where(SkillExecution.id == execution_id)
                 row = (await session.execute(stmt)).scalar_one_or_none()
                 if row:
                     row.status = "failed"
                     row.error = str(e)
                     row.completed_at = datetime.utcnow()
-                    row.duration_seconds = (datetime.utcnow() - started_at).total_seconds()
+                    row.duration_seconds = (
+                        datetime.utcnow() - started_at
+                    ).total_seconds()
                     await session.commit()
             raise
 

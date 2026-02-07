@@ -22,6 +22,7 @@ logger = get_logger("fill_monitor")
 
 class FillEvent(Base):
     """Record of an order fill detected by the monitor."""
+
     __tablename__ = "fill_events"
 
     id = Column(String, primary_key=True)
@@ -89,6 +90,7 @@ class FillMonitor:
         """Check for new fills on our orders."""
         try:
             from services.trading import trading_service
+
             if not trading_service.is_ready():
                 return
 
@@ -102,7 +104,9 @@ class FillMonitor:
                         price=order.average_fill_price or order.price,
                         size_filled=order.filled_size,
                         size_requested=order.size,
-                        fill_percent=(order.filled_size / order.size * 100) if order.size > 0 else 0,
+                        fill_percent=(order.filled_size / order.size * 100)
+                        if order.size > 0
+                        else 0,
                         fee=0.0,
                         detected_at=datetime.utcnow(),
                     )
@@ -136,17 +140,21 @@ class FillMonitor:
     async def _persist_fill(self, fill: FillInfo):
         try:
             async with AsyncSessionLocal() as session:
-                session.add(FillEvent(
-                    id=str(uuid.uuid4()),
-                    order_id=fill.order_id,
-                    token_id=fill.token_id,
-                    side=fill.side,
-                    price=fill.price,
-                    size=fill.size_filled,
-                    fee=fill.fee,
-                    status="filled" if fill.fill_percent >= 99.9 else "partially_filled",
-                    fill_percent=fill.fill_percent,
-                ))
+                session.add(
+                    FillEvent(
+                        id=str(uuid.uuid4()),
+                        order_id=fill.order_id,
+                        token_id=fill.token_id,
+                        side=fill.side,
+                        price=fill.price,
+                        size=fill.size_filled,
+                        fee=fill.fee,
+                        status="filled"
+                        if fill.fill_percent >= 99.9
+                        else "partially_filled",
+                        fill_percent=fill.fill_percent,
+                    )
+                )
                 await session.commit()
         except Exception as e:
             logger.error("Failed to persist fill event", error=str(e))
@@ -155,13 +163,19 @@ class FillMonitor:
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(FillEvent).order_by(FillEvent.detected_at.desc()).limit(limit)
+                    select(FillEvent)
+                    .order_by(FillEvent.detected_at.desc())
+                    .limit(limit)
                 )
                 return [
                     {
-                        "order_id": f.order_id, "token_id": f.token_id,
-                        "side": f.side, "price": f.price, "size": f.size,
-                        "fill_percent": f.fill_percent, "detected_at": f.detected_at.isoformat(),
+                        "order_id": f.order_id,
+                        "token_id": f.token_id,
+                        "side": f.side,
+                        "price": f.price,
+                        "size": f.size,
+                        "fill_percent": f.fill_percent,
+                        "detected_at": f.detected_at.isoformat(),
                     }
                     for f in result.scalars().all()
                 ]
@@ -171,11 +185,13 @@ class FillMonitor:
     async def get_stats(self) -> dict:
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(select(
-                    func.count(FillEvent.id),
-                    func.avg(FillEvent.fill_percent),
-                    func.avg(FillEvent.price),
-                ))
+                result = await session.execute(
+                    select(
+                        func.count(FillEvent.id),
+                        func.avg(FillEvent.fill_percent),
+                        func.avg(FillEvent.price),
+                    )
+                )
                 row = result.one()
                 return {
                     "total_fills": row[0] or 0,

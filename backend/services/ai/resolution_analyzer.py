@@ -327,9 +327,7 @@ class ResolutionAnalyzer:
                 try:
                     analysis = json.loads(llm_response.content)
                 except json.JSONDecodeError:
-                    analysis = self._fallback_analysis(
-                        "LLM returned invalid JSON"
-                    )
+                    analysis = self._fallback_analysis("LLM returned invalid JSON")
             else:
                 analysis = self._fallback_analysis("LLM returned empty response")
 
@@ -545,7 +543,9 @@ class ResolutionAnalyzer:
                     "summary": row.summary or "",
                     "session_id": row.session_id,
                     "model_used": row.model_used,
-                    "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else None,
+                    "analyzed_at": row.analyzed_at.isoformat()
+                    if row.analyzed_at
+                    else None,
                     "cached": True,
                 }
         except Exception as exc:
@@ -601,7 +601,9 @@ class ResolutionAnalyzer:
                         "resolution_likelihood": row.resolution_likelihood or {},
                         "summary": row.summary or "",
                         "model_used": row.model_used,
-                        "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else None,
+                        "analyzed_at": row.analyzed_at.isoformat()
+                        if row.analyzed_at
+                        else None,
                     }
                     for row in rows
                 ]
@@ -630,7 +632,9 @@ class ResolutionAnalyzer:
         ]
 
         if description:
-            sections.append(f"\n**Full Description / Resolution Rules:**\n{description}")
+            sections.append(
+                f"\n**Full Description / Resolution Rules:**\n{description}"
+            )
         else:
             sections.append(
                 "\n**Description:** Not provided. This itself is a risk factor "

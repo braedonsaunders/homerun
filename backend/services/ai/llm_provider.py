@@ -144,7 +144,9 @@ _MAX_RETRIES = 3
 _BASE_DELAY = 1.0  # seconds
 
 
-async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY):
+async def _retry_with_backoff(
+    coro_factory, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY
+):
     """Execute an async callable with exponential backoff on retryable errors.
 
     Retries on HTTP 429 (rate limit) and 5xx (server errors).
@@ -172,10 +174,13 @@ async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, bas
                     response=response,
                 )
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     logger.warning(
                         "LLM request returned %d, retrying in %.1fs (attempt %d/%d)",
-                        response.status_code, delay, attempt + 1, max_retries,
+                        response.status_code,
+                        delay,
+                        attempt + 1,
+                        max_retries,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -185,10 +190,13 @@ async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, bas
         except httpx.RequestError as exc:
             last_exc = exc
             if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 logger.warning(
                     "LLM request failed (%s), retrying in %.1fs (attempt %d/%d)",
-                    str(exc), delay, attempt + 1, max_retries,
+                    str(exc),
+                    delay,
+                    attempt + 1,
+                    max_retries,
                 )
                 await asyncio.sleep(delay)
             else:
@@ -254,7 +262,9 @@ class BaseLLMProvider(ABC):
         """
         pass
 
-    def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    def _estimate_cost(
+        self, model: str, input_tokens: int, output_tokens: int
+    ) -> float:
         """Estimate cost in USD based on model pricing.
 
         Args:
@@ -366,11 +376,13 @@ class OpenAIProvider(BaseLLMProvider):
                 arguments = json.loads(tc["function"]["arguments"])
             except (json.JSONDecodeError, KeyError):
                 arguments = {}
-            result.append(ToolCall(
-                id=tc.get("id", ""),
-                name=tc["function"]["name"],
-                arguments=arguments,
-            ))
+            result.append(
+                ToolCall(
+                    id=tc.get("id", ""),
+                    name=tc["function"]["name"],
+                    arguments=arguments,
+                )
+            )
         return result
 
     async def chat(
@@ -418,7 +430,9 @@ class OpenAIProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
+            raise RuntimeError(
+                f"OpenAI API error ({response.status_code}): {error_msg}"
+            )
 
         choice = data["choices"][0]
         message = choice["message"]
@@ -479,7 +493,9 @@ class OpenAIProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
+            augmented_messages.insert(
+                0, LLMMessage(role="system", content=json_instruction)
+            )
 
         payload: dict[str, Any] = {
             "model": model,
@@ -501,7 +517,9 @@ class OpenAIProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
+            raise RuntimeError(
+                f"OpenAI API error ({response.status_code}): {error_msg}"
+            )
 
         content = data["choices"][0]["message"].get("content", "")
         try:
@@ -541,7 +559,9 @@ class AnthropicProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
 
-    def _format_messages(self, messages: list[LLMMessage]) -> tuple[Optional[str], list[dict]]:
+    def _format_messages(
+        self, messages: list[LLMMessage]
+    ) -> tuple[Optional[str], list[dict]]:
         """Convert LLMMessage objects to Anthropic API format.
 
         Anthropic separates system prompt from messages. This method
@@ -563,16 +583,18 @@ class AnthropicProvider(BaseLLMProvider):
 
             if msg.role == "tool":
                 # Anthropic tool results use a different format
-                formatted.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": msg.tool_call_id or "",
-                            "content": msg.content,
-                        }
-                    ],
-                })
+                formatted.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": msg.tool_call_id or "",
+                                "content": msg.content,
+                            }
+                        ],
+                    }
+                )
                 continue
 
             if msg.role == "assistant" and msg.tool_calls:
@@ -581,16 +603,22 @@ class AnthropicProvider(BaseLLMProvider):
                 if msg.content:
                     content_blocks.append({"type": "text", "text": msg.content})
                 for tc in msg.tool_calls:
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tc.get("id", "") if isinstance(tc, dict) else tc.id,
-                        "name": tc.get("function", {}).get("name", "") if isinstance(tc, dict) else tc.name,
-                        "input": (
-                            json.loads(tc.get("function", {}).get("arguments", "{}"))
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id", "") if isinstance(tc, dict) else tc.id,
+                            "name": tc.get("function", {}).get("name", "")
                             if isinstance(tc, dict)
-                            else tc.arguments
-                        ),
-                    })
+                            else tc.name,
+                            "input": (
+                                json.loads(
+                                    tc.get("function", {}).get("arguments", "{}")
+                                )
+                                if isinstance(tc, dict)
+                                else tc.arguments
+                            ),
+                        }
+                    )
                 formatted.append({"role": "assistant", "content": content_blocks})
                 continue
 
@@ -628,11 +656,13 @@ class AnthropicProvider(BaseLLMProvider):
         result = []
         for block in content_blocks:
             if block.get("type") == "tool_use":
-                result.append(ToolCall(
-                    id=block.get("id", ""),
-                    name=block.get("name", ""),
-                    arguments=block.get("input", {}),
-                ))
+                result.append(
+                    ToolCall(
+                        id=block.get("id", ""),
+                        name=block.get("name", ""),
+                        arguments=block.get("input", {}),
+                    )
+                )
         return result
 
     async def chat(
@@ -684,7 +714,9 @@ class AnthropicProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(f"Anthropic API error ({response.status_code}): {error_msg}")
+            raise RuntimeError(
+                f"Anthropic API error ({response.status_code}): {error_msg}"
+            )
 
         # Extract text content and tool calls
         content_blocks = data.get("content", [])
@@ -703,7 +735,8 @@ class AnthropicProvider(BaseLLMProvider):
         usage = TokenUsage(
             input_tokens=usage_data.get("input_tokens", 0),
             output_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+            total_tokens=usage_data.get("input_tokens", 0)
+            + usage_data.get("output_tokens", 0),
         )
 
         return LLMResponse(
@@ -750,7 +783,9 @@ class AnthropicProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
+            augmented_messages.insert(
+                0, LLMMessage(role="system", content=json_instruction)
+            )
 
         response = await self.chat(
             messages=augmented_messages,
@@ -770,7 +805,9 @@ class AnthropicProvider(BaseLLMProvider):
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
-            logger.error("Failed to parse Anthropic structured output: %s", content[:500])
+            logger.error(
+                "Failed to parse Anthropic structured output: %s", content[:500]
+            )
             raise RuntimeError(f"LLM returned invalid JSON: {exc}") from exc
 
 
@@ -795,7 +832,9 @@ class GoogleProvider(BaseLLMProvider):
         self.api_key = api_key
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-    def _format_contents(self, messages: list[LLMMessage]) -> tuple[Optional[dict], list[dict]]:
+    def _format_contents(
+        self, messages: list[LLMMessage]
+    ) -> tuple[Optional[dict], list[dict]]:
         """Convert LLMMessage objects to Gemini API format.
 
         Gemini uses 'contents' with 'parts' structure and a separate
@@ -816,10 +855,12 @@ class GoogleProvider(BaseLLMProvider):
                 continue
 
             role = "user" if msg.role == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg.content}],
-            })
+            contents.append(
+                {
+                    "role": role,
+                    "parts": [{"text": msg.content}],
+                }
+            )
 
         return system_instruction, contents
 
@@ -834,11 +875,13 @@ class GoogleProvider(BaseLLMProvider):
         """
         function_declarations = []
         for tool in tools:
-            function_declarations.append({
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            })
+            function_declarations.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+            )
         return [{"function_declarations": function_declarations}]
 
     async def chat(
@@ -893,7 +936,9 @@ class GoogleProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(f"Google API error ({response.status_code}): {error_msg}")
+            raise RuntimeError(
+                f"Google API error ({response.status_code}): {error_msg}"
+            )
 
         # Parse response
         candidates = data.get("candidates", [])
@@ -911,11 +956,13 @@ class GoogleProvider(BaseLLMProvider):
                 if parsed_tool_calls is None:
                     parsed_tool_calls = []
                 fc = part["functionCall"]
-                parsed_tool_calls.append(ToolCall(
-                    id=uuid.uuid4().hex[:16],
-                    name=fc.get("name", ""),
-                    arguments=fc.get("args", {}),
-                ))
+                parsed_tool_calls.append(
+                    ToolCall(
+                        id=uuid.uuid4().hex[:16],
+                        name=fc.get("name", ""),
+                        arguments=fc.get("args", {}),
+                    )
+                )
 
         usage_data = data.get("usageMetadata", {})
         usage = TokenUsage(
@@ -964,7 +1011,9 @@ class GoogleProvider(BaseLLMProvider):
         # Add JSON instruction to system or as user prefix
         if system_instruction:
             existing_text = system_instruction["parts"][0]["text"]
-            system_instruction["parts"][0]["text"] = existing_text + "\n\n" + json_instruction
+            system_instruction["parts"][0]["text"] = (
+                existing_text + "\n\n" + json_instruction
+            )
         else:
             system_instruction = {"parts": [{"text": json_instruction}]}
 
@@ -992,7 +1041,9 @@ class GoogleProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(f"Google API error ({response.status_code}): {error_msg}")
+            raise RuntimeError(
+                f"Google API error ({response.status_code}): {error_msg}"
+            )
 
         candidates = data.get("candidates", [])
         if not candidates:
@@ -1049,7 +1100,9 @@ class XAIProvider(BaseLLMProvider):
         Returns:
             LLMResponse with content and usage.
         """
-        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
+        response = await self._delegate.chat(
+            messages, model, tools, temperature, max_tokens
+        )
         response.provider = self.provider.value
         return response
 
@@ -1071,7 +1124,9 @@ class XAIProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        return await self._delegate.structured_output(messages, schema, model, temperature)
+        return await self._delegate.structured_output(
+            messages, schema, model, temperature
+        )
 
 
 # ==================== DEEPSEEK PROVIDER ====================
@@ -1093,7 +1148,9 @@ class DeepSeekProvider(BaseLLMProvider):
             api_key: DeepSeek API key.
         """
         self.api_key = api_key
-        self._delegate = OpenAIProvider(api_key=api_key, base_url="https://api.deepseek.com/v1")
+        self._delegate = OpenAIProvider(
+            api_key=api_key, base_url="https://api.deepseek.com/v1"
+        )
 
     async def chat(
         self,
@@ -1115,7 +1172,9 @@ class DeepSeekProvider(BaseLLMProvider):
         Returns:
             LLMResponse with content and usage.
         """
-        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
+        response = await self._delegate.chat(
+            messages, model, tools, temperature, max_tokens
+        )
         response.provider = self.provider.value
         return response
 
@@ -1137,7 +1196,9 @@ class DeepSeekProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        return await self._delegate.structured_output(messages, schema, model, temperature)
+        return await self._delegate.structured_output(
+            messages, schema, model, temperature
+        )
 
 
 # ==================== LLM MANAGER ====================
@@ -1226,7 +1287,9 @@ class LLMManager:
 
                 # Load current month's spend
                 now = datetime.utcnow()
-                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                month_start = now.replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                )
                 spend_result = await session.execute(
                     select(func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0)).where(
                         LLMUsageLog.requested_at >= month_start,
@@ -1242,7 +1305,9 @@ class LLMManager:
         self._initialized = True
         logger.info(
             "LLM manager initialized: %d providers, $%.2f spent this month (limit $%.2f)",
-            len(self._providers), self._monthly_spend, self._spend_limit,
+            len(self._providers),
+            self._monthly_spend,
+            self._spend_limit,
         )
 
     def detect_provider(self, model: str) -> LLMProvider:
@@ -1255,7 +1320,9 @@ class LLMManager:
             The detected LLMProvider enum value.
         """
         model_lower = model.lower()
-        if any(model_lower.startswith(p) for p in ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")):
+        if any(
+            model_lower.startswith(p) for p in ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+        ):
             return LLMProvider.OPENAI
         elif model_lower.startswith("claude-"):
             return LLMProvider.ANTHROPIC
@@ -1401,7 +1468,9 @@ class LLMManager:
             cost = 0.0
             if response.usage:
                 cost = provider._estimate_cost(
-                    model, response.usage.input_tokens, response.usage.output_tokens,
+                    model,
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
                 )
                 await self._log_usage(
                     provider=provider_enum.value,
@@ -1533,10 +1602,12 @@ class LLMManager:
                         LLMUsageLog.provider,
                         func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0),
                         func.count(LLMUsageLog.id),
-                    ).where(
+                    )
+                    .where(
                         LLMUsageLog.requested_at >= month_start,
                         LLMUsageLog.success == True,  # noqa: E712
-                    ).group_by(LLMUsageLog.provider)
+                    )
+                    .group_by(LLMUsageLog.provider)
                 )
                 provider_rows = provider_result.all()
 
@@ -1557,7 +1628,9 @@ class LLMManager:
                 "total_requests": int(total_row[3]),
                 "error_count": int(error_count),
                 "spend_limit_usd": self._spend_limit,
-                "spend_remaining_usd": max(0.0, self._spend_limit - float(total_row[0])),
+                "spend_remaining_usd": max(
+                    0.0, self._spend_limit - float(total_row[0])
+                ),
                 "providers": {
                     row[0]: {"cost_usd": float(row[1]), "requests": int(row[2])}
                     for row in provider_rows

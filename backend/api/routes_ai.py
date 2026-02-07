@@ -10,6 +10,7 @@ Provides endpoints for:
 - Research session history
 - LLM usage stats
 """
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -226,9 +227,7 @@ async def get_research_sessions(
     from services.ai.scratchpad import ScratchpadService
 
     scratchpad = ScratchpadService()
-    return await scratchpad.get_recent_sessions(
-        session_type=session_type, limit=limit
-    )
+    return await scratchpad.get_recent_sessions(session_type=session_type, limit=limit)
 
 
 @router.get("/ai/sessions/{session_id}")

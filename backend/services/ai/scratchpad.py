@@ -34,6 +34,7 @@ def _get_models():
     """Import database models.  Raises ImportError with a helpful message
     if the AI-specific tables haven't been added yet."""
     from models.database import ResearchSession, ScratchpadEntry
+
     return ResearchSession, ScratchpadEntry
 
 
@@ -332,9 +333,7 @@ class ScratchpadService:
                     session.started_at.isoformat() if session.started_at else None
                 ),
                 "completed_at": (
-                    session.completed_at.isoformat()
-                    if session.completed_at
-                    else None
+                    session.completed_at.isoformat() if session.completed_at else None
                 ),
                 "duration_seconds": session.duration_seconds,
                 "entries": [self._entry_to_dict(e) for e in entries],
@@ -374,9 +373,7 @@ class ScratchpadService:
         ResearchSession, _ = _get_models()
 
         async with AsyncSessionLocal() as db:
-            stmt = select(ResearchSession).order_by(
-                desc(ResearchSession.started_at)
-            )
+            stmt = select(ResearchSession).order_by(desc(ResearchSession.started_at))
             if session_type is not None:
                 stmt = stmt.where(ResearchSession.session_type == session_type)
             stmt = stmt.limit(limit)
@@ -469,11 +466,13 @@ class ScratchpadService:
                     "name": entry.get("tool_name", ""),
                     "arguments": input_data,
                 }
-                messages.append({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [tool_call_repr],
-                })
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [tool_call_repr],
+                    }
+                )
 
             elif entry_type == ENTRY_TYPE_TOOL_RESULT:
                 result_content = (
@@ -481,12 +480,14 @@ class ScratchpadService:
                     if isinstance(output_data, dict)
                     else str(output_data)
                 )
-                messages.append({
-                    "role": "tool",
-                    "content": result_content,
-                    "tool_call_id": entry.get("id", ""),
-                    "name": entry.get("tool_name", ""),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": result_content,
+                        "tool_call_id": entry.get("id", ""),
+                        "name": entry.get("tool_name", ""),
+                    }
+                )
 
             elif entry_type == ENTRY_TYPE_OBSERVATION:
                 content = output_data.get("content", "")
@@ -520,9 +521,7 @@ class ScratchpadService:
         async with AsyncSessionLocal() as db:
             # Find sessions to delete
             result = await db.execute(
-                select(ResearchSession.id).where(
-                    ResearchSession.started_at < cutoff
-                )
+                select(ResearchSession.id).where(ResearchSession.started_at < cutoff)
             )
             session_ids = [row[0] for row in result.all()]
 
@@ -538,9 +537,7 @@ class ScratchpadService:
 
             # Delete sessions
             await db.execute(
-                delete(ResearchSession).where(
-                    ResearchSession.id.in_(session_ids)
-                )
+                delete(ResearchSession).where(ResearchSession.id.in_(session_ids))
             )
 
             await db.commit()
@@ -569,9 +566,7 @@ class ScratchpadService:
             "output_data": entry.output_data,
             "input_tokens": entry.input_tokens,
             "output_tokens": entry.output_tokens,
-            "created_at": (
-                entry.created_at.isoformat() if entry.created_at else None
-            ),
+            "created_at": (entry.created_at.isoformat() if entry.created_at else None),
         }
 
     @staticmethod
@@ -597,9 +592,7 @@ class ScratchpadService:
                 session.started_at.isoformat() if session.started_at else None
             ),
             "completed_at": (
-                session.completed_at.isoformat()
-                if session.completed_at
-                else None
+                session.completed_at.isoformat() if session.completed_at else None
             ),
             "duration_seconds": session.duration_seconds,
         }

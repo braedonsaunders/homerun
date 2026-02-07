@@ -183,14 +183,18 @@ class NewsSentimentAnalyzer:
                 },
                 "market_impact": sentiment_result.get("market_impact", ""),
                 "key_takeaways": sentiment_result.get("key_takeaways", []),
-                "outcome_implications": sentiment_result.get("outcome_implications", {}),
+                "outcome_implications": sentiment_result.get(
+                    "outcome_implications", {}
+                ),
                 "session_id": session_id,
             }
 
         except Exception as exc:
             logger.error(
                 "search_and_analyze failed for query '%s': %s",
-                query, exc, exc_info=True,
+                query,
+                exc,
+                exc_info=True,
             )
             return {
                 "query": query,
@@ -233,7 +237,9 @@ class NewsSentimentAnalyzer:
 
         # Source 2: Polymarket blog / community posts (best-effort)
         if len(articles) < max_results:
-            poly_articles = await self._fetch_polymarket_news(query, max_results - len(articles))
+            poly_articles = await self._fetch_polymarket_news(
+                query, max_results - len(articles)
+            )
             articles.extend(poly_articles)
 
         # De-duplicate by URL
@@ -299,13 +305,15 @@ class NewsSentimentAnalyzer:
         user_content_parts.append(articles_text)
 
         if market_question:
-            user_content_parts.extend([
-                "",
-                f"MARKET CONTEXT: {market_question}",
-                "",
-                "How do these articles affect the likelihood of the market "
-                "question resolving YES vs NO?",
-            ])
+            user_content_parts.extend(
+                [
+                    "",
+                    f"MARKET CONTEXT: {market_question}",
+                    "",
+                    "How do these articles affect the likelihood of the market "
+                    "question resolving YES vs NO?",
+                ]
+            )
 
         user_content = "\n".join(user_content_parts)
 
@@ -406,7 +414,8 @@ class NewsSentimentAnalyzer:
                 if response.status_code != 200:
                     logger.warning(
                         "Google News RSS returned HTTP %d for query '%s'",
-                        response.status_code, query,
+                        response.status_code,
+                        query,
                     )
                     return []
 
@@ -428,17 +437,20 @@ class NewsSentimentAnalyzer:
                             title = parts[0].strip()
                             source_from_title = parts[1].strip()
 
-                    articles.append({
-                        "title": title,
-                        "url": link,
-                        "published": pub_date,
-                        "source": source or source_from_title,
-                        "summary": "",  # RSS doesn't include summaries
-                    })
+                    articles.append(
+                        {
+                            "title": title,
+                            "url": link,
+                            "published": pub_date,
+                            "source": source or source_from_title,
+                            "summary": "",  # RSS doesn't include summaries
+                        }
+                    )
 
                 logger.debug(
                     "Fetched %d articles from Google News RSS for '%s'",
-                    len(articles), query,
+                    len(articles),
+                    query,
                 )
                 return articles
 
@@ -504,13 +516,15 @@ class NewsSentimentAnalyzer:
                             title = parts[0].strip()
                             source_from_title = parts[1].strip()
 
-                    articles.append({
-                        "title": title,
-                        "url": link,
-                        "published": pub_date,
-                        "source": source or source_from_title,
-                        "summary": "",
-                    })
+                    articles.append(
+                        {
+                            "title": title,
+                            "url": link,
+                            "published": pub_date,
+                            "source": source or source_from_title,
+                            "summary": "",
+                        }
+                    )
 
         except Exception as exc:
             logger.debug("Polymarket news fetch failed (non-critical): %s", exc)
@@ -562,16 +576,22 @@ class NewsSentimentAnalyzer:
 
         # Remove common prefixes
         prefixes_to_strip = [
-            "Will ", "Will the ",
-            "Is ", "Is the ",
-            "Does ", "Does the ",
-            "Has ", "Has the ",
-            "Can ", "Can the ",
-            "Are ", "Are the ",
+            "Will ",
+            "Will the ",
+            "Is ",
+            "Is the ",
+            "Does ",
+            "Does the ",
+            "Has ",
+            "Has the ",
+            "Can ",
+            "Can the ",
+            "Are ",
+            "Are the ",
         ]
         for prefix in prefixes_to_strip:
             if q.startswith(prefix):
-                q = q[len(prefix):]
+                q = q[len(prefix) :]
                 break
 
         # Remove trailing question mark
@@ -580,8 +600,12 @@ class NewsSentimentAnalyzer:
         # Remove common suffixes like "by March 2025", "before end of 2025"
         # by finding and removing date-like suffixes
         date_markers = [
-            " by ", " before ", " on or before ", " prior to ",
-            " by the end of ", " before the end of ",
+            " by ",
+            " before ",
+            " on or before ",
+            " prior to ",
+            " by the end of ",
+            " before the end of ",
         ]
         for marker in date_markers:
             idx = q.lower().find(marker)
