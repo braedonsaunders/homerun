@@ -1383,6 +1383,22 @@ class LLMManager:
                     self._spend_limit = app_settings.ai_max_monthly_spend
                 if app_settings.ai_default_model:
                     self._default_model = app_settings.ai_default_model
+                elif app_settings.llm_model:
+                    self._default_model = app_settings.llm_model
+                else:
+                    # No explicit model set — pick a sensible default based
+                    # on which providers are actually configured.
+                    _provider_default_models = {
+                        LLMProvider.OPENAI: "gpt-4o-mini",
+                        LLMProvider.ANTHROPIC: "claude-sonnet-4-5-20250929",
+                        LLMProvider.GOOGLE: "gemini-2.0-flash",
+                        LLMProvider.XAI: "grok-3-mini",
+                        LLMProvider.DEEPSEEK: "deepseek-chat",
+                    }
+                    for p, m in _provider_default_models.items():
+                        if p in self._providers:
+                            self._default_model = m
+                            break
 
                 # Load current month's spend
                 now = datetime.utcnow()
