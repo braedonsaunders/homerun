@@ -27,9 +27,7 @@ async def get_opportunities(
         None,
         description="Sort field: roi (default), ai_score, profit, liquidity, risk",
     ),
-    sort_dir: Optional[str] = Query(
-        "desc", description="Sort direction: asc or desc"
-    ),
+    sort_dir: Optional[str] = Query("desc", description="Sort direction: asc or desc"),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip"),
 ):

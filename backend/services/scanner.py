@@ -142,17 +142,13 @@ class ArbitrageScanner:
             # these are resolved events awaiting settlement and can't
             # be traded profitably.
             now = datetime.utcnow()
-            markets = [
-                m for m in markets
-                if m.end_date is None or m.end_date > now
-            ]
+            markets = [m for m in markets if m.end_date is None or m.end_date > now]
 
             # Also prune expired markets inside events so strategies
             # like NegRisk that iterate event.markets don't pick them up.
             for event in events:
                 event.markets = [
-                    m for m in event.markets
-                    if m.end_date is None or m.end_date > now
+                    m for m in event.markets if m.end_date is None or m.end_date > now
                 ]
 
             print(f"  Fetched {len(events)} events and {len(markets)} markets")
