@@ -138,6 +138,23 @@ class ArbitrageScanner:
             events = await self.client.get_all_events(closed=False)
             markets = await self.client.get_all_markets(active=True)
 
+            # Filter out markets whose end_date has already passed —
+            # these are resolved events awaiting settlement and can't
+            # be traded profitably.
+            now = datetime.utcnow()
+            markets = [
+                m for m in markets
+                if m.end_date is None or m.end_date > now
+            ]
+
+            # Also prune expired markets inside events so strategies
+            # like NegRisk that iterate event.markets don't pick them up.
+            for event in events:
+                event.markets = [
+                    m for m in event.markets
+                    if m.end_date is None or m.end_date > now
+                ]
+
             print(f"  Fetched {len(events)} events and {len(markets)} markets")
 
             # Get live prices for all tokens
