@@ -37,7 +37,7 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
@@ -465,8 +465,6 @@ class OpenAIProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        start_ms = int(time.time() * 1000)
-
         # Add system instruction for JSON output
         json_instruction = (
             "You MUST respond with valid JSON matching this schema. "
@@ -766,7 +764,7 @@ class AnthropicProvider(BaseLLMProvider):
         if content.startswith("```"):
             lines = content.split("\n")
             # Remove first line (```json or ```) and last line (```)
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             content = "\n".join(lines)
 
         try:
@@ -955,8 +953,6 @@ class GoogleProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        start_ms = int(time.time() * 1000)
-
         json_instruction = (
             "You MUST respond with valid JSON matching this schema. "
             "Do not include any text outside the JSON object.\n"

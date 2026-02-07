@@ -11,7 +11,7 @@ Provides endpoints for:
 - LLM usage stats
 """
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional
 import logging
 

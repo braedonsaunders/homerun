@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import {
-  Brain,
   RefreshCw,
   AlertCircle,
   CheckCircle,
@@ -42,7 +41,6 @@ type AISection = 'status' | 'resolution' | 'judgments' | 'market' | 'news' | 'sk
 
 export default function AIPanel() {
   const [activeSection, setActiveSection] = useState<AISection>('status')
-  const queryClient = useQueryClient()
 
   return (
     <div>

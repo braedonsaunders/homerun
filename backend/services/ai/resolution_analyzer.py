@@ -624,7 +624,7 @@ class ResolutionAnalyzer:
     ) -> str:
         """Build the user prompt for the LLM with all available market details."""
         sections = [
-            f"## Market to Analyze\n",
+            "## Market to Analyze\n",
             f"**Market ID:** {market_id}",
             f"**Question:** {question}",
         ]

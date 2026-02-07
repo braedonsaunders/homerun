@@ -120,8 +120,6 @@ class MarketAnalyzer:
                 session_id   -- scratchpad session ID
         """
         session_id = uuid.uuid4().hex[:16]
-        tools_used: list[str] = []
-        data_gathered: dict[str, Any] = {}
 
         try:
             AgentTool, run_agent_to_completion = _get_agent_helpers()
