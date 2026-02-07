@@ -286,6 +286,7 @@ async def update_settings(request: UpdateSettingsRequest):
                     settings.deepseek_api_key = llm.deepseek_api_key or None
                 if llm.model is not None:
                     settings.llm_model = llm.model or None
+                    settings.ai_default_model = llm.model or None
 
             # Update Notification settings
             if request.notifications:
@@ -325,6 +326,16 @@ async def update_settings(request: UpdateSettingsRequest):
 
             settings.updated_at = datetime.utcnow()
             await session.commit()
+
+            # Reinitialize LLM manager to pick up new API keys / default model
+            if request.llm:
+                try:
+                    from services.ai import get_llm_manager
+
+                    manager = get_llm_manager()
+                    await manager.initialize()
+                except Exception:
+                    pass  # AI module may not be loaded
 
             logger.info("Settings updated successfully")
 
