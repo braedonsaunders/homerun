@@ -17,7 +17,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List
 
-from sqlalchemy import Column, String, Float, Boolean, DateTime, select
+from sqlalchemy import Column, String, Float, Boolean, DateTime
 
 from models.database import Base, AsyncSessionLocal
 from services.polymarket import polymarket_client

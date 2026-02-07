@@ -10,15 +10,12 @@ with a write-through strategy: updates go to both in-memory dicts (for fast O(1)
 lookups on the hot path) and the SQL database (for persistence across restarts).
 """
 
-import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import (
     Column,
     String,
-    Float,
-    Integer,
     Boolean,
     DateTime,
     Text,

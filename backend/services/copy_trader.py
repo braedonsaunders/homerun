@@ -23,10 +23,9 @@ from services.scanner import scanner
 from services.depth_analyzer import depth_analyzer
 from services.token_circuit_breaker import token_circuit_breaker
 from utils.logger import get_logger
+from config import settings as app_settings
 
 logger = get_logger("copy_trader")
-
-from config import settings as app_settings
 
 MIN_WHALE_SHARES = app_settings.MIN_WHALE_SHARES  # Ignore noise trades below this threshold
 MIN_CASH_VALUE = 1.01  # Minimum cash value for order execution

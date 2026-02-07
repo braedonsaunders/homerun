@@ -11,9 +11,9 @@ Inspired by terauss trade_monitor binary.
 import uuid
 import asyncio
 from datetime import datetime
-from dataclasses import dataclass, field
-from typing import Optional, Callable
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Index, select, func
+from dataclasses import dataclass
+from typing import Callable
+from sqlalchemy import Column, String, Float, DateTime, Index, select, func
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger
 

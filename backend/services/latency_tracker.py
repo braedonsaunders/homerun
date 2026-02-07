@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, JSON, Index, select, func
+from sqlalchemy import Column, String, Float, DateTime, Boolean, Index, select, func
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger
 

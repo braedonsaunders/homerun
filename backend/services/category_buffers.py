@@ -20,7 +20,6 @@ post-trade review.
 import uuid
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional
 
 from sqlalchemy import Column, String, Float, DateTime, Index
 

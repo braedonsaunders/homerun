@@ -14,7 +14,6 @@ Flow:
 
 import uuid
 import time
-import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional
@@ -228,7 +227,7 @@ class CredentialManager:
                 result = await session.execute(
                     select(StoredCredential).where(
                         StoredCredential.wallet_address == address,
-                        StoredCredential.is_active == True,
+                        StoredCredential.is_active.is_(True),
                     )
                 )
                 row = result.scalar_one_or_none()

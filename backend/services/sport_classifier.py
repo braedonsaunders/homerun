@@ -8,7 +8,6 @@ Inspired by terauss .atp_token_categories.json / .ligue1_tokens.json.
 Persists classifications to SQL DB instead of JSON files.
 """
 
-import uuid
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional
