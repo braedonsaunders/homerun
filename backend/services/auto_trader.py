@@ -15,6 +15,7 @@ IMPORTANT: This executes REAL trades with REAL money.
 """
 
 import asyncio
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -94,6 +95,30 @@ class AutoTraderConfig:
     circuit_breaker_losses: int = 3  # Pause after N consecutive losses
     circuit_breaker_duration_minutes: int = 30
 
+    # Settlement time filtering
+    max_end_date_days: Optional[int] = 30  # Skip markets settling more than N days out (None = no limit)
+    min_end_date_days: Optional[int] = None  # Skip markets settling sooner than N days (None = no limit)
+    prefer_near_settlement: bool = True  # Boost score for markets settling sooner
+
+    # Opportunity prioritization
+    priority_method: str = "composite"  # "roi", "annualized_roi", "composite"
+    settlement_weight: float = 0.3  # Weight for settlement proximity in composite score (0-1)
+    roi_weight: float = 0.5  # Weight for ROI in composite score (0-1)
+    liquidity_weight: float = 0.1  # Weight for liquidity in composite score (0-1)
+    risk_weight: float = 0.1  # Weight for (inverse) risk in composite score (0-1)
+
+    # Event concentration limits
+    max_trades_per_event: int = 3  # Max trades on markets within same event
+    max_exposure_per_event_usd: float = 50.0  # Max total $ exposure per event
+
+    # Exclusion filters
+    excluded_categories: list[str] = field(default_factory=list)  # e.g. ["Politics"]
+    excluded_keywords: list[str] = field(default_factory=list)  # e.g. ["presidential", "2028"]
+    excluded_event_slugs: list[str] = field(default_factory=list)  # e.g. ["will-donald-trump-win"]
+
+    # Volume filter
+    min_volume_usd: float = 0.0  # Minimum market trading volume
+
 
 @dataclass
 class TradeRecord:
@@ -113,6 +138,9 @@ class TradeRecord:
     status: str = "pending"  # pending, open, resolved_win, resolved_loss, failed
     order_ids: list[str] = field(default_factory=list)
     mode: AutoTraderMode = AutoTraderMode.PAPER
+    event_id: Optional[str] = None
+    days_to_settlement: Optional[float] = None
+    composite_score: Optional[float] = None
 
 
 @dataclass
@@ -230,6 +258,119 @@ class AutoTrader:
 
         return True, ""
 
+    def _days_until_settlement(self, opp: ArbitrageOpportunity) -> Optional[float]:
+        """Calculate days until market settlement/resolution.
+
+        Returns None if no end/resolution date is available.
+        """
+        end_date = opp.resolution_date
+        if end_date is None:
+            return None
+        now = datetime.utcnow()
+        if end_date <= now:
+            return 0.0
+        return (end_date - now).total_seconds() / 86400.0
+
+    def _annualized_roi(self, roi_percent: float, days_to_settlement: Optional[float]) -> float:
+        """Convert raw ROI to annualized ROI based on settlement time.
+
+        A 5% ROI in 7 days is much better than 5% in 365 days.
+        If settlement date is unknown, returns raw ROI as-is.
+        """
+        if days_to_settlement is None or days_to_settlement <= 0:
+            return roi_percent
+        # Annualize: (1 + roi)^(365/days) - 1, capped to avoid absurd values
+        periods_per_year = 365.0 / max(days_to_settlement, 0.5)
+        try:
+            annualized = (math.pow(1 + roi_percent / 100, periods_per_year) - 1) * 100
+        except (OverflowError, ValueError):
+            annualized = 999999.0
+        return min(annualized, 999999.0)  # Cap at a reasonable max
+
+    def _settlement_score(self, days_to_settlement: Optional[float]) -> float:
+        """Score settlement proximity from 0.0 (far away) to 1.0 (imminent).
+
+        Uses exponential decay: markets settling within a week score ~1.0,
+        markets settling in 30+ days score low, 365+ days score near 0.
+        """
+        if days_to_settlement is None:
+            return 0.3  # Unknown settlement gets a neutral-low score
+        if days_to_settlement <= 0:
+            return 1.0  # Already past resolution
+        # Exponential decay with half-life of ~14 days
+        return math.exp(-days_to_settlement / 20.0)
+
+    def _composite_score(self, opp: ArbitrageOpportunity) -> float:
+        """Calculate a composite priority score for an opportunity.
+
+        Combines ROI, settlement proximity, liquidity, and risk into a
+        single score using configurable weights. Higher is better.
+        """
+        days = self._days_until_settlement(opp)
+
+        # ROI component (normalized: 10% ROI -> 1.0 score)
+        if self.config.priority_method == "annualized_roi":
+            roi_score = min(self._annualized_roi(opp.roi_percent, days) / 10.0, 10.0)
+        else:
+            roi_score = min(opp.roi_percent / 10.0, 10.0)
+
+        # Settlement component
+        settle_score = self._settlement_score(days)
+
+        # Liquidity component (normalized: $50k -> 1.0 score)
+        liq_score = min(opp.min_liquidity / 50000.0, 1.0)
+
+        # Risk component (inverted: low risk = high score)
+        risk_score = 1.0 - opp.risk_score
+
+        composite = (
+            self.config.roi_weight * roi_score
+            + self.config.settlement_weight * settle_score
+            + self.config.liquidity_weight * liq_score
+            + self.config.risk_weight * risk_score
+        )
+
+        return composite
+
+    def _get_event_trade_count(self, event_id: Optional[str]) -> int:
+        """Count how many open/pending trades exist for a given event."""
+        if not event_id:
+            return 0
+        return sum(
+            1 for t in self._trades.values()
+            if t.status in ("open", "pending") and t.event_id == event_id
+        )
+
+    def _get_event_exposure(self, event_id: Optional[str]) -> float:
+        """Sum total cost of open/pending trades for a given event."""
+        if not event_id:
+            return 0.0
+        return sum(
+            t.total_cost for t in self._trades.values()
+            if t.status in ("open", "pending") and t.event_id == event_id
+        )
+
+    def _matches_exclusion_keywords(self, opp: ArbitrageOpportunity) -> Optional[str]:
+        """Check if opportunity matches any exclusion keyword. Returns matched keyword or None."""
+        if not self.config.excluded_keywords:
+            return None
+        text = f"{opp.title} {opp.description} {opp.event_title or ''}".lower()
+        for kw in self.config.excluded_keywords:
+            if kw.lower() in text:
+                return kw
+        return None
+
+    def _matches_exclusion_slug(self, opp: ArbitrageOpportunity) -> Optional[str]:
+        """Check if opportunity's event slug matches exclusion list."""
+        if not self.config.excluded_event_slugs:
+            return None
+        for market in (opp.markets or []):
+            slug = market.get("slug", "")
+            for excl_slug in self.config.excluded_event_slugs:
+                if excl_slug.lower() in slug.lower():
+                    return excl_slug
+        return None
+
     def _should_trade_opportunity(self, opp: ArbitrageOpportunity) -> tuple[bool, str]:
         """Determine if an opportunity should be traded"""
 
@@ -259,6 +400,46 @@ class AutoTrader:
         if opp.strategy not in self.config.enabled_strategies:
             return False, f"Strategy {opp.strategy.value} not enabled"
 
+        # === EXCLUSION FILTERS (new) ===
+
+        # Category exclusion
+        category = getattr(opp, "category", None)
+        if category and self.config.excluded_categories:
+            if category.lower() in [c.lower() for c in self.config.excluded_categories]:
+                return False, f"Category '{category}' is excluded"
+
+        # Keyword exclusion
+        matched_kw = self._matches_exclusion_keywords(opp)
+        if matched_kw:
+            return False, f"Matches excluded keyword '{matched_kw}'"
+
+        # Slug exclusion
+        matched_slug = self._matches_exclusion_slug(opp)
+        if matched_slug:
+            return False, f"Matches excluded slug '{matched_slug}'"
+
+        # === SETTLEMENT TIME FILTERS (new) ===
+
+        days_to_settle = self._days_until_settlement(opp)
+
+        # Filter out markets that settle too far in the future
+        if self.config.max_end_date_days is not None and days_to_settle is not None:
+            if days_to_settle > self.config.max_end_date_days:
+                return (
+                    False,
+                    f"Settles in {days_to_settle:.0f} days, max allowed is {self.config.max_end_date_days}",
+                )
+
+        # Filter out markets that settle too soon (if configured)
+        if self.config.min_end_date_days is not None and days_to_settle is not None:
+            if days_to_settle < self.config.min_end_date_days:
+                return (
+                    False,
+                    f"Settles in {days_to_settle:.0f} days, min required is {self.config.min_end_date_days}",
+                )
+
+        # === STANDARD FILTERS ===
+
         # Check ROI threshold
         if opp.roi_percent < self.config.min_roi_percent:
             return False, f"ROI {opp.roi_percent:.2f}% below threshold"
@@ -268,7 +449,6 @@ class AutoTrader:
             return False, f"Risk score {opp.risk_score:.2f} above threshold"
 
         # Apply category-specific liquidity adjustments
-        category = getattr(opp, "category", None)
         adjusted_min_liquidity = (
             category_buffer_service.adjust_min_liquidity(
                 self.config.min_liquidity_usd, category
@@ -283,6 +463,12 @@ class AutoTrader:
                 False,
                 f"Liquidity ${opp.min_liquidity:.0f} below threshold (${adjusted_min_liquidity:.0f} for {category or 'default'})",
             )
+
+        # Check volume filter
+        if self.config.min_volume_usd > 0:
+            opp_volume = sum(m.get("volume", 0) for m in (opp.markets or []))
+            if opp_volume < self.config.min_volume_usd:
+                return False, f"Volume ${opp_volume:.0f} below threshold ${self.config.min_volume_usd:.0f}"
 
         # For miracle strategy, check impossibility score
         if opp.strategy == StrategyType.MIRACLE:
@@ -303,6 +489,25 @@ class AutoTrader:
                 return False, (
                     f"Guaranteed profit ${opp.guaranteed_profit:.4f} below "
                     f"threshold ${self.config.min_guaranteed_profit:.4f}"
+                )
+
+        # === EVENT CONCENTRATION LIMITS (new) ===
+
+        event_id = opp.event_id
+        if event_id and self.config.max_trades_per_event > 0:
+            event_trades = self._get_event_trade_count(event_id)
+            if event_trades >= self.config.max_trades_per_event:
+                return (
+                    False,
+                    f"Event already has {event_trades} trades (max {self.config.max_trades_per_event})",
+                )
+
+        if event_id and self.config.max_exposure_per_event_usd > 0:
+            event_exposure = self._get_event_exposure(event_id)
+            if event_exposure >= self.config.max_exposure_per_event_usd:
+                return (
+                    False,
+                    f"Event exposure ${event_exposure:.2f} exceeds max ${self.config.max_exposure_per_event_usd:.2f}",
                 )
 
         # Check max concurrent positions
@@ -486,6 +691,7 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"Failed to record tier assignment: {e}")
 
+        days = self._days_until_settlement(opp)
         trade = TradeRecord(
             id=trade_id,
             opportunity_id=opp.id,
@@ -498,6 +704,9 @@ class AutoTrader:
             capture_ratio=opp.capture_ratio,
             mispricing_type=opp.mispricing_type.value if opp.mispricing_type else None,
             mode=self.config.mode,
+            event_id=opp.event_id,
+            days_to_settlement=days,
+            composite_score=self._composite_score(opp),
         )
 
         guarantee_str = ""
@@ -612,14 +821,48 @@ class AutoTrader:
         return trade
 
     async def _process_opportunities(self, opportunities: list[ArbitrageOpportunity]):
-        """Process a batch of opportunities"""
+        """Process a batch of opportunities, sorted by priority method."""
         self.stats.opportunities_seen += len(opportunities)
 
-        for opp in opportunities:
+        # Sort opportunities by configured priority method
+        if self.config.priority_method == "composite":
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: self._composite_score(o),
+                reverse=True,
+            )
+        elif self.config.priority_method == "annualized_roi":
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: self._annualized_roi(
+                    o.roi_percent, self._days_until_settlement(o)
+                ),
+                reverse=True,
+            )
+        else:
+            # Default: raw ROI
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: o.roi_percent,
+                reverse=True,
+            )
+
+        for opp in sorted_opps:
             should_trade, reason = self._should_trade_opportunity(opp)
 
             if should_trade:
-                logger.info(f"Auto trading opportunity: {opp.title[:50]}...")
+                days = self._days_until_settlement(opp)
+                settle_str = f" | Settles: {days:.0f}d" if days is not None else ""
+                score_str = ""
+                if self.config.priority_method == "composite":
+                    score_str = f" | Score: {self._composite_score(opp):.3f}"
+                elif self.config.priority_method == "annualized_roi":
+                    ann_roi = self._annualized_roi(opp.roi_percent, days)
+                    score_str = f" | Ann.ROI: {ann_roi:.1f}%"
+
+                logger.info(
+                    f"Auto trading opportunity: {opp.title[:50]}...{settle_str}{score_str}"
+                )
 
                 if self.config.require_confirmation:
                     # Would need to implement confirmation mechanism
@@ -758,6 +1001,25 @@ class AutoTrader:
             "paper_account_capital": self.config.paper_account_capital,
             "min_guaranteed_profit": self.config.min_guaranteed_profit,
             "use_profit_guarantee": self.config.use_profit_guarantee,
+            # Settlement time
+            "max_end_date_days": self.config.max_end_date_days,
+            "min_end_date_days": self.config.min_end_date_days,
+            "prefer_near_settlement": self.config.prefer_near_settlement,
+            # Priority/scoring
+            "priority_method": self.config.priority_method,
+            "settlement_weight": self.config.settlement_weight,
+            "roi_weight": self.config.roi_weight,
+            "liquidity_weight": self.config.liquidity_weight,
+            "risk_weight": self.config.risk_weight,
+            # Event concentration
+            "max_trades_per_event": self.config.max_trades_per_event,
+            "max_exposure_per_event_usd": self.config.max_exposure_per_event_usd,
+            # Exclusions
+            "excluded_categories": self.config.excluded_categories,
+            "excluded_keywords": self.config.excluded_keywords,
+            "excluded_event_slugs": self.config.excluded_event_slugs,
+            # Volume
+            "min_volume_usd": self.config.min_volume_usd,
         }
 
     def get_trades(self, limit: int = 100) -> list[dict]:
@@ -780,6 +1042,9 @@ class AutoTrader:
                 "mispricing_type": t.mispricing_type,
                 "status": t.status,
                 "mode": t.mode.value,
+                "event_id": t.event_id,
+                "days_to_settlement": t.days_to_settlement,
+                "composite_score": t.composite_score,
             }
             for t in trades
         ]
