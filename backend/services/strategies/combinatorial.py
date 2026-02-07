@@ -21,6 +21,8 @@ This strategy:
 4. If cost < $1, arbitrage exists with profit = $1 - cost
 """
 
+from __future__ import annotations
+
 from typing import Optional
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from .base import BaseStrategy
