@@ -37,14 +37,22 @@ class LLMSettings(BaseModel):
     """LLM service configuration"""
 
     provider: str = Field(
-        default="none", description="LLM provider: none, openai, anthropic"
+        default="none",
+        description="LLM provider: none, openai, anthropic, google, xai, deepseek",
     )
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(
         default=None, description="Anthropic API key"
     )
+    google_api_key: Optional[str] = Field(
+        default=None, description="Google (Gemini) API key"
+    )
+    xai_api_key: Optional[str] = Field(default=None, description="xAI (Grok) API key")
+    deepseek_api_key: Optional[str] = Field(
+        default=None, description="DeepSeek API key"
+    )
     model: Optional[str] = Field(
-        default=None, description="Model to use (e.g., gpt-4, claude-3)"
+        default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)"
     )
 
 
@@ -192,6 +200,9 @@ async def get_settings():
                 provider=settings.llm_provider or "none",
                 openai_api_key=mask_secret(settings.openai_api_key),
                 anthropic_api_key=mask_secret(settings.anthropic_api_key),
+                google_api_key=mask_secret(settings.google_api_key),
+                xai_api_key=mask_secret(settings.xai_api_key),
+                deepseek_api_key=mask_secret(settings.deepseek_api_key),
                 model=settings.llm_model,
             ),
             notifications=NotificationSettings(
@@ -267,6 +278,12 @@ async def update_settings(request: UpdateSettingsRequest):
                     settings.openai_api_key = llm.openai_api_key or None
                 if llm.anthropic_api_key is not None:
                     settings.anthropic_api_key = llm.anthropic_api_key or None
+                if llm.google_api_key is not None:
+                    settings.google_api_key = llm.google_api_key or None
+                if llm.xai_api_key is not None:
+                    settings.xai_api_key = llm.xai_api_key or None
+                if llm.deepseek_api_key is not None:
+                    settings.deepseek_api_key = llm.deepseek_api_key or None
                 if llm.model is not None:
                     settings.llm_model = llm.model or None
 
@@ -350,6 +367,9 @@ async def get_llm_settings():
         provider=settings.llm_provider or "none",
         openai_api_key=mask_secret(settings.openai_api_key),
         anthropic_api_key=mask_secret(settings.anthropic_api_key),
+        google_api_key=mask_secret(settings.google_api_key),
+        xai_api_key=mask_secret(settings.xai_api_key),
+        deepseek_api_key=mask_secret(settings.deepseek_api_key),
         model=settings.llm_model,
     )
 
@@ -474,3 +494,55 @@ async def test_telegram_connection():
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ==================== MODEL LISTING ENDPOINTS ====================
+
+
+@router.get("/llm/models")
+async def get_available_models(provider: Optional[str] = None):
+    """Get cached list of available models for configured providers.
+
+    Returns models from the database cache. Use POST /settings/llm/models/refresh
+    to fetch fresh models from provider APIs.
+    """
+    try:
+        from services.ai import get_llm_manager
+
+        manager = get_llm_manager()
+        models = await manager.get_cached_models(provider_name=provider)
+        return {"models": models}
+    except RuntimeError:
+        # AI not initialized - return empty
+        return {"models": {}}
+    except Exception as e:
+        logger.error("Failed to get models", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/llm/models/refresh")
+async def refresh_models(provider: Optional[str] = None):
+    """Fetch fresh models from provider APIs and update the cache.
+
+    Queries each configured provider's API for available models and
+    stores the results in the database for quick dropdown population.
+    """
+    try:
+        from services.ai import get_llm_manager
+
+        manager = get_llm_manager()
+
+        # Re-initialize to pick up any newly saved API keys
+        await manager.initialize()
+
+        models = await manager.fetch_and_cache_models(provider_name=provider)
+        return {
+            "status": "success",
+            "message": f"Refreshed models for {len(models)} provider(s)",
+            "models": models,
+        }
+    except RuntimeError as e:
+        return {"status": "error", "message": str(e), "models": {}}
+    except Exception as e:
+        logger.error("Failed to refresh models", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

@@ -45,7 +45,7 @@ from typing import Any, Optional
 import httpx
 from sqlalchemy import func, select
 
-from models.database import AppSettings, AsyncSessionLocal, LLMUsageLog
+from models.database import AppSettings, AsyncSessionLocal, LLMModelCache, LLMUsageLog
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +262,14 @@ class BaseLLMProvider(ABC):
         """
         pass
 
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the provider API.
+
+        Returns:
+            List of dicts with 'id' and 'name' keys.
+        """
+        return []
+
     def _estimate_cost(
         self, model: str, input_tokens: int, output_tokens: int
     ) -> float:
@@ -384,6 +392,32 @@ class OpenAIProvider(BaseLLMProvider):
                 )
             )
         return result
+
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the OpenAI API."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/models",
+                    headers=self._build_headers(),
+                )
+            if response.status_code != 200:
+                logger.warning("Failed to list OpenAI models: %s", response.text[:200])
+                return []
+            data = response.json()
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                if any(
+                    model_id.startswith(p)
+                    for p in ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+                ):
+                    models.append({"id": model_id, "name": model_id})
+            models.sort(key=lambda x: x["id"])
+            return models
+        except Exception as exc:
+            logger.warning("Error listing OpenAI models: %s", exc)
+            return []
 
     async def chat(
         self,
@@ -665,6 +699,31 @@ class AnthropicProvider(BaseLLMProvider):
                 )
         return result
 
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the Anthropic API."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/models",
+                    headers=self._build_headers(),
+                )
+            if response.status_code != 200:
+                logger.warning(
+                    "Failed to list Anthropic models: %s", response.text[:200]
+                )
+                return []
+            data = response.json()
+            models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                display_name = m.get("display_name", model_id)
+                models.append({"id": model_id, "name": display_name})
+            models.sort(key=lambda x: x["id"])
+            return models
+        except Exception as exc:
+            logger.warning("Error listing Anthropic models: %s", exc)
+            return []
+
     async def chat(
         self,
         messages: list[LLMMessage],
@@ -884,6 +943,34 @@ class GoogleProvider(BaseLLMProvider):
             )
         return [{"function_declarations": function_declarations}]
 
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the Google Gemini API."""
+        try:
+            url = f"{self.base_url}/models?key={self.api_key}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+            if response.status_code != 200:
+                logger.warning(
+                    "Failed to list Google models: %s", response.text[:200]
+                )
+                return []
+            data = response.json()
+            models = []
+            for m in data.get("models", []):
+                name = m.get("name", "")
+                # name is like "models/gemini-2.0-flash" - extract the model id
+                model_id = name.replace("models/", "") if name.startswith("models/") else name
+                display_name = m.get("displayName", model_id)
+                # Only include generative models that support generateContent
+                supported = m.get("supportedGenerationMethods", [])
+                if "generateContent" in supported:
+                    models.append({"id": model_id, "name": display_name})
+            models.sort(key=lambda x: x["id"])
+            return models
+        except Exception as exc:
+            logger.warning("Error listing Google models: %s", exc)
+            return []
+
     async def chat(
         self,
         messages: list[LLMMessage],
@@ -1080,6 +1167,12 @@ class XAIProvider(BaseLLMProvider):
         self.api_key = api_key
         self._delegate = OpenAIProvider(api_key=api_key, base_url="https://api.x.ai/v1")
 
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the xAI API."""
+        models = await self._delegate.list_models()
+        # Filter to grok models only
+        return [m for m in models if m["id"].startswith("grok-")]
+
     async def chat(
         self,
         messages: list[LLMMessage],
@@ -1151,6 +1244,12 @@ class DeepSeekProvider(BaseLLMProvider):
         self._delegate = OpenAIProvider(
             api_key=api_key, base_url="https://api.deepseek.com/v1"
         )
+
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from the DeepSeek API."""
+        models = await self._delegate.list_models()
+        # Filter to deepseek models only
+        return [m for m in models if m["id"].startswith("deepseek-")]
 
     async def chat(
         self,
@@ -1644,6 +1743,101 @@ class LLMManager:
                 "error": str(exc),
                 "configured_providers": [p.value for p in self._providers],
             }
+
+    async def fetch_and_cache_models(
+        self, provider_name: Optional[str] = None
+    ) -> dict[str, list[dict[str, str]]]:
+        """Fetch models from provider APIs and cache them in the database.
+
+        Args:
+            provider_name: Optional provider name to refresh. If None, refreshes all.
+
+        Returns:
+            Dict mapping provider name to list of model dicts.
+        """
+        results: dict[str, list[dict[str, str]]] = {}
+
+        providers_to_refresh = {}
+        if provider_name:
+            for p_enum, p_inst in self._providers.items():
+                if p_enum.value == provider_name:
+                    providers_to_refresh[p_enum] = p_inst
+                    break
+        else:
+            providers_to_refresh = dict(self._providers)
+
+        for p_enum, p_inst in providers_to_refresh.items():
+            try:
+                models = await p_inst.list_models()
+                results[p_enum.value] = models
+
+                # Cache in database
+                async with AsyncSessionLocal() as session:
+                    # Delete old entries for this provider
+                    from sqlalchemy import delete
+
+                    await session.execute(
+                        delete(LLMModelCache).where(
+                            LLMModelCache.provider == p_enum.value
+                        )
+                    )
+                    # Insert new entries
+                    for m in models:
+                        entry = LLMModelCache(
+                            id=f"{p_enum.value}_{m['id']}",
+                            provider=p_enum.value,
+                            model_id=m["id"],
+                            display_name=m.get("name", m["id"]),
+                        )
+                        session.add(entry)
+                    await session.commit()
+
+                logger.info(
+                    "Cached %d models for provider %s",
+                    len(models),
+                    p_enum.value,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to fetch models for %s: %s", p_enum.value, exc
+                )
+                results[p_enum.value] = []
+
+        return results
+
+    async def get_cached_models(
+        self, provider_name: Optional[str] = None
+    ) -> dict[str, list[dict[str, str]]]:
+        """Get cached models from the database.
+
+        Args:
+            provider_name: Optional provider to filter by.
+
+        Returns:
+            Dict mapping provider name to list of model dicts.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                query = select(LLMModelCache)
+                if provider_name:
+                    query = query.where(LLMModelCache.provider == provider_name)
+                query = query.order_by(
+                    LLMModelCache.provider, LLMModelCache.model_id
+                )
+                result = await session.execute(query)
+                rows = result.scalars().all()
+
+            models_by_provider: dict[str, list[dict[str, str]]] = {}
+            for row in rows:
+                if row.provider not in models_by_provider:
+                    models_by_provider[row.provider] = []
+                models_by_provider[row.provider].append(
+                    {"id": row.model_id, "name": row.display_name or row.model_id}
+                )
+            return models_by_provider
+        except Exception as exc:
+            logger.error("Failed to get cached models: %s", exc)
+            return {}
 
     def is_available(self) -> bool:
         """Check if any LLM provider is configured and ready.

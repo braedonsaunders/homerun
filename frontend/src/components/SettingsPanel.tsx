@@ -21,7 +21,10 @@ import {
   getSettings,
   updateSettings,
   testPolymarketConnection,
-  testTelegramConnection
+  testTelegramConnection,
+  getLLMModels,
+  refreshLLMModels,
+  type LLMModelOption
 } from '../services/api'
 
 type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'maintenance'
@@ -43,8 +46,14 @@ export default function SettingsPanel() {
     provider: 'none',
     openai_api_key: '',
     anthropic_api_key: '',
+    google_api_key: '',
+    xai_api_key: '',
+    deepseek_api_key: '',
     model: ''
   })
+
+  const [availableModels, setAvailableModels] = useState<Record<string, LLMModelOption[]>>({})
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false)
 
   const [notificationsForm, setNotificationsForm] = useState({
     enabled: false,
@@ -98,6 +107,9 @@ export default function SettingsPanel() {
         provider: settings.llm.provider || 'none',
         openai_api_key: '',
         anthropic_api_key: '',
+        google_api_key: '',
+        xai_api_key: '',
+        deepseek_api_key: '',
         model: settings.llm.model || ''
       })
 
@@ -132,6 +144,28 @@ export default function SettingsPanel() {
       })
     }
   }, [settings])
+
+  // Load available models on mount
+  useEffect(() => {
+    getLLMModels().then(res => {
+      if (res.models) setAvailableModels(res.models)
+    }).catch(() => {})
+  }, [])
+
+  const handleRefreshModels = async () => {
+    setIsRefreshingModels(true)
+    try {
+      const res = await refreshLLMModels()
+      if (res.models) setAvailableModels(res.models)
+    } catch {
+      // ignore
+    } finally {
+      setIsRefreshingModels(false)
+    }
+  }
+
+  // Get models for the currently selected provider
+  const modelsForProvider = availableModels[llmForm.provider] || []
 
   const saveMutation = useMutation({
     mutationFn: updateSettings,
@@ -173,6 +207,9 @@ export default function SettingsPanel() {
         }
         if (llmForm.openai_api_key) updates.llm.openai_api_key = llmForm.openai_api_key
         if (llmForm.anthropic_api_key) updates.llm.anthropic_api_key = llmForm.anthropic_api_key
+        if (llmForm.google_api_key) updates.llm.google_api_key = llmForm.google_api_key
+        if (llmForm.xai_api_key) updates.llm.xai_api_key = llmForm.xai_api_key
+        if (llmForm.deepseek_api_key) updates.llm.deepseek_api_key = llmForm.deepseek_api_key
         break
       case 'notifications':
         updates.notifications = {
@@ -377,12 +414,15 @@ export default function SettingsPanel() {
                   <label className="block text-xs text-gray-500 mb-1">LLM Provider</label>
                   <select
                     value={llmForm.provider}
-                    onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value }))}
+                    onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value, model: '' }))}
                     className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
                   >
                     <option value="none">None (Disabled)</option>
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
+                    <option value="google">Google (Gemini)</option>
+                    <option value="xai">xAI (Grok)</option>
+                    <option value="deepseek">DeepSeek</option>
                   </select>
                 </div>
 
@@ -408,15 +448,71 @@ export default function SettingsPanel() {
                   />
                 )}
 
+                {(llmForm.provider === 'google' || llmForm.provider === 'none') && (
+                  <SecretInput
+                    label="Google (Gemini) API Key"
+                    value={llmForm.google_api_key}
+                    placeholder={settings?.llm.google_api_key || 'AIza...'}
+                    onChange={(v) => setLlmForm(p => ({ ...p, google_api_key: v }))}
+                    showSecret={showSecrets['google_key']}
+                    onToggle={() => toggleSecret('google_key')}
+                  />
+                )}
+
+                {(llmForm.provider === 'xai' || llmForm.provider === 'none') && (
+                  <SecretInput
+                    label="xAI (Grok) API Key"
+                    value={llmForm.xai_api_key}
+                    placeholder={settings?.llm.xai_api_key || 'xai-...'}
+                    onChange={(v) => setLlmForm(p => ({ ...p, xai_api_key: v }))}
+                    showSecret={showSecrets['xai_key']}
+                    onToggle={() => toggleSecret('xai_key')}
+                  />
+                )}
+
+                {(llmForm.provider === 'deepseek' || llmForm.provider === 'none') && (
+                  <SecretInput
+                    label="DeepSeek API Key"
+                    value={llmForm.deepseek_api_key}
+                    placeholder={settings?.llm.deepseek_api_key || 'sk-...'}
+                    onChange={(v) => setLlmForm(p => ({ ...p, deepseek_api_key: v }))}
+                    showSecret={showSecrets['deepseek_key']}
+                    onToggle={() => toggleSecret('deepseek_key')}
+                  />
+                )}
+
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Model</label>
-                  <input
-                    type="text"
-                    value={llmForm.model}
-                    onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
-                    placeholder="e.g., gpt-4, claude-3-opus"
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
+                  <div className="flex gap-2">
+                    <select
+                      value={llmForm.model}
+                      onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
+                      className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                    >
+                      <option value="">Select a model...</option>
+                      {modelsForProvider.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                      {llmForm.model && !modelsForProvider.find(m => m.id === llmForm.model) && (
+                        <option value={llmForm.model}>{llmForm.model} (current)</option>
+                      )}
+                    </select>
+                    <button
+                      onClick={handleRefreshModels}
+                      disabled={isRefreshingModels || llmForm.provider === 'none'}
+                      className="flex items-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg text-sm"
+                      title="Refresh models from provider API"
+                    >
+                      <RefreshCw className={clsx("w-4 h-4", isRefreshingModels && "animate-spin")} />
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">
+                    {modelsForProvider.length > 0
+                      ? `${modelsForProvider.length} models available`
+                      : llmForm.provider !== 'none'
+                        ? 'Click refresh to fetch available models from the API'
+                        : 'Select a provider first'}
+                  </p>
                 </div>
               </div>
 
