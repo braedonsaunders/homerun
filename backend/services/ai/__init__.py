@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 AI Intelligence Layer for Homerun.
 
@@ -11,6 +9,8 @@ Provides LLM-powered analysis for:
 - News/sentiment analysis
 - Pluggable skill system for reusable analysis workflows
 """
+
+from __future__ import annotations
 
 from services.ai.llm_provider import (
     LLMManager,

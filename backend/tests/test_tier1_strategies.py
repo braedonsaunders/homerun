@@ -7,6 +7,8 @@ Covers:
 - BaseStrategy: Risk scoring and opportunity creation (via concrete implementations)
 """
 
+from __future__ import annotations
+
 import sys
 
 sys.path.insert(0, "/home/user/homerun/backend")

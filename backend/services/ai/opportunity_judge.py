@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 LLM-as-Judge Opportunity Scorer.
 
@@ -14,6 +12,8 @@ Scores each opportunity on multiple dimensions:
 
 Inspired by virattt/dexter's LLM-as-judge evaluation pattern.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
