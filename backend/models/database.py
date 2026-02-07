@@ -566,7 +566,9 @@ class LLMModelCache(Base):
     __tablename__ = "llm_model_cache"
 
     id = Column(String, primary_key=True)
-    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek
+    provider = Column(
+        String, nullable=False
+    )  # openai, anthropic, google, xai, deepseek
     model_id = Column(String, nullable=False)  # The model identifier used in API calls
     display_name = Column(String, nullable=True)  # Human-readable name
     created_at = Column(DateTime, default=datetime.utcnow)
