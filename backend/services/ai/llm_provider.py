@@ -1335,6 +1335,9 @@ class LLMManager:
         the corresponding provider instances. Also loads the current month's
         spend from the LLMUsageLog table.
         """
+        # Reset providers so re-initialization picks up removed keys
+        self._providers.clear()
+
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
@@ -1381,20 +1384,27 @@ class LLMManager:
                 # Load spend settings
                 if app_settings.ai_max_monthly_spend is not None:
                     self._spend_limit = app_settings.ai_max_monthly_spend
+
+                _provider_default_models = {
+                    LLMProvider.OPENAI: "gpt-4o-mini",
+                    LLMProvider.ANTHROPIC: "claude-sonnet-4-5-20250929",
+                    LLMProvider.GOOGLE: "gemini-2.0-flash",
+                    LLMProvider.XAI: "grok-3-mini",
+                    LLMProvider.DEEPSEEK: "deepseek-chat",
+                }
+
                 if app_settings.ai_default_model:
                     self._default_model = app_settings.ai_default_model
                 elif app_settings.llm_model:
                     self._default_model = app_settings.llm_model
                 else:
-                    # No explicit model set — pick a sensible default based
-                    # on which providers are actually configured.
-                    _provider_default_models = {
-                        LLMProvider.OPENAI: "gpt-4o-mini",
-                        LLMProvider.ANTHROPIC: "claude-sonnet-4-5-20250929",
-                        LLMProvider.GOOGLE: "gemini-2.0-flash",
-                        LLMProvider.XAI: "grok-3-mini",
-                        LLMProvider.DEEPSEEK: "deepseek-chat",
-                    }
+                    self._default_model = "gpt-4o-mini"
+
+                # Validate that the default model's provider is actually
+                # configured.  If not, fall back to the first available
+                # provider's default model so we don't error at runtime.
+                default_provider = self.detect_provider(self._default_model)
+                if default_provider not in self._providers and self._providers:
                     for p, m in _provider_default_models.items():
                         if p in self._providers:
                             self._default_model = m
@@ -1448,7 +1458,11 @@ class LLMManager:
         elif model_lower.startswith("deepseek-"):
             return LLMProvider.DEEPSEEK
         else:
-            return LLMProvider.OPENAI  # Default fallback
+            # Fall back to the first configured provider rather than
+            # assuming OpenAI is always available.
+            if self._providers:
+                return next(iter(self._providers))
+            return LLMProvider.OPENAI
 
     def _get_provider(self, provider_enum: LLMProvider) -> BaseLLMProvider:
         """Get an initialized provider instance.

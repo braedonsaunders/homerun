@@ -114,6 +114,8 @@ export default function TradingPanel() {
   const { data: balance } = useQuery({
     queryKey: ['trading-balance'],
     queryFn: getTradingBalance,
+    enabled: !!tradingStatus?.initialized,
+    retry: false,
   })
 
   useQuery({
