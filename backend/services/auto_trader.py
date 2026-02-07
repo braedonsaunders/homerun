@@ -79,7 +79,9 @@ class AutoTraderConfig:
     max_position_size_usd: float = 100.0  # Maximum per trade
     position_size_method: str = "fixed"  # fixed, kelly, volatility_adjusted
     paper_account_capital: float = 10000.0  # Starting capital for paper trading
-    paper_account_id: Optional[str] = None  # ID of simulation account to use (None = create new)
+    paper_account_id: Optional[str] = (
+        None  # ID of simulation account to use (None = create new)
+    )
 
     # Risk management
     max_daily_trades: int = 50  # Maximum trades per day
