@@ -27,7 +27,7 @@ import {
   Zap,
   Eye
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import {
   getWalletTradesAnalysis,
   getWalletPositionsAnalysis,
@@ -308,7 +308,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                   <button
                     key={option.value}
                     onClick={() => setTimePeriod(option.value)}
-                    className={clsx(
+                    className={cn(
                       "px-3 py-1.5 text-xs font-medium rounded-md transition-all",
                       timePeriod === option.value
                         ? "bg-purple-500/30 text-purple-300 border border-purple-500/30"
@@ -349,7 +349,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
           />
 
           {/* Tab Navigation */}
-          <div className="flex gap-2 p-1 bg-[#141414] rounded-xl border border-gray-800">
+          <div className="flex gap-2 p-1 bg-card rounded-xl border border-border">
             {[
               { id: 'summary' as const, label: 'Overview', icon: BarChart3 },
               { id: 'trades' as const, label: 'Trade History', icon: History },
@@ -359,7 +359,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={clsx(
+                className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-medium transition-all",
                   activeTab === tab.id
                     ? "bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-white border border-purple-500/30"
@@ -373,7 +373,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
           </div>
 
           {/* Tab Content */}
-          <div className="bg-[#141414] border border-gray-800 rounded-2xl overflow-hidden">
+          <div className="bg-card border border-border rounded-2xl overflow-hidden">
             <div className="p-6">
               {activeTab === 'summary' && (
                 <SummaryTab
@@ -556,7 +556,7 @@ function WalletHeroCard({
           {/* Badges & Refresh */}
           <div className="flex items-center gap-2">
             {anomalyData && (
-              <span className={clsx(
+              <span className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium",
                 anomalyData.anomaly_score > 0.7
                   ? "bg-red-500/20 border-red-500/30 text-red-300"
@@ -594,7 +594,7 @@ function WalletHeroCard({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total P&L</p>
-                <p className={clsx(
+                <p className={cn(
                   "text-3xl font-bold",
                   isProfitable ? "text-green-400" : "text-red-400"
                 )}>
@@ -606,7 +606,7 @@ function WalletHeroCard({
                   </span>
                 </p>
               </div>
-              <div className={clsx(
+              <div className={cn(
                 "w-14 h-14 rounded-xl flex items-center justify-center",
                 isProfitable ? "bg-green-500/20" : "bg-red-500/20"
               )}>
@@ -735,7 +735,7 @@ function SummaryTab({
                 <CheckCircle2 className="w-4 h-4 text-green-400" />
                 <p className="text-sm text-gray-400">Realized P&L</p>
               </div>
-              <p className={clsx(
+              <p className={cn(
                 "text-2xl font-bold",
                 realizedPnl >= 0 ? "text-green-400" : "text-red-400"
               )}>
@@ -753,7 +753,7 @@ function SummaryTab({
                 <Clock className="w-4 h-4 text-blue-400" />
                 <p className="text-sm text-gray-400">Unrealized P&L</p>
               </div>
-              <p className={clsx(
+              <p className={cn(
                 "text-2xl font-bold",
                 unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
               )}>
@@ -771,7 +771,7 @@ function SummaryTab({
                 <DollarSign className="w-4 h-4 text-purple-400" />
                 <p className="text-sm text-gray-400">Total P&L</p>
               </div>
-              <p className={clsx(
+              <p className={cn(
                 "text-2xl font-bold",
                 isProfitable ? "text-green-400" : "text-red-400"
               )}>
@@ -788,7 +788,7 @@ function SummaryTab({
       {/* Investment Flow & Trading Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Investment Flow */}
-        <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5">
+        <div className="rounded-xl bg-muted border border-border p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
               <ArrowRight className="w-4 h-4 text-blue-400" />
@@ -823,10 +823,10 @@ function SummaryTab({
                 ${positionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
-            <div className="pt-3 mt-3 border-t border-gray-800">
+            <div className="pt-3 mt-3 border-t border-border">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-300">Net Flow</span>
-                <span className={clsx(
+                <span className={cn(
                   "font-mono font-bold text-lg",
                   totalPnl >= 0 ? "text-green-400" : "text-red-400"
                 )}>
@@ -838,7 +838,7 @@ function SummaryTab({
         </div>
 
         {/* Trading Activity */}
-        <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5">
+        <div className="rounded-xl bg-muted border border-border p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
               <Activity className="w-4 h-4 text-purple-400" />
@@ -864,10 +864,10 @@ function SummaryTab({
 
           {/* Win Rate Bar */}
           {winRate && (
-            <div className="pt-3 border-t border-gray-800">
+            <div className="pt-3 border-t border-border">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-gray-400">Win Rate</span>
-                <span className={clsx(
+                <span className={cn(
                   "font-medium",
                   winRate.win_rate >= 70 ? "text-green-400" :
                   winRate.win_rate >= 50 ? "text-yellow-400" : "text-red-400"
@@ -877,7 +877,7 @@ function SummaryTab({
               </div>
               <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
                 <div
-                  className={clsx(
+                  className={cn(
                     "h-full rounded-full transition-all duration-500",
                     winRate.win_rate >= 70 ? "bg-gradient-to-r from-green-500 to-emerald-400" :
                     winRate.win_rate >= 50 ? "bg-gradient-to-r from-yellow-500 to-amber-400" :
@@ -959,16 +959,16 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
   const timestamp = trade.timestamp ? new Date(trade.timestamp).toLocaleString() : 'Unknown'
 
   return (
-    <div className={clsx(
+    <div className={cn(
       "rounded-xl overflow-hidden transition-all",
-      isExpanded ? "bg-[#1a1a1a]" : "bg-[#1a1a1a]/50 hover:bg-[#1a1a1a]"
+      isExpanded ? "bg-muted" : "bg-muted/50 hover:bg-muted"
     )}>
       <div
         className="flex items-center justify-between p-4 cursor-pointer"
         onClick={onToggle}
       >
         <div className="flex items-center gap-4">
-          <div className={clsx(
+          <div className={cn(
             "w-10 h-10 rounded-xl flex items-center justify-center",
             isBuy ? "bg-green-500/20" : "bg-red-500/20"
           )}>
@@ -980,7 +980,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className={clsx(
+              <span className={cn(
                 "text-xs font-semibold px-2 py-0.5 rounded-full",
                 isBuy ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
               )}>
@@ -998,7 +998,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
               {trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}
             </p>
           </div>
-          <div className={clsx(
+          <div className={cn(
             "p-2 rounded-lg transition-colors",
             isExpanded ? "bg-purple-500/20" : "bg-white/5"
           )}>
@@ -1012,7 +1012,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
       </div>
 
       {isExpanded && (
-        <div className="px-4 pb-4 border-t border-gray-800/50">
+        <div className="px-4 pb-4 border-t border-border/50">
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div className="bg-black/20 rounded-lg p-3">
               <p className="text-xs text-gray-500 mb-1">Market</p>
@@ -1044,7 +1044,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
             )}
           </div>
           {/* Actions */}
-          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
+          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
             {trade.market_slug && (
               <a
                 href={`https://polymarket.com/event/${trade.market_slug}`}
@@ -1111,7 +1111,7 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
           <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Unrealized P&L</p>
-            <p className={clsx(
+            <p className={cn(
               "text-2xl font-bold",
               data.total_unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
             )}>
@@ -1175,7 +1175,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
       {/* Score & Recommendation */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Anomaly Score */}
-        <div className={clsx("relative overflow-hidden rounded-xl bg-gradient-to-br border p-5", scoreBg)}>
+        <div className={cn("relative overflow-hidden rounded-xl bg-gradient-to-br border p-5", scoreBg)}>
           <div className="relative">
             <div className="flex items-center justify-between">
               <div>
@@ -1189,10 +1189,10 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
                   )}
                   <p className="text-sm text-gray-400">Anomaly Score</p>
                 </div>
-                <p className={clsx("text-3xl font-bold", scoreColor)}>
+                <p className={cn("text-3xl font-bold", scoreColor)}>
                   {(data.anomaly_score * 100).toFixed(0)}%
                 </p>
-                <p className={clsx("text-sm font-medium mt-1", scoreColor)}>{scoreLabel}</p>
+                <p className={cn("text-sm font-medium mt-1", scoreColor)}>{scoreLabel}</p>
               </div>
               <CircularProgress
                 percentage={data.anomaly_score * 100}
@@ -1205,14 +1205,14 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
         </div>
 
         {/* Recommendation */}
-        <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5">
+        <div className="rounded-xl bg-muted border border-border p-5">
           <div className="flex items-center gap-2 mb-3">
             <Eye className="w-5 h-5 text-purple-400" />
             <p className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Recommendation</p>
           </div>
           <p className="text-white leading-relaxed">{data.recommendation}</p>
           <div className="mt-3 flex items-center gap-2">
-            <span className={clsx(
+            <span className={cn(
               "px-2.5 py-1 rounded-full text-xs font-medium border",
               data.is_profitable_pattern
                 ? "bg-green-500/20 text-green-400 border-green-500/30"
@@ -1228,21 +1228,21 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
       <div>
         <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Trading Profile</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <p className="text-xs text-gray-500 mb-1">Total Trades</p>
             <p className="text-xl font-bold text-white">{data.stats.total_trades}</p>
           </div>
-          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <p className="text-xs text-gray-500 mb-1">Win Rate</p>
             <p className="text-xl font-bold text-white">{(data.stats.win_rate * 100).toFixed(1)}%</p>
           </div>
-          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <p className="text-xs text-gray-500 mb-1">Avg ROI</p>
-            <p className={clsx("text-xl font-bold", data.stats.avg_roi >= 0 ? "text-green-400" : "text-red-400")}>
+            <p className={cn("text-xl font-bold", data.stats.avg_roi >= 0 ? "text-green-400" : "text-red-400")}>
               {data.stats.avg_roi >= 0 ? '+' : ''}{data.stats.avg_roi.toFixed(1)}%
             </p>
           </div>
-          <div className="bg-[#1a1a1a] rounded-lg p-4 border border-gray-800">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <p className="text-xs text-gray-500 mb-1">Markets Traded</p>
             <p className="text-xl font-bold text-white">{data.stats.markets_traded ?? '-'}</p>
           </div>
@@ -1283,11 +1283,11 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
             {data.anomalies.map((anomaly, idx) => (
               <div
                 key={idx}
-                className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-4 hover:border-gray-700 transition-colors"
+                className="rounded-xl bg-muted border border-border p-4 hover:border-gray-700 transition-colors"
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <AlertTriangle className={clsx(
+                    <AlertTriangle className={cn(
                       "w-4 h-4",
                       anomaly.severity === 'critical' ? 'text-red-400' :
                       anomaly.severity === 'high' ? 'text-orange-400' :
@@ -1297,7 +1297,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
                       {anomaly.type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
                     </span>
                   </div>
-                  <span className={clsx(
+                  <span className={cn(
                     "px-2 py-0.5 rounded-full text-xs font-medium border",
                     severityColor(anomaly.severity)
                   )}>
@@ -1335,7 +1335,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
   const isConditionId = !position.title && position.market.length > 40
 
   return (
-    <div className="rounded-xl bg-[#1a1a1a] border border-gray-800 p-5 hover:border-gray-700 transition-colors">
+    <div className="rounded-xl bg-muted border border-border p-5 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
           <p className="font-medium text-white truncate" title={displayTitle}>
@@ -1345,7 +1345,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
             {position.outcome || 'Unknown'}
           </p>
         </div>
-        <div className={clsx(
+        <div className={cn(
           "flex items-center gap-1.5 px-3 py-1.5 rounded-full ml-4",
           isProfitable ? "bg-green-500/20" : "bg-red-500/20"
         )}>
@@ -1354,7 +1354,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
           ) : (
             <TrendingDown className="w-4 h-4 text-red-400" />
           )}
-          <span className={clsx("font-semibold", roiColor)}>
+          <span className={cn("font-semibold", roiColor)}>
             {position.roi_percent >= 0 ? '+' : ''}{position.roi_percent.toFixed(1)}%
           </span>
         </div>
@@ -1375,7 +1375,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
         </div>
         <div className="bg-black/20 rounded-lg p-3">
           <p className="text-xs text-gray-500 mb-1">Unrealized P&L</p>
-          <p className={clsx(
+          <p className={cn(
             "font-mono font-medium",
             isProfitable ? "text-green-400" : "text-red-400"
           )}>
@@ -1386,7 +1386,7 @@ function PositionRow({ position }: { position: WalletPosition }) {
 
       {/* Actions */}
       {position.market_slug && (
-        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
+        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
           <a
             href={`https://polymarket.com/event/${position.market_slug}`}
             target="_blank"

@@ -18,7 +18,11 @@ import {
   DollarSign,
   FileText
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
+import { Card } from './ui/card'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import {
   getWallets,
   addWallet,
@@ -204,68 +208,52 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
     <div className="space-y-6">
       {/* Section Tabs - only show if not controlled by parent */}
       {!isControlledByParent && (
-        <div className="flex gap-2">
-          <button
-            onClick={() => setActiveSection('discover')}
-            className={clsx(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-              currentSection === 'discover'
-                ? "bg-green-500/20 text-green-400 border border-green-500/50"
-                : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-            )}
-          >
-            <Search className="w-4 h-4" />
-            Discover Top Traders
-          </button>
-          <button
-            onClick={() => setActiveSection('tracked')}
-            className={clsx(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-              currentSection === 'tracked'
-                ? "bg-blue-500/20 text-blue-400 border border-blue-500/50"
-                : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-            )}
-          >
-            <Wallet className="w-4 h-4" />
-            Tracked Wallets ({wallets.length})
-          </button>
-        </div>
+        <Tabs value={currentSection} onValueChange={(v) => setActiveSection(v as 'tracked' | 'discover')}>
+          <TabsList className="flex h-auto gap-2 bg-transparent p-0">
+            <TabsTrigger
+              value="discover"
+              className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-green-500/20 data-[state=active]:text-green-400 data-[state=active]:border data-[state=active]:border-green-500/50 data-[state=active]:shadow-none"
+            >
+              <Search className="w-4 h-4" />
+              Discover Top Traders
+            </TabsTrigger>
+            <TabsTrigger
+              value="tracked"
+              className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-400 data-[state=active]:border data-[state=active]:border-blue-500/50 data-[state=active]:shadow-none"
+            >
+              <Wallet className="w-4 h-4" />
+              Tracked Wallets ({wallets.length})
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
       )}
 
       {currentSection === 'discover' && (
         <>
           {/* Discovery Mode Toggle - only show if not controlled by parent */}
           {!isControlledByParent && (
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={() => setDiscoverMode('leaderboard')}
-                className={clsx(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                  currentDiscoverMode === 'leaderboard'
-                    ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/50"
-                    : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-                )}
-              >
-                <Trophy className="w-4 h-4" />
-                Leaderboard
-              </button>
-              <button
-                onClick={() => setDiscoverMode('winrate')}
-                className={clsx(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                  currentDiscoverMode === 'winrate'
-                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/50"
-                    : "bg-[#1a1a1a] text-gray-400 hover:text-white"
-                )}
-              >
-                <Target className="w-4 h-4" />
-                High Win Rate
-              </button>
-            </div>
+            <Tabs value={currentDiscoverMode} onValueChange={(v) => setDiscoverMode(v as 'leaderboard' | 'winrate')}>
+              <TabsList className="flex h-auto gap-2 mb-4 bg-transparent p-0">
+                <TabsTrigger
+                  value="leaderboard"
+                  className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-yellow-500/20 data-[state=active]:text-yellow-400 data-[state=active]:border data-[state=active]:border-yellow-500/50 data-[state=active]:shadow-none"
+                >
+                  <Trophy className="w-4 h-4" />
+                  Leaderboard
+                </TabsTrigger>
+                <TabsTrigger
+                  value="winrate"
+                  className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400 data-[state=active]:border data-[state=active]:border-emerald-500/50 data-[state=active]:shadow-none"
+                >
+                  <Target className="w-4 h-4" />
+                  High Win Rate
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           )}
 
           {/* Discovery Header */}
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+          <Card className="p-4">
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="text-lg font-medium flex items-center gap-2">
@@ -281,45 +269,47 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     </>
                   )}
                 </h3>
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
                     ? `Scanning ~${scanCount * 2} traders for ${minWinRate}%+ win rate${minVolume > 0 ? `, $${minVolume.toLocaleString()}+ volume` : ''}`
                     : 'Discovered from Polymarket leaderboard'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button
+                <Button
+                  variant="ghost"
                   onClick={() => setShowFilters(!showFilters)}
-                  className={clsx(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm",
-                    showFilters ? "bg-blue-500/20 text-blue-400" : "bg-[#1a1a1a] hover:bg-gray-700"
+                  className={cn(
+                    "h-auto gap-2 px-3 py-1.5 rounded-lg text-sm",
+                    showFilters ? "bg-blue-500/20 text-blue-400" : "bg-muted hover:bg-gray-700"
                   )}
                 >
                   <Filter className="w-4 h-4" />
                   Filters
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="ghost"
                   onClick={() => refreshCurrentTraders()}
                   disabled={isLoadingTraders}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-[#1a1a1a] rounded-lg text-sm hover:bg-gray-700"
+                  className="h-auto gap-2 px-3 py-1.5 bg-muted rounded-lg text-sm hover:bg-gray-700"
                 >
-                  <RefreshCw className={clsx("w-4 h-4", isLoadingTraders && "animate-spin")} />
+                  <RefreshCw className={cn("w-4 h-4", isLoadingTraders && "animate-spin")} />
                   Refresh
-                </button>
+                </Button>
               </div>
             </div>
 
             {/* Filters Panel */}
             {showFilters && (
-              <div className="mb-4 p-3 bg-[#1a1a1a] rounded-lg space-y-3">
+              <div className="mb-4 p-3 bg-muted rounded-lg space-y-3">
                 {/* Row 1: Basic filters */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Time Period</label>
+                    <label className="block text-xs text-muted-foreground mb-1">Time Period</label>
                     <select
                       value={timePeriod}
                       onChange={(e) => setTimePeriod(e.target.value as TimePeriod)}
-                      className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                     >
                       <option value="ALL">All Time</option>
                       <option value="MONTH">Last 30 Days</option>
@@ -328,11 +318,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Category</label>
+                    <label className="block text-xs text-muted-foreground mb-1">Category</label>
                     <select
                       value={category}
                       onChange={(e) => setCategory(e.target.value as Category)}
-                      className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                      className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                     >
                       <option value="OVERALL">All Categories</option>
                       <option value="POLITICS">Politics</option>
@@ -346,11 +336,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   </div>
                   {currentDiscoverMode === 'leaderboard' && (
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Sort By</label>
+                      <label className="block text-xs text-muted-foreground mb-1">Sort By</label>
                       <select
                         value={orderBy}
                         onChange={(e) => setOrderBy(e.target.value as OrderBy)}
-                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                        className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
                         <option value="PNL">Profit/Loss</option>
                         <option value="VOL">Volume</option>
@@ -360,11 +350,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   {currentDiscoverMode === 'winrate' && (
                     <>
                       <div>
-                        <label className="block text-xs text-gray-500 mb-1">Min Win Rate</label>
+                        <label className="block text-xs text-muted-foreground mb-1">Min Win Rate</label>
                         <select
                           value={minWinRate}
                           onChange={(e) => setMinWinRate(Number(e.target.value))}
-                          className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                          className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                         >
                           <option value={50}>50%+</option>
                           <option value={60}>60%+</option>
@@ -378,11 +368,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs text-gray-500 mb-1">Min Trades</label>
+                        <label className="block text-xs text-muted-foreground mb-1">Min Trades</label>
                         <select
                           value={minTrades}
                           onChange={(e) => setMinTrades(Number(e.target.value))}
-                          className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                          className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                         >
                           <option value={3}>3+ trades</option>
                           <option value={5}>5+ trades</option>
@@ -401,13 +391,13 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
                 {/* Row 2: Advanced win rate filters */}
                 {currentDiscoverMode === 'winrate' && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-gray-700">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-border">
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Min Volume ($)</label>
+                      <label className="block text-xs text-muted-foreground mb-1">Min Volume ($)</label>
                       <select
                         value={minVolume}
                         onChange={(e) => setMinVolume(Number(e.target.value))}
-                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                        className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
                         <option value={0}>No minimum</option>
                         <option value={1000}>$1,000+</option>
@@ -421,11 +411,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Max Volume ($)</label>
+                      <label className="block text-xs text-muted-foreground mb-1">Max Volume ($)</label>
                       <select
                         value={maxVolume}
                         onChange={(e) => setMaxVolume(Number(e.target.value))}
-                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                        className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
                         <option value={0}>No maximum</option>
                         <option value={10000}>$10,000</option>
@@ -437,11 +427,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Scan Depth</label>
+                      <label className="block text-xs text-muted-foreground mb-1">Scan Depth</label>
                       <select
                         value={scanCount}
                         onChange={(e) => setScanCount(Number(e.target.value))}
-                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                        className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
                         <option value={200}>200 (fast)</option>
                         <option value={500}>500 (default)</option>
@@ -450,11 +440,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Show Results</label>
+                      <label className="block text-xs text-muted-foreground mb-1">Show Results</label>
                       <select
                         value={resultLimit}
                         onChange={(e) => setResultLimit(Number(e.target.value))}
-                        className="w-full bg-[#222] border border-gray-700 rounded px-2 py-1.5 text-sm"
+                        className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
                         <option value={25}>25 results</option>
                         <option value={50}>50 results</option>
@@ -477,27 +467,27 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
             {isLoadingTraders ? (
               <div className="flex flex-col items-center justify-center py-8">
-                <RefreshCw className="w-6 h-6 animate-spin text-gray-500" />
-                <span className="mt-2 text-gray-500">
+                <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+                <span className="mt-2 text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
                     ? `Scanning ~${scanCount * 2} traders from PNL + VOL leaderboards for ${minWinRate}%+ win rate...`
                     : 'Verifying trader activity across leaderboard...'}
                 </span>
                 {currentDiscoverMode === 'winrate' && (
-                  <span className="text-xs text-gray-600 mt-1">
+                  <span className="text-xs text-muted-foreground mt-1">
                     Analyzing closed positions for each trader (this is fast)
                   </span>
                 )}
               </div>
             ) : currentTraders.length === 0 ? (
               <div className="text-center py-8">
-                <p className="text-gray-500">
+                <p className="text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
                     ? `No traders found with ${minWinRate}%+ win rate.`
                     : 'No traders discovered yet'}
                 </p>
                 {currentDiscoverMode === 'winrate' && (
-                  <p className="text-xs text-gray-600 mt-2">
+                  <p className="text-xs text-muted-foreground mt-2">
                     Try: Lower the win rate threshold, increase scan count, or reduce min trades/volume filters
                   </p>
                 )}
@@ -505,12 +495,12 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
             ) : (
               <>
                 <div className="flex items-center justify-between mb-2 px-1">
-                  <span className="text-sm text-gray-400">
+                  <span className="text-sm text-muted-foreground">
                     Found {currentTraders.length} trader{currentTraders.length !== 1 ? 's' : ''}
                     {currentDiscoverMode === 'winrate' && ` with ${minWinRate}%+ win rate`}
                   </span>
                   {currentDiscoverMode === 'winrate' && currentTraders.length > 0 && (
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-muted-foreground">
                       Avg: {(currentTraders.reduce((sum, t) => sum + (t.win_rate || 0), 0) / currentTraders.length).toFixed(1)}% WR
                     </span>
                   )}
@@ -519,10 +509,10 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 {currentTraders.map((trader, idx) => (
                   <div
                     key={trader.address}
-                    className="flex items-center justify-between p-3 rounded-lg transition-colors bg-[#1a1a1a] hover:bg-[#222]"
+                    className="flex items-center justify-between p-3 rounded-lg transition-colors bg-muted hover:bg-[#222]"
                   >
                     <div className="flex items-center gap-3">
-                      <div className={clsx(
+                      <div className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
                         currentDiscoverMode === 'winrate' ? "bg-emerald-900" : "bg-gray-700"
                       )}>
@@ -532,9 +522,9 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         <p className="font-medium text-sm">
                           {trader.username || `${trader.address.slice(0, 6)}...${trader.address.slice(-4)}`}
                         </p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-muted-foreground">
                           {trader.win_rate !== undefined && (
-                            <span className={clsx(
+                            <span className={cn(
                               "mr-2 font-medium",
                               trader.win_rate >= 80 ? "text-emerald-400" :
                               trader.win_rate >= 60 ? "text-green-400" :
@@ -544,7 +534,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                             </span>
                           )}
                           {trader.wins !== undefined && trader.losses !== undefined && (
-                            <span className="text-gray-400 mr-2">
+                            <span className="text-muted-foreground mr-2">
                               ({trader.wins}W/{trader.losses}L)
                             </span>
                           )}
@@ -558,30 +548,33 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
+                      <Button
+                        variant="ghost"
                         onClick={() => handleAnalyze(trader.address, trader.username)}
-                        className="flex items-center gap-1 px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded text-xs"
+                        className="h-auto gap-1 px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded text-xs"
                       >
                         <Activity className="w-3 h-3" />
                         Analyze
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="ghost"
                         onClick={() => handleTrackOnly(trader.address)}
                         disabled={trackAndCopyMutation.isPending}
-                        className="flex items-center gap-1 px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs"
+                        className="h-auto gap-1 px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs"
                       >
                         <UserPlus className="w-3 h-3" />
                         Track
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="ghost"
                         onClick={() => handleOpenCopyModal(trader.address)}
                         disabled={trackAndCopyMutation.isPending}
                         title="Track and copy trades"
-                        className="flex items-center gap-1 px-2 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded text-xs disabled:opacity-50"
+                        className="h-auto gap-1 px-2 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded text-xs disabled:opacity-50"
                       >
                         <Copy className="w-3 h-3" />
                         Copy Trade
-                      </button>
+                      </Button>
                       <a
                         href={`https://polymarket.com/profile/${trader.address}`}
                         target="_blank"
@@ -589,7 +582,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         className="p-1 hover:bg-gray-700 rounded"
                         title="View on Polymarket"
                       >
-                        <ExternalLink className="w-3 h-3 text-gray-500" />
+                        <ExternalLink className="w-3 h-3 text-muted-foreground" />
                       </a>
                     </div>
                   </div>
@@ -597,44 +590,44 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
               </div>
               </>
             )}
-          </div>
+          </Card>
         </>
       )}
 
       {currentSection === 'tracked' && (
         <>
           {/* Add Wallet Form */}
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-4">
+          <Card className="p-4">
             <h3 className="text-lg font-medium mb-4">Track a Wallet</h3>
             <div className="flex gap-3">
-              <input
+              <Input
                 type="text"
                 value={newAddress}
                 onChange={(e) => setNewAddress(e.target.value)}
                 placeholder="Wallet address (0x...)"
-                className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+                className="flex-1 bg-muted rounded-lg"
               />
-              <input
+              <Input
                 type="text"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
                 placeholder="Label (optional)"
-                className="w-48 bg-[#1a1a1a] border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+                className="w-48 bg-muted rounded-lg"
               />
-              <button
+              <Button
                 onClick={handleAdd}
                 disabled={addMutation.isPending || !newAddress.trim()}
-                className={clsx(
-                  "flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm",
+                className={cn(
+                  "h-auto gap-2 px-4 py-2 rounded-lg font-medium text-sm",
                   "bg-blue-500 hover:bg-blue-600 transition-colors",
                   (addMutation.isPending || !newAddress.trim()) && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <Plus className="w-4 h-4" />
                 Add
-              </button>
+              </Button>
             </div>
-          </div>
+          </Card>
 
           {/* Tracked Wallets */}
           <div>
@@ -642,16 +635,16 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
-                <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+                <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
               </div>
             ) : wallets.length === 0 ? (
-              <div className="text-center py-12 bg-[#141414] border border-gray-800 rounded-lg">
-                <Wallet className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-                <p className="text-gray-400">No wallets being tracked</p>
-                <p className="text-sm text-gray-600 mt-1">
+              <Card className="text-center py-12">
+                <Wallet className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">No wallets being tracked</p>
+                <p className="text-sm text-muted-foreground mt-1">
                   Use the Discover tab to find top traders, or add a wallet manually
                 </p>
-              </div>
+              </Card>
             ) : (
               <div className="space-y-3">
                 {wallets.map((wallet) => (
@@ -671,24 +664,26 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
       {/* Copy Trade Account Selection Modal */}
       {showCopyModal && selectedTrader && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1a] border border-gray-700 rounded-xl w-full max-w-md mx-4 overflow-hidden">
+          <div className="bg-muted border border-border rounded-xl w-full max-w-md mx-4 overflow-hidden">
             {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+            <div className="flex items-center justify-between p-4 border-b border-border">
               <div>
                 <h3 className="text-lg font-semibold">Copy Trade</h3>
-                <p className="text-sm text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {selectedTrader.username || `${selectedTrader.address.slice(0, 6)}...${selectedTrader.address.slice(-4)}`}
                 </p>
               </div>
-              <button
+              <Button
+                variant="ghost"
+                size="icon"
                 onClick={() => {
                   setShowCopyModal(false)
                   setSelectedTrader(null)
                 }}
-                className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+                className="h-auto p-2 hover:bg-gray-700 rounded-lg"
               >
-                <X className="w-5 h-5 text-gray-400" />
-              </button>
+                <X className="w-5 h-5 text-muted-foreground" />
+              </Button>
             </div>
 
             {/* Modal Content */}
@@ -700,11 +695,11 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
               {/* Paper Trading Option */}
               <div className="space-y-3">
                 <div
-                  className={clsx(
+                  className={cn(
                     "p-4 rounded-lg border-2 cursor-pointer transition-all",
                     simAccounts.length > 0
                       ? "border-blue-500/50 bg-blue-500/10 hover:bg-blue-500/20"
-                      : "border-gray-700 bg-gray-800/50 opacity-60 cursor-not-allowed"
+                      : "border-border bg-gray-800/50 opacity-60 cursor-not-allowed"
                   )}
                   onClick={() => simAccounts.length > 0 && handleCopyTradeConfirm(true)}
                 >
@@ -714,12 +709,12 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     </div>
                     <div className="flex-1">
                       <h4 className="font-medium text-blue-400">Paper Trading</h4>
-                      <p className="text-sm text-gray-400 mt-1">
+                      <p className="text-sm text-muted-foreground mt-1">
                         Copy trades to a simulation account with virtual money. Safe for testing.
                       </p>
                       {simAccounts.length > 0 ? (
                         <div className="mt-3">
-                          <label className="block text-xs text-gray-500 mb-1">Select Account</label>
+                          <label className="block text-xs text-muted-foreground mb-1">Select Account</label>
                           <select
                             value={selectedAccountId}
                             onChange={(e) => {
@@ -756,7 +751,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     </div>
                     <div className="flex-1">
                       <h4 className="font-medium text-green-400">Live Trading</h4>
-                      <p className="text-sm text-gray-400 mt-1">
+                      <p className="text-sm text-muted-foreground mt-1">
                         Track this trader and receive alerts for live copy trading. Uses real money.
                       </p>
                       <p className="text-xs text-yellow-500 mt-2">
@@ -769,16 +764,17 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
             </div>
 
             {/* Modal Footer */}
-            <div className="p-4 border-t border-gray-700 bg-[#141414]">
-              <button
+            <div className="p-4 border-t border-border bg-card">
+              <Button
+                variant="ghost"
                 onClick={() => {
                   setShowCopyModal(false)
                   setSelectedTrader(null)
                 }}
-                className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors"
+                className="w-full h-auto py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -794,18 +790,18 @@ function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRem
   const tradeCount = wallet.recent_trades?.length || 0
 
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
+    <Card className="p-4 hover:border-border transition-colors">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
             <Wallet className="w-5 h-5 text-purple-500" />
           </div>
           <div>
-            <p className="font-medium text-white">{displayName}</p>
+            <p className="font-medium text-foreground">{displayName}</p>
             {hasUsername && wallet.label !== wallet.username && (
-              <p className="text-xs text-gray-500">{wallet.label}</p>
+              <p className="text-xs text-muted-foreground">{wallet.label}</p>
             )}
-            <p className="text-xs text-gray-600 font-mono">
+            <p className="text-xs text-muted-foreground font-mono">
               {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
             </p>
           </div>
@@ -814,21 +810,22 @@ function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRem
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-4 mr-2">
             <div className="text-center">
-              <p className="text-xs text-gray-500">Positions</p>
-              <p className="text-sm font-medium text-white">{posCount}</p>
+              <p className="text-xs text-muted-foreground">Positions</p>
+              <p className="text-sm font-medium text-foreground">{posCount}</p>
             </div>
             <div className="text-center">
-              <p className="text-xs text-gray-500">Trades</p>
-              <p className="text-sm font-medium text-white">{tradeCount}</p>
+              <p className="text-xs text-muted-foreground">Trades</p>
+              <p className="text-sm font-medium text-foreground">{tradeCount}</p>
             </div>
           </div>
-          <button
+          <Button
+            variant="ghost"
             onClick={onAnalyze}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-xs font-medium transition-colors"
+            className="h-auto gap-1.5 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-xs font-medium"
           >
             <Activity className="w-3.5 h-3.5" />
             Analyze
-          </button>
+          </Button>
           <a
             href={`https://polymarket.com/profile/${wallet.address}`}
             target="_blank"
@@ -836,17 +833,18 @@ function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRem
             className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
             title="View on Polymarket"
           >
-            <ExternalLink className="w-4 h-4 text-gray-500" />
+            <ExternalLink className="w-4 h-4 text-muted-foreground" />
           </a>
-          <button
+          <Button
+            variant="ghost"
             onClick={onRemove}
-            className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 transition-colors"
+            className="h-auto p-2 hover:bg-red-500/10 rounded-lg text-red-400"
             title="Remove wallet"
           >
             <Trash2 className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
       </div>
-    </div>
+    </Card>
   )
 }

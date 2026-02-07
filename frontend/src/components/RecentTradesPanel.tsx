@@ -15,7 +15,7 @@ import {
   DollarSign,
   Hash
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import { getRecentTradesFromWallets, RecentTradeFromWallet } from '../services/api'
 
 interface Props {
@@ -158,26 +158,26 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
         <button
           onClick={() => refetch()}
           disabled={isRefetching}
-          className={clsx(
+          className={cn(
             "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm",
-            "bg-[#1a1a1a] text-gray-300 hover:bg-gray-700 transition-colors",
+            "bg-muted text-gray-300 hover:bg-gray-700 transition-colors",
             isRefetching && "opacity-50"
           )}
         >
-          <RefreshCw className={clsx("w-4 h-4", isRefetching && "animate-spin")} />
+          <RefreshCw className={cn("w-4 h-4", isRefetching && "animate-spin")} />
           Refresh
         </button>
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-4 p-3 bg-[#141414] rounded-lg border border-gray-800">
+      <div className="flex items-center gap-4 p-3 bg-card rounded-lg border border-border">
         <Filter className="w-4 h-4 text-gray-500" />
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500">Time:</span>
           <select
             value={hoursFilter}
             onChange={(e) => setHoursFilter(Number(e.target.value))}
-            className="bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
+            className="bg-muted border border-border rounded px-2 py-1 text-sm"
           >
             <option value={1}>Last hour</option>
             <option value={6}>Last 6 hours</option>
@@ -191,7 +191,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           <select
             value={sideFilter}
             onChange={(e) => setSideFilter(e.target.value as 'all' | 'BUY' | 'SELL')}
-            className="bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
+            className="bg-muted border border-border rounded px-2 py-1 text-sm"
           >
             <option value="all">All</option>
             <option value="BUY">Buys only</option>
@@ -203,7 +203,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           <select
             value={tradeLimit}
             onChange={(e) => setTradeLimit(Number(e.target.value))}
-            className="bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-sm"
+            className="bg-muted border border-border rounded px-2 py-1 text-sm"
           >
             <option value={50}>50 trades</option>
             <option value={100}>100 trades</option>
@@ -216,19 +216,19 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
       {/* Summary Stats */}
       {filteredTrades.length > 0 && (
         <div className="grid grid-cols-4 gap-3">
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+          <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-gray-500">Total Trades</p>
             <p className="text-lg font-semibold text-white">{filteredTrades.length}</p>
           </div>
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+          <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-gray-500">Volume</p>
             <p className="text-lg font-semibold text-white">{formatCurrency(totalVolume)}</p>
           </div>
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+          <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-green-500">Buys</p>
             <p className="text-lg font-semibold text-green-400">{buyCount}</p>
           </div>
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-3">
+          <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-red-500">Sells</p>
             <p className="text-lg font-semibold text-red-400">{sellCount}</p>
           </div>
@@ -241,7 +241,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
         </div>
       ) : filteredTrades.length === 0 ? (
-        <div className="text-center py-12 bg-[#141414] rounded-lg border border-gray-800">
+        <div className="text-center py-12 bg-card rounded-lg border border-border">
           <AlertCircle className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <p className="text-gray-400">No recent trades found</p>
           <p className="text-sm text-gray-600 mt-1">
@@ -263,7 +263,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
             return (
               <div
                 key={tradeId}
-                className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden hover:border-gray-700 transition-colors"
+                className="bg-card border border-border rounded-lg overflow-hidden hover:border-border transition-colors"
               >
                 {/* Trade Row */}
                 <div
@@ -272,7 +272,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                 >
                   <div className="flex items-center gap-3">
                     {/* Side indicator */}
-                    <div className={clsx(
+                    <div className={cn(
                       "flex-shrink-0 w-1 h-12 rounded-full",
                       isBuy ? "bg-green-500" : "bg-red-500"
                     )} />
@@ -281,7 +281,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                     <div className="flex-1 min-w-0">
                       {/* Top row: side badge, market name, time */}
                       <div className="flex items-center gap-2 mb-1">
-                        <span className={clsx(
+                        <span className={cn(
                           "flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold",
                           isBuy
                             ? "bg-green-500/10 text-green-400"
@@ -292,7 +292,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                         </span>
 
                         {trade.outcome && (
-                          <span className={clsx(
+                          <span className={cn(
                             "px-1.5 py-0.5 rounded text-xs font-medium",
                             trade.outcome === 'Yes'
                               ? "bg-blue-500/10 text-blue-400"
@@ -309,7 +309,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                       </div>
 
                       {/* Market name */}
-                      <h3 className={clsx(
+                      <h3 className={cn(
                         "font-medium text-sm truncate",
                         hasRealMarketName ? "text-white" : "text-gray-500"
                       )}>
@@ -342,7 +342,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                     <div className="flex-shrink-0 text-right">
                       <div className="flex items-center gap-1 justify-end">
                         <span className="text-xs text-gray-500">@</span>
-                        <span className={clsx(
+                        <span className={cn(
                           "text-sm font-semibold",
                           isBuy ? "text-green-400" : "text-red-400"
                         )}>
@@ -371,7 +371,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
 
                 {/* Expanded Details */}
                 {isExpanded && (
-                  <div className="border-t border-gray-800 p-4 bg-[#0f0f0f]">
+                  <div className="border-t border-border p-4 bg-background">
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                       <div>
                         <p className="text-gray-500 text-xs">Price</p>
@@ -394,7 +394,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                       </div>
                       <div>
                         <p className="text-gray-500 text-xs">Outcome</p>
-                        <p className={clsx(
+                        <p className={cn(
                           "font-medium",
                           trade.outcome === 'Yes' ? 'text-green-400' : 'text-red-400'
                         )}>
@@ -420,7 +420,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex items-center gap-3 mt-4 pt-3 border-t border-gray-800">
+                    <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
                       {trade.market_slug && (
                         <a
                           href={`https://polymarket.com/event/${trade.market_slug}`}

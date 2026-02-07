@@ -10,10 +10,21 @@ import {
   X,
   RefreshCw,
   Sparkles,
-  Command,
+  Command as CommandIcon,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import { sendAIChat, searchMarkets, MarketSearchResult } from '../services/api'
+import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
+import {
+  Command,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandSeparator,
+} from './ui/command'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
 
 interface AICommandBarProps {
   isOpen: boolean
@@ -202,23 +213,16 @@ export default function AICommandBar({
     }
   }
 
-  if (!isOpen) return null
-
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[15vh]">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="overflow-hidden p-0 shadow-2xl shadow-purple-500/10 max-w-xl gap-0 border-border bg-background rounded-2xl top-[25%] translate-y-0">
+        <DialogTitle className="sr-only">AI Command Bar</DialogTitle>
 
-      {/* Command Bar */}
-      <div className="relative w-full max-w-xl bg-[#0f0f0f] border border-gray-800 rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden">
         {/* Input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
           {mode === 'search' && (
-            <div className="flex items-center gap-1 text-gray-500">
-              <Command className="w-4 h-4" />
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <CommandIcon className="w-4 h-4" />
               <span className="text-xs">K</span>
             </div>
           )}
@@ -243,52 +247,62 @@ export default function AICommandBar({
                   ? 'Ask anything about markets, strategies, risk...'
                   : 'Type to search markets...'
             }
-            className="flex-1 bg-transparent text-sm text-white placeholder-gray-600 focus:outline-none"
+            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
           {mode !== 'search' && (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 setMode('search')
                 setInput('')
               }}
-              className="text-xs text-gray-500 hover:text-gray-400 px-2 py-1 bg-gray-800 rounded-lg"
+              className="text-xs h-7 px-2"
             >
               ESC
-            </button>
+            </Button>
           )}
-          <button onClick={onClose} className="p-1 hover:bg-gray-800 rounded-lg">
-            <X className="w-4 h-4 text-gray-500" />
-          </button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="h-8 w-8"
+          >
+            <X className="w-4 h-4 text-muted-foreground" />
+          </Button>
         </div>
 
         {/* Results */}
         <div className="max-h-[400px] overflow-y-auto">
-          {/* Command list */}
+          {/* Command list (search mode) */}
           {mode === 'search' && (
-            <div className="p-2">
-              {filteredCommands.map((cmd, i) => (
-                <button
-                  key={cmd.id}
-                  onClick={cmd.action}
-                  onMouseEnter={() => setSelectedIndex(i)}
-                  className={clsx(
-                    'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors',
-                    i === selectedIndex ? 'bg-[#1a1a1a]' : 'hover:bg-[#141414]'
-                  )}
-                >
-                  <div className={clsx('flex-shrink-0', cmd.color)}>
-                    {cmd.icon}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white">{cmd.label}</p>
-                    <p className="text-xs text-gray-500">{cmd.description}</p>
-                  </div>
-                </button>
-              ))}
-              {filteredCommands.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-4">No matching commands</p>
-              )}
-            </div>
+            <Command className="bg-transparent" shouldFilter={false}>
+              <CommandList className="max-h-[400px]">
+                <CommandEmpty>No matching commands</CommandEmpty>
+                <CommandGroup heading="Commands">
+                  {filteredCommands.map((cmd, i) => (
+                    <CommandItem
+                      key={cmd.id}
+                      onSelect={cmd.action}
+                      onMouseEnter={() => setSelectedIndex(i)}
+                      className={cn(
+                        'flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer',
+                        i === selectedIndex ? 'bg-muted' : 'hover:bg-card'
+                      )}
+                      data-selected={i === selectedIndex}
+                    >
+                      <div className={cn('flex-shrink-0', cmd.color)}>
+                        {cmd.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-foreground">{cmd.label}</p>
+                        <p className="text-xs text-muted-foreground">{cmd.description}</p>
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
           )}
 
           {/* Market search results */}
@@ -306,26 +320,33 @@ export default function AICommandBar({
                         new CustomEvent('market-selected', { detail: m })
                       )
                     }}
-                    className={clsx(
+                    className={cn(
                       'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors',
-                      i === selectedIndex ? 'bg-[#1a1a1a]' : 'hover:bg-[#141414]'
+                      i === selectedIndex ? 'bg-muted' : 'hover:bg-card'
                     )}
                   >
                     <Shield className="w-4 h-4 text-green-400 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white truncate">{m.question}</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="text-sm text-foreground truncate">{m.question}</p>
+                      <p className="text-xs text-muted-foreground">
                         {m.event_title && <span>{m.event_title} | </span>}
-                        {m.category && <span>{m.category} | </span>}
+                        {m.category && (
+                          <>
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 mr-1">
+                              {m.category}
+                            </Badge>
+                            {' | '}
+                          </>
+                        )}
                         YES: ${m.yes_price?.toFixed(2)} | Liq: ${m.liquidity?.toFixed(0)}
                       </p>
                     </div>
                   </button>
                 ))
               ) : input.length >= 2 ? (
-                <p className="text-sm text-gray-500 text-center py-4">No markets found</p>
+                <p className="text-sm text-muted-foreground text-center py-4">No markets found</p>
               ) : (
-                <p className="text-sm text-gray-500 text-center py-4">
+                <p className="text-sm text-muted-foreground text-center py-4">
                   Start typing to search markets...
                 </p>
               )}
@@ -336,18 +357,18 @@ export default function AICommandBar({
           {mode === 'ask' && (
             <div className="p-4">
               {askMutation.isPending && (
-                <div className="flex items-center gap-2 text-sm text-gray-400">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <RefreshCw className="w-4 h-4 animate-spin text-purple-400" />
                   Thinking...
                 </div>
               )}
               {askMutation.data && (
-                <div className="bg-[#1a1a1a] rounded-xl p-4 border border-gray-800">
+                <div className="bg-muted rounded-xl p-4 border border-border">
                   <div className="flex items-center gap-2 mb-2">
                     <Brain className="w-4 h-4 text-purple-400" />
-                    <span className="text-xs text-gray-500">AI Response</span>
+                    <Badge variant="secondary" className="text-xs">AI Response</Badge>
                   </div>
-                  <p className="text-sm text-gray-300 whitespace-pre-wrap">
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                     {askMutation.data.response}
                   </p>
                 </div>
@@ -358,7 +379,7 @@ export default function AICommandBar({
                 </p>
               )}
               {!askMutation.isPending && !askMutation.data && !askMutation.error && (
-                <p className="text-sm text-gray-500 text-center">
+                <p className="text-sm text-muted-foreground text-center">
                   Type your question and press Enter
                 </p>
               )}
@@ -367,18 +388,19 @@ export default function AICommandBar({
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 border-t border-gray-800 flex items-center gap-4 text-[10px] text-gray-600">
+        <CommandSeparator />
+        <div className="px-4 py-2 flex items-center gap-4 text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.5 bg-gray-800 rounded text-gray-500">Enter</kbd> select
+            <kbd className="px-1 py-0.5 bg-muted rounded text-muted-foreground">Enter</kbd> select
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.5 bg-gray-800 rounded text-gray-500">&uarr;&darr;</kbd> navigate
+            <kbd className="px-1 py-0.5 bg-muted rounded text-muted-foreground">&uarr;&darr;</kbd> navigate
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.5 bg-gray-800 rounded text-gray-500">Esc</kbd> close
+            <kbd className="px-1 py-0.5 bg-muted rounded text-muted-foreground">Esc</kbd> close
           </span>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -11,8 +11,12 @@ import {
   Trash2,
   Sparkles,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import { sendAIChat, AIChatMessage } from '../services/api'
+import { Button } from './ui/button'
+import { Card } from './ui/card'
+import { ScrollArea } from './ui/scroll-area'
+import { Separator } from './ui/separator'
 
 interface AICopilotPanelProps {
   isOpen: boolean
@@ -102,19 +106,19 @@ export default function AICopilotPanel({
 
   return (
     <div
-      className={clsx(
-        'fixed bottom-4 right-4 z-50 flex flex-col bg-[#0f0f0f] border border-gray-800 rounded-2xl shadow-2xl shadow-purple-500/5 transition-all',
+      className={cn(
+        'fixed bottom-4 right-4 z-50 flex flex-col bg-background border border-border rounded-2xl shadow-2xl shadow-purple-500/5 transition-all',
         isExpanded ? 'w-[560px] h-[700px]' : 'w-[420px] h-[560px]'
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+      <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" />
+            <Sparkles className="w-4 h-4 text-foreground" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-white">AI Copilot</h3>
+            <h3 className="text-sm font-semibold text-foreground">AI Copilot</h3>
             {contextLabel && (
               <p className="text-[10px] text-purple-400 truncate max-w-[200px]">
                 {contextLabel}
@@ -124,112 +128,124 @@ export default function AICopilotPanel({
         </div>
         <div className="flex items-center gap-1">
           {messages.length > 0 && (
-            <button
+            <Button
               onClick={() => setMessages([])}
-              className="p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
               title="Clear chat"
             >
-              <Trash2 className="w-3.5 h-3.5 text-gray-500" />
-            </button>
+              <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+            </Button>
           )}
-          <button
+          <Button
             onClick={() => setIsExpanded(!isExpanded)}
-            className="p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
           >
             {isExpanded ? (
-              <Minimize2 className="w-3.5 h-3.5 text-gray-500" />
+              <Minimize2 className="w-3.5 h-3.5 text-muted-foreground" />
             ) : (
-              <Maximize2 className="w-3.5 h-3.5 text-gray-500" />
+              <Maximize2 className="w-3.5 h-3.5 text-muted-foreground" />
             )}
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={onClose}
-            className="p-1.5 hover:bg-gray-800 rounded-lg transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
           >
-            <X className="w-3.5 h-3.5 text-gray-500" />
-          </button>
+            <X className="w-3.5 h-3.5 text-muted-foreground" />
+          </Button>
         </div>
       </div>
 
+      <Separator />
+
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center mb-3">
-              <Bot className="w-6 h-6 text-purple-400" />
-            </div>
-            <p className="text-sm text-gray-400 mb-1">
-              Ask me anything about your trades
-            </p>
-            <p className="text-xs text-gray-600 mb-4">
-              I can analyze opportunities, assess risk, and help you make decisions.
-            </p>
-
-            {/* Quick Actions */}
-            {contextType === 'opportunity' && (
-              <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
-                {quickActions.map((action) => (
-                  <button
-                    key={action.label}
-                    onClick={() => {
-                      setMessages([{ role: 'user', content: action.prompt }])
-                      chatMutation.mutate(action.prompt)
-                    }}
-                    className="text-left text-xs p-2.5 bg-[#1a1a1a] border border-gray-800 rounded-xl hover:border-purple-500/30 hover:bg-purple-500/5 transition-colors text-gray-400 hover:text-gray-300"
-                  >
-                    {action.label}
-                  </button>
-                ))}
+      <ScrollArea className="flex-1">
+        <div className="px-4 py-3 space-y-3">
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center mb-3">
+                <Bot className="w-6 h-6 text-purple-400" />
               </div>
-            )}
-          </div>
-        )}
+              <p className="text-sm text-muted-foreground mb-1">
+                Ask me anything about your trades
+              </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                I can analyze opportunities, assess risk, and help you make decisions.
+              </p>
 
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={clsx('flex gap-2', msg.role === 'user' ? 'justify-end' : 'justify-start')}
-          >
-            {msg.role === 'assistant' && (
+              {/* Quick Actions */}
+              {contextType === 'opportunity' && (
+                <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
+                  {quickActions.map((action) => (
+                    <Card
+                      key={action.label}
+                      className="cursor-pointer text-left text-xs p-2.5 rounded-xl hover:border-purple-500/30 hover:bg-purple-500/5 transition-colors text-muted-foreground hover:text-foreground shadow-none"
+                      onClick={() => {
+                        setMessages([{ role: 'user', content: action.prompt }])
+                        chatMutation.mutate(action.prompt)
+                      }}
+                    >
+                      {action.label}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {messages.map((msg, i) => (
+            <div
+              key={i}
+              className={cn('flex gap-2', msg.role === 'user' ? 'justify-end' : 'justify-start')}
+            >
+              {msg.role === 'assistant' && (
+                <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Bot className="w-3.5 h-3.5 text-purple-400" />
+                </div>
+              )}
+              <Card
+                className={cn(
+                  'max-w-[80%] rounded-xl px-3 py-2 text-sm shadow-none',
+                  msg.role === 'user'
+                    ? 'bg-blue-500/20 text-blue-100 border-0'
+                    : 'bg-muted text-muted-foreground border border-border'
+                )}
+              >
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+              </Card>
+              {msg.role === 'user' && (
+                <div className="w-6 h-6 rounded-lg bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <User className="w-3.5 h-3.5 text-blue-400" />
+                </div>
+              )}
+            </div>
+          ))}
+
+          {chatMutation.isPending && (
+            <div className="flex gap-2">
               <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
                 <Bot className="w-3.5 h-3.5 text-purple-400" />
               </div>
-            )}
-            <div
-              className={clsx(
-                'max-w-[80%] rounded-xl px-3 py-2 text-sm',
-                msg.role === 'user'
-                  ? 'bg-blue-500/20 text-blue-100'
-                  : 'bg-[#1a1a1a] text-gray-300 border border-gray-800'
-              )}
-            >
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+              <Card className="rounded-xl px-3 py-2 bg-muted border border-border shadow-none">
+                <RefreshCw className="w-4 h-4 text-purple-400 animate-spin" />
+              </Card>
             </div>
-            {msg.role === 'user' && (
-              <div className="w-6 h-6 rounded-lg bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <User className="w-3.5 h-3.5 text-blue-400" />
-              </div>
-            )}
-          </div>
-        ))}
+          )}
 
-        {chatMutation.isPending && (
-          <div className="flex gap-2">
-            <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Bot className="w-3.5 h-3.5 text-purple-400" />
-            </div>
-            <div className="bg-[#1a1a1a] rounded-xl px-3 py-2 border border-gray-800">
-              <RefreshCw className="w-4 h-4 text-purple-400 animate-spin" />
-            </div>
-          </div>
-        )}
+          <div ref={messagesEndRef} />
+        </div>
+      </ScrollArea>
 
-        <div ref={messagesEndRef} />
-      </div>
+      <Separator />
 
       {/* Input */}
-      <div className="px-3 pb-3 pt-1">
-        <div className="flex items-end gap-2 bg-[#1a1a1a] border border-gray-800 rounded-xl px-3 py-2 focus-within:border-purple-500/50 transition-colors">
+      <div className="px-3 pb-3 pt-2">
+        <div className="flex items-end gap-2 bg-muted border border-border rounded-xl px-3 py-2 focus-within:border-purple-500/50 transition-colors">
           <textarea
             ref={inputRef}
             value={input}
@@ -237,21 +253,23 @@ export default function AICopilotPanel({
             onKeyDown={handleKeyDown}
             placeholder="Ask about this opportunity..."
             rows={1}
-            className="flex-1 bg-transparent text-sm text-white placeholder-gray-600 resize-none focus:outline-none max-h-24"
+            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none max-h-24"
             style={{ minHeight: '24px' }}
           />
-          <button
+          <Button
             onClick={handleSend}
             disabled={!input.trim() || chatMutation.isPending}
-            className={clsx(
-              'p-1.5 rounded-lg transition-colors flex-shrink-0',
+            size="icon"
+            variant={input.trim() && !chatMutation.isPending ? "default" : "ghost"}
+            className={cn(
+              "h-8 w-8 flex-shrink-0",
               input.trim() && !chatMutation.isPending
-                ? 'bg-purple-500 hover:bg-purple-600 text-white'
-                : 'bg-gray-800 text-gray-600 cursor-not-allowed'
+                ? "bg-purple-500 hover:bg-purple-600"
+                : ""
             )}
           >
             <Send className="w-3.5 h-3.5" />
-          </button>
+          </Button>
         </div>
       </div>
     </div>
