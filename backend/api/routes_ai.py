@@ -459,8 +459,8 @@ async def ai_chat(request: AIChatRequest):
         if context_parts:
             system_prompt += "\nCurrent context:\n" + "\n".join(context_parts)
 
-        # Build messages
-        messages = []
+        # Build messages with system prompt as first message
+        messages = [{"role": "system", "content": system_prompt}]
         for msg in request.history[-10:]:  # Keep last 10 messages
             messages.append(
                 {"role": msg.get("role", "user"), "content": msg.get("content", "")}
@@ -469,16 +469,18 @@ async def ai_chat(request: AIChatRequest):
 
         response = await manager.chat(
             messages=messages,
-            system=system_prompt,
             model=request.model,
             max_tokens=1024,
             purpose="ai_chat",
         )
 
         return {
-            "response": response.get("content", ""),
-            "model": response.get("model", ""),
-            "tokens_used": response.get("usage", {}),
+            "response": response.content or "",
+            "model": response.model or "",
+            "tokens_used": {
+                "input_tokens": response.usage.input_tokens if response.usage else 0,
+                "output_tokens": response.usage.output_tokens if response.usage else 0,
+            },
         }
 
     except HTTPException:

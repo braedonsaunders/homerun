@@ -297,12 +297,9 @@ class OpportunityJudge:
                 purpose="opportunity_judge",
             )
 
-            # Parse the structured response
-            if llm_response.content:
-                try:
-                    judgment = json.loads(llm_response.content)
-                except json.JSONDecodeError:
-                    judgment = self._fallback_judgment("LLM returned invalid JSON")
+            # structured_output() returns a dict directly
+            if llm_response:
+                judgment = llm_response
             else:
                 judgment = self._fallback_judgment("LLM returned empty response")
 
