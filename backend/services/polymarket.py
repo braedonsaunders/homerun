@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
+from utils.rate_limiter import rate_limiter
 
 
 class PolymarketClient:
@@ -298,6 +299,7 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
+        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/positions", params={"user": address}
@@ -473,6 +475,7 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
+        await rate_limiter.acquire("data_trades")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
@@ -609,7 +612,7 @@ class PolymarketClient:
                 self._username_cache[addr] = uname
 
         # Verify each trader has real activity by fetching win rate data
-        semaphore = asyncio.Semaphore(15)
+        semaphore = asyncio.Semaphore(5)
         results = []
 
         async def verify_trader(entry: dict):
@@ -826,6 +829,7 @@ class PolymarketClient:
         self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
+        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
         try:
             response = await client.get(
@@ -965,8 +969,7 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        # Use higher concurrency since closed-positions is a single lightweight call
-        semaphore = asyncio.Semaphore(25)
+        semaphore = asyncio.Semaphore(10)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
