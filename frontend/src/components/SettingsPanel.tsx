@@ -14,7 +14,8 @@ import {
   Eye,
   EyeOff,
   Zap,
-  MessageSquare
+  MessageSquare,
+  Activity,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -24,10 +25,12 @@ import {
   testTelegramConnection,
   getLLMModels,
   refreshLLMModels,
+  getAutoTraderStatus,
+  updateAutoTraderConfig,
   type LLMModelOption
 } from '../services/api'
 
-type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'maintenance'
+type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
 
 export default function SettingsPanel() {
   const [activeSection, setActiveSection] = useState<SettingsSection>('polymarket')
@@ -85,12 +88,43 @@ export default function SettingsPanel() {
     cleanup_resolved_trade_days: 30
   })
 
+  const [autoTraderForm, setAutoTraderForm] = useState({
+    min_roi_percent: 2.5,
+    max_risk_score: 0.5,
+    base_position_size_usd: 10,
+    max_position_size_usd: 100,
+    max_daily_trades: 50,
+    max_daily_loss_usd: 100,
+    paper_account_capital: 10000
+  })
+
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ['settings'],
     queryFn: getSettings,
   })
+
+  const { data: autoTraderStatus } = useQuery({
+    queryKey: ['auto-trader-status'],
+    queryFn: getAutoTraderStatus,
+  })
+
+  // Sync auto trader form with loaded config
+  useEffect(() => {
+    if (autoTraderStatus?.config) {
+      const c = autoTraderStatus.config
+      setAutoTraderForm({
+        min_roi_percent: c.min_roi_percent ?? 2.5,
+        max_risk_score: c.max_risk_score ?? 0.5,
+        base_position_size_usd: c.base_position_size_usd ?? 10,
+        max_position_size_usd: c.max_position_size_usd ?? 100,
+        max_daily_trades: c.max_daily_trades ?? 50,
+        max_daily_loss_usd: c.max_daily_loss_usd ?? 100,
+        paper_account_capital: c.paper_account_capital ?? 10000
+      })
+    }
+  }, [autoTraderStatus])
 
   // Sync form state with loaded settings
   useEffect(() => {
@@ -180,6 +214,19 @@ export default function SettingsPanel() {
     }
   })
 
+  const autoTraderConfigMutation = useMutation({
+    mutationFn: updateAutoTraderConfig,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
+      setSaveMessage({ type: 'success', text: 'Auto trader config saved successfully' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    },
+    onError: (error: any) => {
+      setSaveMessage({ type: 'error', text: error.message || 'Failed to save auto trader config' })
+      setTimeout(() => setSaveMessage(null), 5000)
+    }
+  })
+
   const testPolymarketMutation = useMutation({
     mutationFn: testPolymarketConnection,
   })
@@ -232,6 +279,9 @@ export default function SettingsPanel() {
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
+      case 'autotrader':
+        autoTraderConfigMutation.mutate(autoTraderForm)
+        return
     }
 
     saveMutation.mutate(updates)
@@ -255,6 +305,7 @@ export default function SettingsPanel() {
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
+    { id: 'autotrader', icon: Activity, label: 'Auto Trader', description: 'Auto trading configuration' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
 
@@ -841,6 +892,144 @@ export default function SettingsPanel() {
                 >
                   <Save className="w-4 h-4" />
                   Save Trading Settings
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Auto Trader Config */}
+          {activeSection === 'autotrader' && (
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-emerald-500/10 rounded-lg">
+                  <Activity className="w-5 h-5 text-emerald-500" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
+                  <p className="text-sm text-gray-500">Configure autonomous trading parameters and limits</p>
+                </div>
+              </div>
+
+              {autoTraderStatus?.config && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 bg-[#1a1a1a] rounded-lg">
+                  <div>
+                    <p className="text-xs text-gray-500">Mode</p>
+                    <p className="font-mono text-sm font-medium">{autoTraderStatus.config.mode?.toUpperCase()}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Status</p>
+                    <p className={clsx("font-mono text-sm font-medium", autoTraderStatus.running ? "text-green-400" : "text-gray-400")}>
+                      {autoTraderStatus.running ? 'Running' : 'Stopped'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Strategies</p>
+                    <p className="font-mono text-xs">{autoTraderStatus.config.enabled_strategies?.join(', ') || 'All'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Circuit Breaker</p>
+                    <p className="font-mono text-sm">{autoTraderStatus.config.circuit_breaker_losses} losses</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Min ROI %</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.min_roi_percent}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, min_roi_percent: parseFloat(e.target.value) || 0 }))}
+                    step="0.5"
+                    min={0}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Minimum return to execute a trade</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Max Risk Score</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.max_risk_score}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_risk_score: parseFloat(e.target.value) || 0 }))}
+                    step="0.1"
+                    min={0}
+                    max={1}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">0 = lowest risk, 1 = highest</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Base Position Size ($)</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.base_position_size_usd}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, base_position_size_usd: parseFloat(e.target.value) || 1 }))}
+                    min={1}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Default trade size</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Max Position Size ($)</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.max_position_size_usd}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_position_size_usd: parseFloat(e.target.value) || 1 }))}
+                    min={1}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Maximum single trade size</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Max Daily Trades</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.max_daily_trades}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_trades: parseInt(e.target.value) || 1 }))}
+                    min={1}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Daily trade count limit</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Max Daily Loss ($)</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.max_daily_loss_usd}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_loss_usd: parseFloat(e.target.value) || 0 }))}
+                    min={0}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Stop trading after this daily loss</p>
+                </div>
+
+                <div className="col-span-2">
+                  <label className="block text-xs text-gray-500 mb-1">Paper Account Capital ($)</label>
+                  <input
+                    type="number"
+                    value={autoTraderForm.paper_account_capital}
+                    onChange={(e) => setAutoTraderForm(p => ({ ...p, paper_account_capital: parseFloat(e.target.value) || 100 }))}
+                    min={100}
+                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Starting capital for paper trading simulation</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
+                <button
+                  onClick={() => handleSaveSection('autotrader')}
+                  disabled={autoTraderConfigMutation.isPending}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
+                >
+                  <Save className="w-4 h-4" />
+                  Save Auto Trader Config
                 </button>
               </div>
             </div>
