@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from .base import BaseStrategy
 
