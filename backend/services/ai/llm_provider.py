@@ -950,16 +950,16 @@ class GoogleProvider(BaseLLMProvider):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url)
             if response.status_code != 200:
-                logger.warning(
-                    "Failed to list Google models: %s", response.text[:200]
-                )
+                logger.warning("Failed to list Google models: %s", response.text[:200])
                 return []
             data = response.json()
             models = []
             for m in data.get("models", []):
                 name = m.get("name", "")
                 # name is like "models/gemini-2.0-flash" - extract the model id
-                model_id = name.replace("models/", "") if name.startswith("models/") else name
+                model_id = (
+                    name.replace("models/", "") if name.startswith("models/") else name
+                )
                 display_name = m.get("displayName", model_id)
                 # Only include generative models that support generateContent
                 supported = m.get("supportedGenerationMethods", [])
@@ -1798,9 +1798,7 @@ class LLMManager:
                     p_enum.value,
                 )
             except Exception as exc:
-                logger.error(
-                    "Failed to fetch models for %s: %s", p_enum.value, exc
-                )
+                logger.error("Failed to fetch models for %s: %s", p_enum.value, exc)
                 results[p_enum.value] = []
 
         return results
@@ -1821,9 +1819,7 @@ class LLMManager:
                 query = select(LLMModelCache)
                 if provider_name:
                     query = query.where(LLMModelCache.provider == provider_name)
-                query = query.order_by(
-                    LLMModelCache.provider, LLMModelCache.model_id
-                )
+                query = query.order_by(LLMModelCache.provider, LLMModelCache.model_id)
                 result = await session.execute(query)
                 rows = result.scalars().all()
 
