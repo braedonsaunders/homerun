@@ -113,9 +113,7 @@ class DepthAnalyzer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_order_book_levels(
-        order_book: dict, side: str
-    ) -> List[tuple]:
+    def _parse_order_book_levels(order_book: dict, side: str) -> List[tuple]:
         """Return a list of ``(price, size)`` tuples from the raw order book.
 
         For a **BUY** trade we consume from the *asks* (sorted ascending by
@@ -129,18 +127,12 @@ class DepthAnalyzer:
         side_upper = side.upper()
         if side_upper == "BUY":
             raw_levels = order_book.get("asks", [])
-            levels = [
-                (float(lvl["price"]), float(lvl["size"]))
-                for lvl in raw_levels
-            ]
+            levels = [(float(lvl["price"]), float(lvl["size"])) for lvl in raw_levels]
             # Ascending: cheapest asks first
             levels.sort(key=lambda x: x[0])
         else:
             raw_levels = order_book.get("bids", [])
-            levels = [
-                (float(lvl["price"]), float(lvl["size"]))
-                for lvl in raw_levels
-            ]
+            levels = [(float(lvl["price"]), float(lvl["size"])) for lvl in raw_levels]
             # Descending: best (highest) bids first
             levels.sort(key=lambda x: x[0], reverse=True)
         return levels
@@ -361,9 +353,7 @@ class DepthAnalyzer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_vwap(
-        levels: List[tuple], target_usd: float
-    ) -> float:
+    def _compute_vwap(levels: List[tuple], target_usd: float) -> float:
         """Walk order book levels to compute VWAP for *target_usd*.
 
         Parameters

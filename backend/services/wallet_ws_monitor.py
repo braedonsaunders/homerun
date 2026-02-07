@@ -302,12 +302,14 @@ class WalletWebSocketMonitor:
 
     async def _subscribe_mempool(self, ws):
         """Subscribe to pending transactions for pre-confirmation detection."""
-        subscribe_msg = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "eth_subscribe",
-            "params": ["newPendingTransactions"]
-        })
+        subscribe_msg = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "eth_subscribe",
+                "params": ["newPendingTransactions"],
+            }
+        )
         await ws.send(subscribe_msg)
 
         response = await ws.recv()
@@ -341,8 +343,7 @@ class WalletWebSocketMonitor:
 
         if websockets is None:
             logger.error(
-                "websockets library not installed. "
-                "Install with: pip install websockets"
+                "websockets library not installed. Install with: pip install websockets"
             )
             return
 
@@ -394,10 +395,7 @@ class WalletWebSocketMonitor:
                     current_delay = self._reconnect_delay  # Reset on success
 
                     # Stop fallback polling if it was running
-                    if (
-                        self._poll_fallback_task
-                        and not self._poll_fallback_task.done()
-                    ):
+                    if self._poll_fallback_task and not self._poll_fallback_task.done():
                         self._poll_fallback_task.cancel()
                         self._poll_fallback_task = None
                         logger.info("Stopped fallback polling, WS reconnected")
@@ -449,9 +447,7 @@ class WalletWebSocketMonitor:
                             block_number_hex = result.get("number")
                             if block_number_hex:
                                 block_number = int(block_number_hex, 16)
-                                block_timestamp_hex = result.get(
-                                    "timestamp", "0x0"
-                                )
+                                block_timestamp_hex = result.get("timestamp", "0x0")
                                 await self._handle_block(
                                     block_number,
                                     block_timestamp_hex=block_timestamp_hex,
@@ -484,10 +480,7 @@ class WalletWebSocketMonitor:
                 )
 
                 # Start fallback polling while disconnected
-                if (
-                    self._poll_fallback_task is None
-                    or self._poll_fallback_task.done()
-                ):
+                if self._poll_fallback_task is None or self._poll_fallback_task.done():
                     self._poll_fallback_task = asyncio.create_task(
                         self._poll_fallback_loop()
                     )
@@ -495,9 +488,7 @@ class WalletWebSocketMonitor:
                 if self._running:
                     await asyncio.sleep(current_delay)
                     # Exponential backoff
-                    current_delay = min(
-                        current_delay * 2, self._max_reconnect_delay
-                    )
+                    current_delay = min(current_delay * 2, self._max_reconnect_delay)
 
         self._ws_connection = None
 

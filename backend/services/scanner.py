@@ -178,6 +178,7 @@ class ArbitrageScanner:
             # AI Intelligence: Score top opportunities (non-blocking)
             try:
                 from services.ai import get_llm_manager
+
                 manager = get_llm_manager()
                 if manager.is_available():
                     asyncio.create_task(self._ai_score_opportunities(all_opportunities))

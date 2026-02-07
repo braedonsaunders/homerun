@@ -269,13 +269,20 @@ class AutoTrader:
 
         # Apply category-specific liquidity adjustments
         category = getattr(opp, "category", None)
-        adjusted_min_liquidity = category_buffer_service.adjust_min_liquidity(
-            self.config.min_liquidity_usd, category
-        ) if category else self.config.min_liquidity_usd
+        adjusted_min_liquidity = (
+            category_buffer_service.adjust_min_liquidity(
+                self.config.min_liquidity_usd, category
+            )
+            if category
+            else self.config.min_liquidity_usd
+        )
 
         # Check liquidity with category adjustment
         if opp.min_liquidity < adjusted_min_liquidity:
-            return False, f"Liquidity ${opp.min_liquidity:.0f} below threshold (${adjusted_min_liquidity:.0f} for {category or 'default'})"
+            return (
+                False,
+                f"Liquidity ${opp.min_liquidity:.0f} below threshold (${adjusted_min_liquidity:.0f} for {category or 'default'})",
+            )
 
         # For miracle strategy, check impossibility score
         if opp.strategy == StrategyType.MIRACLE:
@@ -358,15 +365,21 @@ class AutoTrader:
 
             # Minimum viable: must exceed fees by enough to be worth it
             MIN_CASH_VALUE = 1.01  # From terauss settings
-            min_viable = max(0.02 * 10, MIN_CASH_VALUE)  # At least 10x the 2% fee or min cash value
+            min_viable = max(
+                0.02 * 10, MIN_CASH_VALUE
+            )  # At least 10x the 2% fee or min cash value
             if size < min_viable and size > 0:
                 probability = size / min_viable
                 if random.random() < probability:
                     size = min_viable  # Execute at minimum size
-                    logger.info(f"Probabilistic execution: size below minimum, executing at ${min_viable:.2f} (prob={probability:.2f})")
+                    logger.info(
+                        f"Probabilistic execution: size below minimum, executing at ${min_viable:.2f} (prob={probability:.2f})"
+                    )
                 else:
                     size = 0  # Skip this time
-                    logger.debug(f"Probabilistic skip: size below minimum (prob={probability:.2f})")
+                    logger.debug(
+                        f"Probabilistic skip: size below minimum (prob={probability:.2f})"
+                    )
 
         else:
             size = self.config.base_position_size_usd
@@ -401,10 +414,16 @@ class AutoTrader:
 
         # Apply limits after tier/category adjustments
         position_size = min(position_size, self.config.max_position_size_usd)
-        position_size = max(position_size, settings.MIN_ORDER_SIZE_USD) if position_size > 0 else 0
+        position_size = (
+            max(position_size, settings.MIN_ORDER_SIZE_USD) if position_size > 0 else 0
+        )
 
         # Depth check for each position leg (only for live/paper/mock trades)
-        if self.config.mode in (AutoTraderMode.LIVE, AutoTraderMode.PAPER, AutoTraderMode.MOCK):
+        if self.config.mode in (
+            AutoTraderMode.LIVE,
+            AutoTraderMode.PAPER,
+            AutoTraderMode.MOCK,
+        ):
             if opp.positions_to_take:
                 for pos in opp.positions_to_take:
                     token_id = pos.get("token_id", "")
@@ -416,14 +435,16 @@ class AutoTrader:
                             token_id=token_id,
                             side="BUY",
                             target_price=price + tier.price_buffer,
-                            required_size_usd=position_size / max(len(opp.positions_to_take), 1),
+                            required_size_usd=position_size
+                            / max(len(opp.positions_to_take), 1),
                             trade_context="auto_trader",
                         )
                         if not depth_result.has_sufficient_depth:
                             # Trip the token on insufficient depth
                             token_circuit_breaker.trip_token(
-                                token_id, "insufficient_depth",
-                                {"available": depth_result.available_depth_usd}
+                                token_id,
+                                "insufficient_depth",
+                                {"available": depth_result.available_depth_usd},
                             )
                             logger.warning(
                                 "Insufficient depth, blocking trade",
@@ -558,9 +579,13 @@ class AutoTrader:
 
         elif self.config.mode == AutoTraderMode.MOCK:
             # Run full real pipeline but simulate the fill
-            logger.info(f"MOCK execution: would place {len(opp.positions_to_take)} orders, size=${position_size:.2f}")
+            logger.info(
+                f"MOCK execution: would place {len(opp.positions_to_take)} orders, size=${position_size:.2f}"
+            )
             trade.status = "open"
-            trade.order_ids = [f"mock_{uuid.uuid4().hex[:8]}" for _ in (opp.positions_to_take or [])]
+            trade.order_ids = [
+                f"mock_{uuid.uuid4().hex[:8]}" for _ in (opp.positions_to_take or [])
+            ]
 
         elif self.config.mode == AutoTraderMode.SHADOW:
             # Shadow mode - just record what would happen

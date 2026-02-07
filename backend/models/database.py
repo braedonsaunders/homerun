@@ -511,11 +511,15 @@ class AppSettings(Base):
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
-    ai_resolution_analysis = Column(Boolean, default=True)  # Auto-analyze resolution criteria
+    ai_resolution_analysis = Column(
+        Boolean, default=True
+    )  # Auto-analyze resolution criteria
     ai_opportunity_scoring = Column(Boolean, default=True)  # LLM-as-judge scoring
     ai_news_sentiment = Column(Boolean, default=True)  # News/sentiment analysis
     ai_max_monthly_spend = Column(Float, default=50.0)  # Monthly LLM cost cap
-    ai_default_model = Column(String, default="gpt-4o-mini")  # Default model for AI tasks
+    ai_default_model = Column(
+        String, default="gpt-4o-mini"
+    )  # Default model for AI tasks
     ai_premium_model = Column(String, default="gpt-4o")  # Model for high-value analysis
 
     # Notification Settings
@@ -562,7 +566,9 @@ class ResearchSession(Base):
     __tablename__ = "research_sessions"
 
     id = Column(String, primary_key=True)
-    session_type = Column(String, nullable=False)  # "resolution_analysis", "opportunity_judge", "market_analysis", "news_sentiment"
+    session_type = Column(
+        String, nullable=False
+    )  # "resolution_analysis", "opportunity_judge", "market_analysis", "news_sentiment"
     query = Column(Text, nullable=False)  # The question/task being researched
     opportunity_id = Column(String, nullable=True)  # Link to opportunity if applicable
     market_id = Column(String, nullable=True)
@@ -587,7 +593,9 @@ class ResearchSession(Base):
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
-    entries = relationship("ScratchpadEntry", back_populates="session", cascade="all, delete-orphan")
+    entries = relationship(
+        "ScratchpadEntry", back_populates="session", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_research_type", "session_type"),
@@ -612,7 +620,9 @@ class ScratchpadEntry(Base):
     sequence = Column(Integer, nullable=False)  # Order within session
 
     # Entry content
-    entry_type = Column(String, nullable=False)  # "thinking", "tool_call", "tool_result", "observation", "answer"
+    entry_type = Column(
+        String, nullable=False
+    )  # "thinking", "tool_call", "tool_result", "observation", "answer"
     tool_name = Column(String, nullable=True)  # Which tool was called
     input_data = Column(JSON, nullable=True)  # Tool input or thinking content
     output_data = Column(JSON, nullable=True)  # Tool output or result
@@ -651,7 +661,9 @@ class ResolutionAnalysis(Base):
     resolution_rules = Column(Text, nullable=True)
 
     # Analysis results
-    clarity_score = Column(Float, nullable=True)  # 0-1: how clear/unambiguous the resolution criteria are
+    clarity_score = Column(
+        Float, nullable=True
+    )  # 0-1: how clear/unambiguous the resolution criteria are
     risk_score = Column(Float, nullable=True)  # 0-1: risk of unexpected resolution
     confidence = Column(Float, nullable=True)  # 0-1: confidence in the analysis
 
@@ -659,7 +671,9 @@ class ResolutionAnalysis(Base):
     ambiguities = Column(JSON, nullable=True)  # List of identified ambiguities
     edge_cases = Column(JSON, nullable=True)  # Potential edge cases
     key_dates = Column(JSON, nullable=True)  # Important dates for resolution
-    resolution_likelihood = Column(JSON, nullable=True)  # Likelihood assessment per outcome
+    resolution_likelihood = Column(
+        JSON, nullable=True
+    )  # Likelihood assessment per outcome
     summary = Column(Text, nullable=True)  # Human-readable summary
     recommendation = Column(String, nullable=True)  # "safe", "caution", "avoid"
 
@@ -693,12 +707,18 @@ class OpportunityJudgment(Base):
     overall_score = Column(Float, nullable=False)  # Composite score
     profit_viability = Column(Float, nullable=True)  # Will the profit materialize?
     resolution_safety = Column(Float, nullable=True)  # Will it resolve as expected?
-    execution_feasibility = Column(Float, nullable=True)  # Can we execute at these prices?
-    market_efficiency = Column(Float, nullable=True)  # Is this a real inefficiency or noise?
+    execution_feasibility = Column(
+        Float, nullable=True
+    )  # Can we execute at these prices?
+    market_efficiency = Column(
+        Float, nullable=True
+    )  # Is this a real inefficiency or noise?
 
     # LLM reasoning
     reasoning = Column(Text, nullable=True)  # Full chain-of-thought
-    recommendation = Column(String, nullable=False)  # "strong_execute", "execute", "review", "skip", "strong_skip"
+    recommendation = Column(
+        String, nullable=False
+    )  # "strong_execute", "execute", "review", "skip", "strong_skip"
     risk_factors = Column(JSON, nullable=True)
 
     # Comparison with ML classifier
@@ -761,7 +781,9 @@ class LLMUsageLog(Base):
     __tablename__ = "llm_usage_log"
 
     id = Column(String, primary_key=True)
-    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek
+    provider = Column(
+        String, nullable=False
+    )  # openai, anthropic, google, xai, deepseek
     model = Column(String, nullable=False)
 
     # Usage
@@ -770,7 +792,9 @@ class LLMUsageLog(Base):
     cost_usd = Column(Float, nullable=False)
 
     # Context
-    purpose = Column(String, nullable=True)  # "resolution_analysis", "opportunity_judge", etc.
+    purpose = Column(
+        String, nullable=True
+    )  # "resolution_analysis", "opportunity_judge", etc.
     session_id = Column(String, nullable=True)
 
     # Timing

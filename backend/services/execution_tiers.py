@@ -339,9 +339,7 @@ class ExecutionTierService:
             category_rows = category_result.all()
 
             # Total count
-            total_result = await session.execute(
-                select(func.count(TierAssignment.id))
-            )
+            total_result = await session.execute(select(func.count(TierAssignment.id)))
             total_count = total_result.scalar() or 0
 
         tier_breakdown = {}

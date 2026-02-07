@@ -67,9 +67,7 @@ class CachedUsername(Base):
     cached_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_cu_cached_at", "cached_at"),
-    )
+    __table_args__ = (Index("idx_cu_cached_at", "cached_at"),)
 
 
 # ==================== Cache Service ====================
@@ -140,7 +138,13 @@ class MarketCacheService:
             async with AsyncSessionLocal() as session:
                 now = datetime.utcnow()
                 # Separate known columns from extra data
-                known_keys = {"question", "slug", "groupItemTitle", "category", "active"}
+                known_keys = {
+                    "question",
+                    "slug",
+                    "groupItemTitle",
+                    "category",
+                    "active",
+                }
                 extra = {k: v for k, v in data.items() if k not in known_keys}
 
                 stmt = sqlite_upsert(CachedMarket).values(
@@ -187,7 +191,13 @@ class MarketCacheService:
         try:
             async with AsyncSessionLocal() as session:
                 now = datetime.utcnow()
-                known_keys = {"question", "slug", "groupItemTitle", "category", "active"}
+                known_keys = {
+                    "question",
+                    "slug",
+                    "groupItemTitle",
+                    "category",
+                    "active",
+                }
 
                 for condition_id, data in markets.items():
                     extra = {k: v for k, v in data.items() if k not in known_keys}
@@ -334,7 +344,9 @@ class MarketCacheService:
                 row = result.one()
                 stats["usernames_db_count"] = row[2]
                 stats["usernames_oldest"] = row[0].isoformat() if row[0] else None
-                stats["usernames_newest_update"] = row[1].isoformat() if row[1] else None
+                stats["usernames_newest_update"] = (
+                    row[1].isoformat() if row[1] else None
+                )
 
         except Exception as e:
             logger.error("Failed to gather cache DB stats", error=str(e))

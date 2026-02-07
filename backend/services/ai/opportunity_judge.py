@@ -300,9 +300,7 @@ class OpportunityJudge:
                 try:
                     judgment = json.loads(llm_response.content)
                 except json.JSONDecodeError:
-                    judgment = self._fallback_judgment(
-                        "LLM returned invalid JSON"
-                    )
+                    judgment = self._fallback_judgment("LLM returned invalid JSON")
             else:
                 judgment = self._fallback_judgment("LLM returned empty response")
 
@@ -406,7 +404,9 @@ class OpportunityJudge:
                 logger.error(
                     "Batch judgment failed for opportunity",
                     opportunity_index=i,
-                    opportunity_id=opportunities[i].id if i < len(opportunities) else "unknown",
+                    opportunity_id=opportunities[i].id
+                    if i < len(opportunities)
+                    else "unknown",
                     error=str(result),
                 )
                 fallback = self._fallback_judgment(f"Batch judgment failed: {result}")
@@ -463,9 +463,7 @@ class OpportunityJudge:
                         OpportunityJudgment.strategy_type == strategy_type
                     )
                 if min_score is not None:
-                    query = query.where(
-                        OpportunityJudgment.overall_score >= min_score
-                    )
+                    query = query.where(OpportunityJudgment.overall_score >= min_score)
 
                 query = query.limit(limit)
                 result = await session.execute(query)
@@ -488,7 +486,9 @@ class OpportunityJudge:
                         "ml_recommendation": row.ml_recommendation,
                         "agreement": row.agreement,
                         "model_used": row.model_used,
-                        "judged_at": row.judged_at.isoformat() if row.judged_at else None,
+                        "judged_at": row.judged_at.isoformat()
+                        if row.judged_at
+                        else None,
                     }
                     for row in rows
                 ]
@@ -549,14 +549,10 @@ class OpportunityJudge:
                         func.count(OpportunityJudgment.id),
                     ).group_by(OpportunityJudgment.recommendation)
                 )
-                recommendation_counts = {
-                    row[0]: row[1] for row in rec_result.all()
-                }
+                recommendation_counts = {row[0]: row[1] for row in rec_result.all()}
 
                 agreement_rate = (
-                    round(agreements / total_with_ml, 4)
-                    if total_with_ml > 0
-                    else None
+                    round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
                 )
 
                 return {
@@ -565,7 +561,9 @@ class OpportunityJudge:
                     "agreements": agreements,
                     "disagreements": disagreements,
                     "agreement_rate": agreement_rate,
-                    "average_overall_score": round(float(avg_score), 4) if avg_score else None,
+                    "average_overall_score": round(float(avg_score), 4)
+                    if avg_score
+                    else None,
                     "recommendation_distribution": recommendation_counts,
                 }
         except Exception as exc:
@@ -590,7 +588,9 @@ class OpportunityJudge:
 
         # Core fields
         sections.append(f"**ID:** {opportunity.id}")
-        sections.append(f"**Strategy:** {opportunity.strategy.value if opportunity.strategy else 'unknown'}")
+        sections.append(
+            f"**Strategy:** {opportunity.strategy.value if opportunity.strategy else 'unknown'}"
+        )
         sections.append(f"**Title:** {opportunity.title}")
         sections.append(f"**Description:** {opportunity.description}")
 
@@ -612,13 +612,19 @@ class OpportunityJudge:
         # Liquidity
         sections.append("\n### Liquidity & Execution")
         sections.append(f"- Minimum liquidity: ${opportunity.min_liquidity:.2f}")
-        sections.append(f"- Maximum position size: ${opportunity.max_position_size:.2f}")
+        sections.append(
+            f"- Maximum position size: ${opportunity.max_position_size:.2f}"
+        )
 
         # Mispricing classification
         if opportunity.mispricing_type:
-            sections.append(f"\n**Mispricing type:** {opportunity.mispricing_type.value}")
+            sections.append(
+                f"\n**Mispricing type:** {opportunity.mispricing_type.value}"
+            )
         if opportunity.guaranteed_profit is not None:
-            sections.append(f"**Guaranteed profit (Frank-Wolfe):** ${opportunity.guaranteed_profit:.4f}")
+            sections.append(
+                f"**Guaranteed profit (Frank-Wolfe):** ${opportunity.guaranteed_profit:.4f}"
+            )
         if opportunity.capture_ratio is not None:
             sections.append(f"**Capture ratio:** {opportunity.capture_ratio:.4f}")
 
@@ -627,10 +633,22 @@ class OpportunityJudge:
             sections.append("\n### Markets Involved")
             for i, mkt in enumerate(opportunity.markets):
                 sections.append(f"\n**Market {i + 1}:**")
-                sections.append(f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}")
+                sections.append(
+                    f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
+                )
                 sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
-                yes_price = mkt.get("yes_price", mkt.get("outcome_prices", [None, None])[0] if len(mkt.get("outcome_prices", [])) > 0 else "N/A")
-                no_price = mkt.get("no_price", mkt.get("outcome_prices", [None, None])[1] if len(mkt.get("outcome_prices", [])) > 1 else "N/A")
+                yes_price = mkt.get(
+                    "yes_price",
+                    mkt.get("outcome_prices", [None, None])[0]
+                    if len(mkt.get("outcome_prices", [])) > 0
+                    else "N/A",
+                )
+                no_price = mkt.get(
+                    "no_price",
+                    mkt.get("outcome_prices", [None, None])[1]
+                    if len(mkt.get("outcome_prices", [])) > 1
+                    else "N/A",
+                )
                 sections.append(f"  - YES price: {yes_price}")
                 sections.append(f"  - NO price: {no_price}")
                 if mkt.get("liquidity"):
@@ -644,7 +662,9 @@ class OpportunityJudge:
 
         # Timing
         if opportunity.resolution_date:
-            sections.append(f"**Resolution date:** {opportunity.resolution_date.isoformat()}")
+            sections.append(
+                f"**Resolution date:** {opportunity.resolution_date.isoformat()}"
+            )
         sections.append(f"**Detected at:** {opportunity.detected_at.isoformat()}")
 
         # Positions to take
@@ -660,9 +680,15 @@ class OpportunityJudge:
         # Resolution analysis if available
         if resolution_analysis:
             sections.append("\n### Pre-computed Resolution Analysis")
-            sections.append(f"- Clarity score: {resolution_analysis.get('clarity_score', 'N/A')}")
-            sections.append(f"- Risk score: {resolution_analysis.get('risk_score', 'N/A')}")
-            sections.append(f"- Recommendation: {resolution_analysis.get('recommendation', 'N/A')}")
+            sections.append(
+                f"- Clarity score: {resolution_analysis.get('clarity_score', 'N/A')}"
+            )
+            sections.append(
+                f"- Risk score: {resolution_analysis.get('risk_score', 'N/A')}"
+            )
+            sections.append(
+                f"- Recommendation: {resolution_analysis.get('recommendation', 'N/A')}"
+            )
             ambiguities = resolution_analysis.get("ambiguities", [])
             if ambiguities:
                 sections.append(f"- Ambiguities: {'; '.join(ambiguities[:5])}")
@@ -676,8 +702,12 @@ class OpportunityJudge:
         # ML prediction for comparison
         if ml_prediction:
             sections.append("\n### ML Classifier Assessment")
-            sections.append(f"- Probability of profitability: {ml_prediction.get('probability', 'N/A')}")
-            sections.append(f"- Recommendation: {ml_prediction.get('recommendation', 'N/A')}")
+            sections.append(
+                f"- Probability of profitability: {ml_prediction.get('probability', 'N/A')}"
+            )
+            sections.append(
+                f"- Recommendation: {ml_prediction.get('recommendation', 'N/A')}"
+            )
             sections.append(f"- Confidence: {ml_prediction.get('confidence', 'N/A')}")
 
         sections.append(
@@ -813,7 +843,9 @@ class OpportunityJudge:
                 judgment_row = OpportunityJudgment(
                     id=uuid.uuid4().hex[:16],
                     opportunity_id=opportunity.id,
-                    strategy_type=opportunity.strategy.value if opportunity.strategy else "unknown",
+                    strategy_type=opportunity.strategy.value
+                    if opportunity.strategy
+                    else "unknown",
                     overall_score=result["overall_score"],
                     profit_viability=result["profit_viability"],
                     resolution_safety=result["resolution_safety"],
@@ -822,8 +854,12 @@ class OpportunityJudge:
                     reasoning=result["reasoning"],
                     recommendation=result["recommendation"],
                     risk_factors=result.get("risk_factors"),
-                    ml_probability=ml_prediction.get("probability") if ml_prediction else None,
-                    ml_recommendation=ml_prediction.get("recommendation") if ml_prediction else None,
+                    ml_probability=ml_prediction.get("probability")
+                    if ml_prediction
+                    else None,
+                    ml_recommendation=ml_prediction.get("recommendation")
+                    if ml_prediction
+                    else None,
                     agreement=result.get("ml_agreement"),
                     session_id=session_id,
                     model_used=model_used,

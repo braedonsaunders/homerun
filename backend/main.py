@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
 
         # Pre-flight configuration validation
         from services.config_validator import config_validator
+
         validation = config_validator.validate_all(settings)
         if not validation.valid:
             logger.error(
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
         # Load sport token classifications from DB
         try:
             from services.sport_classifier import sport_classifier
+
             await sport_classifier.load_from_db()
         except Exception as e:
             logger.warning(f"Sport classifier load failed (non-critical): {e}")
@@ -81,6 +83,7 @@ async def lifespan(app: FastAPI):
         # Load persistent market cache from DB into memory
         try:
             from services.market_cache import market_cache_service
+
             await market_cache_service.load_from_db()
             stats = await market_cache_service.get_cache_stats()
             logger.info(
@@ -95,6 +98,7 @@ async def lifespan(app: FastAPI):
         try:
             from services.ai import initialize_ai
             from services.ai.skills.loader import skill_loader
+
             llm_manager = await initialize_ai()
             skill_loader.discover()
             if llm_manager.is_available():
@@ -104,7 +108,9 @@ async def lifespan(app: FastAPI):
                     skills=len(skill_loader.list_skills()),
                 )
             else:
-                logger.info("AI intelligence layer initialized (no providers configured)")
+                logger.info(
+                    "AI intelligence layer initialized (no providers configured)"
+                )
         except Exception as e:
             logger.warning(f"AI initialization failed (non-critical): {e}")
 
@@ -129,6 +135,7 @@ async def lifespan(app: FastAPI):
         # Start fill monitor (read-only, zero risk)
         try:
             from services.fill_monitor import fill_monitor
+
             await fill_monitor.start()
         except Exception as e:
             logger.warning(f"Fill monitor start failed (non-critical): {e}")
@@ -187,6 +194,7 @@ async def lifespan(app: FastAPI):
         maintenance_service.stop()
         try:
             from services.fill_monitor import fill_monitor
+
             fill_monitor.stop()
         except Exception:
             pass
@@ -293,6 +301,7 @@ def _get_ai_status() -> dict:
     """Get AI status for health check."""
     try:
         from services.ai import get_llm_manager
+
         manager = get_llm_manager()
         return {"enabled": manager.is_available()}
     except Exception:

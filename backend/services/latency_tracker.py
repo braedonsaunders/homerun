@@ -22,6 +22,7 @@ logger = get_logger("latency_tracker")
 
 class PipelineLatencyLog(Base):
     """Record of end-to-end pipeline execution timing."""
+
     __tablename__ = "pipeline_latency_logs"
 
     id = Column(String, primary_key=True)
@@ -57,6 +58,7 @@ class PipelineLatencyLog(Base):
 @dataclass
 class StageTimer:
     """Tracks timing for individual pipeline stages."""
+
     stages: dict = field(default_factory=dict)  # stage_name -> duration_ms
     _current_stage: Optional[str] = None
     _stage_start: Optional[float] = None
@@ -87,15 +89,24 @@ class StageTimer:
 @dataclass
 class FillQuality:
     """Fill quality assessment."""
+
     fill_percent: float
     quality: str  # "excellent" >= 80%, "good" 40-79%, "poor" < 40%
     slippage_bps: float
 
     @staticmethod
-    def assess(requested_size: float, filled_size: float,
-               expected_price: float, actual_price: float) -> "FillQuality":
+    def assess(
+        requested_size: float,
+        filled_size: float,
+        expected_price: float,
+        actual_price: float,
+    ) -> "FillQuality":
         fill_pct = (filled_size / requested_size * 100) if requested_size > 0 else 0
-        slippage = abs(actual_price - expected_price) / expected_price * 10000 if expected_price > 0 else 0
+        slippage = (
+            abs(actual_price - expected_price) / expected_price * 10000
+            if expected_price > 0
+            else 0
+        )
 
         if fill_pct >= 80:
             quality = "excellent"
@@ -166,23 +177,29 @@ class LatencyTracker:
         # Persist to DB
         try:
             async with AsyncSessionLocal() as session:
-                session.add(PipelineLatencyLog(
-                    id=tracking_id,
-                    opportunity_id=opportunity_id,
-                    trade_context=trade_context,
-                    detection_ms=stages.get("detection"),
-                    risk_check_ms=stages.get("risk_check"),
-                    depth_check_ms=stages.get("depth_check"),
-                    sizing_ms=stages.get("sizing"),
-                    order_placement_ms=stages.get("order_placement"),
-                    fill_confirmation_ms=stages.get("fill_confirmation"),
-                    total_ms=stages.get("total"),
-                    fill_percent=fill_quality.fill_percent if fill_quality else None,
-                    fill_quality=fill_quality.quality if fill_quality else None,
-                    slippage_bps=fill_quality.slippage_bps if fill_quality else None,
-                    success=success,
-                    error=error,
-                ))
+                session.add(
+                    PipelineLatencyLog(
+                        id=tracking_id,
+                        opportunity_id=opportunity_id,
+                        trade_context=trade_context,
+                        detection_ms=stages.get("detection"),
+                        risk_check_ms=stages.get("risk_check"),
+                        depth_check_ms=stages.get("depth_check"),
+                        sizing_ms=stages.get("sizing"),
+                        order_placement_ms=stages.get("order_placement"),
+                        fill_confirmation_ms=stages.get("fill_confirmation"),
+                        total_ms=stages.get("total"),
+                        fill_percent=fill_quality.fill_percent
+                        if fill_quality
+                        else None,
+                        fill_quality=fill_quality.quality if fill_quality else None,
+                        slippage_bps=fill_quality.slippage_bps
+                        if fill_quality
+                        else None,
+                        success=success,
+                        error=error,
+                    )
+                )
                 await session.commit()
         except Exception as e:
             logger.error("Failed to persist latency log", error=str(e))
@@ -199,10 +216,13 @@ class LatencyTracker:
                     func.avg(PipelineLatencyLog.fill_percent).label("avg_fill_pct"),
                     func.avg(PipelineLatencyLog.slippage_bps).label("avg_slippage_bps"),
                 ).where(
-                    PipelineLatencyLog.recorded_at >= datetime.utcnow() - __import__("datetime").timedelta(hours=hours)
+                    PipelineLatencyLog.recorded_at
+                    >= datetime.utcnow() - __import__("datetime").timedelta(hours=hours)
                 )
                 if trade_context:
-                    query = query.where(PipelineLatencyLog.trade_context == trade_context)
+                    query = query.where(
+                        PipelineLatencyLog.trade_context == trade_context
+                    )
 
                 result = await session.execute(query)
                 row = result.one()
@@ -212,19 +232,29 @@ class LatencyTracker:
                     select(
                         PipelineLatencyLog.fill_quality,
                         func.count(PipelineLatencyLog.id),
-                    ).where(
-                        PipelineLatencyLog.fill_quality.isnot(None)
-                    ).group_by(PipelineLatencyLog.fill_quality)
+                    )
+                    .where(PipelineLatencyLog.fill_quality.isnot(None))
+                    .group_by(PipelineLatencyLog.fill_quality)
                 )
                 quality_counts = {r[0]: r[1] for r in quality_result.all()}
 
                 return {
                     "total_executions": row.total or 0,
-                    "avg_total_ms": round(row.avg_total_ms, 2) if row.avg_total_ms else 0,
-                    "min_total_ms": round(row.min_total_ms, 2) if row.min_total_ms else 0,
-                    "max_total_ms": round(row.max_total_ms, 2) if row.max_total_ms else 0,
-                    "avg_fill_percent": round(row.avg_fill_pct, 2) if row.avg_fill_pct else 0,
-                    "avg_slippage_bps": round(row.avg_slippage_bps, 2) if row.avg_slippage_bps else 0,
+                    "avg_total_ms": round(row.avg_total_ms, 2)
+                    if row.avg_total_ms
+                    else 0,
+                    "min_total_ms": round(row.min_total_ms, 2)
+                    if row.min_total_ms
+                    else 0,
+                    "max_total_ms": round(row.max_total_ms, 2)
+                    if row.max_total_ms
+                    else 0,
+                    "avg_fill_percent": round(row.avg_fill_pct, 2)
+                    if row.avg_fill_pct
+                    else 0,
+                    "avg_slippage_bps": round(row.avg_slippage_bps, 2)
+                    if row.avg_slippage_bps
+                    else 0,
                     "fill_quality_breakdown": quality_counts,
                 }
         except Exception as e:

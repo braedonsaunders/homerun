@@ -328,9 +328,7 @@ class TokenCircuitBreaker:
             reason_counts[event.reason] = reason_counts.get(event.reason, 0) + 1
 
         # Count unique tokens that have been tripped
-        unique_tokens_tripped = len(
-            set(event.token_id for event in self._trip_history)
-        )
+        unique_tokens_tripped = len(set(event.token_id for event in self._trip_history))
 
         return {
             "active_trips": len(active_trips),
@@ -343,9 +341,7 @@ class TokenCircuitBreaker:
                     "reason": t.reason,
                     "triggered_at": t.triggered_at.isoformat(),
                     "expires_at": t.expires_at.isoformat(),
-                    "remaining_seconds": max(
-                        0, (t.expires_at - now).total_seconds()
-                    ),
+                    "remaining_seconds": max(0, (t.expires_at - now).total_seconds()),
                     "trade_count": t.trade_count,
                 }
                 for t in active_trips

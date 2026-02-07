@@ -306,9 +306,7 @@ class Agent:
 
                     # Execute each tool call
                     for tc in response.tool_calls:
-                        async for event in self._execute_tool_call(
-                            session_id, tc
-                        ):
+                        async for event in self._execute_tool_call(session_id, tc):
                             yield event
 
                     # Loop back for next iteration
@@ -344,18 +342,12 @@ class Agent:
                 self.max_iterations,
                 session_id,
             )
-            async for event in self._force_final_answer(
-                session_id, model, manager
-            ):
+            async for event in self._force_final_answer(session_id, model, manager):
                 yield event
 
         except Exception as e:
-            logger.exception(
-                "Agent error in session %s: %s", session_id, e
-            )
-            await self._scratchpad.complete_session(
-                session_id=session_id, error=str(e)
-            )
+            logger.exception("Agent error in session %s: %s", session_id, e)
+            await self._scratchpad.complete_session(session_id=session_id, error=str(e))
             yield AgentEvent(
                 type=AgentEventType.ERROR,
                 data={"error": str(e), "session_id": session_id},
@@ -477,9 +469,7 @@ class Agent:
                 else str(result)
             )
             if len(result_str) > _MAX_TOOL_RESULT_CHARS:
-                result_str = (
-                    result_str[:_MAX_TOOL_RESULT_CHARS] + "\n... [truncated]"
-                )
+                result_str = result_str[:_MAX_TOOL_RESULT_CHARS] + "\n... [truncated]"
 
             self._messages.append(
                 LLMMessage(
@@ -565,15 +555,11 @@ class Agent:
                 final_response.usage.input_tokens if final_response.usage else 0
             ),
             output_tokens=(
-                final_response.usage.output_tokens
-                if final_response.usage
-                else 0
+                final_response.usage.output_tokens if final_response.usage else 0
             ),
         )
 
-        await self._scratchpad.complete_session(
-            session_id=session_id, result=result
-        )
+        await self._scratchpad.complete_session(session_id=session_id, result=result)
 
         yield AgentEvent(
             type=AgentEventType.DONE,

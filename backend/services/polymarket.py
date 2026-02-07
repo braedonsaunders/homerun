@@ -24,6 +24,7 @@ class PolymarketClient:
         if self._persistent_cache is None:
             try:
                 from services.market_cache import market_cache_service
+
                 if not market_cache_service._loaded:
                     await market_cache_service.load_from_db()
                 self._persistent_cache = market_cache_service
