@@ -138,7 +138,7 @@ class MarketAnalyzer:
                 system_prompt=system_prompt,
                 query=query,
                 tools=tools,
-                model=model or "gpt-4o-mini",
+                model=model,
                 max_iterations=8,
                 session_type="market_analysis",
                 market_id=market_id,
@@ -671,7 +671,7 @@ class MarketAnalyzer:
                     LLMMessage(role="system", content=system_prompt),
                     LLMMessage(role="user", content=user_content),
                 ],
-                model=model or "gpt-4o-mini",
+                model=model,
                 purpose="market_analysis",
             )
             analysis_text = response.content

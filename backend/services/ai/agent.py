@@ -219,7 +219,7 @@ class Agent:
             )
             return
 
-        model = self.model or "gpt-4o-mini"
+        model = self.model or get_llm_manager()._default_model
 
         # Create scratchpad session
         session_id = await self._scratchpad.create_session(
