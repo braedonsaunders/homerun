@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Resolution Criteria Analyzer.
 
@@ -15,6 +13,8 @@ unexpectedly due to ambiguous criteria.
 
 Inspired by virattt/dexter's autonomous research agent pattern.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
