@@ -299,8 +299,22 @@ class PriceChaserService:
             remaining_size -= fill_size
             remaining_size = max(remaining_size, 0.0)
 
+            # Dust threshold: consider complete if remaining is negligible
+            DUST_THRESHOLD = 0.01  # Consider complete if remaining < this many shares
+            if remaining_size <= DUST_THRESHOLD:
+                # Close enough - consider fully filled
+                logger.info(
+                    "Order fully filled via price chase (within dust threshold)",
+                    total_attempts=attempt + 1,
+                    total_filled=total_filled,
+                    final_price=adjusted_price,
+                    remaining_dust=remaining_size,
+                )
+                remaining_size = 0.0
+                break
+
             # If fully filled, we are done
-            if remaining_size <= 0 or outcome == "filled":
+            if outcome == "filled":
                 logger.info(
                     "Order fully filled via price chase",
                     total_attempts=attempt + 1,
@@ -318,8 +332,16 @@ class PriceChaserService:
                 )
                 break
 
-            # Brief pause before next retry to let the book update
-            await asyncio.sleep(1)
+            # Calculate tier-aware backoff delay
+            if tier and tier >= 3:
+                # Low-confidence tiers: exponential backoff 200ms, 400ms, 800ms...
+                delay = 0.2 * (2 ** attempt)
+            elif tier and tier == 2:
+                delay = 0.5  # Standard: flat 500ms
+            else:
+                delay = 0.3  # High confidence: fast retry 300ms
+
+            await asyncio.sleep(delay)
 
         # Determine success
         success = total_filled > 0 and remaining_size <= 0

@@ -92,6 +92,19 @@ class Settings(BaseSettings):
 
     # WebSocket Wallet Monitor
     WS_WALLET_MONITOR_ENABLED: bool = True  # Enable real-time wallet monitoring
+    MEMPOOL_MODE_ENABLED: bool = False  # Enable pre-confirmation mempool monitoring
+
+    # Per-Market Position Limits
+    MAX_PER_MARKET_USD: float = 500.0  # Maximum USD exposure per market
+
+    # Copy Trading — Whale Filtering
+    MIN_WHALE_SHARES: float = 10.0  # Ignore whale trades below this share count
+
+    # Fill Monitor
+    FILL_MONITOR_POLL_SECONDS: int = 5  # Fill monitor polling interval
+
+    # CSV Trade Logging
+    CSV_TRADE_LOG_ENABLED: bool = True  # Enable append-only CSV trade log
 
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup

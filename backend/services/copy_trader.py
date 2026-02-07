@@ -1,4 +1,5 @@
 import asyncio
+import random
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -24,6 +25,11 @@ from services.token_circuit_breaker import token_circuit_breaker
 from utils.logger import get_logger
 
 logger = get_logger("copy_trader")
+
+from config import settings as app_settings
+
+MIN_WHALE_SHARES = app_settings.MIN_WHALE_SHARES  # Ignore noise trades below this threshold
+MIN_CASH_VALUE = 1.01  # Minimum cash value for order execution
 
 
 class CopyTradingService:
@@ -347,6 +353,26 @@ class CopyTradingService:
             except (ValueError, OSError):
                 source_timestamp = None
 
+        # Filter out noise trades below minimum whale size
+        if source_size < MIN_WHALE_SHARES:
+            logger.debug(
+                f"Skipping small whale trade: {source_size} shares < {MIN_WHALE_SHARES} minimum"
+            )
+            return await self._record_copied_trade(
+                config,
+                trade_id,
+                market_id,
+                market_question,
+                token_id,
+                "BUY",
+                outcome,
+                source_price,
+                source_size,
+                source_timestamp,
+                status="skipped",
+                error=f"Below minimum whale size ({source_size} < {MIN_WHALE_SHARES})",
+            )
+
         # Get account to check capital
         async with AsyncSessionLocal() as session:
             account = await session.get(SimulationAccount, config.account_id)
@@ -385,6 +411,34 @@ class CopyTradingService:
                     status="skipped",
                     error="Insufficient capital or zero size",
                 )
+
+            # Probabilistic sub-minimum execution: if copy value is below
+            # the $1.01 minimum order size, randomly decide whether to
+            # round up to the minimum or skip entirely.
+            if copy_size * source_price < MIN_CASH_VALUE and copy_size > 0:
+                prob = (copy_size * source_price) / MIN_CASH_VALUE
+                if random.random() < prob:
+                    copy_size = MIN_CASH_VALUE / source_price  # Execute at minimum
+                    logger.info(
+                        "Probabilistic bump to minimum order size",
+                        original_value=copy_size * source_price,
+                        prob=round(prob, 2),
+                    )
+                else:
+                    return await self._record_copied_trade(
+                        config,
+                        trade_id,
+                        market_id,
+                        market_question,
+                        token_id,
+                        "BUY",
+                        outcome,
+                        source_price,
+                        source_size,
+                        source_timestamp,
+                        status="skipped",
+                        error=f"Probabilistic skip (p={prob:.2f})",
+                    )
 
         # Check per-token circuit breaker before executing
         if token_id:

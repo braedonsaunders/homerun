@@ -37,6 +37,11 @@ from services.price_chaser import OrderRetryLog  # noqa: F401
 from services.token_circuit_breaker import TokenTrip  # noqa: F401
 from services.category_buffers import CategoryBufferLog  # noqa: F401
 from services.market_cache import CachedMarket, CachedUsername  # noqa: F401
+from services.live_market_detector import MarketLiveStatus  # noqa: F401
+from services.credential_manager import StoredCredential  # noqa: F401
+from services.latency_tracker import PipelineLatencyLog  # noqa: F401
+from services.sport_classifier import SportTokenClassification  # noqa: F401
+from services.fill_monitor import FillEvent  # noqa: F401
 
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL if hasattr(settings, "LOG_LEVEL") else "INFO")
@@ -52,6 +57,25 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Pre-flight configuration validation
+        from services.config_validator import config_validator
+        validation = config_validator.validate_all(settings)
+        if not validation.valid:
+            logger.error(
+                "Configuration validation failed",
+                errors=validation.errors,
+                warnings=validation.warnings,
+            )
+        elif validation.warnings:
+            logger.warning(f"Config warnings: {validation.warnings}")
+
+        # Load sport token classifications from DB
+        try:
+            from services.sport_classifier import sport_classifier
+            await sport_classifier.load_from_db()
+        except Exception as e:
+            logger.warning(f"Sport classifier load failed (non-critical): {e}")
 
         # Load persistent market cache from DB into memory
         try:
@@ -83,6 +107,13 @@ async def lifespan(app: FastAPI):
 
         # Start copy trading service
         await copy_trader.start()
+
+        # Start fill monitor (read-only, zero risk)
+        try:
+            from services.fill_monitor import fill_monitor
+            await fill_monitor.start()
+        except Exception as e:
+            logger.warning(f"Fill monitor start failed (non-critical): {e}")
 
         # Initialize trading service if configured
         if settings.TRADING_ENABLED:
@@ -136,6 +167,11 @@ async def lifespan(app: FastAPI):
         copy_trader.stop()
         auto_trader.stop()
         maintenance_service.stop()
+        try:
+            from services.fill_monitor import fill_monitor
+            fill_monitor.stop()
+        except Exception:
+            pass
         notifier.stop()
         opportunity_recorder.stop()
 
