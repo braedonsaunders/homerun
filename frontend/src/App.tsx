@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAtom } from 'jotai'
 import {
   TrendingUp,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
   Brain,
   Sparkles,
   Command,
+  Keyboard,
 } from 'lucide-react'
 import clsx from 'clsx'
 import {
@@ -38,6 +40,9 @@ import {
   Opportunity
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
+import { useDataSimulation } from './hooks/useDataSimulation'
+import { shortcutsHelpOpenAtom, simulationEnabledAtom } from './store/atoms'
 import OpportunityCard from './components/OpportunityCard'
 import TradeExecutionModal from './components/TradeExecutionModal'
 import WalletTracker from './components/WalletTracker'
@@ -52,6 +57,9 @@ import SettingsPanel from './components/SettingsPanel'
 import AIPanel from './components/AIPanel'
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
+import DataFreshnessIndicator from './components/DataFreshnessIndicator'
+import ThemeToggle from './components/ThemeToggle'
+import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
@@ -76,19 +84,9 @@ function App() {
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
   const [commandBarOpen, setCommandBarOpen] = useState(false)
+  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
+  const [simulationEnabled] = useAtom(simulationEnabledAtom)
   const queryClient = useQueryClient()
-
-  // Cmd+K to open command bar
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault()
-        setCommandBarOpen((v) => !v)
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
 
   // Open copilot with context
   const handleOpenCopilot = useCallback((contextType?: string, contextId?: string, label?: string) => {
@@ -187,10 +185,44 @@ function App() {
     },
   })
 
+  // Data simulation between scan cycles
+  const { simulatedData: displayOpportunities } = useDataSimulation(
+    opportunities,
+    { enabled: simulationEnabled && activeTab === 'opportunities' && opportunitiesView === 'arbitrage' }
+  )
+
+  // Keyboard shortcuts
+  const shortcuts: Shortcut[] = useMemo(() => [
+    { key: '1', description: 'Go to Opportunities', category: 'Navigation', action: () => setActiveTab('opportunities') },
+    { key: '2', description: 'Go to Trading', category: 'Navigation', action: () => setActiveTab('trading') },
+    { key: '3', description: 'Go to Accounts', category: 'Navigation', action: () => setActiveTab('accounts') },
+    { key: '4', description: 'Go to Traders', category: 'Navigation', action: () => setActiveTab('traders') },
+    { key: '5', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
+    { key: '6', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
+    { key: '7', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
+    { key: '8', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
+    { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
+    { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => scanMutation.mutate() },
+    { key: '/', description: 'Focus Search', category: 'Actions', action: () => {
+      setActiveTab('opportunities')
+      setTimeout(() => document.querySelector<HTMLInputElement>('input[placeholder*="Search"]')?.focus(), 100)
+    }},
+    { key: '.', ctrl: true, description: 'Toggle AI Copilot', category: 'Actions', action: () => setCopilotOpen(v => !v) },
+    { key: '?', shift: true, description: 'Show Keyboard Shortcuts', category: 'Help', action: () => setShortcutsHelpOpen(v => !v) },
+    { key: 'Escape', description: 'Close Modals / Panels', category: 'Help', action: () => {
+      setShortcutsHelpOpen(false)
+      setCommandBarOpen(false)
+      setCopilotOpen(false)
+      setExecutingOpportunity(null)
+    }},
+  ], [scanMutation, setShortcutsHelpOpen])
+
+  useKeyboardShortcuts(shortcuts)
+
   // Stats
-  const totalProfit = opportunities.reduce((sum, o) => sum + o.net_profit, 0)
-  const avgROI = opportunities.length > 0
-    ? opportunities.reduce((sum, o) => sum + o.roi_percent, 0) / opportunities.length
+  const totalProfit = displayOpportunities.reduce((sum, o) => sum + o.net_profit, 0)
+  const avgROI = displayOpportunities.length > 0
+    ? displayOpportunities.reduce((sum, o) => sum + o.roi_percent, 0) / displayOpportunities.length
     : 0
 
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
@@ -211,7 +243,7 @@ function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               {/* Connection Status */}
               <div className={clsx(
                 "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs",
@@ -223,6 +255,21 @@ function App() {
                 )} />
                 {isConnected ? 'Live' : 'Disconnected'}
               </div>
+
+              {/* Data Freshness Indicator */}
+              <DataFreshnessIndicator lastUpdated={status?.last_scan} />
+
+              {/* Theme Toggle */}
+              <ThemeToggle />
+
+              {/* Keyboard Shortcuts Help */}
+              <button
+                onClick={() => setShortcutsHelpOpen(true)}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a] transition-colors"
+                title="Keyboard shortcuts (?)"
+              >
+                <Keyboard className="w-3.5 h-3.5" />
+              </button>
 
               {/* Scanner Status & Controls */}
               <div className="flex items-center gap-2">
@@ -341,48 +388,56 @@ function App() {
               onClick={() => setActiveTab('opportunities')}
               icon={<Zap className="w-4 h-4" />}
               label="Opportunities"
+              shortcutKey="1"
             />
             <TabButton
               active={activeTab === 'trading'}
               onClick={() => setActiveTab('trading')}
               icon={<Bot className="w-4 h-4" />}
               label="Trading"
+              shortcutKey="2"
             />
             <TabButton
               active={activeTab === 'accounts'}
               onClick={() => setActiveTab('accounts')}
               icon={<Wallet className="w-4 h-4" />}
               label="Accounts"
+              shortcutKey="3"
             />
             <TabButton
               active={activeTab === 'traders'}
               onClick={() => setActiveTab('traders')}
               icon={<Users className="w-4 h-4" />}
               label="Traders"
+              shortcutKey="4"
             />
             <TabButton
               active={activeTab === 'positions'}
               onClick={() => setActiveTab('positions')}
               icon={<Briefcase className="w-4 h-4" />}
               label="Positions"
+              shortcutKey="5"
             />
             <TabButton
               active={activeTab === 'performance'}
               onClick={() => setActiveTab('performance')}
               icon={<BarChart3 className="w-4 h-4" />}
               label="Performance"
+              shortcutKey="6"
             />
             <TabButton
               active={activeTab === 'ai'}
               onClick={() => setActiveTab('ai')}
               icon={<Brain className="w-4 h-4" />}
               label="AI"
+              shortcutKey="7"
             />
             <TabButton
               active={activeTab === 'settings'}
               onClick={() => setActiveTab('settings')}
               icon={<Settings className="w-4 h-4" />}
               label="Settings"
+              shortcutKey="8"
             />
           </div>
         </div>
@@ -507,7 +562,7 @@ function App() {
               <div className="flex items-center justify-center py-12">
                 <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
               </div>
-            ) : opportunities.length === 0 ? (
+            ) : displayOpportunities.length === 0 ? (
               <div className="text-center py-12">
                 <AlertCircle className="w-12 h-12 text-gray-600 mx-auto mb-4" />
                 <p className="text-gray-400">No arbitrage opportunities found</p>
@@ -518,7 +573,7 @@ function App() {
             ) : (
               <>
                 <div className="space-y-4">
-                  {opportunities.map((opp) => (
+                  {displayOpportunities.map((opp) => (
                     <OpportunityCard
                       key={opp.id}
                       opportunity={opp}
@@ -726,6 +781,13 @@ function App() {
         onNavigateToAI={handleNavigateToAI}
         onOpenCopilot={handleOpenCopilot}
       />
+
+      {/* Keyboard Shortcuts Help Modal */}
+      <KeyboardShortcutsHelp
+        isOpen={shortcutsHelpOpen}
+        onClose={() => setShortcutsHelpOpen(false)}
+        shortcuts={shortcuts}
+      />
     </div>
   )
 }
@@ -748,12 +810,14 @@ function TabButton({
   active,
   onClick,
   icon,
-  label
+  label,
+  shortcutKey
 }: {
   active: boolean
   onClick: () => void
   icon: React.ReactNode
   label: string
+  shortcutKey?: string
 }) {
   return (
     <button
@@ -764,9 +828,15 @@ function TabButton({
           ? "border-green-500 text-white"
           : "border-transparent text-gray-500 hover:text-gray-300"
       )}
+      title={shortcutKey ? `${label} (${shortcutKey})` : label}
     >
       {icon}
       {label}
+      {shortcutKey && (
+        <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-[#1a1a1a] rounded text-gray-600 border border-gray-800">
+          {shortcutKey}
+        </kbd>
+      )}
     </button>
   )
 }

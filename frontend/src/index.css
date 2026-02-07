@@ -2,16 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* Dark theme (default) */
+:root,
+.theme-dark {
   --bg-primary: #0a0a0a;
   --bg-secondary: #141414;
   --bg-tertiary: #1a1a1a;
+  --bg-hover: #222222;
   --text-primary: #ffffff;
   --text-secondary: #a0a0a0;
+  --text-muted: #6b7280;
+  --border-primary: #1f2937;
+  --border-secondary: #374151;
   --accent-green: #22c55e;
   --accent-red: #ef4444;
   --accent-blue: #3b82f6;
   --accent-yellow: #eab308;
+  --accent-purple: #a855f7;
+  --scrollbar-track: #141414;
+  --scrollbar-thumb: #333;
+  --scrollbar-thumb-hover: #444;
+}
+
+/* Light theme */
+.theme-light {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f1f3;
+  --bg-hover: #e5e7eb;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --border-primary: #e5e7eb;
+  --border-secondary: #d1d5db;
+  --accent-green: #16a34a;
+  --accent-red: #dc2626;
+  --accent-blue: #2563eb;
+  --accent-yellow: #ca8a04;
+  --accent-purple: #9333ea;
+  --scrollbar-track: #f0f1f3;
+  --scrollbar-thumb: #c4c7cc;
+  --scrollbar-thumb-hover: #a1a5ab;
+}
+
+/* Light theme overrides for Tailwind hardcoded colors */
+.theme-light .bg-\[\#0a0a0a\] { background-color: var(--bg-primary) !important; }
+.theme-light .bg-\[\#141414\] { background-color: var(--bg-secondary) !important; }
+.theme-light .bg-\[\#1a1a1a\] { background-color: var(--bg-tertiary) !important; }
+.theme-light .bg-\[\#0a0a0a\]\/80 { background-color: rgba(248, 249, 250, 0.8) !important; }
+.theme-light .bg-\[\#0f0f0f\] { background-color: var(--bg-secondary) !important; }
+.theme-light .border-gray-800 { border-color: var(--border-primary) !important; }
+.theme-light .border-gray-700 { border-color: var(--border-secondary) !important; }
+.theme-light .text-white { color: var(--text-primary) !important; }
+.theme-light .text-gray-300 { color: var(--text-secondary) !important; }
+.theme-light .text-gray-400 { color: var(--text-secondary) !important; }
+.theme-light .text-gray-500 { color: var(--text-muted) !important; }
+.theme-light .text-gray-600 { color: var(--text-muted) !important; }
+.theme-light .hover\:bg-gray-700:hover { background-color: var(--bg-hover) !important; }
+.theme-light .hover\:text-gray-300:hover { color: var(--text-primary) !important; }
+.theme-light .hover\:text-white:hover { color: var(--text-primary) !important; }
+.theme-light input,
+.theme-light select,
+.theme-light textarea {
+  background-color: var(--bg-tertiary) !important;
+  border-color: var(--border-primary) !important;
+  color: var(--text-primary) !important;
 }
 
 body {
@@ -19,6 +74,7 @@ body {
   background-color: var(--bg-primary);
   color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* Custom scrollbar */
@@ -28,14 +84,30 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Data freshness animation */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+}
+
+/* Flash animation for simulated data updates */
+@keyframes flash-update {
+  0% { background-color: rgba(34, 197, 94, 0.1); }
+  100% { background-color: transparent; }
+}
+
+.flash-update {
+  animation: flash-update 0.5s ease-out;
 }

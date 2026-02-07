@@ -9,12 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
     "@tanstack/react-query": "^5.17.0",
     "axios": "^1.6.0",
+    "clsx": "^2.1.0",
+    "jotai": "^2.17.1",
     "lucide-react": "^0.303.0",
-    "clsx": "^2.1.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^3.7.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

@@ -14,6 +14,7 @@ import {
   ArrowDownRight
 } from 'lucide-react'
 import clsx from 'clsx'
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
   getSimulationAccounts,
   getAccountTrades,
@@ -599,7 +600,6 @@ function TradeRow({
   )
 }
 
-// Simple ASCII-style chart component
 function SimplePnlChart({
   data,
   viewMode
@@ -612,94 +612,84 @@ function SimplePnlChart({
   const showSim = viewMode === 'simulation' || viewMode === 'all'
   const showAuto = viewMode === 'live' || viewMode === 'all'
 
-  const allValues = data.flatMap(d => [
-    ...(showSim ? [d.cumSimPnl] : []),
-    ...(showAuto ? [d.cumAutoPnl] : [])
-  ])
-  const maxVal = Math.max(...allValues, 0)
-  const minVal = Math.min(...allValues, 0)
-  const range = maxVal - minVal || 1
-
-  const chartHeight = 200
-
-  const getY = (val: number) => {
-    return chartHeight - ((val - minVal) / range) * chartHeight
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr)
+    return `${date.getMonth() + 1}/${date.getDate()}`
   }
 
-  const zeroY = getY(0)
-
-  // Generate path for simulation P&L
-  const simPath = showSim ? data.map((d, i) => {
-    const x = (i / (data.length - 1 || 1)) * 100
-    const y = getY(d.cumSimPnl)
-    return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
-  }).join(' ') : ''
-
-  // Generate path for auto trader P&L
-  const autoPath = showAuto ? data.map((d, i) => {
-    const x = (i / (data.length - 1 || 1)) * 100
-    const y = getY(d.cumAutoPnl)
-    return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
-  }).join(' ') : ''
+  const formatDollar = (value: number) => {
+    return `$${value.toFixed(2)}`
+  }
 
   return (
-    <div className="relative h-full">
-      <svg viewBox={`0 0 100 ${chartHeight}`} className="w-full h-full" preserveAspectRatio="none">
-        {/* Zero line */}
-        <line
-          x1="0"
-          y1={zeroY}
-          x2="100"
-          y2={zeroY}
-          stroke="#374151"
-          strokeWidth="0.5"
-          strokeDasharray="2,2"
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+        <defs>
+          <linearGradient id="simGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="autoGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3} />
+            <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+        <XAxis
+          dataKey="date"
+          tickFormatter={formatDate}
+          stroke="#6b7280"
+          tick={{ fontSize: 11 }}
+          axisLine={{ stroke: '#374151' }}
         />
-
-        {/* Simulation P&L line */}
-        {showSim && simPath && (
-          <path
-            d={simPath}
-            fill="none"
-            stroke="#3b82f6"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
-
-        {/* Auto trader P&L line */}
-        {showAuto && autoPath && (
-          <path
-            d={autoPath}
-            fill="none"
-            stroke="#a855f7"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
-      </svg>
-
-      {/* Legend */}
-      <div className="absolute bottom-0 left-0 flex gap-4 text-xs">
+        <YAxis
+          tickFormatter={formatDollar}
+          stroke="#6b7280"
+          tick={{ fontSize: 11 }}
+          axisLine={{ stroke: '#374151' }}
+          width={65}
+        />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #374151',
+            borderRadius: '8px',
+            fontSize: '12px',
+            color: '#fff',
+          }}
+          labelFormatter={(label) => `Date: ${label}`}
+          formatter={(value: any, name: any) => [
+            typeof value === 'number' ? `$${value.toFixed(2)}` : '$0.00',
+            name === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'
+          ]}
+        />
+        <Legend
+          formatter={(value) => value === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'}
+          wrapperStyle={{ fontSize: '12px' }}
+        />
         {showSim && (
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-blue-500" />
-            <span className="text-gray-400">Paper: ${data[data.length - 1]?.cumSimPnl.toFixed(2)}</span>
-          </div>
+          <Area
+            type="monotone"
+            dataKey="cumSimPnl"
+            stroke="#3b82f6"
+            strokeWidth={2}
+            fill="url(#simGradient)"
+            dot={false}
+            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: '#1a1a1a' }}
+          />
         )}
         {showAuto && (
-          <div className="flex items-center gap-1">
-            <div className="w-3 h-0.5 bg-purple-500" />
-            <span className="text-gray-400">Live: ${data[data.length - 1]?.cumAutoPnl.toFixed(2)}</span>
-          </div>
+          <Area
+            type="monotone"
+            dataKey="cumAutoPnl"
+            stroke="#a855f7"
+            strokeWidth={2}
+            fill="url(#autoGradient)"
+            dot={false}
+            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: '#1a1a1a' }}
+          />
         )}
-      </div>
-
-      {/* Y-axis labels */}
-      <div className="absolute top-0 right-0 h-full flex flex-col justify-between text-xs text-gray-500">
-        <span>${maxVal.toFixed(0)}</span>
-        <span>${minVal.toFixed(0)}</span>
-      </div>
-    </div>
+      </AreaChart>
+    </ResponsiveContainer>
   )
 }
