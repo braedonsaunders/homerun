@@ -15,6 +15,7 @@ IMPORTANT: This executes REAL trades with REAL money.
 """
 
 import asyncio
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -94,6 +95,46 @@ class AutoTraderConfig:
     circuit_breaker_losses: int = 3  # Pause after N consecutive losses
     circuit_breaker_duration_minutes: int = 30
 
+    # Settlement time filtering
+    max_end_date_days: Optional[int] = 30  # Skip markets settling more than N days out (None = no limit)
+    min_end_date_days: Optional[int] = None  # Skip markets settling sooner than N days (None = no limit)
+    prefer_near_settlement: bool = True  # Boost score for markets settling sooner
+
+    # Opportunity prioritization
+    priority_method: str = "composite"  # "roi", "annualized_roi", "composite"
+    settlement_weight: float = 0.3  # Weight for settlement proximity in composite score (0-1)
+    roi_weight: float = 0.5  # Weight for ROI in composite score (0-1)
+    liquidity_weight: float = 0.1  # Weight for liquidity in composite score (0-1)
+    risk_weight: float = 0.1  # Weight for (inverse) risk in composite score (0-1)
+
+    # Event concentration limits
+    max_trades_per_event: int = 3  # Max trades on markets within same event
+    max_exposure_per_event_usd: float = 50.0  # Max total $ exposure per event
+
+    # Exclusion filters
+    excluded_categories: list[str] = field(default_factory=list)  # e.g. ["Politics"]
+    excluded_keywords: list[str] = field(default_factory=list)  # e.g. ["presidential", "2028"]
+    excluded_event_slugs: list[str] = field(default_factory=list)  # e.g. ["will-donald-trump-win"]
+
+    # Volume filter
+    min_volume_usd: float = 0.0  # Minimum market trading volume
+
+    # AI: Resolution analysis gate (Option B)
+    ai_resolution_gate: bool = True  # Require resolution analysis before trading
+    ai_max_resolution_risk: float = 0.5  # Block if resolution risk_score exceeds this
+    ai_min_resolution_clarity: float = 0.5  # Block if clarity_score below this
+    ai_resolution_block_avoid: bool = True  # Hard block if recommendation is "avoid"
+    ai_resolution_model: Optional[str] = None  # LLM model override (None = default gpt-4o-mini)
+    ai_skip_on_analysis_failure: bool = False  # If True, skip trade when analysis fails; if False, allow trade through
+
+    # AI: Opportunity judge position sizing (Option C)
+    ai_position_sizing: bool = True  # Use AI judge score to scale position sizes
+    ai_min_score_to_trade: float = 0.0  # Hard floor: skip if overall_score below this (0 = no floor)
+    ai_score_size_multiplier: bool = True  # Scale position size by AI score (e.g. 0.8 score = 80% size)
+    ai_score_boost_threshold: float = 0.85  # Boost size by 1.2x if score exceeds this
+    ai_score_boost_multiplier: float = 1.2  # How much to boost high-confidence trades
+    ai_judge_model: Optional[str] = None  # LLM model override (None = default gpt-4o-mini)
+
 
 @dataclass
 class TradeRecord:
@@ -113,6 +154,14 @@ class TradeRecord:
     status: str = "pending"  # pending, open, resolved_win, resolved_loss, failed
     order_ids: list[str] = field(default_factory=list)
     mode: AutoTraderMode = AutoTraderMode.PAPER
+    event_id: Optional[str] = None
+    days_to_settlement: Optional[float] = None
+    composite_score: Optional[float] = None
+    ai_resolution_recommendation: Optional[str] = None  # safe/caution/avoid
+    ai_resolution_risk: Optional[float] = None
+    ai_judge_score: Optional[float] = None  # overall_score from opportunity judge
+    ai_judge_recommendation: Optional[str] = None  # strong_execute/execute/review/skip/strong_skip
+    ai_size_adjustment: Optional[float] = None  # multiplier applied from AI scoring
 
 
 @dataclass
@@ -156,6 +205,11 @@ class AutoTrader:
         self._execution_lock = asyncio.Lock()
         self._callbacks: list[Callable] = []
         self._daily_reset_date = datetime.utcnow().date()
+
+        # AI integration caches
+        self._resolution_cache: dict[str, dict] = {}  # market_id -> resolution analysis
+        self._judge_cache: dict[str, dict] = {}  # opportunity_id -> judge result
+        self._ai_available: Optional[bool] = None  # Lazily checked
 
     def configure(self, **kwargs):
         """Update configuration"""
@@ -230,8 +284,210 @@ class AutoTrader:
 
         return True, ""
 
-    def _should_trade_opportunity(self, opp: ArbitrageOpportunity) -> tuple[bool, str]:
-        """Determine if an opportunity should be traded"""
+    def _days_until_settlement(self, opp: ArbitrageOpportunity) -> Optional[float]:
+        """Calculate days until market settlement/resolution.
+
+        Returns None if no end/resolution date is available.
+        """
+        end_date = opp.resolution_date
+        if end_date is None:
+            return None
+        now = datetime.utcnow()
+        if end_date <= now:
+            return 0.0
+        return (end_date - now).total_seconds() / 86400.0
+
+    def _annualized_roi(self, roi_percent: float, days_to_settlement: Optional[float]) -> float:
+        """Convert raw ROI to annualized ROI based on settlement time.
+
+        A 5% ROI in 7 days is much better than 5% in 365 days.
+        If settlement date is unknown, returns raw ROI as-is.
+        """
+        if days_to_settlement is None or days_to_settlement <= 0:
+            return roi_percent
+        # Annualize: (1 + roi)^(365/days) - 1, capped to avoid absurd values
+        periods_per_year = 365.0 / max(days_to_settlement, 0.5)
+        try:
+            annualized = (math.pow(1 + roi_percent / 100, periods_per_year) - 1) * 100
+        except (OverflowError, ValueError):
+            annualized = 999999.0
+        return min(annualized, 999999.0)  # Cap at a reasonable max
+
+    def _settlement_score(self, days_to_settlement: Optional[float]) -> float:
+        """Score settlement proximity from 0.0 (far away) to 1.0 (imminent).
+
+        Uses exponential decay: markets settling within a week score ~1.0,
+        markets settling in 30+ days score low, 365+ days score near 0.
+        """
+        if days_to_settlement is None:
+            return 0.3  # Unknown settlement gets a neutral-low score
+        if days_to_settlement <= 0:
+            return 1.0  # Already past resolution
+        # Exponential decay with half-life of ~14 days
+        return math.exp(-days_to_settlement / 20.0)
+
+    def _composite_score(self, opp: ArbitrageOpportunity) -> float:
+        """Calculate a composite priority score for an opportunity.
+
+        Combines ROI, settlement proximity, liquidity, and risk into a
+        single score using configurable weights. Higher is better.
+        """
+        days = self._days_until_settlement(opp)
+
+        # ROI component (normalized: 10% ROI -> 1.0 score)
+        if self.config.priority_method == "annualized_roi":
+            roi_score = min(self._annualized_roi(opp.roi_percent, days) / 10.0, 10.0)
+        else:
+            roi_score = min(opp.roi_percent / 10.0, 10.0)
+
+        # Settlement component
+        settle_score = self._settlement_score(days)
+
+        # Liquidity component (normalized: $50k -> 1.0 score)
+        liq_score = min(opp.min_liquidity / 50000.0, 1.0)
+
+        # Risk component (inverted: low risk = high score)
+        risk_score = 1.0 - opp.risk_score
+
+        composite = (
+            self.config.roi_weight * roi_score
+            + self.config.settlement_weight * settle_score
+            + self.config.liquidity_weight * liq_score
+            + self.config.risk_weight * risk_score
+        )
+
+        return composite
+
+    def _get_event_trade_count(self, event_id: Optional[str]) -> int:
+        """Count how many open/pending trades exist for a given event."""
+        if not event_id:
+            return 0
+        return sum(
+            1 for t in self._trades.values()
+            if t.status in ("open", "pending") and t.event_id == event_id
+        )
+
+    def _get_event_exposure(self, event_id: Optional[str]) -> float:
+        """Sum total cost of open/pending trades for a given event."""
+        if not event_id:
+            return 0.0
+        return sum(
+            t.total_cost for t in self._trades.values()
+            if t.status in ("open", "pending") and t.event_id == event_id
+        )
+
+    def _is_ai_available(self) -> bool:
+        """Check if the AI subsystem is initialized and usable."""
+        if self._ai_available is not None:
+            return self._ai_available
+        try:
+            from services.ai import get_llm_manager
+            manager = get_llm_manager()
+            self._ai_available = manager.is_available()
+        except Exception:
+            self._ai_available = False
+        return self._ai_available
+
+    async def _get_resolution_analysis(self, opp: ArbitrageOpportunity) -> Optional[dict]:
+        """Get resolution analysis for an opportunity's markets, using cache.
+
+        Checks the in-memory cache first, then the DB-level 24h cache inside
+        the resolution analyzer. Only the first market's ID is used as the
+        cache key since most opportunities have a primary market.
+
+        Returns the aggregate analysis dict, or None if analysis fails / AI unavailable.
+        """
+        if not self._is_ai_available():
+            return None
+
+        # Use event_id or first market id as cache key
+        cache_key = opp.event_id
+        if not cache_key and opp.markets:
+            cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
+        if not cache_key:
+            return None
+
+        # Check in-memory cache
+        if cache_key in self._resolution_cache:
+            return self._resolution_cache[cache_key]
+
+        try:
+            from services.ai.resolution_analyzer import resolution_analyzer
+
+            result = await resolution_analyzer.analyze_opportunity_markets(
+                opportunity=opp,
+                model=self.config.ai_resolution_model,
+            )
+            self._resolution_cache[cache_key] = result
+            logger.info(
+                f"Resolution analysis for {opp.title[:40]}: "
+                f"clarity={result.get('overall_clarity', '?'):.2f}, "
+                f"risk={result.get('overall_risk', '?'):.2f}, "
+                f"rec={result.get('overall_recommendation', '?')}"
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Resolution analysis failed for {cache_key}: {e}")
+            return None
+
+    async def _get_ai_judgment(self, opp: ArbitrageOpportunity, resolution_analysis: Optional[dict] = None) -> Optional[dict]:
+        """Get AI judge score for an opportunity, using cache.
+
+        Returns the judgment dict, or None if unavailable.
+        """
+        if not self._is_ai_available():
+            return None
+
+        # Check in-memory cache
+        if opp.id in self._judge_cache:
+            return self._judge_cache[opp.id]
+
+        try:
+            from services.ai.opportunity_judge import opportunity_judge
+
+            result = await opportunity_judge.judge_opportunity(
+                opportunity=opp,
+                resolution_analysis=resolution_analysis,
+                model=self.config.ai_judge_model,
+            )
+            self._judge_cache[opp.id] = result
+            logger.info(
+                f"AI judgment for {opp.title[:40]}: "
+                f"score={result.get('overall_score', '?'):.2f}, "
+                f"rec={result.get('recommendation', '?')}"
+            )
+            return result
+        except Exception as e:
+            logger.error(f"AI judgment failed for {opp.id}: {e}")
+            return None
+
+    def _matches_exclusion_keywords(self, opp: ArbitrageOpportunity) -> Optional[str]:
+        """Check if opportunity matches any exclusion keyword. Returns matched keyword or None."""
+        if not self.config.excluded_keywords:
+            return None
+        text = f"{opp.title} {opp.description} {opp.event_title or ''}".lower()
+        for kw in self.config.excluded_keywords:
+            if kw.lower() in text:
+                return kw
+        return None
+
+    def _matches_exclusion_slug(self, opp: ArbitrageOpportunity) -> Optional[str]:
+        """Check if opportunity's event slug matches exclusion list."""
+        if not self.config.excluded_event_slugs:
+            return None
+        for market in (opp.markets or []):
+            slug = market.get("slug", "")
+            for excl_slug in self.config.excluded_event_slugs:
+                if excl_slug.lower() in slug.lower():
+                    return excl_slug
+        return None
+
+    async def _should_trade_opportunity(self, opp: ArbitrageOpportunity) -> tuple[bool, str]:
+        """Determine if an opportunity should be traded.
+
+        This is async because the resolution analysis gate requires an LLM call
+        (cached after first call per market).
+        """
 
         # Already processed
         if opp.id in self._processed_opportunities:
@@ -259,6 +515,46 @@ class AutoTrader:
         if opp.strategy not in self.config.enabled_strategies:
             return False, f"Strategy {opp.strategy.value} not enabled"
 
+        # === EXCLUSION FILTERS ===
+
+        # Category exclusion
+        category = getattr(opp, "category", None)
+        if category and self.config.excluded_categories:
+            if category.lower() in [c.lower() for c in self.config.excluded_categories]:
+                return False, f"Category '{category}' is excluded"
+
+        # Keyword exclusion
+        matched_kw = self._matches_exclusion_keywords(opp)
+        if matched_kw:
+            return False, f"Matches excluded keyword '{matched_kw}'"
+
+        # Slug exclusion
+        matched_slug = self._matches_exclusion_slug(opp)
+        if matched_slug:
+            return False, f"Matches excluded slug '{matched_slug}'"
+
+        # === SETTLEMENT TIME FILTERS ===
+
+        days_to_settle = self._days_until_settlement(opp)
+
+        # Filter out markets that settle too far in the future
+        if self.config.max_end_date_days is not None and days_to_settle is not None:
+            if days_to_settle > self.config.max_end_date_days:
+                return (
+                    False,
+                    f"Settles in {days_to_settle:.0f} days, max allowed is {self.config.max_end_date_days}",
+                )
+
+        # Filter out markets that settle too soon (if configured)
+        if self.config.min_end_date_days is not None and days_to_settle is not None:
+            if days_to_settle < self.config.min_end_date_days:
+                return (
+                    False,
+                    f"Settles in {days_to_settle:.0f} days, min required is {self.config.min_end_date_days}",
+                )
+
+        # === STANDARD FILTERS ===
+
         # Check ROI threshold
         if opp.roi_percent < self.config.min_roi_percent:
             return False, f"ROI {opp.roi_percent:.2f}% below threshold"
@@ -268,7 +564,6 @@ class AutoTrader:
             return False, f"Risk score {opp.risk_score:.2f} above threshold"
 
         # Apply category-specific liquidity adjustments
-        category = getattr(opp, "category", None)
         adjusted_min_liquidity = (
             category_buffer_service.adjust_min_liquidity(
                 self.config.min_liquidity_usd, category
@@ -283,6 +578,12 @@ class AutoTrader:
                 False,
                 f"Liquidity ${opp.min_liquidity:.0f} below threshold (${adjusted_min_liquidity:.0f} for {category or 'default'})",
             )
+
+        # Check volume filter
+        if self.config.min_volume_usd > 0:
+            opp_volume = sum(m.get("volume", 0) for m in (opp.markets or []))
+            if opp_volume < self.config.min_volume_usd:
+                return False, f"Volume ${opp_volume:.0f} below threshold ${self.config.min_volume_usd:.0f}"
 
         # For miracle strategy, check impossibility score
         if opp.strategy == StrategyType.MIRACLE:
@@ -305,6 +606,25 @@ class AutoTrader:
                     f"threshold ${self.config.min_guaranteed_profit:.4f}"
                 )
 
+        # === EVENT CONCENTRATION LIMITS ===
+
+        event_id = opp.event_id
+        if event_id and self.config.max_trades_per_event > 0:
+            event_trades = self._get_event_trade_count(event_id)
+            if event_trades >= self.config.max_trades_per_event:
+                return (
+                    False,
+                    f"Event already has {event_trades} trades (max {self.config.max_trades_per_event})",
+                )
+
+        if event_id and self.config.max_exposure_per_event_usd > 0:
+            event_exposure = self._get_event_exposure(event_id)
+            if event_exposure >= self.config.max_exposure_per_event_usd:
+                return (
+                    False,
+                    f"Event exposure ${event_exposure:.2f} exceeds max ${self.config.max_exposure_per_event_usd:.2f}",
+                )
+
         # Check max concurrent positions
         open_positions = len([t for t in self._trades.values() if t.status == "open"])
         if open_positions >= self.config.max_concurrent_positions:
@@ -312,6 +632,44 @@ class AutoTrader:
                 False,
                 f"Max concurrent positions ({self.config.max_concurrent_positions}) reached",
             )
+
+        # === AI RESOLUTION ANALYSIS GATE (Option B) ===
+        # Run after all cheap filters pass to minimize LLM costs.
+        # Results are cached per market (24h TTL in analyzer + in-memory here).
+
+        if self.config.ai_resolution_gate and self._is_ai_available():
+            analysis = await self._get_resolution_analysis(opp)
+
+            if analysis is None:
+                # AI unavailable or analysis failed
+                if self.config.ai_skip_on_analysis_failure:
+                    return False, "Resolution analysis unavailable (configured to skip)"
+                # else: allow trade through (fail-open)
+            else:
+                rec = analysis.get("overall_recommendation", "caution")
+                risk = analysis.get("overall_risk", 0.5)
+                clarity = analysis.get("overall_clarity", 0.5)
+
+                # Hard block on "avoid" recommendation
+                if self.config.ai_resolution_block_avoid and rec == "avoid":
+                    return (
+                        False,
+                        f"AI resolution analysis: AVOID (clarity={clarity:.2f}, risk={risk:.2f})",
+                    )
+
+                # Check risk threshold
+                if risk > self.config.ai_max_resolution_risk:
+                    return (
+                        False,
+                        f"AI resolution risk {risk:.2f} exceeds max {self.config.ai_max_resolution_risk}",
+                    )
+
+                # Check clarity threshold
+                if clarity < self.config.ai_min_resolution_clarity:
+                    return (
+                        False,
+                        f"AI resolution clarity {clarity:.2f} below min {self.config.ai_min_resolution_clarity}",
+                    )
 
         return True, "Opportunity meets criteria"
 
@@ -412,7 +770,63 @@ class AutoTrader:
             )
         position_size *= tier.size_multiplier
 
-        # Apply limits after tier/category adjustments
+        # === AI OPPORTUNITY JUDGE POSITION SIZING (Option C) ===
+        # Run the AI judge to get a quality score, then adjust position size.
+        # This is non-blocking in the sense that if AI is unavailable, we
+        # proceed with the base size.
+        ai_judge_result = None
+        ai_size_adjustment = 1.0
+
+        if self.config.ai_position_sizing and self._is_ai_available():
+            # Pass resolution analysis if we already have it from the gate
+            cache_key = opp.event_id
+            if not cache_key and opp.markets:
+                cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
+            resolution_data = self._resolution_cache.get(cache_key) if cache_key else None
+
+            ai_judge_result = await self._get_ai_judgment(opp, resolution_analysis=resolution_data)
+
+            if ai_judge_result:
+                ai_score = ai_judge_result.get("overall_score", 0.5)
+                ai_rec = ai_judge_result.get("recommendation", "review")
+
+                # Hard floor: skip if score too low
+                if self.config.ai_min_score_to_trade > 0 and ai_score < self.config.ai_min_score_to_trade:
+                    logger.info(
+                        f"AI judge blocked trade: score {ai_score:.2f} < min {self.config.ai_min_score_to_trade}"
+                    )
+                    trade = TradeRecord(
+                        id=trade_id,
+                        opportunity_id=opp.id,
+                        strategy=opp.strategy,
+                        executed_at=datetime.utcnow(),
+                        positions=opp.positions_to_take,
+                        total_cost=0,
+                        expected_profit=0,
+                        status="failed",
+                        mode=self.config.mode,
+                        ai_judge_score=ai_score,
+                        ai_judge_recommendation=ai_rec,
+                    )
+                    self._trades[trade_id] = trade
+                    self._processed_opportunities.add(opp.id)
+                    return trade
+
+                # Scale position size by AI score
+                if self.config.ai_score_size_multiplier:
+                    ai_size_adjustment = ai_score  # 0.8 score = 80% of base size
+
+                    # Boost high-confidence trades
+                    if ai_score >= self.config.ai_score_boost_threshold:
+                        ai_size_adjustment *= self.config.ai_score_boost_multiplier
+
+                    position_size *= ai_size_adjustment
+                    logger.info(
+                        f"AI size adjustment: {ai_size_adjustment:.2f}x "
+                        f"(score={ai_score:.2f}, rec={ai_rec})"
+                    )
+
+        # Apply limits after tier/category/AI adjustments
         position_size = min(position_size, self.config.max_position_size_usd)
         position_size = (
             max(position_size, settings.MIN_ORDER_SIZE_USD) if position_size > 0 else 0
@@ -486,6 +900,14 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"Failed to record tier assignment: {e}")
 
+        days = self._days_until_settlement(opp)
+
+        # Collect resolution analysis info for the trade record
+        res_cache_key = opp.event_id
+        if not res_cache_key and opp.markets:
+            res_cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
+        res_data = self._resolution_cache.get(res_cache_key) if res_cache_key else None
+
         trade = TradeRecord(
             id=trade_id,
             opportunity_id=opp.id,
@@ -498,6 +920,14 @@ class AutoTrader:
             capture_ratio=opp.capture_ratio,
             mispricing_type=opp.mispricing_type.value if opp.mispricing_type else None,
             mode=self.config.mode,
+            event_id=opp.event_id,
+            days_to_settlement=days,
+            composite_score=self._composite_score(opp),
+            ai_resolution_recommendation=res_data.get("overall_recommendation") if res_data else None,
+            ai_resolution_risk=res_data.get("overall_risk") if res_data else None,
+            ai_judge_score=ai_judge_result.get("overall_score") if ai_judge_result else None,
+            ai_judge_recommendation=ai_judge_result.get("recommendation") if ai_judge_result else None,
+            ai_size_adjustment=ai_size_adjustment if ai_size_adjustment != 1.0 else None,
         )
 
         guarantee_str = ""
@@ -612,14 +1042,48 @@ class AutoTrader:
         return trade
 
     async def _process_opportunities(self, opportunities: list[ArbitrageOpportunity]):
-        """Process a batch of opportunities"""
+        """Process a batch of opportunities, sorted by priority method."""
         self.stats.opportunities_seen += len(opportunities)
 
-        for opp in opportunities:
-            should_trade, reason = self._should_trade_opportunity(opp)
+        # Sort opportunities by configured priority method
+        if self.config.priority_method == "composite":
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: self._composite_score(o),
+                reverse=True,
+            )
+        elif self.config.priority_method == "annualized_roi":
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: self._annualized_roi(
+                    o.roi_percent, self._days_until_settlement(o)
+                ),
+                reverse=True,
+            )
+        else:
+            # Default: raw ROI
+            sorted_opps = sorted(
+                opportunities,
+                key=lambda o: o.roi_percent,
+                reverse=True,
+            )
+
+        for opp in sorted_opps:
+            should_trade, reason = await self._should_trade_opportunity(opp)
 
             if should_trade:
-                logger.info(f"Auto trading opportunity: {opp.title[:50]}...")
+                days = self._days_until_settlement(opp)
+                settle_str = f" | Settles: {days:.0f}d" if days is not None else ""
+                score_str = ""
+                if self.config.priority_method == "composite":
+                    score_str = f" | Score: {self._composite_score(opp):.3f}"
+                elif self.config.priority_method == "annualized_roi":
+                    ann_roi = self._annualized_roi(opp.roi_percent, days)
+                    score_str = f" | Ann.ROI: {ann_roi:.1f}%"
+
+                logger.info(
+                    f"Auto trading opportunity: {opp.title[:50]}...{settle_str}{score_str}"
+                )
 
                 if self.config.require_confirmation:
                     # Would need to implement confirmation mechanism
@@ -758,6 +1222,39 @@ class AutoTrader:
             "paper_account_capital": self.config.paper_account_capital,
             "min_guaranteed_profit": self.config.min_guaranteed_profit,
             "use_profit_guarantee": self.config.use_profit_guarantee,
+            # Settlement time
+            "max_end_date_days": self.config.max_end_date_days,
+            "min_end_date_days": self.config.min_end_date_days,
+            "prefer_near_settlement": self.config.prefer_near_settlement,
+            # Priority/scoring
+            "priority_method": self.config.priority_method,
+            "settlement_weight": self.config.settlement_weight,
+            "roi_weight": self.config.roi_weight,
+            "liquidity_weight": self.config.liquidity_weight,
+            "risk_weight": self.config.risk_weight,
+            # Event concentration
+            "max_trades_per_event": self.config.max_trades_per_event,
+            "max_exposure_per_event_usd": self.config.max_exposure_per_event_usd,
+            # Exclusions
+            "excluded_categories": self.config.excluded_categories,
+            "excluded_keywords": self.config.excluded_keywords,
+            "excluded_event_slugs": self.config.excluded_event_slugs,
+            # Volume
+            "min_volume_usd": self.config.min_volume_usd,
+            # AI: Resolution analysis gate
+            "ai_resolution_gate": self.config.ai_resolution_gate,
+            "ai_max_resolution_risk": self.config.ai_max_resolution_risk,
+            "ai_min_resolution_clarity": self.config.ai_min_resolution_clarity,
+            "ai_resolution_block_avoid": self.config.ai_resolution_block_avoid,
+            "ai_resolution_model": self.config.ai_resolution_model,
+            "ai_skip_on_analysis_failure": self.config.ai_skip_on_analysis_failure,
+            # AI: Opportunity judge position sizing
+            "ai_position_sizing": self.config.ai_position_sizing,
+            "ai_min_score_to_trade": self.config.ai_min_score_to_trade,
+            "ai_score_size_multiplier": self.config.ai_score_size_multiplier,
+            "ai_score_boost_threshold": self.config.ai_score_boost_threshold,
+            "ai_score_boost_multiplier": self.config.ai_score_boost_multiplier,
+            "ai_judge_model": self.config.ai_judge_model,
         }
 
     def get_trades(self, limit: int = 100) -> list[dict]:
@@ -780,6 +1277,14 @@ class AutoTrader:
                 "mispricing_type": t.mispricing_type,
                 "status": t.status,
                 "mode": t.mode.value,
+                "event_id": t.event_id,
+                "days_to_settlement": t.days_to_settlement,
+                "composite_score": t.composite_score,
+                "ai_resolution_recommendation": t.ai_resolution_recommendation,
+                "ai_resolution_risk": t.ai_resolution_risk,
+                "ai_judge_score": t.ai_judge_score,
+                "ai_judge_recommendation": t.ai_judge_recommendation,
+                "ai_size_adjustment": t.ai_size_adjustment,
             }
             for t in trades
         ]

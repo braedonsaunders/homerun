@@ -35,6 +35,98 @@ class AutoTraderConfigRequest(BaseModel):
         None, ge=100, description="Starting capital for paper trading"
     )
 
+    # Settlement time filters
+    max_end_date_days: Optional[int] = Field(
+        None, ge=1, description="Max days until settlement (skip markets further out). Set to null to disable."
+    )
+    min_end_date_days: Optional[int] = Field(
+        None, ge=0, description="Min days until settlement (skip markets settling too soon)"
+    )
+    prefer_near_settlement: Optional[bool] = Field(
+        None, description="Boost score for markets settling sooner"
+    )
+
+    # Opportunity prioritization
+    priority_method: Optional[str] = Field(
+        None, description="How to rank opportunities: 'roi', 'annualized_roi', or 'composite'"
+    )
+    settlement_weight: Optional[float] = Field(
+        None, ge=0, le=1, description="Weight for settlement proximity in composite score"
+    )
+    roi_weight: Optional[float] = Field(
+        None, ge=0, le=1, description="Weight for ROI in composite score"
+    )
+    liquidity_weight: Optional[float] = Field(
+        None, ge=0, le=1, description="Weight for liquidity in composite score"
+    )
+    risk_weight: Optional[float] = Field(
+        None, ge=0, le=1, description="Weight for (inverse) risk in composite score"
+    )
+
+    # Event concentration limits
+    max_trades_per_event: Optional[int] = Field(
+        None, ge=1, description="Max trades on markets within the same event"
+    )
+    max_exposure_per_event_usd: Optional[float] = Field(
+        None, ge=0, description="Max total $ exposure per event"
+    )
+
+    # Exclusion filters
+    excluded_categories: Optional[list[str]] = Field(
+        None, description="Categories to exclude (e.g. ['Politics', 'Sports'])"
+    )
+    excluded_keywords: Optional[list[str]] = Field(
+        None, description="Keywords to exclude from titles/descriptions (e.g. ['presidential', '2028'])"
+    )
+    excluded_event_slugs: Optional[list[str]] = Field(
+        None, description="Event slugs to exclude (partial match)"
+    )
+
+    # Volume filter
+    min_volume_usd: Optional[float] = Field(
+        None, ge=0, description="Minimum market trading volume in USD"
+    )
+
+    # AI: Resolution analysis gate
+    ai_resolution_gate: Optional[bool] = Field(
+        None, description="Require AI resolution analysis before trading (cached per market, 24h TTL)"
+    )
+    ai_max_resolution_risk: Optional[float] = Field(
+        None, ge=0, le=1, description="Block trades if resolution risk exceeds this"
+    )
+    ai_min_resolution_clarity: Optional[float] = Field(
+        None, ge=0, le=1, description="Block trades if resolution clarity is below this"
+    )
+    ai_resolution_block_avoid: Optional[bool] = Field(
+        None, description="Hard block when resolution analysis recommends 'avoid'"
+    )
+    ai_resolution_model: Optional[str] = Field(
+        None, description="LLM model for resolution analysis (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+    )
+    ai_skip_on_analysis_failure: Optional[bool] = Field(
+        None, description="If true, skip trade when analysis fails. If false, allow trade through (fail-open)."
+    )
+
+    # AI: Opportunity judge position sizing
+    ai_position_sizing: Optional[bool] = Field(
+        None, description="Use AI judge score to scale position sizes"
+    )
+    ai_min_score_to_trade: Optional[float] = Field(
+        None, ge=0, le=1, description="Hard floor: skip if AI overall_score below this (0 = disabled)"
+    )
+    ai_score_size_multiplier: Optional[bool] = Field(
+        None, description="Scale position size by AI score (0.8 score = 80% size)"
+    )
+    ai_score_boost_threshold: Optional[float] = Field(
+        None, ge=0, le=1, description="Boost size when AI score exceeds this"
+    )
+    ai_score_boost_multiplier: Optional[float] = Field(
+        None, ge=1.0, le=3.0, description="Multiplier for high-confidence AI trades"
+    )
+    ai_judge_model: Optional[str] = Field(
+        None, description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')"
+    )
+
 
 class AutoTraderStatusResponse(BaseModel):
     mode: str
@@ -153,6 +245,97 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
 
     if config.paper_account_capital is not None:
         updates["paper_account_capital"] = config.paper_account_capital
+
+    # Settlement time filters
+    if config.max_end_date_days is not None:
+        updates["max_end_date_days"] = config.max_end_date_days
+
+    if config.min_end_date_days is not None:
+        updates["min_end_date_days"] = config.min_end_date_days
+
+    if config.prefer_near_settlement is not None:
+        updates["prefer_near_settlement"] = config.prefer_near_settlement
+
+    # Priority/scoring
+    if config.priority_method is not None:
+        valid_methods = ("roi", "annualized_roi", "composite")
+        if config.priority_method not in valid_methods:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid priority_method: {config.priority_method}. Must be one of: {valid_methods}",
+            )
+        updates["priority_method"] = config.priority_method
+
+    if config.settlement_weight is not None:
+        updates["settlement_weight"] = config.settlement_weight
+
+    if config.roi_weight is not None:
+        updates["roi_weight"] = config.roi_weight
+
+    if config.liquidity_weight is not None:
+        updates["liquidity_weight"] = config.liquidity_weight
+
+    if config.risk_weight is not None:
+        updates["risk_weight"] = config.risk_weight
+
+    # Event concentration
+    if config.max_trades_per_event is not None:
+        updates["max_trades_per_event"] = config.max_trades_per_event
+
+    if config.max_exposure_per_event_usd is not None:
+        updates["max_exposure_per_event_usd"] = config.max_exposure_per_event_usd
+
+    # Exclusions
+    if config.excluded_categories is not None:
+        updates["excluded_categories"] = config.excluded_categories
+
+    if config.excluded_keywords is not None:
+        updates["excluded_keywords"] = config.excluded_keywords
+
+    if config.excluded_event_slugs is not None:
+        updates["excluded_event_slugs"] = config.excluded_event_slugs
+
+    # Volume
+    if config.min_volume_usd is not None:
+        updates["min_volume_usd"] = config.min_volume_usd
+
+    # AI: Resolution analysis gate
+    if config.ai_resolution_gate is not None:
+        updates["ai_resolution_gate"] = config.ai_resolution_gate
+
+    if config.ai_max_resolution_risk is not None:
+        updates["ai_max_resolution_risk"] = config.ai_max_resolution_risk
+
+    if config.ai_min_resolution_clarity is not None:
+        updates["ai_min_resolution_clarity"] = config.ai_min_resolution_clarity
+
+    if config.ai_resolution_block_avoid is not None:
+        updates["ai_resolution_block_avoid"] = config.ai_resolution_block_avoid
+
+    if config.ai_resolution_model is not None:
+        updates["ai_resolution_model"] = config.ai_resolution_model
+
+    if config.ai_skip_on_analysis_failure is not None:
+        updates["ai_skip_on_analysis_failure"] = config.ai_skip_on_analysis_failure
+
+    # AI: Opportunity judge position sizing
+    if config.ai_position_sizing is not None:
+        updates["ai_position_sizing"] = config.ai_position_sizing
+
+    if config.ai_min_score_to_trade is not None:
+        updates["ai_min_score_to_trade"] = config.ai_min_score_to_trade
+
+    if config.ai_score_size_multiplier is not None:
+        updates["ai_score_size_multiplier"] = config.ai_score_size_multiplier
+
+    if config.ai_score_boost_threshold is not None:
+        updates["ai_score_boost_threshold"] = config.ai_score_boost_threshold
+
+    if config.ai_score_boost_multiplier is not None:
+        updates["ai_score_boost_multiplier"] = config.ai_score_boost_multiplier
+
+    if config.ai_judge_model is not None:
+        updates["ai_judge_model"] = config.ai_judge_model
 
     auto_trader.configure(**updates)
 
