@@ -10,13 +10,18 @@ import {
   Calendar,
   ExternalLink
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import {
   getSimulationAccounts,
   getAccountPositions,
   getTradingPositions,
   SimulationAccount
 } from '../services/api'
+import { Card, CardContent } from './ui/card'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { Separator } from './ui/separator'
 
 interface SimulationPosition {
   id: string
@@ -112,55 +117,33 @@ export default function PositionsPanel() {
             <Briefcase className="w-6 h-6 text-blue-500" />
             Open Positions
           </h2>
-          <p className="text-sm text-gray-500">Track your active positions across all accounts</p>
+          <p className="text-sm text-muted-foreground">Track your active positions across all accounts</p>
         </div>
-        <button
+        <Button
+          variant="secondary"
           onClick={handleRefresh}
           disabled={isLoading}
-          className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
         >
-          <RefreshCw className={clsx("w-4 h-4", isLoading && "animate-spin")} />
+          <RefreshCw className={cn("w-4 h-4 mr-2", isLoading && "animate-spin")} />
           Refresh
-        </button>
+        </Button>
       </div>
 
       {/* View Mode Selector */}
       <div className="flex items-center gap-4">
-        <div className="flex bg-[#141414] rounded-lg p-1 border border-gray-800">
-          <button
-            onClick={() => setViewMode('all')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'all' ? "bg-blue-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            All Positions
-          </button>
-          <button
-            onClick={() => setViewMode('simulation')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'simulation' ? "bg-blue-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            Paper Trading
-          </button>
-          <button
-            onClick={() => setViewMode('live')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'live' ? "bg-blue-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            Live Trading
-          </button>
-        </div>
+        <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
+          <TabsList>
+            <TabsTrigger value="all">All Positions</TabsTrigger>
+            <TabsTrigger value="simulation">Paper Trading</TabsTrigger>
+            <TabsTrigger value="live">Live Trading</TabsTrigger>
+          </TabsList>
+        </Tabs>
 
         {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
           <select
             value={selectedAccount || ''}
             onChange={(e) => setSelectedAccount(e.target.value || null)}
-            className="bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+            className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
           >
             <option value="">All Simulation Accounts</option>
             {accounts.map((account: SimulationAccount) => (
@@ -219,7 +202,7 @@ export default function PositionsPanel() {
       {/* Positions List */}
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
         </div>
       ) : (
         <div className="space-y-6">
@@ -227,17 +210,19 @@ export default function PositionsPanel() {
           {(viewMode === 'simulation' || viewMode === 'all') && (
             <div className="space-y-4">
               {viewMode === 'all' && (
-                <h3 className="text-lg font-semibold text-gray-300 flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-muted-foreground flex items-center gap-2">
                   <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                   Paper Trading Positions
                 </h3>
               )}
               {simulationPositions.length === 0 ? (
-                <div className="text-center py-8 bg-[#141414] border border-gray-800 rounded-lg">
-                  <Briefcase className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                  <p className="text-gray-400">No open paper trading positions</p>
-                  <p className="text-sm text-gray-600">Execute opportunities from the Paper Trading tab</p>
-                </div>
+                <Card>
+                  <CardContent className="text-center py-8">
+                    <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground">No open paper trading positions</p>
+                    <p className="text-sm text-muted-foreground">Execute opportunities from the Paper Trading tab</p>
+                  </CardContent>
+                </Card>
               ) : (
                 <div className="grid gap-3">
                   {simulationPositions.map((position: SimulationPosition & { accountName?: string; accountId?: string }) => (
@@ -256,17 +241,19 @@ export default function PositionsPanel() {
           {(viewMode === 'live' || viewMode === 'all') && (
             <div className="space-y-4">
               {viewMode === 'all' && (
-                <h3 className="text-lg font-semibold text-gray-300 flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-muted-foreground flex items-center gap-2">
                   <span className="w-2 h-2 bg-green-500 rounded-full"></span>
                   Live Trading Positions
                 </h3>
               )}
               {livePositions.length === 0 ? (
-                <div className="text-center py-8 bg-[#141414] border border-gray-800 rounded-lg">
-                  <Target className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                  <p className="text-gray-400">No open live trading positions</p>
-                  <p className="text-sm text-gray-600">Start live trading from the Auto Trading tab</p>
-                </div>
+                <Card>
+                  <CardContent className="text-center py-8">
+                    <Target className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground">No open live trading positions</p>
+                    <p className="text-sm text-muted-foreground">Start live trading from the Auto Trading tab</p>
+                  </CardContent>
+                </Card>
               ) : (
                 <div className="grid gap-3">
                   {livePositions.map((position: TradingPosition, idx: number) => (
@@ -286,7 +273,7 @@ function StatCard({
   icon,
   label,
   value,
-  valueColor = 'text-white'
+  valueColor = 'text-foreground'
 }: {
   icon: React.ReactNode
   label: string
@@ -294,15 +281,15 @@ function StatCard({
   valueColor?: string
 }) {
   return (
-    <div className="bg-[#141414] rounded-lg p-4 border border-gray-800">
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-[#1a1a1a] rounded-lg">{icon}</div>
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <div className="p-2 bg-muted rounded-lg">{icon}</div>
         <div>
-          <p className="text-xs text-gray-500">{label}</p>
-          <p className={clsx("text-lg font-semibold", valueColor)}>{value}</p>
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className={cn("text-lg font-semibold", valueColor)}>{value}</p>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -321,75 +308,80 @@ function SimulationPositionCard({
   const isProfitable = position.unrealized_pnl >= 0
 
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <span className={clsx(
-              "px-2 py-0.5 rounded text-xs font-medium",
-              position.side === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-            )}>
-              {position.side.toUpperCase()}
-            </span>
-            {showAccount && position.accountName && (
-              <span className="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-400">
-                {position.accountName}
-              </span>
-            )}
-            <span className={clsx(
-              "px-2 py-0.5 rounded text-xs",
-              position.status === 'open' ? "bg-blue-500/20 text-blue-400" : "bg-gray-500/20 text-gray-400"
-            )}>
-              {position.status}
-            </span>
-          </div>
-          <h4 className="font-medium text-sm mb-2 line-clamp-2">{position.market_question}</h4>
+    <Card className="transition-colors">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-2">
+              <Badge className={cn(
+                "rounded border-transparent",
+                position.side === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+              )}>
+                {position.side.toUpperCase()}
+              </Badge>
+              {showAccount && position.accountName && (
+                <Badge className="rounded border-transparent bg-blue-500/20 text-blue-400">
+                  {position.accountName}
+                </Badge>
+              )}
+              <Badge className={cn(
+                "rounded border-transparent",
+                position.status === 'open' ? "bg-blue-500/20 text-blue-400" : "bg-muted text-muted-foreground"
+              )}>
+                {position.status}
+              </Badge>
+            </div>
+            <h4 className="font-medium text-sm mb-2 line-clamp-2">{position.market_question}</h4>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <p className="text-gray-500 text-xs">Quantity</p>
-              <p className="font-mono">{position.quantity.toFixed(2)}</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground text-xs">Quantity</p>
+                <p className="font-mono">{position.quantity.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Entry Price</p>
+                <p className="font-mono">${position.entry_price.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Current Price</p>
+                <p className="font-mono">${currentPrice.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Entry Cost</p>
+                <p className="font-mono">${position.entry_cost.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-right ml-4">
+            <div className="mb-2">
+              <p className="text-muted-foreground text-xs">Current Value</p>
+              <p className="font-mono font-medium">${currentValue.toFixed(2)}</p>
             </div>
             <div>
-              <p className="text-gray-500 text-xs">Entry Price</p>
-              <p className="font-mono">${position.entry_price.toFixed(4)}</p>
-            </div>
-            <div>
-              <p className="text-gray-500 text-xs">Current Price</p>
-              <p className="font-mono">${currentPrice.toFixed(4)}</p>
-            </div>
-            <div>
-              <p className="text-gray-500 text-xs">Entry Cost</p>
-              <p className="font-mono">${position.entry_cost.toFixed(2)}</p>
+              <p className="text-muted-foreground text-xs">Unrealized P&L</p>
+              <p className={cn(
+                "font-mono font-medium",
+                isProfitable ? "text-green-400" : "text-red-400"
+              )}>
+                {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
+                <span className="text-xs ml-1">({isProfitable ? '+' : ''}{pnlPercent.toFixed(1)}%)</span>
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="text-right ml-4">
-          <div className="mb-2">
-            <p className="text-gray-500 text-xs">Current Value</p>
-            <p className="font-mono font-medium">${currentValue.toFixed(2)}</p>
+        {position.resolution_date && (
+          <div className="mt-3">
+            <Separator />
+            <div className="pt-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <Calendar className="w-3 h-3" />
+              Resolution: {new Date(position.resolution_date).toLocaleDateString()}
+            </div>
           </div>
-          <div>
-            <p className="text-gray-500 text-xs">Unrealized P&L</p>
-            <p className={clsx(
-              "font-mono font-medium",
-              isProfitable ? "text-green-400" : "text-red-400"
-            )}>
-              {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
-              <span className="text-xs ml-1">({isProfitable ? '+' : ''}{pnlPercent.toFixed(1)}%)</span>
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {position.resolution_date && (
-        <div className="mt-3 pt-3 border-t border-gray-800 flex items-center gap-2 text-xs text-gray-500">
-          <Calendar className="w-3 h-3" />
-          Resolution: {new Date(position.resolution_date).toLocaleDateString()}
-        </div>
-      )}
-    </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -401,73 +393,78 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
   const isProfitable = position.unrealized_pnl >= 0
 
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-2">
-            <span className={clsx(
-              "px-2 py-0.5 rounded text-xs font-medium",
-              position.outcome.toLowerCase() === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-            )}>
-              {position.outcome.toUpperCase()}
-            </span>
-            <span className="px-2 py-0.5 rounded text-xs bg-purple-500/20 text-purple-400">
-              LIVE
-            </span>
-          </div>
-          <h4 className="font-medium text-sm mb-2">{position.market_question}</h4>
+    <Card className="transition-colors">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-2">
+              <Badge className={cn(
+                "rounded border-transparent",
+                position.outcome.toLowerCase() === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+              )}>
+                {position.outcome.toUpperCase()}
+              </Badge>
+              <Badge className="rounded border-transparent bg-purple-500/20 text-purple-400">
+                LIVE
+              </Badge>
+            </div>
+            <h4 className="font-medium text-sm mb-2">{position.market_question}</h4>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <p className="text-gray-500 text-xs">Size</p>
-              <p className="font-mono">{position.size.toFixed(2)}</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground text-xs">Size</p>
+                <p className="font-mono">{position.size.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Avg Price</p>
+                <p className="font-mono">${position.average_cost.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Current Price</p>
+                <p className="font-mono">${position.current_price.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground text-xs">Cost Basis</p>
+                <p className="font-mono">${costBasis.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-right ml-4">
+            <div className="mb-2">
+              <p className="text-muted-foreground text-xs">Current Value</p>
+              <p className="font-mono font-medium">${currentValue.toFixed(2)}</p>
             </div>
             <div>
-              <p className="text-gray-500 text-xs">Avg Price</p>
-              <p className="font-mono">${position.average_cost.toFixed(4)}</p>
-            </div>
-            <div>
-              <p className="text-gray-500 text-xs">Current Price</p>
-              <p className="font-mono">${position.current_price.toFixed(4)}</p>
-            </div>
-            <div>
-              <p className="text-gray-500 text-xs">Cost Basis</p>
-              <p className="font-mono">${costBasis.toFixed(2)}</p>
+              <p className="text-muted-foreground text-xs">Unrealized P&L</p>
+              <p className={cn(
+                "font-mono font-medium",
+                isProfitable ? "text-green-400" : "text-red-400"
+              )}>
+                {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
+                <span className="text-xs ml-1">({isProfitable ? '+' : ''}{roiPercent.toFixed(1)}%)</span>
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="text-right ml-4">
-          <div className="mb-2">
-            <p className="text-gray-500 text-xs">Current Value</p>
-            <p className="font-mono font-medium">${currentValue.toFixed(2)}</p>
+        {position.market_id && (
+          <div className="mt-3">
+            <Separator />
+            <div className="pt-3">
+              <a
+                href={`https://polymarket.com/event/${position.market_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+              >
+                View on Polymarket
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
           </div>
-          <div>
-            <p className="text-gray-500 text-xs">Unrealized P&L</p>
-            <p className={clsx(
-              "font-mono font-medium",
-              isProfitable ? "text-green-400" : "text-red-400"
-            )}>
-              {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
-              <span className="text-xs ml-1">({isProfitable ? '+' : ''}{roiPercent.toFixed(1)}%)</span>
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {position.market_id && (
-        <div className="mt-3 pt-3 border-t border-gray-800">
-          <a
-            href={`https://polymarket.com/event/${position.market_id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
-          >
-            View on Polymarket
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-      )}
-    </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

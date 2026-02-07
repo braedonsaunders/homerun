@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  X,
   Play,
   AlertTriangle,
   DollarSign,
@@ -16,7 +15,7 @@ import {
   Shield,
   Sparkles,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import {
   Opportunity,
   getSimulationAccounts,
@@ -24,6 +23,20 @@ import {
   executeOpportunityLive,
   getOpportunityAISummary,
 } from '../services/api'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from './ui/dialog'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
+import { Card, CardContent } from './ui/card'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
+import { Switch } from './ui/switch'
+import { Separator } from './ui/separator'
 
 interface TradeExecutionModalProps {
   opportunity: Opportunity
@@ -141,98 +154,96 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-[#1a1a1a] border border-gray-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto p-0 gap-0">
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-gray-800">
-          <div>
-            <h2 className="text-lg font-bold text-white">Execute Trade</h2>
-            <p className="text-xs text-gray-500 mt-0.5">{opportunity.title}</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5 text-gray-400" />
-          </button>
-        </div>
+        <DialogHeader className="p-5 pb-0">
+          <DialogTitle>Execute Trade</DialogTitle>
+          <DialogDescription>{opportunity.title}</DialogDescription>
+        </DialogHeader>
 
         <div className="p-5 space-y-5">
           {/* Opportunity Summary */}
-          <div className="bg-black/30 rounded-xl p-4">
-            <div className="grid grid-cols-3 gap-3 text-sm">
-              <div>
-                <p className="text-xs text-gray-500">ROI</p>
-                <p className="font-mono font-bold text-green-400">{opportunity.roi_percent.toFixed(2)}%</p>
+          <Card className="border-border bg-muted/50">
+            <CardContent className="p-4">
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">ROI</p>
+                  <p className="font-mono font-bold text-green-400">{opportunity.roi_percent.toFixed(2)}%</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Cost / Unit</p>
+                  <p className="font-mono text-foreground">${opportunity.total_cost.toFixed(4)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Risk</p>
+                  <p className={cn("font-mono", opportunity.risk_score < 0.3 ? "text-green-400" : opportunity.risk_score < 0.6 ? "text-yellow-400" : "text-red-400")}>
+                    {(opportunity.risk_score * 100).toFixed(0)}%
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Cost / Unit</p>
-                <p className="font-mono text-white">${opportunity.total_cost.toFixed(4)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Risk</p>
-                <p className={clsx("font-mono", opportunity.risk_score < 0.3 ? "text-green-400" : opportunity.risk_score < 0.6 ? "text-yellow-400" : "text-red-400")}>
-                  {(opportunity.risk_score * 100).toFixed(0)}%
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 pt-3 border-t border-gray-700">
-              <p className="text-xs text-gray-500 mb-1.5">Positions</p>
+              <Separator className="my-3" />
+              <p className="text-xs text-muted-foreground mb-1.5">Positions</p>
               {opportunity.positions_to_take.map((pos, idx) => (
                 <div key={idx} className="flex items-center justify-between text-sm py-1">
-                  <span className="text-gray-300">
-                    <span className={clsx(
-                      "px-1.5 py-0.5 rounded text-xs font-medium mr-1.5",
-                      pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                    )}>
+                  <span className="text-muted-foreground">
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "mr-1.5 text-xs font-medium",
+                        pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
+                      )}
+                    >
                       {pos.action} {pos.outcome}
-                    </span>
+                    </Badge>
                     {pos.market.length > 40 ? pos.market.slice(0, 40) + '...' : pos.market}
                   </span>
-                  <span className="font-mono text-gray-400">${pos.price.toFixed(4)}</span>
+                  <span className="font-mono text-muted-foreground">${pos.price.toFixed(4)}</span>
                 </div>
               ))}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
           {/* AI Trade Advisor */}
           <AITradeAdvisor opportunity={opportunity} />
 
           {/* Mode Toggle */}
           <div>
-            <label className="block text-xs text-gray-500 mb-2">Trading Mode</label>
+            <Label className="block text-xs text-muted-foreground mb-2">Trading Mode</Label>
             <div className="flex gap-2">
-              <button
+              <Button
+                variant="outline"
                 onClick={() => setMode('paper')}
-                className={clsx(
+                className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all",
                   mode === 'paper'
-                    ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                    : "bg-black/20 text-gray-500 border border-gray-800 hover:border-gray-700"
+                    ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                    : "bg-muted/50 text-muted-foreground border-border hover:border-border"
                 )}
               >
                 <Play className="w-4 h-4" />
                 Paper Trading
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 onClick={() => setMode('live')}
-                className={clsx(
+                className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all",
                   mode === 'live'
-                    ? "bg-green-500/20 text-green-400 border border-green-500/30"
-                    : "bg-black/20 text-gray-500 border border-gray-800 hover:border-gray-700"
+                    ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
+                    : "bg-muted/50 text-muted-foreground border-border hover:border-border"
                 )}
               >
                 <Zap className="w-4 h-4" />
                 Live Trading
-              </button>
+              </Button>
             </div>
           </div>
 
           {/* Paper Account Selector */}
           {mode === 'paper' && (
             <div>
-              <label className="block text-xs text-gray-500 mb-2">Paper Account</label>
+              <Label className="block text-xs text-muted-foreground mb-2">Paper Account</Label>
               {accounts.length === 0 ? (
                 <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-sm text-yellow-400">
                   <div className="flex items-center gap-2">
@@ -244,7 +255,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                 <select
                   value={selectedAccountId || ''}
                   onChange={(e) => setSelectedAccountId(e.target.value)}
-                  className="w-full bg-black/30 border border-gray-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500/50"
+                  className="w-full bg-muted/50 border border-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500/50"
                 >
                   {accounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
@@ -268,86 +279,85 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
 
           {/* Position Size */}
           <div>
-            <label className="block text-xs text-gray-500 mb-2">
+            <Label className="block text-xs text-muted-foreground mb-2">
               Position Size (Units)
-            </label>
+            </Label>
             <div className="relative">
-              <input
+              <Input
                 type="number"
                 value={positionSize}
                 onChange={(e) => setPositionSize(Math.max(0, Number(e.target.value)))}
                 min={0}
                 max={opportunity.max_position_size}
                 step={10}
-                className="w-full bg-black/30 border border-gray-700 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-500/50"
+                className="w-full bg-muted/50 border-border rounded-xl px-4 py-2.5 text-sm font-mono pr-28"
               />
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-600">
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground/60">
                 max: {opportunity.max_position_size.toFixed(0)}
               </div>
             </div>
             {/* Quick size buttons */}
             <div className="flex gap-2 mt-2">
               {[25, 50, 75, 100].map(pct => (
-                <button
+                <Button
                   key={pct}
+                  variant="outline"
+                  size="sm"
                   onClick={() => setPositionSize(Math.floor(opportunity.max_position_size * pct / 100))}
-                  className="flex-1 py-1.5 text-xs text-gray-400 bg-black/20 border border-gray-800 rounded-lg hover:bg-gray-800 hover:text-gray-300 transition-colors"
+                  className="flex-1 py-1.5 text-xs text-muted-foreground bg-muted/50 border-border rounded-lg hover:bg-muted hover:text-foreground transition-colors"
                 >
                   {pct}%
-                </button>
+                </Button>
               ))}
             </div>
           </div>
 
           {/* Estimated Cost & Profit */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="bg-black/30 rounded-xl p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <DollarSign className="w-3.5 h-3.5 text-gray-500" />
-                <p className="text-xs text-gray-500">Estimated Cost</p>
-              </div>
-              <p className="font-mono font-semibold text-white">${estimatedCost.toFixed(2)}</p>
-            </div>
-            <div className="bg-black/30 rounded-xl p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <TrendingUp className="w-3.5 h-3.5 text-green-500" />
-                <p className="text-xs text-gray-500">Expected Profit</p>
-              </div>
-              <p className="font-mono font-semibold text-green-400">+${estimatedProfit.toFixed(4)}</p>
-            </div>
+            <Card className="border-border bg-muted/50">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <DollarSign className="w-3.5 h-3.5 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">Estimated Cost</p>
+                </div>
+                <p className="font-mono font-semibold text-foreground">${estimatedCost.toFixed(2)}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border bg-muted/50">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <TrendingUp className="w-3.5 h-3.5 text-green-500" />
+                  <p className="text-xs text-muted-foreground">Expected Profit</p>
+                </div>
+                <p className="font-mono font-semibold text-green-400">+${estimatedProfit.toFixed(4)}</p>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Advanced Options Toggle */}
-          <button
+          <Button
+            variant="ghost"
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-300 transition-colors w-full"
+            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors w-full justify-start px-0"
           >
             {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             Advanced Options
-          </button>
+          </Button>
 
           {/* Advanced Options */}
           {showAdvanced && (
-            <div className="space-y-4 bg-black/20 rounded-xl p-4 border border-gray-800">
+            <div className="space-y-4 bg-muted/50 rounded-xl p-4 border border-border">
               {/* Take Profit */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="flex items-center gap-2 text-sm text-gray-300">
+                  <Label className="flex items-center gap-2 text-sm">
                     <Target className="w-4 h-4 text-green-400" />
                     Take Profit (Auto-Sell)
-                  </label>
-                  <button
-                    onClick={() => setTakeProfitEnabled(!takeProfitEnabled)}
-                    className={clsx(
-                      "w-10 h-5 rounded-full transition-colors relative",
-                      takeProfitEnabled ? "bg-green-500" : "bg-gray-700"
-                    )}
-                  >
-                    <div className={clsx(
-                      "w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all",
-                      takeProfitEnabled ? "left-5.5 right-0.5" : "left-0.5"
-                    )} style={{ left: takeProfitEnabled ? '22px' : '2px' }} />
-                  </button>
+                  </Label>
+                  <Switch
+                    checked={takeProfitEnabled}
+                    onCheckedChange={setTakeProfitEnabled}
+                  />
                 </div>
                 {takeProfitEnabled && (
                   <div>
@@ -363,7 +373,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                       />
                       <span className="text-sm font-mono text-green-400 w-16 text-right">+{takeProfitPercent}%</span>
                     </div>
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-muted-foreground/60 mt-1">
                       Auto-sell when position gains {takeProfitPercent}% of entry value
                     </p>
                   </div>
@@ -373,21 +383,14 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
               {/* Stop Loss */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="flex items-center gap-2 text-sm text-gray-300">
+                  <Label className="flex items-center gap-2 text-sm">
                     <AlertTriangle className="w-4 h-4 text-red-400" />
                     Stop Loss
-                  </label>
-                  <button
-                    onClick={() => setStopLossEnabled(!stopLossEnabled)}
-                    className={clsx(
-                      "w-10 h-5 rounded-full transition-colors relative",
-                      stopLossEnabled ? "bg-red-500" : "bg-gray-700"
-                    )}
-                  >
-                    <div className={clsx(
-                      "w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all",
-                    )} style={{ left: stopLossEnabled ? '22px' : '2px' }} />
-                  </button>
+                  </Label>
+                  <Switch
+                    checked={stopLossEnabled}
+                    onCheckedChange={setStopLossEnabled}
+                  />
                 </div>
                 {stopLossEnabled && (
                   <div>
@@ -403,14 +406,14 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                       />
                       <span className="text-sm font-mono text-red-400 w-16 text-right">-{stopLossPercent}%</span>
                     </div>
-                    <p className="text-xs text-gray-600 mt-1">
+                    <p className="text-xs text-muted-foreground/60 mt-1">
                       Auto-sell when position loses {stopLossPercent}% of entry value
                     </p>
                   </div>
                 )}
               </div>
 
-              <p className="text-xs text-gray-600 flex items-start gap-1.5">
+              <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
                 <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
                 Take-profit and stop-loss are monitored while the auto-trader is running. They will trigger sell orders automatically when price thresholds are hit.
               </p>
@@ -419,7 +422,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
 
           {/* Execution Result */}
           {executionResult && (
-            <div className={clsx(
+            <div className={cn(
               "rounded-xl p-3 text-sm flex items-start gap-2",
               executionResult.success
                 ? "bg-green-500/10 border border-green-500/20 text-green-400"
@@ -436,17 +439,18 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
 
           {/* Execute Button */}
           <div className="flex gap-3 pt-2">
-            <button
+            <Button
+              variant="secondary"
               onClick={onClose}
-              className="flex-1 py-3 text-sm font-medium text-gray-400 bg-gray-800 hover:bg-gray-700 rounded-xl transition-colors"
+              className="flex-1 py-3 text-sm font-medium rounded-xl"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={handleExecute}
               disabled={!canExecute}
-              className={clsx(
-                "flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed",
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold rounded-xl transition-all",
                 mode === 'paper'
                   ? "bg-blue-500 hover:bg-blue-600 text-white"
                   : "bg-green-500 hover:bg-green-600 text-white"
@@ -463,11 +467,11 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                   {mode === 'paper' ? 'Execute Paper Trade' : 'Execute Live Trade'}
                 </>
               )}
-            </button>
+            </Button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -495,33 +499,34 @@ function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
   const signal = getSignal()
 
   return (
-    <div className={clsx(
+    <div className={cn(
       'rounded-xl border transition-colors',
       hasData
         ? signal?.bg || 'bg-purple-500/5 border-purple-500/20'
-        : 'bg-[#111] border-gray-800'
+        : 'bg-muted border-border'
     )}>
-      <button
+      <Button
+        variant="ghost"
         onClick={() => setShowDetails(!showDetails)}
-        className="w-full flex items-center gap-3 px-4 py-3"
+        className="w-full flex items-center gap-3 px-4 py-3 h-auto hover:bg-transparent"
       >
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center flex-shrink-0">
           <Sparkles className="w-4 h-4 text-purple-400" />
         </div>
         <div className="flex-1 text-left">
-          <p className="text-xs font-medium text-gray-300">AI Trade Advisor</p>
+          <p className="text-xs font-medium text-foreground/80">AI Trade Advisor</p>
           {isLoading ? (
-            <p className="text-[10px] text-gray-500 flex items-center gap-1">
+            <p className="text-[10px] text-muted-foreground flex items-center gap-1">
               <RefreshCw className="w-3 h-3 animate-spin" /> Checking intelligence...
             </p>
           ) : hasData ? (
-            <p className="text-[10px] text-gray-500">
-              {signal && <span className={clsx('font-bold mr-1', signal.color)}>{signal.label}</span>}
+            <p className="text-[10px] text-muted-foreground">
+              {signal && <span className={cn('font-bold mr-1', signal.color)}>{signal.label}</span>}
               {judgment && <span>Score: {(judgment.overall_score * 100).toFixed(0)}/100</span>}
               {resolutions.length > 0 && <span> | Resolution: {resolutions[0].recommendation}</span>}
             </p>
           ) : (
-            <p className="text-[10px] text-gray-500">No cached AI analysis. Expand for details.</p>
+            <p className="text-[10px] text-muted-foreground">No cached AI analysis. Expand for details.</p>
           )}
         </div>
         {hasData && (
@@ -534,11 +539,11 @@ function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
           )
         )}
         {showDetails ? (
-          <ChevronUp className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          <ChevronUp className="w-4 h-4 text-muted-foreground flex-shrink-0" />
         ) : (
-          <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
         )}
-      </button>
+      </Button>
 
       {showDetails && hasData && (
         <div className="px-4 pb-3 space-y-2">
@@ -552,9 +557,9 @@ function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
               ].map((item) => {
                 const color = item.value >= 0.7 ? 'text-green-400' : item.value >= 0.4 ? 'text-yellow-400' : 'text-red-400'
                 return (
-                  <div key={item.label} className="text-center bg-black/20 rounded-lg py-1.5">
-                    <p className="text-[10px] text-gray-500">{item.label}</p>
-                    <p className={clsx('text-sm font-bold', color)}>
+                  <div key={item.label} className="text-center bg-muted/50 rounded-lg py-1.5">
+                    <p className="text-[10px] text-muted-foreground">{item.label}</p>
+                    <p className={cn('text-sm font-bold', color)}>
                       {(item.value * 100).toFixed(0)}
                     </p>
                   </div>
@@ -563,22 +568,25 @@ function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
             </div>
           )}
           {judgment?.reasoning && (
-            <p className="text-xs text-gray-400 bg-black/20 rounded-lg p-2">
+            <p className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-2">
               {judgment.reasoning}
             </p>
           )}
           {resolutions.map((r: any, i: number) => (
             <div key={i} className="flex items-center gap-2 text-xs">
-              <Shield className="w-3 h-3 text-gray-500" />
-              <span className={clsx(
-                'px-1.5 py-0.5 rounded font-medium',
-                r.recommendation === 'safe' ? 'bg-green-500/10 text-green-400' :
-                r.recommendation === 'caution' ? 'bg-yellow-500/10 text-yellow-400' :
-                'bg-red-500/10 text-red-400'
-              )}>
+              <Shield className="w-3 h-3 text-muted-foreground" />
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-xs font-medium',
+                  r.recommendation === 'safe' ? 'bg-green-500/10 text-green-400 border-green-500/30' :
+                  r.recommendation === 'caution' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' :
+                  'bg-red-500/10 text-red-400 border-red-500/30'
+                )}
+              >
                 {r.recommendation}
-              </span>
-              <span className="text-gray-500">
+              </Badge>
+              <span className="text-muted-foreground">
                 Clarity: {(r.clarity_score * 100).toFixed(0)}% | Risk: {(r.risk_score * 100).toFixed(0)}%
               </span>
             </div>
@@ -588,4 +596,3 @@ function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
     </div>
   )
 }
-

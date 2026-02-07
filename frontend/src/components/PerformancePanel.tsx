@@ -13,7 +13,7 @@ import {
   ArrowUpRight,
   ArrowDownRight
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
   getSimulationAccounts,
@@ -23,6 +23,11 @@ import {
   SimulationAccount,
   SimulationTrade
 } from '../services/api'
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { ScrollArea } from './ui/scroll-area'
 
 type ViewMode = 'simulation' | 'live' | 'all'
 type TimeRange = '7d' | '30d' | '90d' | 'all'
@@ -222,70 +227,42 @@ export default function PerformancePanel() {
             <BarChart3 className="w-6 h-6 text-purple-500" />
             Performance Analytics
           </h2>
-          <p className="text-sm text-gray-500">Track your trading performance over time</p>
+          <p className="text-sm text-muted-foreground">Track your trading performance over time</p>
         </div>
-        <button
+        <Button
+          variant="secondary"
           onClick={handleRefresh}
           disabled={isLoading}
-          className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
         >
-          <RefreshCw className={clsx("w-4 h-4", isLoading && "animate-spin")} />
+          <RefreshCw className={cn("w-4 h-4 mr-2", isLoading && "animate-spin")} />
           Refresh
-        </button>
+        </Button>
       </div>
 
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4">
-        <div className="flex bg-[#141414] rounded-lg p-1 border border-gray-800">
-          <button
-            onClick={() => setViewMode('all')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'all' ? "bg-purple-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            All Trading
-          </button>
-          <button
-            onClick={() => setViewMode('simulation')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'simulation' ? "bg-purple-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            Paper Trading
-          </button>
-          <button
-            onClick={() => setViewMode('live')}
-            className={clsx(
-              "px-4 py-2 rounded-md text-sm font-medium transition-colors",
-              viewMode === 'live' ? "bg-purple-500 text-white" : "text-gray-400 hover:text-white"
-            )}
-          >
-            Live Trading
-          </button>
-        </div>
+        <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
+          <TabsList>
+            <TabsTrigger value="all">All Trading</TabsTrigger>
+            <TabsTrigger value="simulation">Paper Trading</TabsTrigger>
+            <TabsTrigger value="live">Live Trading</TabsTrigger>
+          </TabsList>
+        </Tabs>
 
-        <div className="flex bg-[#141414] rounded-lg p-1 border border-gray-800">
-          {(['7d', '30d', '90d', 'all'] as TimeRange[]).map(range => (
-            <button
-              key={range}
-              onClick={() => setTimeRange(range)}
-              className={clsx(
-                "px-3 py-2 rounded-md text-sm font-medium transition-colors",
-                timeRange === range ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white"
-              )}
-            >
-              {range === 'all' ? 'All Time' : range.toUpperCase()}
-            </button>
-          ))}
-        </div>
+        <Tabs value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+          <TabsList>
+            <TabsTrigger value="7d">7D</TabsTrigger>
+            <TabsTrigger value="30d">30D</TabsTrigger>
+            <TabsTrigger value="90d">90D</TabsTrigger>
+            <TabsTrigger value="all">All Time</TabsTrigger>
+          </TabsList>
+        </Tabs>
 
         {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
           <select
             value={selectedAccount || ''}
             onChange={(e) => setSelectedAccount(e.target.value || null)}
-            className="bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+            className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
           >
             <option value="">All Simulation Accounts</option>
             {accounts.map((account: SimulationAccount) => (
@@ -297,7 +274,7 @@ export default function PerformancePanel() {
 
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
         </div>
       ) : (
         <>
@@ -355,104 +332,122 @@ export default function PerformancePanel() {
           </div>
 
           {/* P&L Chart */}
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
-            <h3 className="font-semibold mb-4 flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-purple-500" />
-              Cumulative P&L Over Time
-            </h3>
-            {cumulativePnlData.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                No trade data available for the selected time range
-              </div>
-            ) : (
-              <div className="h-64">
-                <SimplePnlChart data={cumulativePnlData} viewMode={viewMode} />
-              </div>
-            )}
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-purple-500" />
+                Cumulative P&L Over Time
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {cumulativePnlData.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  No trade data available for the selected time range
+                </div>
+              ) : (
+                <div className="h-64">
+                  <SimplePnlChart data={cumulativePnlData} viewMode={viewMode} />
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Strategy Performance */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {(viewMode === 'simulation' || viewMode === 'all') && Object.keys(simMetrics.byStrategy).length > 0 && (
-              <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
-                <h3 className="font-semibold mb-4 flex items-center gap-2">
-                  <PieChart className="w-5 h-5 text-blue-500" />
-                  Paper Trading by Strategy
-                </h3>
-                <div className="space-y-3">
-                  {Object.entries(simMetrics.byStrategy).map(([strategy, stats]) => (
-                    <StrategyRow
-                      key={strategy}
-                      strategy={strategy}
-                      trades={stats.trades}
-                      pnl={stats.pnl}
-                      wins={stats.wins}
-                      losses={stats.losses}
-                    />
-                  ))}
-                </div>
-              </div>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <PieChart className="w-5 h-5 text-blue-500" />
+                    Paper Trading by Strategy
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {Object.entries(simMetrics.byStrategy).map(([strategy, stats]) => (
+                      <StrategyRow
+                        key={strategy}
+                        strategy={strategy}
+                        trades={stats.trades}
+                        pnl={stats.pnl}
+                        wins={stats.wins}
+                        losses={stats.losses}
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             )}
 
             {(viewMode === 'live' || viewMode === 'all') && Object.keys(autoMetrics.byStrategy).length > 0 && (
-              <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
-                <h3 className="font-semibold mb-4 flex items-center gap-2">
-                  <PieChart className="w-5 h-5 text-purple-500" />
-                  Live Trading by Strategy
-                </h3>
-                <div className="space-y-3">
-                  {Object.entries(autoMetrics.byStrategy).map(([strategy, stats]) => (
-                    <StrategyRow
-                      key={strategy}
-                      strategy={strategy}
-                      trades={stats.trades}
-                      pnl={stats.pnl}
-                      wins={stats.wins}
-                      losses={stats.losses}
-                    />
-                  ))}
-                </div>
-              </div>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <PieChart className="w-5 h-5 text-purple-500" />
+                    Live Trading by Strategy
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {Object.entries(autoMetrics.byStrategy).map(([strategy, stats]) => (
+                      <StrategyRow
+                        key={strategy}
+                        strategy={strategy}
+                        trades={stats.trades}
+                        pnl={stats.pnl}
+                        wins={stats.wins}
+                        losses={stats.losses}
+                      />
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </div>
 
           {/* Recent Trades */}
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-6">
-            <h3 className="font-semibold mb-4 flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-gray-400" />
-              Recent Trades
-            </h3>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {(viewMode === 'simulation' || viewMode === 'all') && filteredSimTrades.slice(0, 20).map((trade) => (
-                <TradeRow
-                  key={trade.id}
-                  type="paper"
-                  strategy={trade.strategy_type}
-                  cost={trade.total_cost}
-                  pnl={trade.actual_pnl}
-                  status={trade.status}
-                  date={trade.executed_at}
-                  accountName={(trade as SimulationTrade & { accountName?: string }).accountName}
-                />
-              ))}
-              {(viewMode === 'live' || viewMode === 'all') && filteredAutoTrades.slice(0, 20).map((trade) => (
-                <TradeRow
-                  key={trade.id}
-                  type="live"
-                  strategy={trade.strategy}
-                  cost={trade.total_cost}
-                  pnl={trade.actual_profit}
-                  status={trade.status}
-                  date={trade.executed_at}
-                />
-              ))}
-              {filteredSimTrades.length === 0 && filteredAutoTrades.length === 0 && (
-                <div className="text-center py-8 text-gray-500">
-                  No trades found for the selected time range
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-muted-foreground" />
+                Recent Trades
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-96">
+                <div className="space-y-2">
+                  {(viewMode === 'simulation' || viewMode === 'all') && filteredSimTrades.slice(0, 20).map((trade) => (
+                    <TradeRow
+                      key={trade.id}
+                      type="paper"
+                      strategy={trade.strategy_type}
+                      cost={trade.total_cost}
+                      pnl={trade.actual_pnl}
+                      status={trade.status}
+                      date={trade.executed_at}
+                      accountName={(trade as SimulationTrade & { accountName?: string }).accountName}
+                    />
+                  ))}
+                  {(viewMode === 'live' || viewMode === 'all') && filteredAutoTrades.slice(0, 20).map((trade) => (
+                    <TradeRow
+                      key={trade.id}
+                      type="live"
+                      strategy={trade.strategy}
+                      cost={trade.total_cost}
+                      pnl={trade.actual_profit}
+                      status={trade.status}
+                      date={trade.executed_at}
+                    />
+                  ))}
+                  {filteredSimTrades.length === 0 && filteredAutoTrades.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      No trades found for the selected time range
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </>
       )}
     </div>
@@ -464,7 +459,7 @@ function MetricCard({
   label,
   value,
   subtitle,
-  valueColor = 'text-white'
+  valueColor = 'text-foreground'
 }: {
   icon: React.ReactNode
   label: string
@@ -473,16 +468,16 @@ function MetricCard({
   valueColor?: string
 }) {
   return (
-    <div className="bg-[#141414] rounded-lg p-4 border border-gray-800">
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-[#1a1a1a] rounded-lg">{icon}</div>
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <div className="p-2 bg-muted rounded-lg">{icon}</div>
         <div>
-          <p className="text-xs text-gray-500">{label}</p>
-          <p className={clsx("text-lg font-semibold", valueColor)}>{value}</p>
-          {subtitle && <p className="text-xs text-gray-500">{subtitle}</p>}
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className={cn("text-lg font-semibold", valueColor)}>{value}</p>
+          {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -503,25 +498,25 @@ function StrategyRow({
   const isProfitable = pnl >= 0
 
   return (
-    <div className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
+    <div className="flex items-center justify-between bg-muted rounded-lg p-3">
       <div className="flex items-center gap-3">
-        <div className={clsx(
+        <div className={cn(
           "w-2 h-2 rounded-full",
           isProfitable ? "bg-green-500" : "bg-red-500"
         )} />
         <div>
           <p className="font-medium text-sm">{strategy}</p>
-          <p className="text-xs text-gray-500">{trades} trades | {winRate.toFixed(0)}% win rate</p>
+          <p className="text-xs text-muted-foreground">{trades} trades | {winRate.toFixed(0)}% win rate</p>
         </div>
       </div>
       <div className="text-right">
-        <p className={clsx(
+        <p className={cn(
           "font-mono font-medium",
           isProfitable ? "text-green-400" : "text-red-400"
         )}>
           {isProfitable ? '+' : ''}${pnl.toFixed(2)}
         </p>
-        <p className="text-xs text-gray-500">{wins}W / {losses}L</p>
+        <p className="text-xs text-muted-foreground">{wins}W / {losses}L</p>
       </div>
     </div>
   )
@@ -546,18 +541,18 @@ function TradeRow({
 }) {
   const isProfitable = (pnl || 0) >= 0
   const statusColors: Record<string, string> = {
-    open: 'bg-blue-500/20 text-blue-400',
-    pending: 'bg-yellow-500/20 text-yellow-400',
-    resolved_win: 'bg-green-500/20 text-green-400',
-    resolved_loss: 'bg-red-500/20 text-red-400',
-    win: 'bg-green-500/20 text-green-400',
-    loss: 'bg-red-500/20 text-red-400',
-    resolved: 'bg-gray-500/20 text-gray-400',
-    executed: 'bg-blue-500/20 text-blue-400'
+    open: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    resolved_win: 'bg-green-500/20 text-green-400 border-green-500/30',
+    resolved_loss: 'bg-red-500/20 text-red-400 border-red-500/30',
+    win: 'bg-green-500/20 text-green-400 border-green-500/30',
+    loss: 'bg-red-500/20 text-red-400 border-red-500/30',
+    resolved: 'bg-gray-500/20 text-muted-foreground border-gray-500/30',
+    executed: 'bg-blue-500/20 text-blue-400 border-blue-500/30'
   }
 
   return (
-    <div className="flex items-center justify-between bg-[#1a1a1a] rounded-lg p-3">
+    <div className="flex items-center justify-between bg-muted rounded-lg p-3">
       <div className="flex items-center gap-3">
         {isProfitable ? (
           <ArrowUpRight className="w-4 h-4 text-green-400" />
@@ -567,32 +562,39 @@ function TradeRow({
         <div>
           <div className="flex items-center gap-2">
             <p className="font-medium text-sm">{strategy}</p>
-            <span className={clsx(
-              "px-1.5 py-0.5 rounded text-xs",
-              type === 'paper' ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
-            )}>
+            <Badge
+              variant="outline"
+              className={cn(
+                type === 'paper'
+                  ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                  : "bg-purple-500/20 text-purple-400 border-purple-500/30"
+              )}
+            >
               {type === 'paper' ? 'Paper' : 'Live'}
-            </span>
+            </Badge>
           </div>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-muted-foreground">
             Cost: ${cost.toFixed(2)}
             {accountName && ` | ${accountName}`}
           </p>
         </div>
       </div>
       <div className="text-right">
-        <span className={clsx("px-2 py-0.5 rounded text-xs", statusColors[status] || 'bg-gray-500/20 text-gray-400')}>
+        <Badge
+          variant="outline"
+          className={cn(statusColors[status] || 'bg-gray-500/20 text-muted-foreground border-gray-500/30')}
+        >
           {status.replace('_', ' ')}
-        </span>
+        </Badge>
         {pnl != null && (
-          <p className={clsx(
+          <p className={cn(
             "font-mono text-sm mt-1",
             isProfitable ? "text-green-400" : "text-red-400"
           )}>
             {isProfitable ? '+' : ''}${pnl.toFixed(2)}
           </p>
         )}
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-muted-foreground mt-1">
           {new Date(date).toLocaleDateString()}
         </p>
       </div>

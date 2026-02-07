@@ -17,7 +17,14 @@ import {
   MessageSquare,
   Activity,
 } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
+import { Card, CardContent } from './ui/card'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
+import { Switch } from './ui/switch'
+import { Separator } from './ui/separator'
+import { Badge } from './ui/badge'
 import {
   getSettings,
   updateSettings,
@@ -31,6 +38,49 @@ import {
 } from '../services/api'
 
 type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
+
+function SecretInput({
+  label,
+  value,
+  placeholder,
+  onChange,
+  showSecret,
+  onToggle,
+  description
+}: {
+  label: string
+  value: string
+  placeholder: string
+  onChange: (value: string) => void
+  showSecret: boolean
+  onToggle: () => void
+  description?: string
+}) {
+  return (
+    <div>
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="relative mt-1">
+        <Input
+          type={showSecret ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="pr-10 font-mono"
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="absolute right-0 top-0 h-full px-3"
+          onClick={onToggle}
+        >
+          {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        </Button>
+      </div>
+      {description && <p className="text-xs text-muted-foreground mt-1">{description}</p>}
+    </div>
+  )
+}
 
 export default function SettingsPanel() {
   const [activeSection, setActiveSection] = useState<SettingsSection>('polymarket')
@@ -294,7 +344,7 @@ export default function SettingsPanel() {
   if (isLoading) {
     return (
       <div className="flex justify-center py-12">
-        <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
@@ -315,12 +365,12 @@ export default function SettingsPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold">Settings</h2>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Configure application settings and integrations
           </p>
         </div>
         {settings?.updated_at && (
-          <div className="text-xs text-gray-500">
+          <div className="text-xs text-muted-foreground">
             Last updated: {new Date(settings.updated_at).toLocaleString()}
           </div>
         )}
@@ -328,7 +378,7 @@ export default function SettingsPanel() {
 
       {/* Save Message */}
       {saveMessage && (
-        <div className={clsx(
+        <div className={cn(
           "flex items-center gap-2 p-3 rounded-lg text-sm",
           saveMessage.type === 'success' ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
         )}>
@@ -345,811 +395,733 @@ export default function SettingsPanel() {
         {/* Sidebar Navigation */}
         <div className="w-64 space-y-1">
           {sections.map(section => (
-            <button
+            <Button
               key={section.id}
-              onClick={() => setActiveSection(section.id)}
-              className={clsx(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors",
-                activeSection === section.id
-                  ? "bg-green-500/10 text-green-400 border border-green-500/30"
-                  : "bg-[#141414] text-gray-400 hover:text-white border border-gray-800 hover:border-gray-700"
+              variant={activeSection === section.id ? "default" : "ghost"}
+              className={cn(
+                "w-full justify-start gap-3 h-auto py-3",
+                activeSection === section.id && "bg-primary/10 text-primary"
               )}
+              onClick={() => setActiveSection(section.id)}
             >
               <section.icon className="w-5 h-5" />
-              <div>
+              <div className="text-left">
                 <div className="font-medium text-sm">{section.label}</div>
-                <div className="text-xs text-gray-500">{section.description}</div>
+                <div className="text-xs text-muted-foreground">{section.description}</div>
               </div>
-            </button>
+            </Button>
           ))}
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 bg-[#141414] border border-gray-800 rounded-lg p-6">
-          {/* Polymarket Settings */}
-          {activeSection === 'polymarket' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-green-500/10 rounded-lg">
-                  <Key className="w-5 h-5 text-green-500" />
+        <Card className="flex-1">
+          <CardContent className="p-6">
+            {/* Polymarket Settings */}
+            {activeSection === 'polymarket' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-green-500/10 rounded-lg">
+                    <Key className="w-5 h-5 text-green-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Polymarket Account</h3>
+                    <p className="text-sm text-muted-foreground">Configure your Polymarket API credentials for live trading</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Polymarket Account</h3>
-                  <p className="text-sm text-gray-500">Configure your Polymarket API credentials for live trading</p>
+
+                <div className="space-y-4">
+                  <SecretInput
+                    label="API Key"
+                    value={polymarketForm.api_key}
+                    placeholder={settings?.polymarket.api_key || 'Enter API key'}
+                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_key: v }))}
+                    showSecret={showSecrets['pm_key']}
+                    onToggle={() => toggleSecret('pm_key')}
+                  />
+
+                  <SecretInput
+                    label="API Secret"
+                    value={polymarketForm.api_secret}
+                    placeholder={settings?.polymarket.api_secret || 'Enter API secret'}
+                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_secret: v }))}
+                    showSecret={showSecrets['pm_secret']}
+                    onToggle={() => toggleSecret('pm_secret')}
+                  />
+
+                  <SecretInput
+                    label="API Passphrase"
+                    value={polymarketForm.api_passphrase}
+                    placeholder={settings?.polymarket.api_passphrase || 'Enter API passphrase'}
+                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_passphrase: v }))}
+                    showSecret={showSecrets['pm_pass']}
+                    onToggle={() => toggleSecret('pm_pass')}
+                  />
+
+                  <SecretInput
+                    label="Private Key"
+                    value={polymarketForm.private_key}
+                    placeholder={settings?.polymarket.private_key || 'Enter wallet private key'}
+                    onChange={(v) => setPolymarketForm(p => ({ ...p, private_key: v }))}
+                    showSecret={showSecrets['pm_pk']}
+                    onToggle={() => toggleSecret('pm_pk')}
+                    description="Your wallet private key for signing transactions"
+                  />
                 </div>
-              </div>
 
-              <div className="space-y-4">
-                <SecretInput
-                  label="API Key"
-                  value={polymarketForm.api_key}
-                  placeholder={settings?.polymarket.api_key || 'Enter API key'}
-                  onChange={(v) => setPolymarketForm(p => ({ ...p, api_key: v }))}
-                  showSecret={showSecrets['pm_key']}
-                  onToggle={() => toggleSecret('pm_key')}
-                />
+                <Separator />
 
-                <SecretInput
-                  label="API Secret"
-                  value={polymarketForm.api_secret}
-                  placeholder={settings?.polymarket.api_secret || 'Enter API secret'}
-                  onChange={(v) => setPolymarketForm(p => ({ ...p, api_secret: v }))}
-                  showSecret={showSecrets['pm_secret']}
-                  onToggle={() => toggleSecret('pm_secret')}
-                />
-
-                <SecretInput
-                  label="API Passphrase"
-                  value={polymarketForm.api_passphrase}
-                  placeholder={settings?.polymarket.api_passphrase || 'Enter API passphrase'}
-                  onChange={(v) => setPolymarketForm(p => ({ ...p, api_passphrase: v }))}
-                  showSecret={showSecrets['pm_pass']}
-                  onToggle={() => toggleSecret('pm_pass')}
-                />
-
-                <SecretInput
-                  label="Private Key"
-                  value={polymarketForm.private_key}
-                  placeholder={settings?.polymarket.private_key || 'Enter wallet private key'}
-                  onChange={(v) => setPolymarketForm(p => ({ ...p, private_key: v }))}
-                  showSecret={showSecrets['pm_pk']}
-                  onToggle={() => toggleSecret('pm_pk')}
-                  description="Your wallet private key for signing transactions"
-                />
-              </div>
-
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('polymarket')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Polymarket Settings
-                </button>
-                <button
-                  onClick={() => testPolymarketMutation.mutate()}
-                  disabled={testPolymarketMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
-                >
-                  <Zap className="w-4 h-4" />
-                  Test Connection
-                </button>
-                {testPolymarketMutation.data && (
-                  <span className={clsx(
-                    "text-sm",
-                    testPolymarketMutation.data.status === 'success' ? "text-green-400" : "text-yellow-400"
-                  )}>
-                    {testPolymarketMutation.data.message}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* LLM Settings */}
-          {activeSection === 'llm' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-purple-500/10 rounded-lg">
-                  <Bot className="w-5 h-5 text-purple-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">AI / LLM Services</h3>
-                  <p className="text-sm text-gray-500">Configure AI providers for analysis and insights</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">LLM Provider</label>
-                  <select
-                    value={llmForm.provider}
-                    onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value, model: '' }))}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('polymarket')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Polymarket Settings
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => testPolymarketMutation.mutate()}
+                    disabled={testPolymarketMutation.isPending}
                   >
-                    <option value="none">None (Disabled)</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="google">Google (Gemini)</option>
-                    <option value="xai">xAI (Grok)</option>
-                    <option value="deepseek">DeepSeek</option>
-                  </select>
+                    <Zap className="w-4 h-4 mr-2" />
+                    Test Connection
+                  </Button>
+                  {testPolymarketMutation.data && (
+                    <Badge variant={testPolymarketMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                      "text-sm",
+                      testPolymarketMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                    )}>
+                      {testPolymarketMutation.data.message}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* LLM Settings */}
+            {activeSection === 'llm' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-purple-500/10 rounded-lg">
+                    <Bot className="w-5 h-5 text-purple-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">AI / LLM Services</h3>
+                    <p className="text-sm text-muted-foreground">Configure AI providers for analysis and insights</p>
+                  </div>
                 </div>
 
-                {(llmForm.provider === 'openai' || llmForm.provider === 'none') && (
-                  <SecretInput
-                    label="OpenAI API Key"
-                    value={llmForm.openai_api_key}
-                    placeholder={settings?.llm.openai_api_key || 'sk-...'}
-                    onChange={(v) => setLlmForm(p => ({ ...p, openai_api_key: v }))}
-                    showSecret={showSecrets['openai_key']}
-                    onToggle={() => toggleSecret('openai_key')}
-                  />
-                )}
-
-                {(llmForm.provider === 'anthropic' || llmForm.provider === 'none') && (
-                  <SecretInput
-                    label="Anthropic API Key"
-                    value={llmForm.anthropic_api_key}
-                    placeholder={settings?.llm.anthropic_api_key || 'sk-ant-...'}
-                    onChange={(v) => setLlmForm(p => ({ ...p, anthropic_api_key: v }))}
-                    showSecret={showSecrets['anthropic_key']}
-                    onToggle={() => toggleSecret('anthropic_key')}
-                  />
-                )}
-
-                {(llmForm.provider === 'google' || llmForm.provider === 'none') && (
-                  <SecretInput
-                    label="Google (Gemini) API Key"
-                    value={llmForm.google_api_key}
-                    placeholder={settings?.llm.google_api_key || 'AIza...'}
-                    onChange={(v) => setLlmForm(p => ({ ...p, google_api_key: v }))}
-                    showSecret={showSecrets['google_key']}
-                    onToggle={() => toggleSecret('google_key')}
-                  />
-                )}
-
-                {(llmForm.provider === 'xai' || llmForm.provider === 'none') && (
-                  <SecretInput
-                    label="xAI (Grok) API Key"
-                    value={llmForm.xai_api_key}
-                    placeholder={settings?.llm.xai_api_key || 'xai-...'}
-                    onChange={(v) => setLlmForm(p => ({ ...p, xai_api_key: v }))}
-                    showSecret={showSecrets['xai_key']}
-                    onToggle={() => toggleSecret('xai_key')}
-                  />
-                )}
-
-                {(llmForm.provider === 'deepseek' || llmForm.provider === 'none') && (
-                  <SecretInput
-                    label="DeepSeek API Key"
-                    value={llmForm.deepseek_api_key}
-                    placeholder={settings?.llm.deepseek_api_key || 'sk-...'}
-                    onChange={(v) => setLlmForm(p => ({ ...p, deepseek_api_key: v }))}
-                    showSecret={showSecrets['deepseek_key']}
-                    onToggle={() => toggleSecret('deepseek_key')}
-                  />
-                )}
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Model</label>
-                  <div className="flex gap-2">
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">LLM Provider</Label>
                     <select
-                      value={llmForm.model}
-                      onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
-                      className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                      value={llmForm.provider}
+                      onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value, model: '' }))}
+                      className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm mt-1"
                     >
-                      <option value="">Select a model...</option>
-                      {modelsForProvider.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                      {llmForm.model && !modelsForProvider.find(m => m.id === llmForm.model) && (
-                        <option value={llmForm.model}>{llmForm.model} (current)</option>
-                      )}
+                      <option value="none">None (Disabled)</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="google">Google (Gemini)</option>
+                      <option value="xai">xAI (Grok)</option>
+                      <option value="deepseek">DeepSeek</option>
                     </select>
-                    <button
-                      onClick={handleRefreshModels}
-                      disabled={isRefreshingModels || llmForm.provider === 'none'}
-                      className="flex items-center gap-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg text-sm"
-                      title="Refresh models from provider API"
-                    >
-                      <RefreshCw className={clsx("w-4 h-4", isRefreshingModels && "animate-spin")} />
-                    </button>
                   </div>
-                  <p className="text-xs text-gray-600 mt-1">
-                    {modelsForProvider.length > 0
-                      ? `${modelsForProvider.length} models available`
-                      : llmForm.provider !== 'none'
-                        ? 'Click refresh to fetch available models from the API'
-                        : 'Select a provider first'}
-                  </p>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('llm')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save LLM Settings
-                </button>
-              </div>
-            </div>
-          )}
+                  {(llmForm.provider === 'openai' || llmForm.provider === 'none') && (
+                    <SecretInput
+                      label="OpenAI API Key"
+                      value={llmForm.openai_api_key}
+                      placeholder={settings?.llm.openai_api_key || 'sk-...'}
+                      onChange={(v) => setLlmForm(p => ({ ...p, openai_api_key: v }))}
+                      showSecret={showSecrets['openai_key']}
+                      onToggle={() => toggleSecret('openai_key')}
+                    />
+                  )}
 
-          {/* Notification Settings */}
-          {activeSection === 'notifications' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-blue-500/10 rounded-lg">
-                  <Bell className="w-5 h-5 text-blue-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Notifications</h3>
-                  <p className="text-sm text-gray-500">Configure Telegram alerts for opportunities and trades</p>
-                </div>
-              </div>
+                  {(llmForm.provider === 'anthropic' || llmForm.provider === 'none') && (
+                    <SecretInput
+                      label="Anthropic API Key"
+                      value={llmForm.anthropic_api_key}
+                      placeholder={settings?.llm.anthropic_api_key || 'sk-ant-...'}
+                      onChange={(v) => setLlmForm(p => ({ ...p, anthropic_api_key: v }))}
+                      showSecret={showSecrets['anthropic_key']}
+                      onToggle={() => toggleSecret('anthropic_key')}
+                    />
+                  )}
 
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-[#1a1a1a] rounded-lg">
+                  {(llmForm.provider === 'google' || llmForm.provider === 'none') && (
+                    <SecretInput
+                      label="Google (Gemini) API Key"
+                      value={llmForm.google_api_key}
+                      placeholder={settings?.llm.google_api_key || 'AIza...'}
+                      onChange={(v) => setLlmForm(p => ({ ...p, google_api_key: v }))}
+                      showSecret={showSecrets['google_key']}
+                      onToggle={() => toggleSecret('google_key')}
+                    />
+                  )}
+
+                  {(llmForm.provider === 'xai' || llmForm.provider === 'none') && (
+                    <SecretInput
+                      label="xAI (Grok) API Key"
+                      value={llmForm.xai_api_key}
+                      placeholder={settings?.llm.xai_api_key || 'xai-...'}
+                      onChange={(v) => setLlmForm(p => ({ ...p, xai_api_key: v }))}
+                      showSecret={showSecrets['xai_key']}
+                      onToggle={() => toggleSecret('xai_key')}
+                    />
+                  )}
+
+                  {(llmForm.provider === 'deepseek' || llmForm.provider === 'none') && (
+                    <SecretInput
+                      label="DeepSeek API Key"
+                      value={llmForm.deepseek_api_key}
+                      placeholder={settings?.llm.deepseek_api_key || 'sk-...'}
+                      onChange={(v) => setLlmForm(p => ({ ...p, deepseek_api_key: v }))}
+                      showSecret={showSecrets['deepseek_key']}
+                      onToggle={() => toggleSecret('deepseek_key')}
+                    />
+                  )}
+
                   <div>
-                    <p className="font-medium text-sm">Enable Notifications</p>
-                    <p className="text-xs text-gray-500">Receive alerts via Telegram</p>
-                  </div>
-                  <button
-                    onClick={() => setNotificationsForm(p => ({ ...p, enabled: !p.enabled }))}
-                    className={clsx(
-                      "w-12 h-6 rounded-full transition-colors relative",
-                      notificationsForm.enabled ? "bg-green-500" : "bg-gray-600"
-                    )}
-                  >
-                    <div className={clsx(
-                      "w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform",
-                      notificationsForm.enabled ? "translate-x-6" : "translate-x-0.5"
-                    )} />
-                  </button>
-                </div>
-
-                <SecretInput
-                  label="Telegram Bot Token"
-                  value={notificationsForm.telegram_bot_token}
-                  placeholder={settings?.notifications.telegram_bot_token || 'Enter bot token'}
-                  onChange={(v) => setNotificationsForm(p => ({ ...p, telegram_bot_token: v }))}
-                  showSecret={showSecrets['tg_token']}
-                  onToggle={() => toggleSecret('tg_token')}
-                  description="Get this from @BotFather on Telegram"
-                />
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Telegram Chat ID</label>
-                  <input
-                    type="text"
-                    value={notificationsForm.telegram_chat_id}
-                    onChange={(e) => setNotificationsForm(p => ({ ...p, telegram_chat_id: e.target.value }))}
-                    placeholder="Your chat ID"
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                </div>
-
-                <div className="space-y-3 pt-4">
-                  <p className="text-sm font-medium">Alert Types</p>
-
-                  <div className="flex items-center justify-between p-3 bg-[#1a1a1a] rounded-lg">
-                    <div>
-                      <p className="text-sm">New Opportunities</p>
-                      <p className="text-xs text-gray-500">Alert when new arbitrage opportunities are found</p>
+                    <Label className="text-xs text-muted-foreground">Model</Label>
+                    <div className="flex gap-2 mt-1">
+                      <select
+                        value={llmForm.model}
+                        onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
+                        className="flex-1 bg-muted border border-border rounded-lg px-3 py-2 text-sm"
+                      >
+                        <option value="">Select a model...</option>
+                        {modelsForProvider.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                        {llmForm.model && !modelsForProvider.find(m => m.id === llmForm.model) && (
+                          <option value={llmForm.model}>{llmForm.model} (current)</option>
+                        )}
+                      </select>
+                      <Button
+                        variant="secondary"
+                        size="icon"
+                        onClick={handleRefreshModels}
+                        disabled={isRefreshingModels || llmForm.provider === 'none'}
+                        title="Refresh models from provider API"
+                      >
+                        <RefreshCw className={cn("w-4 h-4", isRefreshingModels && "animate-spin")} />
+                      </Button>
                     </div>
-                    <button
-                      onClick={() => setNotificationsForm(p => ({ ...p, notify_on_opportunity: !p.notify_on_opportunity }))}
-                      className={clsx(
-                        "w-12 h-6 rounded-full transition-colors relative",
-                        notificationsForm.notify_on_opportunity ? "bg-green-500" : "bg-gray-600"
-                      )}
-                    >
-                      <div className={clsx(
-                        "w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform",
-                        notificationsForm.notify_on_opportunity ? "translate-x-6" : "translate-x-0.5"
-                      )} />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 bg-[#1a1a1a] rounded-lg">
-                    <div>
-                      <p className="text-sm">Trade Executions</p>
-                      <p className="text-xs text-gray-500">Alert when trades are executed</p>
-                    </div>
-                    <button
-                      onClick={() => setNotificationsForm(p => ({ ...p, notify_on_trade: !p.notify_on_trade }))}
-                      className={clsx(
-                        "w-12 h-6 rounded-full transition-colors relative",
-                        notificationsForm.notify_on_trade ? "bg-green-500" : "bg-gray-600"
-                      )}
-                    >
-                      <div className={clsx(
-                        "w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform",
-                        notificationsForm.notify_on_trade ? "translate-x-6" : "translate-x-0.5"
-                      )} />
-                    </button>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Minimum ROI for Alerts (%)</label>
-                    <input
-                      type="number"
-                      value={notificationsForm.notify_min_roi}
-                      onChange={(e) => setNotificationsForm(p => ({ ...p, notify_min_roi: parseFloat(e.target.value) || 0 }))}
-                      step="0.5"
-                      min="0"
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('notifications')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Notification Settings
-                </button>
-                <button
-                  onClick={() => testTelegramMutation.mutate()}
-                  disabled={testTelegramMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  Test Telegram
-                </button>
-                {testTelegramMutation.data && (
-                  <span className={clsx(
-                    "text-sm",
-                    testTelegramMutation.data.status === 'success' ? "text-green-400" : "text-yellow-400"
-                  )}>
-                    {testTelegramMutation.data.message}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Scanner Settings */}
-          {activeSection === 'scanner' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-cyan-500/10 rounded-lg">
-                  <Scan className="w-5 h-5 text-cyan-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Scanner Settings</h3>
-                  <p className="text-sm text-gray-500">Configure market scanning behavior</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Scan Interval (seconds)</label>
-                  <input
-                    type="number"
-                    value={scannerForm.scan_interval_seconds}
-                    onChange={(e) => setScannerForm(p => ({ ...p, scan_interval_seconds: parseInt(e.target.value) || 60 }))}
-                    min={10}
-                    max={3600}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">How often to scan for opportunities</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Min Profit Threshold (%)</label>
-                  <input
-                    type="number"
-                    value={scannerForm.min_profit_threshold}
-                    onChange={(e) => setScannerForm(p => ({ ...p, min_profit_threshold: parseFloat(e.target.value) || 0 }))}
-                    step="0.5"
-                    min={0}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Minimum ROI to report as opportunity</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Max Markets to Scan</label>
-                  <input
-                    type="number"
-                    value={scannerForm.max_markets_to_scan}
-                    onChange={(e) => setScannerForm(p => ({ ...p, max_markets_to_scan: parseInt(e.target.value) || 100 }))}
-                    min={10}
-                    max={5000}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Limit on markets per scan</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Min Liquidity ($)</label>
-                  <input
-                    type="number"
-                    value={scannerForm.min_liquidity}
-                    onChange={(e) => setScannerForm(p => ({ ...p, min_liquidity: parseFloat(e.target.value) || 0 }))}
-                    min={0}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Minimum market liquidity</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('scanner')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Scanner Settings
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Trading Settings */}
-          {activeSection === 'trading' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-yellow-500/10 rounded-lg">
-                  <TrendingUp className="w-5 h-5 text-yellow-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Trading Safety</h3>
-                  <p className="text-sm text-gray-500">Configure trading limits and safety controls</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-lg border border-yellow-500/30">
-                  <div>
-                    <p className="font-medium text-sm">Enable Live Trading</p>
-                    <p className="text-xs text-gray-500">Allow real money trades on Polymarket</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      if (!tradingForm.trading_enabled || confirm('Are you sure you want to enable live trading?')) {
-                        setTradingForm(p => ({ ...p, trading_enabled: !p.trading_enabled }))
-                      }
-                    }}
-                    className={clsx(
-                      "w-12 h-6 rounded-full transition-colors relative",
-                      tradingForm.trading_enabled ? "bg-yellow-500" : "bg-gray-600"
-                    )}
-                  >
-                    <div className={clsx(
-                      "w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform",
-                      tradingForm.trading_enabled ? "translate-x-6" : "translate-x-0.5"
-                    )} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Max Trade Size ($)</label>
-                    <input
-                      type="number"
-                      value={tradingForm.max_trade_size_usd}
-                      onChange={(e) => setTradingForm(p => ({ ...p, max_trade_size_usd: parseFloat(e.target.value) || 0 }))}
-                      min={1}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Max Daily Volume ($)</label>
-                    <input
-                      type="number"
-                      value={tradingForm.max_daily_trade_volume}
-                      onChange={(e) => setTradingForm(p => ({ ...p, max_daily_trade_volume: parseFloat(e.target.value) || 0 }))}
-                      min={10}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Max Open Positions</label>
-                    <input
-                      type="number"
-                      value={tradingForm.max_open_positions}
-                      onChange={(e) => setTradingForm(p => ({ ...p, max_open_positions: parseInt(e.target.value) || 1 }))}
-                      min={1}
-                      max={100}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Max Slippage (%)</label>
-                    <input
-                      type="number"
-                      value={tradingForm.max_slippage_percent}
-                      onChange={(e) => setTradingForm(p => ({ ...p, max_slippage_percent: parseFloat(e.target.value) || 0 }))}
-                      step="0.1"
-                      min={0.1}
-                      max={10}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('trading')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Trading Settings
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Auto Trader Config */}
-          {activeSection === 'autotrader' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-emerald-500/10 rounded-lg">
-                  <Activity className="w-5 h-5 text-emerald-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
-                  <p className="text-sm text-gray-500">Configure autonomous trading parameters and limits</p>
-                </div>
-              </div>
-
-              {autoTraderStatus?.config && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 bg-[#1a1a1a] rounded-lg">
-                  <div>
-                    <p className="text-xs text-gray-500">Mode</p>
-                    <p className="font-mono text-sm font-medium">{autoTraderStatus.config.mode?.toUpperCase()}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Status</p>
-                    <p className={clsx("font-mono text-sm font-medium", autoTraderStatus.running ? "text-green-400" : "text-gray-400")}>
-                      {autoTraderStatus.running ? 'Running' : 'Stopped'}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {modelsForProvider.length > 0
+                        ? `${modelsForProvider.length} models available`
+                        : llmForm.provider !== 'none'
+                          ? 'Click refresh to fetch available models from the API'
+                          : 'Select a provider first'}
                     </p>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Strategies</p>
-                    <p className="font-mono text-xs">{autoTraderStatus.config.enabled_strategies?.join(', ') || 'All'}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">Circuit Breaker</p>
-                    <p className="font-mono text-sm">{autoTraderStatus.config.circuit_breaker_losses} losses</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Min ROI %</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.min_roi_percent}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, min_roi_percent: parseFloat(e.target.value) || 0 }))}
-                    step="0.5"
-                    min={0}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Minimum return to execute a trade</p>
                 </div>
 
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Max Risk Score</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.max_risk_score}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_risk_score: parseFloat(e.target.value) || 0 }))}
-                    step="0.1"
-                    min={0}
-                    max={1}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">0 = lowest risk, 1 = highest</p>
-                </div>
+                <Separator />
 
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Base Position Size ($)</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.base_position_size_usd}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, base_position_size_usd: parseFloat(e.target.value) || 1 }))}
-                    min={1}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Default trade size</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Max Position Size ($)</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.max_position_size_usd}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_position_size_usd: parseFloat(e.target.value) || 1 }))}
-                    min={1}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Maximum single trade size</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Max Daily Trades</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.max_daily_trades}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_trades: parseInt(e.target.value) || 1 }))}
-                    min={1}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Daily trade count limit</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Max Daily Loss ($)</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.max_daily_loss_usd}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_loss_usd: parseFloat(e.target.value) || 0 }))}
-                    min={0}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Stop trading after this daily loss</p>
-                </div>
-
-                <div className="col-span-2">
-                  <label className="block text-xs text-gray-500 mb-1">Paper Account Capital ($)</label>
-                  <input
-                    type="number"
-                    value={autoTraderForm.paper_account_capital}
-                    onChange={(e) => setAutoTraderForm(p => ({ ...p, paper_account_capital: parseFloat(e.target.value) || 100 }))}
-                    min={100}
-                    className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                  />
-                  <p className="text-xs text-gray-600 mt-1">Starting capital for paper trading simulation</p>
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('llm')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save LLM Settings
+                  </Button>
                 </div>
               </div>
+            )}
 
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('autotrader')}
-                  disabled={autoTraderConfigMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Auto Trader Config
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Maintenance Settings */}
-          {activeSection === 'maintenance' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2 bg-red-500/10 rounded-lg">
-                  <Database className="w-5 h-5 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Database Maintenance</h3>
-                  <p className="text-sm text-gray-500">Configure automatic cleanup of old data</p>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-3 bg-[#1a1a1a] rounded-lg">
-                  <div>
-                    <p className="font-medium text-sm">Auto Cleanup</p>
-                    <p className="text-xs text-gray-500">Automatically delete old records</p>
+            {/* Notification Settings */}
+            {activeSection === 'notifications' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-blue-500/10 rounded-lg">
+                    <Bell className="w-5 h-5 text-blue-500" />
                   </div>
-                  <button
-                    onClick={() => setMaintenanceForm(p => ({ ...p, auto_cleanup_enabled: !p.auto_cleanup_enabled }))}
-                    className={clsx(
-                      "w-12 h-6 rounded-full transition-colors relative",
-                      maintenanceForm.auto_cleanup_enabled ? "bg-green-500" : "bg-gray-600"
-                    )}
+                  <div>
+                    <h3 className="text-lg font-semibold">Notifications</h3>
+                    <p className="text-sm text-muted-foreground">Configure Telegram alerts for opportunities and trades</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="bg-muted">
+                    <CardContent className="flex items-center justify-between p-3">
+                      <div>
+                        <p className="font-medium text-sm">Enable Notifications</p>
+                        <p className="text-xs text-muted-foreground">Receive alerts via Telegram</p>
+                      </div>
+                      <Switch
+                        checked={notificationsForm.enabled}
+                        onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, enabled: checked }))}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <SecretInput
+                    label="Telegram Bot Token"
+                    value={notificationsForm.telegram_bot_token}
+                    placeholder={settings?.notifications.telegram_bot_token || 'Enter bot token'}
+                    onChange={(v) => setNotificationsForm(p => ({ ...p, telegram_bot_token: v }))}
+                    showSecret={showSecrets['tg_token']}
+                    onToggle={() => toggleSecret('tg_token')}
+                    description="Get this from @BotFather on Telegram"
+                  />
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Telegram Chat ID</Label>
+                    <Input
+                      type="text"
+                      value={notificationsForm.telegram_chat_id}
+                      onChange={(e) => setNotificationsForm(p => ({ ...p, telegram_chat_id: e.target.value }))}
+                      placeholder="Your chat ID"
+                      className="mt-1"
+                    />
+                  </div>
+
+                  <div className="space-y-3 pt-4">
+                    <p className="text-sm font-medium">Alert Types</p>
+
+                    <Card className="bg-muted">
+                      <CardContent className="flex items-center justify-between p-3">
+                        <div>
+                          <p className="text-sm">New Opportunities</p>
+                          <p className="text-xs text-muted-foreground">Alert when new arbitrage opportunities are found</p>
+                        </div>
+                        <Switch
+                          checked={notificationsForm.notify_on_opportunity}
+                          onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_opportunity: checked }))}
+                        />
+                      </CardContent>
+                    </Card>
+
+                    <Card className="bg-muted">
+                      <CardContent className="flex items-center justify-between p-3">
+                        <div>
+                          <p className="text-sm">Trade Executions</p>
+                          <p className="text-xs text-muted-foreground">Alert when trades are executed</p>
+                        </div>
+                        <Switch
+                          checked={notificationsForm.notify_on_trade}
+                          onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_trade: checked }))}
+                        />
+                      </CardContent>
+                    </Card>
+
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Minimum ROI for Alerts (%)</Label>
+                      <Input
+                        type="number"
+                        value={notificationsForm.notify_min_roi}
+                        onChange={(e) => setNotificationsForm(p => ({ ...p, notify_min_roi: parseFloat(e.target.value) || 0 }))}
+                        step="0.5"
+                        min="0"
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('notifications')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Notification Settings
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => testTelegramMutation.mutate()}
+                    disabled={testTelegramMutation.isPending}
                   >
-                    <div className={clsx(
-                      "w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform",
-                      maintenanceForm.auto_cleanup_enabled ? "translate-x-6" : "translate-x-0.5"
-                    )} />
-                  </button>
+                    <MessageSquare className="w-4 h-4 mr-2" />
+                    Test Telegram
+                  </Button>
+                  {testTelegramMutation.data && (
+                    <Badge variant={testTelegramMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                      "text-sm",
+                      testTelegramMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                    )}>
+                      {testTelegramMutation.data.message}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Scanner Settings */}
+            {activeSection === 'scanner' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-cyan-500/10 rounded-lg">
+                    <Scan className="w-5 h-5 text-cyan-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Scanner Settings</h3>
+                    <p className="text-sm text-muted-foreground">Configure market scanning behavior</p>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Cleanup Interval (hours)</label>
-                    <input
+                    <Label className="text-xs text-muted-foreground">Scan Interval (seconds)</Label>
+                    <Input
                       type="number"
-                      value={maintenanceForm.cleanup_interval_hours}
-                      onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_interval_hours: parseInt(e.target.value) || 24 }))}
-                      min={1}
-                      max={168}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                      value={scannerForm.scan_interval_seconds}
+                      onChange={(e) => setScannerForm(p => ({ ...p, scan_interval_seconds: parseInt(e.target.value) || 60 }))}
+                      min={10}
+                      max={3600}
+                      className="mt-1"
                     />
+                    <p className="text-xs text-muted-foreground mt-1">How often to scan for opportunities</p>
                   </div>
 
                   <div>
-                    <label className="block text-xs text-gray-500 mb-1">Keep Resolved Trades (days)</label>
-                    <input
+                    <Label className="text-xs text-muted-foreground">Min Profit Threshold (%)</Label>
+                    <Input
                       type="number"
-                      value={maintenanceForm.cleanup_resolved_trade_days}
-                      onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_resolved_trade_days: parseInt(e.target.value) || 30 }))}
-                      min={1}
-                      max={365}
-                      className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                      value={scannerForm.min_profit_threshold}
+                      onChange={(e) => setScannerForm(p => ({ ...p, min_profit_threshold: parseFloat(e.target.value) || 0 }))}
+                      step="0.5"
+                      min={0}
+                      className="mt-1"
                     />
+                    <p className="text-xs text-muted-foreground mt-1">Minimum ROI to report as opportunity</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Max Markets to Scan</Label>
+                    <Input
+                      type="number"
+                      value={scannerForm.max_markets_to_scan}
+                      onChange={(e) => setScannerForm(p => ({ ...p, max_markets_to_scan: parseInt(e.target.value) || 100 }))}
+                      min={10}
+                      max={5000}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Limit on markets per scan</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Min Liquidity ($)</Label>
+                    <Input
+                      type="number"
+                      value={scannerForm.min_liquidity}
+                      onChange={(e) => setScannerForm(p => ({ ...p, min_liquidity: parseFloat(e.target.value) || 0 }))}
+                      min={0}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Minimum market liquidity</p>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-3 pt-4 border-t border-gray-700">
-                <button
-                  onClick={() => handleSaveSection('maintenance')}
-                  disabled={saveMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 rounded-lg text-sm font-medium"
-                >
-                  <Save className="w-4 h-4" />
-                  Save Maintenance Settings
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+                <Separator />
 
-function SecretInput({
-  label,
-  value,
-  placeholder,
-  onChange,
-  showSecret,
-  onToggle,
-  description
-}: {
-  label: string
-  value: string
-  placeholder: string
-  onChange: (value: string) => void
-  showSecret: boolean
-  onToggle: () => void
-  description?: string
-}) {
-  return (
-    <div>
-      <label className="block text-xs text-gray-500 mb-1">{label}</label>
-      <div className="relative">
-        <input
-          type={showSecret ? 'text' : 'password'}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 pr-10 text-sm font-mono"
-        />
-        <button
-          type="button"
-          onClick={onToggle}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white"
-        >
-          {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-        </button>
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Scanner Settings
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Trading Settings */}
+            {activeSection === 'trading' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-yellow-500/10 rounded-lg">
+                    <TrendingUp className="w-5 h-5 text-yellow-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Trading Safety</h3>
+                    <p className="text-sm text-muted-foreground">Configure trading limits and safety controls</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="bg-muted border-yellow-500/30">
+                    <CardContent className="flex items-center justify-between p-4">
+                      <div>
+                        <p className="font-medium text-sm">Enable Live Trading</p>
+                        <p className="text-xs text-muted-foreground">Allow real money trades on Polymarket</p>
+                      </div>
+                      <Switch
+                        checked={tradingForm.trading_enabled}
+                        onCheckedChange={(checked) => {
+                          if (!tradingForm.trading_enabled || confirm('Are you sure you want to enable live trading?')) {
+                            setTradingForm(p => ({ ...p, trading_enabled: checked }))
+                          }
+                        }}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Max Trade Size ($)</Label>
+                      <Input
+                        type="number"
+                        value={tradingForm.max_trade_size_usd}
+                        onChange={(e) => setTradingForm(p => ({ ...p, max_trade_size_usd: parseFloat(e.target.value) || 0 }))}
+                        min={1}
+                        className="mt-1"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Max Daily Volume ($)</Label>
+                      <Input
+                        type="number"
+                        value={tradingForm.max_daily_trade_volume}
+                        onChange={(e) => setTradingForm(p => ({ ...p, max_daily_trade_volume: parseFloat(e.target.value) || 0 }))}
+                        min={10}
+                        className="mt-1"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Max Open Positions</Label>
+                      <Input
+                        type="number"
+                        value={tradingForm.max_open_positions}
+                        onChange={(e) => setTradingForm(p => ({ ...p, max_open_positions: parseInt(e.target.value) || 1 }))}
+                        min={1}
+                        max={100}
+                        className="mt-1"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Max Slippage (%)</Label>
+                      <Input
+                        type="number"
+                        value={tradingForm.max_slippage_percent}
+                        onChange={(e) => setTradingForm(p => ({ ...p, max_slippage_percent: parseFloat(e.target.value) || 0 }))}
+                        step="0.1"
+                        min={0.1}
+                        max={10}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('trading')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Trading Settings
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Auto Trader Config */}
+            {activeSection === 'autotrader' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-emerald-500/10 rounded-lg">
+                    <Activity className="w-5 h-5 text-emerald-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
+                    <p className="text-sm text-muted-foreground">Configure autonomous trading parameters and limits</p>
+                  </div>
+                </div>
+
+                {autoTraderStatus?.config && (
+                  <Card className="bg-muted">
+                    <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+                      <div>
+                        <p className="text-xs text-muted-foreground">Mode</p>
+                        <p className="font-mono text-sm font-medium">{autoTraderStatus.config.mode?.toUpperCase()}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Status</p>
+                        <Badge variant={autoTraderStatus.running ? "default" : "secondary"} className={cn(
+                          "font-mono text-sm font-medium",
+                          autoTraderStatus.running ? "bg-green-500/10 text-green-400" : "bg-muted text-muted-foreground"
+                        )}>
+                          {autoTraderStatus.running ? 'Running' : 'Stopped'}
+                        </Badge>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Strategies</p>
+                        <p className="font-mono text-xs">{autoTraderStatus.config.enabled_strategies?.join(', ') || 'All'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Circuit Breaker</p>
+                        <p className="font-mono text-sm">{autoTraderStatus.config.circuit_breaker_losses} losses</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Min ROI %</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.min_roi_percent}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, min_roi_percent: parseFloat(e.target.value) || 0 }))}
+                      step="0.5"
+                      min={0}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Minimum return to execute a trade</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Max Risk Score</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.max_risk_score}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_risk_score: parseFloat(e.target.value) || 0 }))}
+                      step="0.1"
+                      min={0}
+                      max={1}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">0 = lowest risk, 1 = highest</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Base Position Size ($)</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.base_position_size_usd}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, base_position_size_usd: parseFloat(e.target.value) || 1 }))}
+                      min={1}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Default trade size</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Max Position Size ($)</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.max_position_size_usd}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_position_size_usd: parseFloat(e.target.value) || 1 }))}
+                      min={1}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Maximum single trade size</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Max Daily Trades</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.max_daily_trades}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_trades: parseInt(e.target.value) || 1 }))}
+                      min={1}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Daily trade count limit</p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Max Daily Loss ($)</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.max_daily_loss_usd}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_loss_usd: parseFloat(e.target.value) || 0 }))}
+                      min={0}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Stop trading after this daily loss</p>
+                  </div>
+
+                  <div className="col-span-2">
+                    <Label className="text-xs text-muted-foreground">Paper Account Capital ($)</Label>
+                    <Input
+                      type="number"
+                      value={autoTraderForm.paper_account_capital}
+                      onChange={(e) => setAutoTraderForm(p => ({ ...p, paper_account_capital: parseFloat(e.target.value) || 100 }))}
+                      min={100}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Starting capital for paper trading simulation</p>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('autotrader')} disabled={autoTraderConfigMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Auto Trader Config
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Maintenance Settings */}
+            {activeSection === 'maintenance' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-red-500/10 rounded-lg">
+                    <Database className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Database Maintenance</h3>
+                    <p className="text-sm text-muted-foreground">Configure automatic cleanup of old data</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="bg-muted">
+                    <CardContent className="flex items-center justify-between p-3">
+                      <div>
+                        <p className="font-medium text-sm">Auto Cleanup</p>
+                        <p className="text-xs text-muted-foreground">Automatically delete old records</p>
+                      </div>
+                      <Switch
+                        checked={maintenanceForm.auto_cleanup_enabled}
+                        onCheckedChange={(checked) => setMaintenanceForm(p => ({ ...p, auto_cleanup_enabled: checked }))}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Cleanup Interval (hours)</Label>
+                      <Input
+                        type="number"
+                        value={maintenanceForm.cleanup_interval_hours}
+                        onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_interval_hours: parseInt(e.target.value) || 24 }))}
+                        min={1}
+                        max={168}
+                        className="mt-1"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Keep Resolved Trades (days)</Label>
+                      <Input
+                        type="number"
+                        value={maintenanceForm.cleanup_resolved_trade_days}
+                        onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_resolved_trade_days: parseInt(e.target.value) || 30 }))}
+                        min={1}
+                        max={365}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('maintenance')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Maintenance Settings
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
-      {description && <p className="text-xs text-gray-600 mt-1">{description}</p>}
     </div>
   )
 }

@@ -1,8 +1,10 @@
 import { useAtom } from 'jotai'
 import { Sun, Moon } from 'lucide-react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
 import { themeAtom, Theme } from '../store/atoms'
 import { useEffect } from 'react'
+import { Button } from './ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 export default function ThemeToggle({ className = '' }: { className?: string }) {
   const [theme, setTheme] = useAtom(themeAtom)
@@ -24,22 +26,24 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
   }, [theme])
 
   return (
-    <button
-      onClick={toggleTheme}
-      className={clsx(
-        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all',
-        theme === 'dark'
-          ? 'bg-gray-800 text-gray-400 hover:text-yellow-400 hover:bg-gray-700'
-          : 'bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20',
-        className
-      )}
-      title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-    >
-      {theme === 'dark' ? (
-        <Sun className="w-3.5 h-3.5" />
-      ) : (
-        <Moon className="w-3.5 h-3.5" />
-      )}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleTheme}
+          className={cn("h-8 px-2", className)}
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-3.5 h-3.5" />
+          ) : (
+            <Moon className="w-3.5 h-3.5" />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        Switch to {theme === 'dark' ? 'light' : 'dark'} mode
+      </TooltipContent>
+    </Tooltip>
   )
 }

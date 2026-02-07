@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
-import clsx from 'clsx'
+import { cn } from '../lib/utils'
+import { Badge } from './ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 interface DataFreshnessIndicatorProps {
   lastUpdated: string | null | undefined
@@ -75,38 +77,37 @@ export default function DataFreshnessIndicator({
   const timeSince = lastUpdated ? getTimeSince(lastUpdated) : null
 
   return (
-    <div
-      className={clsx(
-        'flex items-center gap-2 px-2.5 py-1 rounded-full text-xs',
-        config.bg,
-        className
-      )}
-      title={lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : 'No data received yet'}
-    >
-      <span className="relative flex h-2.5 w-2.5">
-        {level === 'fresh' && (
-          <span className={clsx(
-            'absolute inline-flex h-full w-full rounded-full opacity-75',
-            config.color,
-            'animate-ping'
-          )} />
-        )}
-        <span className={clsx(
-          'relative inline-flex rounded-full h-2.5 w-2.5',
-          config.color
-        )} />
-      </span>
-      {showLabel && (
-        <span className={clsx(
-          'font-medium',
-          level === 'fresh' && 'text-green-400',
-          level === 'warning' && 'text-yellow-400',
-          level === 'stale' && 'text-red-400',
-          level === 'unknown' && 'text-gray-400',
-        )}>
-          {timeSince || config.label}
-        </span>
-      )}
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className={cn("gap-2 py-1", config.bg, className)}>
+          <span className="relative flex h-2.5 w-2.5">
+            {level === 'fresh' && (
+              <span className={cn(
+                'absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping',
+                config.color
+              )} />
+            )}
+            <span className={cn(
+              'relative inline-flex rounded-full h-2.5 w-2.5',
+              config.color
+            )} />
+          </span>
+          {showLabel && (
+            <span className={cn(
+              'font-medium',
+              level === 'fresh' && 'text-green-400',
+              level === 'warning' && 'text-yellow-400',
+              level === 'stale' && 'text-red-400',
+              level === 'unknown' && 'text-gray-400',
+            )}>
+              {timeSince || config.label}
+            </span>
+          )}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>
+        {lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : 'No data received yet'}
+      </TooltipContent>
+    </Tooltip>
   )
 }
