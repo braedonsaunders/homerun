@@ -14,6 +14,8 @@ import {
   PlayCircle,
   Bot,
   Search,
+  ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ChevronRight,
   Pause,
@@ -88,6 +90,8 @@ function App() {
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
+  const [sortBy, setSortBy] = useState<string>('roi')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
@@ -146,13 +150,15 @@ function App() {
 
   // Queries
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, currentPage],
+    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
       category: selectedCategory || undefined,
       min_profit: minProfit,
       max_risk: maxRisk,
       search: searchQuery || undefined,
+      sort_by: sortBy,
+      sort_dir: sortDir,
       limit: ITEMS_PER_PAGE,
       offset: currentPage * ITEMS_PER_PAGE
     }),
@@ -610,6 +616,43 @@ function App() {
                       className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer mt-2"
                     />
                   </div>
+                </div>
+
+                {/* Sort Controls */}
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-xs text-muted-foreground">Sort:</span>
+                  {([
+                    ['roi', 'ROI'],
+                    ['ai_score', 'AI Score'],
+                    ['profit', 'Profit'],
+                    ['liquidity', 'Liquidity'],
+                    ['risk', 'Risk'],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        if (sortBy === key) {
+                          setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                        } else {
+                          setSortBy(key)
+                          setSortDir('desc')
+                        }
+                      }}
+                      className={cn(
+                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                        sortBy === key
+                          ? 'bg-primary/20 text-primary'
+                          : 'bg-muted/50 text-muted-foreground hover:bg-muted'
+                      )}
+                    >
+                      {label}
+                      {sortBy === key && (
+                        sortDir === 'desc'
+                          ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
+                          : <ChevronUp className="w-3 h-3 inline ml-0.5" />
+                      )}
+                    </button>
+                  ))}
                 </div>
 
                 {/* Opportunities List */}

@@ -248,6 +248,8 @@ export const getOpportunities = async (params?: {
   min_liquidity?: number
   search?: string
   category?: string
+  sort_by?: string
+  sort_dir?: string
   limit?: number
   offset?: number
 }): Promise<OpportunitiesResponse> => {

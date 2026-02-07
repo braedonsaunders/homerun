@@ -23,6 +23,11 @@ async def get_opportunities(
     category: Optional[str] = Query(
         None, description="Filter by category (e.g., politics, sports, crypto)"
     ),
+    sort_by: Optional[str] = Query(
+        None,
+        description="Sort field: roi (default), ai_score, profit, liquidity, risk",
+    ),
+    sort_dir: Optional[str] = Query("desc", description="Sort direction: asc or desc"),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip"),
 ):
@@ -47,6 +52,59 @@ async def get_opportunities(
             or (opp.event_title and search_lower in opp.event_title.lower())
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
         ]
+
+    # Sort opportunities
+    reverse = sort_dir != "asc"
+    if sort_by == "ai_score":
+        # Look up latest AI judgment scores from the database
+        from sqlalchemy import select, func
+        from models.database import AsyncSessionLocal, OpportunityJudgment
+
+        ai_scores: dict[str, float] = {}
+        try:
+            async with AsyncSessionLocal() as session:
+                # Get the most recent overall_score per opportunity_id
+                subq = (
+                    select(
+                        OpportunityJudgment.opportunity_id,
+                        func.max(OpportunityJudgment.judged_at).label("latest"),
+                    )
+                    .group_by(OpportunityJudgment.opportunity_id)
+                    .subquery()
+                )
+                rows = await session.execute(
+                    select(
+                        OpportunityJudgment.opportunity_id,
+                        OpportunityJudgment.overall_score,
+                    ).join(
+                        subq,
+                        (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
+                        & (OpportunityJudgment.judged_at == subq.c.latest),
+                    )
+                )
+                for row in rows:
+                    ai_scores[row.opportunity_id] = row.overall_score or 0.0
+        except Exception:
+            pass
+
+        # Scored opportunities first, then unscored (sorted by ROI)
+        opportunities.sort(
+            key=lambda o: (
+                o.id in ai_scores,
+                ai_scores.get(o.id, 0.0),
+            ),
+            reverse=reverse,
+        )
+    elif sort_by == "profit":
+        opportunities.sort(key=lambda o: o.net_profit, reverse=reverse)
+    elif sort_by == "liquidity":
+        opportunities.sort(key=lambda o: o.min_liquidity, reverse=reverse)
+    elif sort_by == "risk":
+        opportunities.sort(key=lambda o: o.risk_score, reverse=reverse)
+    else:
+        # Default: sort by ROI (already sorted from scanner, but
+        # respect direction)
+        opportunities.sort(key=lambda o: o.roi_percent, reverse=reverse)
 
     # Apply pagination
     total = len(opportunities)
