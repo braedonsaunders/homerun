@@ -40,6 +40,7 @@ import {
   getTradingPositions,
   getTradingBalance,
   getOrders,
+  getSimulationAccounts,
 } from '../services/api'
 
 interface TradingPosition {
@@ -75,6 +76,7 @@ export default function TradingPanel() {
   const [tradeSortDir, setTradeSortDir] = useState<'asc' | 'desc'>('desc')
   const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([])
   const [expandedPositions, setExpandedPositions] = useState<Set<number>>(new Set())
+  const [showAccountPicker, setShowAccountPicker] = useState(false)
   const feedRef = useRef<HTMLDivElement>(null)
   const prevTradesRef = useRef<string[]>([])
   const prevStatsRef = useRef<{ seen: number; executed: number; skipped: number } | null>(null)
@@ -115,9 +117,16 @@ export default function TradingPanel() {
     refetchInterval: 15000,
   })
 
+  const { data: simulationAccounts = [] } = useQuery({
+    queryKey: ['simulation-accounts'],
+    queryFn: getSimulationAccounts,
+    enabled: showAccountPicker,
+  })
+
   const startMutation = useMutation({
-    mutationFn: (mode: string) => startAutoTrader(mode),
+    mutationFn: ({ mode, accountId }: { mode: string; accountId?: string }) => startAutoTrader(mode, accountId),
     onSuccess: () => {
+      setShowAccountPicker(false)
       queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
       addFeedEvent({ type: 'system', title: 'Auto Trader Started', detail: 'Trading engine is now active', icon: 'system' })
     }
@@ -146,6 +155,19 @@ export default function TradingPanel() {
       addFeedEvent({ type: 'system', title: 'EMERGENCY STOP', detail: 'All trading halted, orders cancelled', icon: 'alert' })
     }
   })
+
+  // Close account picker when clicking outside
+  const accountPickerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!showAccountPicker) return
+    const handler = (e: MouseEvent) => {
+      if (accountPickerRef.current && !accountPickerRef.current.contains(e.target as Node)) {
+        setShowAccountPicker(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showAccountPicker])
 
   const stats = status?.stats
   const config = status?.config
@@ -427,18 +449,46 @@ export default function TradingPanel() {
             </button>
           ) : (
             <>
-              <button
-                onClick={() => startMutation.mutate('paper')}
-                disabled={startMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition-colors border border-blue-500/20"
-              >
-                <Play className="w-3.5 h-3.5" />
-                Paper
-              </button>
+              <div className="relative" ref={accountPickerRef}>
+                <button
+                  onClick={() => setShowAccountPicker(prev => !prev)}
+                  disabled={startMutation.isPending}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition-colors border border-blue-500/20"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  Paper
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {showAccountPicker && (
+                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+                    <div className="px-3 py-2 border-b border-gray-700">
+                      <span className="text-xs font-medium text-gray-400">Select Paper Account</span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      {simulationAccounts.map(acc => (
+                        <button
+                          key={acc.id}
+                          onClick={() => startMutation.mutate({ mode: 'paper', accountId: acc.id })}
+                          className="w-full text-left px-3 py-2 hover:bg-gray-700/50 transition-colors border-b border-gray-700/50 last:border-b-0"
+                        >
+                          <div className="text-sm text-gray-200">{acc.name}</div>
+                          <div className="text-xs text-gray-500">${acc.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital</div>
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => startMutation.mutate({ mode: 'paper' })}
+                      className="w-full text-left px-3 py-2 hover:bg-blue-500/10 transition-colors border-t border-gray-700 text-blue-400 text-sm"
+                    >
+                      + New Account
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={() => {
                   if (confirm('Enable LIVE trading? This will use REAL MONEY.')) {
-                    startMutation.mutate('live')
+                    startMutation.mutate({ mode: 'live' })
                   }
                 }}
                 disabled={startMutation.isPending}

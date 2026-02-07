@@ -833,8 +833,8 @@ export const getAutoTraderStatus = async (): Promise<AutoTraderStatus> => {
   return data
 }
 
-export const startAutoTrader = async (mode?: string) => {
-  const { data } = await api.post('/auto-trader/start', null, { params: { mode } })
+export const startAutoTrader = async (mode?: string, accountId?: string) => {
+  const { data } = await api.post('/auto-trader/start', null, { params: { mode, account_id: accountId } })
   return data
 }
 
