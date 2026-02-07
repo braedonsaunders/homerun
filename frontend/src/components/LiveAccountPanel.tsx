@@ -44,6 +44,8 @@ export default function LiveAccountPanel() {
   const { data: balance } = useQuery({
     queryKey: ['trading-balance'],
     queryFn: getTradingBalance,
+    enabled: !!tradingStatus?.initialized,
+    retry: false,
   })
 
   const positionsTotalValue = livePositions.reduce((s: number, p: TradingPosition) => s + p.size * p.current_price, 0)

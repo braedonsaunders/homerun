@@ -16,7 +16,6 @@ Inspired by virattt/dexter's LLM-as-judge evaluation pattern.
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -34,7 +33,9 @@ from services.ai.scratchpad import ScratchpadService
 if TYPE_CHECKING:
     from models.opportunity import ArbitrageOpportunity
 
-logger = logging.getLogger(__name__)
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # System prompt
