@@ -96,13 +96,19 @@ class AutoTraderConfig:
     circuit_breaker_duration_minutes: int = 30
 
     # Settlement time filtering
-    max_end_date_days: Optional[int] = 30  # Skip markets settling more than N days out (None = no limit)
-    min_end_date_days: Optional[int] = None  # Skip markets settling sooner than N days (None = no limit)
+    max_end_date_days: Optional[int] = (
+        30  # Skip markets settling more than N days out (None = no limit)
+    )
+    min_end_date_days: Optional[int] = (
+        None  # Skip markets settling sooner than N days (None = no limit)
+    )
     prefer_near_settlement: bool = True  # Boost score for markets settling sooner
 
     # Opportunity prioritization
     priority_method: str = "composite"  # "roi", "annualized_roi", "composite"
-    settlement_weight: float = 0.3  # Weight for settlement proximity in composite score (0-1)
+    settlement_weight: float = (
+        0.3  # Weight for settlement proximity in composite score (0-1)
+    )
     roi_weight: float = 0.5  # Weight for ROI in composite score (0-1)
     liquidity_weight: float = 0.1  # Weight for liquidity in composite score (0-1)
     risk_weight: float = 0.1  # Weight for (inverse) risk in composite score (0-1)
@@ -113,8 +119,12 @@ class AutoTraderConfig:
 
     # Exclusion filters
     excluded_categories: list[str] = field(default_factory=list)  # e.g. ["Politics"]
-    excluded_keywords: list[str] = field(default_factory=list)  # e.g. ["presidential", "2028"]
-    excluded_event_slugs: list[str] = field(default_factory=list)  # e.g. ["will-donald-trump-win"]
+    excluded_keywords: list[str] = field(
+        default_factory=list
+    )  # e.g. ["presidential", "2028"]
+    excluded_event_slugs: list[str] = field(
+        default_factory=list
+    )  # e.g. ["will-donald-trump-win"]
 
     # Volume filter
     min_volume_usd: float = 0.0  # Minimum market trading volume
@@ -124,16 +134,26 @@ class AutoTraderConfig:
     ai_max_resolution_risk: float = 0.5  # Block if resolution risk_score exceeds this
     ai_min_resolution_clarity: float = 0.5  # Block if clarity_score below this
     ai_resolution_block_avoid: bool = True  # Hard block if recommendation is "avoid"
-    ai_resolution_model: Optional[str] = None  # LLM model override (None = default gpt-4o-mini)
-    ai_skip_on_analysis_failure: bool = False  # If True, skip trade when analysis fails; if False, allow trade through
+    ai_resolution_model: Optional[str] = (
+        None  # LLM model override (None = default gpt-4o-mini)
+    )
+    ai_skip_on_analysis_failure: bool = (
+        False  # If True, skip trade when analysis fails; if False, allow trade through
+    )
 
     # AI: Opportunity judge position sizing (Option C)
     ai_position_sizing: bool = True  # Use AI judge score to scale position sizes
-    ai_min_score_to_trade: float = 0.0  # Hard floor: skip if overall_score below this (0 = no floor)
-    ai_score_size_multiplier: bool = True  # Scale position size by AI score (e.g. 0.8 score = 80% size)
+    ai_min_score_to_trade: float = (
+        0.0  # Hard floor: skip if overall_score below this (0 = no floor)
+    )
+    ai_score_size_multiplier: bool = (
+        True  # Scale position size by AI score (e.g. 0.8 score = 80% size)
+    )
     ai_score_boost_threshold: float = 0.85  # Boost size by 1.2x if score exceeds this
     ai_score_boost_multiplier: float = 1.2  # How much to boost high-confidence trades
-    ai_judge_model: Optional[str] = None  # LLM model override (None = default gpt-4o-mini)
+    ai_judge_model: Optional[str] = (
+        None  # LLM model override (None = default gpt-4o-mini)
+    )
 
 
 @dataclass
@@ -160,7 +180,9 @@ class TradeRecord:
     ai_resolution_recommendation: Optional[str] = None  # safe/caution/avoid
     ai_resolution_risk: Optional[float] = None
     ai_judge_score: Optional[float] = None  # overall_score from opportunity judge
-    ai_judge_recommendation: Optional[str] = None  # strong_execute/execute/review/skip/strong_skip
+    ai_judge_recommendation: Optional[str] = (
+        None  # strong_execute/execute/review/skip/strong_skip
+    )
     ai_size_adjustment: Optional[float] = None  # multiplier applied from AI scoring
 
 
@@ -297,7 +319,9 @@ class AutoTrader:
             return 0.0
         return (end_date - now).total_seconds() / 86400.0
 
-    def _annualized_roi(self, roi_percent: float, days_to_settlement: Optional[float]) -> float:
+    def _annualized_roi(
+        self, roi_percent: float, days_to_settlement: Optional[float]
+    ) -> float:
         """Convert raw ROI to annualized ROI based on settlement time.
 
         A 5% ROI in 7 days is much better than 5% in 365 days.
@@ -363,7 +387,8 @@ class AutoTrader:
         if not event_id:
             return 0
         return sum(
-            1 for t in self._trades.values()
+            1
+            for t in self._trades.values()
             if t.status in ("open", "pending") and t.event_id == event_id
         )
 
@@ -372,7 +397,8 @@ class AutoTrader:
         if not event_id:
             return 0.0
         return sum(
-            t.total_cost for t in self._trades.values()
+            t.total_cost
+            for t in self._trades.values()
             if t.status in ("open", "pending") and t.event_id == event_id
         )
 
@@ -382,13 +408,16 @@ class AutoTrader:
             return self._ai_available
         try:
             from services.ai import get_llm_manager
+
             manager = get_llm_manager()
             self._ai_available = manager.is_available()
         except Exception:
             self._ai_available = False
         return self._ai_available
 
-    async def _get_resolution_analysis(self, opp: ArbitrageOpportunity) -> Optional[dict]:
+    async def _get_resolution_analysis(
+        self, opp: ArbitrageOpportunity
+    ) -> Optional[dict]:
         """Get resolution analysis for an opportunity's markets, using cache.
 
         Checks the in-memory cache first, then the DB-level 24h cache inside
@@ -403,7 +432,9 @@ class AutoTrader:
         # Use event_id or first market id as cache key
         cache_key = opp.event_id
         if not cache_key and opp.markets:
-            cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
+            cache_key = opp.markets[0].get("id") or opp.markets[0].get(
+                "condition_id", ""
+            )
         if not cache_key:
             return None
 
@@ -430,7 +461,9 @@ class AutoTrader:
             logger.error(f"Resolution analysis failed for {cache_key}: {e}")
             return None
 
-    async def _get_ai_judgment(self, opp: ArbitrageOpportunity, resolution_analysis: Optional[dict] = None) -> Optional[dict]:
+    async def _get_ai_judgment(
+        self, opp: ArbitrageOpportunity, resolution_analysis: Optional[dict] = None
+    ) -> Optional[dict]:
         """Get AI judge score for an opportunity, using cache.
 
         Returns the judgment dict, or None if unavailable.
@@ -475,14 +508,16 @@ class AutoTrader:
         """Check if opportunity's event slug matches exclusion list."""
         if not self.config.excluded_event_slugs:
             return None
-        for market in (opp.markets or []):
+        for market in opp.markets or []:
             slug = market.get("slug", "")
             for excl_slug in self.config.excluded_event_slugs:
                 if excl_slug.lower() in slug.lower():
                     return excl_slug
         return None
 
-    async def _should_trade_opportunity(self, opp: ArbitrageOpportunity) -> tuple[bool, str]:
+    async def _should_trade_opportunity(
+        self, opp: ArbitrageOpportunity
+    ) -> tuple[bool, str]:
         """Determine if an opportunity should be traded.
 
         This is async because the resolution analysis gate requires an LLM call
@@ -583,7 +618,10 @@ class AutoTrader:
         if self.config.min_volume_usd > 0:
             opp_volume = sum(m.get("volume", 0) for m in (opp.markets or []))
             if opp_volume < self.config.min_volume_usd:
-                return False, f"Volume ${opp_volume:.0f} below threshold ${self.config.min_volume_usd:.0f}"
+                return (
+                    False,
+                    f"Volume ${opp_volume:.0f} below threshold ${self.config.min_volume_usd:.0f}",
+                )
 
         # For miracle strategy, check impossibility score
         if opp.strategy == StrategyType.MIRACLE:
@@ -781,17 +819,26 @@ class AutoTrader:
             # Pass resolution analysis if we already have it from the gate
             cache_key = opp.event_id
             if not cache_key and opp.markets:
-                cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
-            resolution_data = self._resolution_cache.get(cache_key) if cache_key else None
+                cache_key = opp.markets[0].get("id") or opp.markets[0].get(
+                    "condition_id", ""
+                )
+            resolution_data = (
+                self._resolution_cache.get(cache_key) if cache_key else None
+            )
 
-            ai_judge_result = await self._get_ai_judgment(opp, resolution_analysis=resolution_data)
+            ai_judge_result = await self._get_ai_judgment(
+                opp, resolution_analysis=resolution_data
+            )
 
             if ai_judge_result:
                 ai_score = ai_judge_result.get("overall_score", 0.5)
                 ai_rec = ai_judge_result.get("recommendation", "review")
 
                 # Hard floor: skip if score too low
-                if self.config.ai_min_score_to_trade > 0 and ai_score < self.config.ai_min_score_to_trade:
+                if (
+                    self.config.ai_min_score_to_trade > 0
+                    and ai_score < self.config.ai_min_score_to_trade
+                ):
                     logger.info(
                         f"AI judge blocked trade: score {ai_score:.2f} < min {self.config.ai_min_score_to_trade}"
                     )
@@ -905,7 +952,9 @@ class AutoTrader:
         # Collect resolution analysis info for the trade record
         res_cache_key = opp.event_id
         if not res_cache_key and opp.markets:
-            res_cache_key = opp.markets[0].get("id") or opp.markets[0].get("condition_id", "")
+            res_cache_key = opp.markets[0].get("id") or opp.markets[0].get(
+                "condition_id", ""
+            )
         res_data = self._resolution_cache.get(res_cache_key) if res_cache_key else None
 
         trade = TradeRecord(
@@ -923,11 +972,19 @@ class AutoTrader:
             event_id=opp.event_id,
             days_to_settlement=days,
             composite_score=self._composite_score(opp),
-            ai_resolution_recommendation=res_data.get("overall_recommendation") if res_data else None,
+            ai_resolution_recommendation=res_data.get("overall_recommendation")
+            if res_data
+            else None,
             ai_resolution_risk=res_data.get("overall_risk") if res_data else None,
-            ai_judge_score=ai_judge_result.get("overall_score") if ai_judge_result else None,
-            ai_judge_recommendation=ai_judge_result.get("recommendation") if ai_judge_result else None,
-            ai_size_adjustment=ai_size_adjustment if ai_size_adjustment != 1.0 else None,
+            ai_judge_score=ai_judge_result.get("overall_score")
+            if ai_judge_result
+            else None,
+            ai_judge_recommendation=ai_judge_result.get("recommendation")
+            if ai_judge_result
+            else None,
+            ai_size_adjustment=ai_size_adjustment
+            if ai_size_adjustment != 1.0
+            else None,
         )
 
         guarantee_str = ""

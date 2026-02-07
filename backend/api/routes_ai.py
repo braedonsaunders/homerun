@@ -440,9 +440,7 @@ async def ai_chat(request: AIChatRequest):
                 )
 
         if request.context_type == "market" and request.context_id:
-            context_parts.append(
-                f"The user is viewing market ID: {request.context_id}"
-            )
+            context_parts.append(f"The user is viewing market ID: {request.context_id}")
 
         system_prompt = (
             "You are the AI copilot for Homerun, a Polymarket prediction market "

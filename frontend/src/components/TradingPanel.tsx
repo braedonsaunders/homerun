@@ -1219,7 +1219,6 @@ function PnlChart({ points }: { points: { date: string; equity: number }[] }) {
   const lastEquity = points[points.length - 1]?.equity || 0
   const isProfitable = lastEquity >= 0
   const lineColor = isProfitable ? '#22c55e' : '#ef4444'
-  const fillColor = isProfitable ? 'rgba(34, 197, 94, 0.06)' : 'rgba(239, 68, 68, 0.06)'
 
   return (
     <div className="relative h-full">
