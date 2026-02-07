@@ -225,7 +225,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
           </div>
 
           {/* AI Insights Panel */}
-          {showAIInsights && (judgment || resolutions.length > 0) && (
+          {showAIInsights && (
             <div className="bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/20 rounded-xl p-4 space-y-3">
               <h4 className="text-sm font-medium text-purple-400 flex items-center gap-2">
                 <Sparkles className="w-4 h-4" />

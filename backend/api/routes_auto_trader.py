@@ -166,7 +166,9 @@ async def get_auto_trader_status():
 
 
 @router.post("/start")
-async def start_auto_trader(mode: Optional[str] = None):
+async def start_auto_trader(
+    mode: Optional[str] = None, account_id: Optional[str] = None
+):
     """
     Start the auto trader.
 
@@ -176,6 +178,8 @@ async def start_auto_trader(mode: Optional[str] = None):
     - shadow: Record trades without executing
 
     Default mode is 'paper' if not specified.
+    If account_id is provided, the auto trader will use that simulation account
+    instead of creating a new one.
     """
     if auto_trader._running:
         return {"status": "already_running", "mode": auto_trader.config.mode.value}
@@ -190,6 +194,10 @@ async def start_auto_trader(mode: Optional[str] = None):
             )
     elif auto_trader.config.mode == AutoTraderMode.DISABLED:
         auto_trader.config.mode = AutoTraderMode.PAPER
+
+    # Set selected paper account if provided
+    if account_id:
+        auto_trader.config.paper_account_id = account_id
 
     await auto_trader.start()
 

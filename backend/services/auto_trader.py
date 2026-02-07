@@ -79,6 +79,7 @@ class AutoTraderConfig:
     max_position_size_usd: float = 100.0  # Maximum per trade
     position_size_method: str = "fixed"  # fixed, kelly, volatility_adjusted
     paper_account_capital: float = 10000.0  # Starting capital for paper trading
+    paper_account_id: Optional[str] = None  # ID of simulation account to use (None = create new)
 
     # Risk management
     max_daily_trades: int = 50  # Maximum trades per day
@@ -1037,21 +1038,29 @@ class AutoTrader:
             # Simulation mode
             from services.simulation import simulation_service
 
-            # Get or create a simulation account for auto trading
-            accounts = await simulation_service.get_all_accounts()
-            auto_trader_account = None
-            for acc in accounts:
-                if acc.name == "Auto Trader":
-                    auto_trader_account = acc
-                    break
+            # Use selected account, or fall back to finding/creating "Auto Trader" account
+            account = None
+            if self.config.paper_account_id:
+                account = await simulation_service.get_account(
+                    self.config.paper_account_id
+                )
+                if not account:
+                    logger.warning(
+                        f"Selected paper account {self.config.paper_account_id} not found, falling back to default"
+                    )
 
-            if not auto_trader_account:
-                auto_trader_account = await simulation_service.create_account(
+            if not account:
+                accounts = await simulation_service.get_all_accounts()
+                for acc in accounts:
+                    if acc.name == "Auto Trader":
+                        account = acc
+                        break
+
+            if not account:
+                account = await simulation_service.create_account(
                     name="Auto Trader",
                     initial_capital=self.config.paper_account_capital,
                 )
-
-            account = auto_trader_account
 
             # Execute in simulation
             sim_trade = await simulation_service.execute_opportunity(
