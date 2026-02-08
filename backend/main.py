@@ -22,6 +22,7 @@ from services import scanner, wallet_tracker, polymarket_client
 from services.copy_trader import copy_trader
 from services.trading import trading_service
 from services.auto_trader import auto_trader
+from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
 from services.notifier import notifier
 from services.opportunity_recorder import opportunity_recorder
@@ -132,6 +133,9 @@ async def lifespan(app: FastAPI):
         # Start copy trading service
         await copy_trader.start()
 
+        # Start position monitor (spread trading exit strategies)
+        await position_monitor.start()
+
         # Start fill monitor (read-only, zero risk)
         try:
             from services.fill_monitor import fill_monitor
@@ -191,6 +195,7 @@ async def lifespan(app: FastAPI):
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()
+        position_monitor.stop()
         maintenance_service.stop()
         try:
             from services.fill_monitor import fill_monitor

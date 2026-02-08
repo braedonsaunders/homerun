@@ -30,6 +30,7 @@ import {
   Sparkles,
   Command,
   Keyboard,
+  Copy,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -63,6 +64,7 @@ import SimulationPanel from './components/SimulationPanel'
 import LiveAccountPanel from './components/LiveAccountPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
+import CopyTradingPanel from './components/CopyTradingPanel'
 import PositionsPanel from './components/PositionsPanel'
 import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
@@ -77,6 +79,7 @@ import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
 type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
+type TradingSubTab = 'auto' | 'copy'
 
 const ITEMS_PER_PAGE = 20
 
@@ -84,6 +87,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [accountsSubTab, setAccountsSubTab] = useState<AccountsSubTab>('paper')
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('leaderboard')
+  const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(2.5)
@@ -721,9 +725,44 @@ function App() {
               </div>
             </TabsContent>
 
-            {/* Trading Tab - Auto Trading */}
+            {/* Trading Tab - Auto Trading + Copy Trading */}
             <TabsContent value="trading" forceMount className="mt-0 data-[state=inactive]:hidden">
-              <TradingPanel />
+              {/* Trading Subtabs Navigation */}
+              <div className="flex items-center gap-2 mb-6">
+                <Button
+                  variant="outline"
+                  onClick={() => setTradingSubTab('auto')}
+                  className={cn(
+                    "flex items-center gap-2",
+                    tradingSubTab === 'auto'
+                      ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                      : "bg-card text-muted-foreground hover:text-foreground border-border"
+                  )}
+                >
+                  <Bot className="w-4 h-4" />
+                  Auto Trader
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setTradingSubTab('copy')}
+                  className={cn(
+                    "flex items-center gap-2",
+                    tradingSubTab === 'copy'
+                      ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
+                      : "bg-card text-muted-foreground hover:text-foreground border-border"
+                  )}
+                >
+                  <Copy className="w-4 h-4" />
+                  Copy Trading
+                </Button>
+              </div>
+              {/* Trading Subtab Content */}
+              <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
+                <TradingPanel />
+              </div>
+              <div className={tradingSubTab === 'copy' ? '' : 'hidden'}>
+                <CopyTradingPanel />
+              </div>
             </TabsContent>
 
             {/* Accounts Tab with Paper/Live Subtabs */}

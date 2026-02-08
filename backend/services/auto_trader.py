@@ -67,7 +67,7 @@ class AutoTraderConfig:
     # Entry criteria
     min_roi_percent: float = 2.5  # Minimum ROI to trade
     max_risk_score: float = 0.5  # Maximum acceptable risk
-    min_liquidity_usd: float = 5000.0  # Minimum market liquidity
+    min_liquidity_usd: float = 500.0  # Minimum market liquidity
     min_impossibility_score: float = 0.8  # For miracle strategy
 
     # Profit guarantee thresholds (from article Proposition 4.1)
@@ -100,7 +100,7 @@ class AutoTraderConfig:
 
     # Settlement time filtering
     max_end_date_days: Optional[int] = (
-        30  # Skip markets settling more than N days out (None = no limit)
+        None  # Skip markets settling more than N days out (None = no limit)
     )
     min_end_date_days: Optional[int] = (
         None  # Skip markets settling sooner than N days (None = no limit)
@@ -143,6 +143,11 @@ class AutoTraderConfig:
     ai_skip_on_analysis_failure: bool = (
         False  # If True, skip trade when analysis fails; if False, allow trade through
     )
+
+    # Spread trading exit strategies
+    take_profit_pct: float = 5.0  # Sell when price rises X% above entry (0 = disabled)
+    stop_loss_pct: float = 10.0  # Sell when price drops X% below entry (0 = disabled)
+    enable_spread_exits: bool = True  # Whether to set TP/SL on new positions
 
     # AI: Opportunity judge position sizing (Option C)
     ai_position_sizing: bool = True  # Use AI judge score to scale position sizes
@@ -1067,9 +1072,29 @@ class AutoTrader:
                     initial_capital=self.config.paper_account_capital,
                 )
 
+            # Calculate spread trading exit prices
+            take_profit_price = None
+            stop_loss_price = None
+            if self.config.enable_spread_exits and opp.positions_to_take:
+                avg_entry = sum(p.get("price", 0) for p in opp.positions_to_take) / max(
+                    len(opp.positions_to_take), 1
+                )
+                if self.config.take_profit_pct > 0 and avg_entry > 0:
+                    take_profit_price = min(
+                        avg_entry * (1 + self.config.take_profit_pct / 100), 0.99
+                    )
+                if self.config.stop_loss_pct > 0 and avg_entry > 0:
+                    stop_loss_price = max(
+                        avg_entry * (1 - self.config.stop_loss_pct / 100), 0.01
+                    )
+
             # Execute in simulation
             sim_trade = await simulation_service.execute_opportunity(
-                account_id=account.id, opportunity=opp, position_size=position_size
+                account_id=account.id,
+                opportunity=opp,
+                position_size=position_size,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
             )
 
             if sim_trade:
@@ -1312,6 +1337,10 @@ class AutoTrader:
             "excluded_event_slugs": self.config.excluded_event_slugs,
             # Volume
             "min_volume_usd": self.config.min_volume_usd,
+            # Spread trading exits
+            "take_profit_pct": self.config.take_profit_pct,
+            "stop_loss_pct": self.config.stop_loss_pct,
+            "enable_spread_exits": self.config.enable_spread_exits,
             # AI: Resolution analysis gate
             "ai_resolution_gate": self.config.ai_resolution_gate,
             "ai_max_resolution_risk": self.config.ai_max_resolution_risk,

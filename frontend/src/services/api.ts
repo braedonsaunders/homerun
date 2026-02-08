@@ -149,18 +149,65 @@ export interface CopyConfig {
   source_wallet: string
   account_id: string
   enabled: boolean
+  copy_mode: string
   settings: {
     min_roi_threshold: number
     max_position_size: number
     copy_delay_seconds: number
     slippage_tolerance: number
+    proportional_sizing: boolean
+    proportional_multiplier: number
+    copy_buys: boolean
+    copy_sells: boolean
+    market_categories: string[]
   }
   stats: {
     total_copied: number
     successful_copies: number
     failed_copies: number
     total_pnl: number
+    total_buys_copied: number
+    total_sells_copied: number
   }
+}
+
+export interface CopiedTrade {
+  id: string
+  config_id: string
+  source_trade_id: string
+  source_wallet: string
+  market_id: string
+  market_question: string | null
+  token_id: string | null
+  side: string
+  outcome: string | null
+  source_price: number
+  source_size: number
+  executed_price: number | null
+  executed_size: number | null
+  status: string
+  execution_mode: string
+  error_message: string | null
+  source_timestamp: string | null
+  copied_at: string
+  executed_at: string | null
+  realized_pnl: number | null
+}
+
+export interface CopyTradingStatus {
+  service_running: boolean
+  poll_interval_seconds: number
+  total_configs: number
+  enabled_configs: number
+  tracked_wallets: string[]
+  configs_summary: Array<{
+    id: string
+    source_wallet: string
+    copy_mode: string
+    enabled: boolean
+    total_copied: number
+    successful_copies: number
+  }>
 }
 
 export interface WalletAnalysis {
@@ -457,12 +504,33 @@ export const getCopyConfigs = async (accountId?: string): Promise<CopyConfig[]> 
 export const createCopyConfig = async (params: {
   source_wallet: string
   account_id: string
+  copy_mode?: string
   min_roi_threshold?: number
   max_position_size?: number
   copy_delay_seconds?: number
   slippage_tolerance?: number
+  proportional_sizing?: boolean
+  proportional_multiplier?: number
+  copy_buys?: boolean
+  copy_sells?: boolean
 }) => {
   const { data } = await api.post('/copy-trading/configs', params)
+  return data
+}
+
+export const updateCopyConfig = async (configId: string, params: {
+  enabled?: boolean
+  copy_mode?: string
+  min_roi_threshold?: number
+  max_position_size?: number
+  copy_delay_seconds?: number
+  slippage_tolerance?: number
+  proportional_sizing?: boolean
+  proportional_multiplier?: number
+  copy_buys?: boolean
+  copy_sells?: boolean
+}) => {
+  const { data } = await api.patch(`/copy-trading/configs/${configId}`, params)
   return data
 }
 
@@ -481,7 +549,22 @@ export const disableCopyConfig = async (configId: string) => {
   return data
 }
 
-export const getCopyTradingStatus = async () => {
+export const forceSyncCopyConfig = async (configId: string) => {
+  const { data } = await api.post(`/copy-trading/configs/${configId}/sync`)
+  return data
+}
+
+export const getCopyTrades = async (params?: {
+  config_id?: string
+  status?: string
+  limit?: number
+  offset?: number
+}): Promise<CopiedTrade[]> => {
+  const { data } = await api.get('/copy-trading/trades', { params })
+  return data
+}
+
+export const getCopyTradingStatus = async (): Promise<CopyTradingStatus> => {
   const { data } = await api.get('/copy-trading/status')
   return data
 }

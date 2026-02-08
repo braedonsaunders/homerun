@@ -768,7 +768,11 @@ class CopyTradingService:
             )
             session.add(trade)
 
-            # Create position record
+            # Create position record with spread trading exits
+            # Default: take profit at +5%, stop loss at -10%
+            take_profit = min(price * 1.05, 0.99) if price > 0 else None
+            stop_loss = max(price * 0.90, 0.01) if price > 0 else None
+
             position = SimulationPosition(
                 id=str(uuid.uuid4()),
                 account_id=account_id,
@@ -780,6 +784,8 @@ class CopyTradingService:
                 quantity=size,
                 entry_price=price,
                 entry_cost=total_cost_with_slippage,
+                take_profit_price=take_profit,
+                stop_loss_price=stop_loss,
                 status=TradeStatus.OPEN,
             )
             session.add(position)
