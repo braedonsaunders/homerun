@@ -289,6 +289,26 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
 
         {/* Action buttons row */}
         <div className="flex items-center gap-2">
+          {/* Polymarket link */}
+          {(() => {
+            const polyUrl = opportunity.event_slug
+              ? `https://polymarket.com/event/${opportunity.event_slug}`
+              : opportunity.markets.length > 0 && opportunity.markets[0].slug
+                ? `https://polymarket.com/event/${opportunity.markets[0].slug}`
+                : null
+            return polyUrl ? (
+              <a
+                href={polyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Polymarket
+              </a>
+            ) : null
+          })()}
           {onOpenCopilot && (
             <Button
               variant="outline"
@@ -378,7 +398,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                       </p>
                     </div>
                     <a
-                      href={`https://polymarket.com/event/${market.id}`}
+                      href={market.slug ? `https://polymarket.com/event/${market.slug}` : `https://polymarket.com/event/${market.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
