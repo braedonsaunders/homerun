@@ -16,6 +16,7 @@ import {
   Zap,
   MessageSquare,
   Activity,
+  DollarSign,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -100,7 +101,8 @@ export default function SettingsPanel() {
     google_api_key: '',
     xai_api_key: '',
     deepseek_api_key: '',
-    model: ''
+    model: '',
+    max_monthly_spend: 50.0
   })
 
   const [availableModels, setAvailableModels] = useState<Record<string, LLMModelOption[]>>({})
@@ -162,7 +164,8 @@ export default function SettingsPanel() {
         google_api_key: '',
         xai_api_key: '',
         deepseek_api_key: '',
-        model: settings.llm.model || ''
+        model: settings.llm.model || '',
+        max_monthly_spend: settings.llm.max_monthly_spend ?? 50.0
       })
 
       setNotificationsForm({
@@ -256,7 +259,8 @@ export default function SettingsPanel() {
       case 'llm':
         updates.llm = {
           provider: llmForm.provider,
-          model: llmForm.model || null
+          model: llmForm.model || null,
+          max_monthly_spend: llmForm.max_monthly_spend
         }
         if (llmForm.openai_api_key) updates.llm.openai_api_key = llmForm.openai_api_key
         if (llmForm.anthropic_api_key) updates.llm.anthropic_api_key = llmForm.anthropic_api_key
@@ -567,6 +571,28 @@ export default function SettingsPanel() {
                         : llmForm.provider !== 'none'
                           ? 'Click refresh to fetch available models from the API'
                           : 'Select a provider first'}
+                    </p>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Monthly Spend Limit (USD)</Label>
+                    <div className="flex items-center gap-3 mt-1">
+                      <DollarSign className="w-4 h-4 text-muted-foreground" />
+                      <Input
+                        type="number"
+                        min={0}
+                        step={5}
+                        value={llmForm.max_monthly_spend}
+                        onChange={(e) => setLlmForm(p => ({ ...p, max_monthly_spend: parseFloat(e.target.value) || 0 }))}
+                        className="w-40"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      LLM requests will be blocked once monthly spend reaches this limit. Set to 0 to disable the limit.
                     </p>
                   </div>
                 </div>

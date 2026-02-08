@@ -1487,9 +1487,13 @@ class LLMManager:
     def _check_spend_limit(self) -> None:
         """Check if the monthly spend limit has been exceeded.
 
+        A spend limit of 0 disables the check entirely.
+
         Raises:
             RuntimeError: If the spend limit has been exceeded.
         """
+        if self._spend_limit <= 0:
+            return  # Limit disabled
         if self._monthly_spend >= self._spend_limit:
             raise RuntimeError(
                 f"Monthly LLM spend limit reached (${self._monthly_spend:.2f} / "
@@ -1701,7 +1705,8 @@ class LLMManager:
         """Get usage statistics from the database.
 
         Returns a summary of LLM usage including total spend, per-provider
-        breakdown, and request counts for the current month.
+        breakdown, per-model breakdown, and request counts for the current
+        month.
 
         Returns:
             Dict with usage statistics.
@@ -1711,19 +1716,25 @@ class LLMManager:
 
         try:
             async with AsyncSessionLocal() as session:
-                # Total spend this month
+                # Total spend this month (successful requests)
                 total_result = await session.execute(
                     select(
                         func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0),
                         func.coalesce(func.sum(LLMUsageLog.input_tokens), 0),
                         func.coalesce(func.sum(LLMUsageLog.output_tokens), 0),
                         func.count(LLMUsageLog.id),
+                        func.coalesce(func.avg(LLMUsageLog.latency_ms), 0.0),
                     ).where(
                         LLMUsageLog.requested_at >= month_start,
                         LLMUsageLog.success == True,  # noqa: E712
                     )
                 )
                 total_row = total_result.one()
+                total_cost = float(total_row[0])
+                total_input = int(total_row[1])
+                total_output = int(total_row[2])
+                total_requests = int(total_row[3])
+                avg_latency = float(total_row[4])
 
                 # Per-provider breakdown
                 provider_result = await session.execute(
@@ -1740,6 +1751,23 @@ class LLMManager:
                 )
                 provider_rows = provider_result.all()
 
+                # Per-model breakdown
+                model_result = await session.execute(
+                    select(
+                        LLMUsageLog.model,
+                        func.count(LLMUsageLog.id),
+                        func.coalesce(func.sum(LLMUsageLog.input_tokens), 0),
+                        func.coalesce(func.sum(LLMUsageLog.output_tokens), 0),
+                        func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0),
+                    )
+                    .where(
+                        LLMUsageLog.requested_at >= month_start,
+                        LLMUsageLog.success == True,  # noqa: E712
+                    )
+                    .group_by(LLMUsageLog.model)
+                )
+                model_rows = model_result.all()
+
                 # Error count
                 error_result = await session.execute(
                     select(func.count(LLMUsageLog.id)).where(
@@ -1751,18 +1779,32 @@ class LLMManager:
 
             return {
                 "month_start": month_start.isoformat(),
-                "total_cost_usd": float(total_row[0]),
-                "total_input_tokens": int(total_row[1]),
-                "total_output_tokens": int(total_row[2]),
-                "total_requests": int(total_row[3]),
+                "total_cost_usd": total_cost,
+                "estimated_cost": total_cost,
+                "total_input_tokens": total_input,
+                "total_output_tokens": total_output,
+                "total_tokens": total_input + total_output,
+                "total_requests": total_requests,
+                "successful_requests": total_requests,
+                "failed_requests": int(error_count),
                 "error_count": int(error_count),
+                "avg_latency_ms": round(avg_latency, 1),
                 "spend_limit_usd": self._spend_limit,
-                "spend_remaining_usd": max(
-                    0.0, self._spend_limit - float(total_row[0])
-                ),
+                "spend_remaining_usd": max(0.0, self._spend_limit - total_cost),
                 "providers": {
                     row[0]: {"cost_usd": float(row[1]), "requests": int(row[2])}
                     for row in provider_rows
+                },
+                "by_model": {
+                    row[0]: {
+                        "requests": int(row[1]),
+                        "tokens": int(row[2]) + int(row[3]),
+                        "input_tokens": int(row[2]),
+                        "output_tokens": int(row[3]),
+                        "cost": float(row[4]),
+                    }
+                    for row in model_rows
+                    if row[0]
                 },
                 "configured_providers": [p.value for p in self._providers],
             }

@@ -54,6 +54,9 @@ class LLMSettings(BaseModel):
     model: Optional[str] = Field(
         default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)"
     )
+    max_monthly_spend: Optional[float] = Field(
+        default=None, ge=0, description="Monthly LLM cost cap in USD"
+    )
 
 
 class NotificationSettings(BaseModel):
@@ -204,6 +207,7 @@ async def get_settings():
                 xai_api_key=mask_secret(settings.xai_api_key),
                 deepseek_api_key=mask_secret(settings.deepseek_api_key),
                 model=settings.llm_model,
+                max_monthly_spend=settings.ai_max_monthly_spend,
             ),
             notifications=NotificationSettings(
                 enabled=settings.notifications_enabled,
@@ -287,6 +291,8 @@ async def update_settings(request: UpdateSettingsRequest):
                 if llm.model is not None:
                     settings.llm_model = llm.model or None
                     settings.ai_default_model = llm.model or None
+                if llm.max_monthly_spend is not None:
+                    settings.ai_max_monthly_spend = llm.max_monthly_spend
 
             # Update Notification settings
             if request.notifications:
