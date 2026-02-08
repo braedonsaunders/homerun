@@ -126,6 +126,56 @@ class MustHappenStrategy(BaseStrategy):
         # If we got here with 3+ markets, likely exhaustive
         return len(event.markets) >= 3
 
+    def _is_date_based_event(self, event: Event) -> bool:
+        """Check if an event's markets are cumulative date-based ("by X" style).
+
+        "Delisted by March", "Ceasefire broken by June", "Bitcoin above $X by Q4"
+        are CUMULATIVE: if the event happens in March, the June market also resolves YES.
+        Buying YES on all dates is a directional bet, NOT arbitrage.
+        """
+        questions = [m.question.lower() for m in event.markets]
+        # If most markets contain date/time keywords, it's a date-based event
+        date_patterns = [
+            "by january",
+            "by february",
+            "by march",
+            "by april",
+            "by may",
+            "by june",
+            "by july",
+            "by august",
+            "by september",
+            "by october",
+            "by november",
+            "by december",
+            "by jan",
+            "by feb",
+            "by mar",
+            "by apr",
+            "by jun",
+            "by jul",
+            "by aug",
+            "by sep",
+            "by oct",
+            "by nov",
+            "by dec",
+            "by q1",
+            "by q2",
+            "by q3",
+            "by q4",
+            "by end of",
+            "by the end of",
+            "by 2025",
+            "by 2026",
+            "by 2027",
+            "before ",
+        ]
+        date_count = sum(
+            1 for q in questions if any(pattern in q for pattern in date_patterns)
+        )
+        # If more than half the markets are date-based, reject the whole event
+        return date_count > len(questions) * 0.5
+
     def _detect_must_happen(
         self, event: Event, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
@@ -133,6 +183,11 @@ class MustHappenStrategy(BaseStrategy):
         active_markets = [m for m in event.markets if m.active and not m.closed]
 
         if len(active_markets) < 2:
+            return None
+
+        # CRITICAL: Reject date-based cumulative markets
+        # "X by March", "X by June" are cumulative, not mutually exclusive
+        if self._is_date_based_event(event):
             return None
 
         # Calculate total YES cost

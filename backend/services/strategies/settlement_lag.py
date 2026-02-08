@@ -272,10 +272,17 @@ class SettlementLagStrategy(BaseStrategy):
         if sum_deviation < self.MIN_SUM_DEVIATION:
             return []  # Prices look correct
 
-        # Require at least one concrete settlement signal beyond just sum deviation:
-        # either some outcomes are near zero/one (suggesting partial resolution),
-        # or the event is overdue
-        has_settlement_signal = near_zero_count > 0 or near_one_count > 0 or any_overdue
+        # Require STRONG settlement signals, not just near-zero prices.
+        # In a 22-candidate race, most candidates SHOULD have near-zero prices —
+        # that's normal market pricing, not settlement lag.
+        #
+        # True settlement lag requires:
+        # - At least one outcome near 1.0 (winner is known but not yet settled), OR
+        # - Event is overdue (past resolution date)
+        #
+        # Near-zero prices alone are NOT evidence of settlement — they're just
+        # unpopular outcomes in a multi-candidate race.
+        has_settlement_signal = near_one_count > 0 or any_overdue
         if not has_settlement_signal:
             return []
 

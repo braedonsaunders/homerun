@@ -37,12 +37,14 @@ class Settings(BaseSettings):
     )
 
     # NegRisk Exhaustivity Thresholds
-    NEGRISK_MIN_TOTAL_YES: float = (
-        0.85  # Skip NegRisk if total YES < this (likely missing outcomes)
-    )
-    NEGRISK_WARN_TOTAL_YES: float = (
-        0.92  # Warn if total YES < this (possibly missing outcomes)
-    )
+    # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
+    # Anything below 0.93 is almost always non-exhaustive outcomes, not mispricing.
+    NEGRISK_MIN_TOTAL_YES: float = 0.93  # Hard reject below this
+    NEGRISK_WARN_TOTAL_YES: float = 0.97  # Warn below this
+    # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
+    MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
+    # Max number of legs in a multi-leg trade (slippage compounds per leg)
+    MAX_TRADE_LEGS: int = 8
 
     # Settlement Lag Timing
     SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
