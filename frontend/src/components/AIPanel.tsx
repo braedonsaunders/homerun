@@ -211,10 +211,31 @@ function AIStatusSection() {
           <h4 className="text-sm font-semibold text-muted-foreground mb-3">Quick Usage Summary</h4>
           <div className="grid grid-cols-4 gap-4">
             <MiniStat label="Total Requests" value={status.usage.total_requests ?? 0} />
-            <MiniStat label="Total Tokens" value={status.usage.total_tokens ?? 0} />
-            <MiniStat label="Est. Cost" value={`$${(status.usage.estimated_cost ?? 0).toFixed(4)}`} />
+            <MiniStat label="Total Tokens" value={formatNumber(status.usage.total_tokens ?? 0)} />
+            <MiniStat label="Est. Cost" value={`$${(status.usage.estimated_cost ?? status.usage.total_cost_usd ?? 0).toFixed(4)}`} />
             <MiniStat label="Avg Latency" value={`${(status.usage.avg_latency_ms ?? 0).toFixed(0)}ms`} />
           </div>
+          {status.usage.spend_limit_usd != null && (
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                <span>Monthly Spend</span>
+                <span>${(status.usage.estimated_cost ?? status.usage.total_cost_usd ?? 0).toFixed(2)} / ${status.usage.spend_limit_usd.toFixed(2)}</span>
+              </div>
+              <div className="w-full bg-muted rounded-full h-2 border border-border">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all',
+                    ((status.usage.estimated_cost ?? status.usage.total_cost_usd ?? 0) / status.usage.spend_limit_usd) >= 0.9
+                      ? 'bg-red-500'
+                      : ((status.usage.estimated_cost ?? status.usage.total_cost_usd ?? 0) / status.usage.spend_limit_usd) >= 0.7
+                        ? 'bg-yellow-500'
+                        : 'bg-green-500'
+                  )}
+                  style={{ width: `${Math.min(100, ((status.usage.estimated_cost ?? status.usage.total_cost_usd ?? 0) / status.usage.spend_limit_usd) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
         </Card>
       )}
     </div>
@@ -1056,48 +1077,85 @@ function UsageSection() {
         {!usage ? (
           <EmptyState message="No usage data available yet." />
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <UsageStat
-              icon={<Zap className="w-4 h-4 text-blue-400" />}
-              label="Total Requests"
-              value={usage.total_requests ?? 0}
-            />
-            <UsageStat
-              icon={<FileText className="w-4 h-4 text-green-400" />}
-              label="Input Tokens"
-              value={formatNumber(usage.input_tokens ?? usage.total_input_tokens ?? 0)}
-            />
-            <UsageStat
-              icon={<FileText className="w-4 h-4 text-purple-400" />}
-              label="Output Tokens"
-              value={formatNumber(usage.output_tokens ?? usage.total_output_tokens ?? 0)}
-            />
-            <UsageStat
-              icon={<DollarSign className="w-4 h-4 text-yellow-400" />}
-              label="Estimated Cost"
-              value={`$${(usage.estimated_cost ?? usage.total_cost ?? 0).toFixed(4)}`}
-            />
-            <UsageStat
-              icon={<Clock className="w-4 h-4 text-cyan-400" />}
-              label="Avg Latency"
-              value={`${(usage.avg_latency_ms ?? 0).toFixed(0)}ms`}
-            />
-            <UsageStat
-              icon={<Activity className="w-4 h-4 text-orange-400" />}
-              label="Total Tokens"
-              value={formatNumber(usage.total_tokens ?? 0)}
-            />
-            <UsageStat
-              icon={<CheckCircle className="w-4 h-4 text-green-400" />}
-              label="Successful"
-              value={usage.successful_requests ?? usage.total_requests ?? 0}
-            />
-            <UsageStat
-              icon={<AlertCircle className="w-4 h-4 text-red-400" />}
-              label="Failed"
-              value={usage.failed_requests ?? 0}
-            />
-          </div>
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <UsageStat
+                icon={<Zap className="w-4 h-4 text-blue-400" />}
+                label="Total Requests"
+                value={usage.total_requests ?? 0}
+              />
+              <UsageStat
+                icon={<FileText className="w-4 h-4 text-green-400" />}
+                label="Input Tokens"
+                value={formatNumber(usage.total_input_tokens ?? 0)}
+              />
+              <UsageStat
+                icon={<FileText className="w-4 h-4 text-purple-400" />}
+                label="Output Tokens"
+                value={formatNumber(usage.total_output_tokens ?? 0)}
+              />
+              <UsageStat
+                icon={<DollarSign className="w-4 h-4 text-yellow-400" />}
+                label="Estimated Cost"
+                value={`$${(usage.estimated_cost ?? usage.total_cost_usd ?? 0).toFixed(4)}`}
+              />
+              <UsageStat
+                icon={<Clock className="w-4 h-4 text-cyan-400" />}
+                label="Avg Latency"
+                value={`${(usage.avg_latency_ms ?? 0).toFixed(0)}ms`}
+              />
+              <UsageStat
+                icon={<Activity className="w-4 h-4 text-orange-400" />}
+                label="Total Tokens"
+                value={formatNumber(usage.total_tokens ?? 0)}
+              />
+              <UsageStat
+                icon={<CheckCircle className="w-4 h-4 text-green-400" />}
+                label="Successful"
+                value={usage.successful_requests ?? usage.total_requests ?? 0}
+              />
+              <UsageStat
+                icon={<AlertCircle className="w-4 h-4 text-red-400" />}
+                label="Failed"
+                value={usage.failed_requests ?? usage.error_count ?? 0}
+              />
+            </div>
+
+            {usage.spend_limit_usd != null && (
+              <div className="mt-4 p-4 bg-muted rounded-lg border border-border">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-blue-400" />
+                    <span className="text-sm font-medium">Monthly Spend Limit</span>
+                  </div>
+                  <span className="text-sm font-semibold">
+                    ${(usage.estimated_cost ?? usage.total_cost_usd ?? 0).toFixed(2)} / ${usage.spend_limit_usd.toFixed(2)}
+                  </span>
+                </div>
+                <div className="w-full bg-background rounded-full h-3 border border-border">
+                  <div
+                    className={cn(
+                      'h-full rounded-full transition-all',
+                      ((usage.estimated_cost ?? usage.total_cost_usd ?? 0) / usage.spend_limit_usd) >= 0.9
+                        ? 'bg-red-500'
+                        : ((usage.estimated_cost ?? usage.total_cost_usd ?? 0) / usage.spend_limit_usd) >= 0.7
+                          ? 'bg-yellow-500'
+                          : 'bg-green-500'
+                    )}
+                    style={{ width: `${Math.min(100, ((usage.estimated_cost ?? usage.total_cost_usd ?? 0) / usage.spend_limit_usd) * 100)}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-xs text-muted-foreground">
+                    ${(usage.spend_remaining_usd ?? 0).toFixed(2)} remaining
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {usage.month_start ? `Since ${new Date(usage.month_start).toLocaleDateString()}` : ''}
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </Card>
 
