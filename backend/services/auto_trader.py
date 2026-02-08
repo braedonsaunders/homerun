@@ -18,7 +18,7 @@ import asyncio
 import math
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional, Callable
 import uuid
@@ -317,7 +317,10 @@ class AutoTrader:
         end_date = opp.resolution_date
         if end_date is None:
             return None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        # Make end_date aware if it isn't already
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
         if end_date <= now:
             return 0.0
         return (end_date - now).total_seconds() / 86400.0
