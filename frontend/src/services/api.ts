@@ -44,6 +44,7 @@ export interface Opportunity {
   risk_factors: string[]
   markets: Market[]
   event_id?: string
+  event_slug?: string
   event_title?: string
   category?: string
   min_liquidity: number
@@ -56,6 +57,7 @@ export interface Opportunity {
 
 export interface Market {
   id: string
+  slug?: string
   question: string
   yes_price: number
   no_price: number
@@ -354,6 +356,18 @@ export const getOpportunities = async (params?: {
   offset?: number
 }): Promise<OpportunitiesResponse> => {
   const response = await api.get('/opportunities', { params })
+  const total = parseInt(response.headers['x-total-count'] || '0', 10)
+  return {
+    opportunities: response.data,
+    total
+  }
+}
+
+export const searchPolymarketOpportunities = async (params: {
+  q: string
+  limit?: number
+}): Promise<OpportunitiesResponse> => {
+  const response = await api.get('/opportunities/search-polymarket', { params })
   const total = parseInt(response.headers['x-total-count'] || '0', 10)
   return {
     opportunities: response.data,

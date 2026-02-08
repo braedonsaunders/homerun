@@ -31,10 +31,12 @@ import {
   Command,
   Keyboard,
   Copy,
+  Globe,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
   getOpportunities,
+  searchPolymarketOpportunities,
   getScannerStatus,
   triggerScan,
   getStrategies,
@@ -99,6 +101,9 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
+  const [polymarketSearchQuery, setPolymarketSearchQuery] = useState('')
+  const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
+  const [searchMode, setSearchMode] = useState<'current' | 'polymarket'>('current')
   const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
@@ -182,6 +187,17 @@ function App() {
     queryKey: ['strategies'],
     queryFn: getStrategies,
   })
+
+  // Polymarket search query (only runs when user submits a search)
+  const { data: polymarketSearchData, isLoading: polySearchLoading } = useQuery({
+    queryKey: ['polymarket-search', polymarketSearchSubmitted],
+    queryFn: () => searchPolymarketOpportunities({ q: polymarketSearchSubmitted, limit: 50 }),
+    enabled: !!polymarketSearchSubmitted && searchMode === 'polymarket',
+    staleTime: 60000,
+  })
+
+  const polymarketResults = polymarketSearchData?.opportunities || []
+  const polymarketTotal = polymarketSearchData?.total || 0
 
   // Mutations
   const scanMutation = useMutation({
@@ -523,7 +539,7 @@ function App() {
                     )}
                   >
                     <Zap className="w-4 h-4" />
-                    Arbitrage Opportunities
+                    Markets
                   </Button>
                   <Button
                     variant="outline"
@@ -536,7 +552,7 @@ function App() {
                     )}
                   >
                     <Activity className="w-4 h-4" />
-                    Recent Wallet Trades
+                    Tracked Traders
                   </Button>
                 </div>
 
@@ -550,20 +566,128 @@ function App() {
                   />
                 ) : (
                 <>
-                {/* Search */}
-                <div className="mb-4">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input
-                      type="text"
-                      placeholder="Search opportunities by market, event, or keyword..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-10 bg-card border-border"
-                    />
+                {/* Search Mode Toggle + Search Input */}
+                <div className="mb-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setSearchMode('current')}
+                      className={cn(
+                        'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                        searchMode === 'current'
+                          ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                          : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
+                      )}
+                    >
+                      Current Opportunities
+                    </button>
+                    <button
+                      onClick={() => setSearchMode('polymarket')}
+                      className={cn(
+                        'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
+                        searchMode === 'polymarket'
+                          ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                          : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
+                      )}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      Search All Polymarket
+                    </button>
                   </div>
+
+                  {searchMode === 'current' ? (
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        type="text"
+                        placeholder="Search current opportunities by market, event, or keyword..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-10 bg-card border-border"
+                      />
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        if (polymarketSearchQuery.trim()) {
+                          setPolymarketSearchSubmitted(polymarketSearchQuery.trim())
+                        }
+                      }}
+                      className="flex gap-2"
+                    >
+                      <div className="relative flex-1">
+                        <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-blue-400" />
+                        <Input
+                          type="text"
+                          placeholder="Search all Polymarket markets (e.g. 'bitcoin', 'election', 'FIFA')..."
+                          value={polymarketSearchQuery}
+                          onChange={(e) => setPolymarketSearchQuery(e.target.value)}
+                          className="pl-10 bg-card border-blue-500/20 focus:border-blue-500/40"
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        disabled={!polymarketSearchQuery.trim() || polySearchLoading}
+                        className="bg-blue-500 hover:bg-blue-600 text-white"
+                      >
+                        {polySearchLoading ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Search className="w-4 h-4" />
+                        )}
+                        Search
+                      </Button>
+                    </form>
+                  )}
                 </div>
 
+                {searchMode === 'polymarket' ? (
+                  /* ========== Polymarket Search Results ========== */
+                  <>
+                    {polySearchLoading ? (
+                      <div className="flex items-center justify-center py-12">
+                        <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
+                        <span className="ml-3 text-muted-foreground">Searching Polymarket and analyzing opportunities...</span>
+                      </div>
+                    ) : !polymarketSearchSubmitted ? (
+                      <div className="text-center py-12">
+                        <Globe className="w-12 h-12 text-blue-400/30 mx-auto mb-4" />
+                        <p className="text-muted-foreground">Search all of Polymarket for arbitrage opportunities</p>
+                        <p className="text-sm text-muted-foreground/70 mt-1">
+                          Enter a keyword above and press Search to find markets and analyze them
+                        </p>
+                      </div>
+                    ) : polymarketResults.length === 0 ? (
+                      <div className="text-center py-12">
+                        <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+                        <p className="text-muted-foreground">No arbitrage opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
+                        <p className="text-sm text-muted-foreground/70 mt-1">
+                          Try different keywords or broader search terms
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-2 mb-4">
+                          <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10">
+                            {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
+                          </Badge>
+                        </div>
+                        <div className="space-y-4">
+                          {polymarketResults.map((opp) => (
+                            <OpportunityCard
+                              key={opp.id}
+                              opportunity={opp}
+                              onExecute={setExecutingOpportunity}
+                              onOpenCopilot={handleOpenCopilotForOpportunity}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  /* ========== Current Opportunities (filters + list + pagination) ========== */
+                  <>
                 {/* Filters */}
                 <div className="flex gap-4 mb-6">
                   <div className="flex-1">
@@ -718,6 +842,8 @@ function App() {
                         </div>
                       </div>
                     </div>
+                  </>
+                )}
                   </>
                 )}
                 </>

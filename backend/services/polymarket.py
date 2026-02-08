@@ -119,6 +119,52 @@ class PolymarketClient:
 
         return all_events
 
+    async def search_events(
+        self, query: str, limit: int = 20, closed: bool = False
+    ) -> list[Event]:
+        """Search events on Polymarket by keyword using Gamma API text search.
+
+        Searches by slug, title, and tag concurrently, then merges and
+        deduplicates results.
+        """
+        client = await self._get_client()
+        base_params = {
+            "closed": str(closed).lower(),
+            "limit": limit,
+            "active": "true",
+        }
+
+        # Normalise query for slug-based search (lowercase, hyphenated)
+        slug_query = query.lower().replace(" ", "-")
+
+        async def _fetch(extra_params: dict) -> list[dict]:
+            try:
+                resp = await client.get(
+                    f"{self.gamma_url}/events",
+                    params={**base_params, **extra_params},
+                )
+                return resp.json() if resp.status_code == 200 else []
+            except Exception:
+                return []
+
+        # Search by slug, title, and tag concurrently
+        slug_results, title_results, tag_results = await asyncio.gather(
+            _fetch({"slug": slug_query}),
+            _fetch({"title": query}),
+            _fetch({"tag": query}),
+        )
+
+        # Merge and deduplicate
+        seen_ids: set[str] = set()
+        combined: list[dict] = []
+        for item in slug_results + title_results + tag_results:
+            eid = str(item.get("id", ""))
+            if eid and eid not in seen_ids:
+                seen_ids.add(eid)
+                combined.append(item)
+
+        return [Event.from_gamma_response(e) for e in combined[:limit]]
+
     async def get_event_by_slug(self, slug: str) -> Optional[Event]:
         """Get a specific event by slug"""
         client = await self._get_client()
