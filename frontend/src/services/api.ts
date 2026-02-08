@@ -865,23 +865,56 @@ export const emergencyStopTrading = async (): Promise<{ status: string; cancelle
 
 // ==================== AUTO TRADER ====================
 
+export interface AutoTraderConfig {
+  mode: string
+  enabled_strategies: string[]
+  min_roi_percent: number
+  max_risk_score: number
+  min_liquidity_usd: number
+  base_position_size_usd: number
+  max_position_size_usd: number
+  max_daily_trades: number
+  max_daily_loss_usd: number
+  circuit_breaker_losses: number
+  require_confirmation: boolean
+  paper_account_capital?: number
+  min_guaranteed_profit: number
+  use_profit_guarantee: boolean
+  max_end_date_days: number | null
+  min_end_date_days: number | null
+  prefer_near_settlement: boolean
+  priority_method: string
+  settlement_weight: number
+  roi_weight: number
+  liquidity_weight: number
+  risk_weight: number
+  max_trades_per_event: number
+  max_exposure_per_event_usd: number
+  excluded_categories: string[]
+  excluded_keywords: string[]
+  excluded_event_slugs: string[]
+  min_volume_usd: number
+  take_profit_pct: number
+  stop_loss_pct: number
+  enable_spread_exits: boolean
+  ai_resolution_gate: boolean
+  ai_max_resolution_risk: number
+  ai_min_resolution_clarity: number
+  ai_resolution_block_avoid: boolean
+  ai_resolution_model: string | null
+  ai_skip_on_analysis_failure: boolean
+  ai_position_sizing: boolean
+  ai_min_score_to_trade: number
+  ai_score_size_multiplier: boolean
+  ai_score_boost_threshold: number
+  ai_score_boost_multiplier: number
+  ai_judge_model: string | null
+}
+
 export interface AutoTraderStatus {
   mode: string
   running: boolean
-  config: {
-    mode: string
-    enabled_strategies: string[]
-    min_roi_percent: number
-    max_risk_score: number
-    min_liquidity_usd: number
-    base_position_size_usd: number
-    max_position_size_usd: number
-    max_daily_trades: number
-    max_daily_loss_usd: number
-    circuit_breaker_losses: number
-    require_confirmation: boolean
-    paper_account_capital?: number
-  }
+  config: AutoTraderConfig
   stats: {
     total_trades: number
     winning_trades: number

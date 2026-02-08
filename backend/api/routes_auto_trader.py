@@ -96,6 +96,23 @@ class AutoTraderConfigRequest(BaseModel):
         None, ge=0, description="Minimum market trading volume in USD"
     )
 
+    # Spread trading exits
+    take_profit_pct: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Sell when price rises X% above entry (0 = disabled)",
+    )
+    stop_loss_pct: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Sell when price drops X% below entry (0 = disabled)",
+    )
+    enable_spread_exits: Optional[bool] = Field(
+        None, description="Whether to set TP/SL on new positions"
+    )
+
     # AI: Resolution analysis gate
     ai_resolution_gate: Optional[bool] = Field(
         None,
@@ -322,6 +339,16 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
     # Volume
     if config.min_volume_usd is not None:
         updates["min_volume_usd"] = config.min_volume_usd
+
+    # Spread trading exits
+    if config.take_profit_pct is not None:
+        updates["take_profit_pct"] = config.take_profit_pct
+
+    if config.stop_loss_pct is not None:
+        updates["stop_loss_pct"] = config.stop_loss_pct
+
+    if config.enable_spread_exits is not None:
+        updates["enable_spread_exits"] = config.enable_spread_exits
 
     # AI: Resolution analysis gate
     if config.ai_resolution_gate is not None:
