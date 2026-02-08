@@ -61,7 +61,9 @@ class BaseStrategy(ABC):
                 factors.append(f"Long capital lockup ({days_until} days to resolution)")
             elif days_until > 90:
                 score += 0.2
-                factors.append(f"Extended capital lockup ({days_until} days to resolution)")
+                factors.append(
+                    f"Extended capital lockup ({days_until} days to resolution)"
+                )
 
         # Liquidity risk
         min_liquidity = min((m.liquidity for m in markets), default=0)
@@ -139,7 +141,9 @@ class BaseStrategy(ABC):
 
         # --- Hard filter: minimum absolute profit ---
         # The profit from max_position investment (scaled proportionally)
-        absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
+        absolute_profit = (
+            max_position * (net_profit / total_cost) if total_cost > 0 else 0
+        )
         if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
             return None
 
@@ -158,7 +162,10 @@ class BaseStrategy(ABC):
 
             # --- Hard filter: minimum annualized ROI ---
             annualized_roi = self._calculate_annualized_roi(roi, resolution_date)
-            if annualized_roi is not None and annualized_roi < settings.MIN_ANNUALIZED_ROI:
+            if (
+                annualized_roi is not None
+                and annualized_roi < settings.MIN_ANNUALIZED_ROI
+            ):
                 return None
 
         risk_score, risk_factors = self.calculate_risk_score(markets, resolution_date)

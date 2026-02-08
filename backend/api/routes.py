@@ -100,7 +100,9 @@ async def get_opportunities(
 
 @router.get("/opportunities/search-polymarket")
 async def search_polymarket_opportunities(
-    q: str = Query(..., min_length=1, description="Search query for Polymarket markets"),
+    q: str = Query(
+        ..., min_length=1, description="Search query for Polymarket markets"
+    ),
     limit: int = Query(20, ge=1, le=50, description="Maximum results to return"),
 ):
     """
@@ -152,7 +154,10 @@ async def search_polymarket_opportunities(
         for opp in all_opportunities:
             market_ids = sorted(m.get("id", "") for m in opp.markets)
             fingerprint = "|".join(market_ids)
-            if fingerprint not in seen_fingerprints or opp.roi_percent > seen_fingerprints[fingerprint].roi_percent:
+            if (
+                fingerprint not in seen_fingerprints
+                or opp.roi_percent > seen_fingerprints[fingerprint].roi_percent
+            ):
                 seen_fingerprints[fingerprint] = opp
         all_opportunities = list(seen_fingerprints.values())
         all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
@@ -165,9 +170,7 @@ async def search_polymarket_opportunities(
 
             manager = get_llm_manager()
             if manager.is_available():
-                asyncio.create_task(
-                    scanner._ai_score_opportunities(all_opportunities)
-                )
+                asyncio.create_task(scanner._ai_score_opportunities(all_opportunities))
         except Exception:
             pass
 
