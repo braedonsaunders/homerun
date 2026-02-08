@@ -45,7 +45,9 @@ class AIAnalysis(BaseModel):
     resolution_safety: float = 0.0
     execution_feasibility: float = 0.0
     market_efficiency: float = 0.0
-    recommendation: str = "pending"  # strong_execute, execute, review, skip, strong_skip, pending
+    recommendation: str = (
+        "pending"  # strong_execute, execute, review, skip, strong_skip, pending
+    )
     reasoning: Optional[str] = None
     risk_factors: list[str] = []
     judged_at: Optional[datetime] = None
@@ -56,7 +58,9 @@ class ArbitrageOpportunity(BaseModel):
     """Represents a detected arbitrage opportunity"""
 
     id: str = Field(default_factory=lambda: "")
-    stable_id: str = Field(default_factory=lambda: "")  # Persists across scans (no timestamp)
+    stable_id: str = Field(
+        default_factory=lambda: ""
+    )  # Persists across scans (no timestamp)
     strategy: StrategyType
     title: str
     description: str

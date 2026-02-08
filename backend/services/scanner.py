@@ -301,14 +301,21 @@ class ArbitrageScanner:
                     .subquery()
                 )
                 rows = (
-                    await session.execute(
-                        select(OpportunityJudgment).join(
-                            subq,
-                            (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
-                            & (OpportunityJudgment.judged_at == subq.c.latest),
+                    (
+                        await session.execute(
+                            select(OpportunityJudgment).join(
+                                subq,
+                                (
+                                    OpportunityJudgment.opportunity_id
+                                    == subq.c.opportunity_id
+                                )
+                                & (OpportunityJudgment.judged_at == subq.c.latest),
+                            )
                         )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
 
                 for row in rows:
                     # Convert opportunity_id to stable_id by stripping trailing _<timestamp>
@@ -332,7 +339,9 @@ class ArbitrageScanner:
                     )
 
                 if rows:
-                    print(f"Loaded {len(self._ai_cache)} AI judgments from database into cache")
+                    print(
+                        f"Loaded {len(self._ai_cache)} AI judgments from database into cache"
+                    )
         except Exception as e:
             print(f"Error loading AI cache from DB: {e}")
 
