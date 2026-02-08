@@ -102,9 +102,42 @@ async def get_opportunities(
     elif sort_by == "risk":
         opportunities.sort(key=lambda o: o.risk_score, reverse=reverse)
     else:
-        # Default: sort by ROI (already sorted from scanner, but
-        # respect direction)
-        opportunities.sort(key=lambda o: o.roi_percent, reverse=reverse)
+        # Default: sort by ROI, but deprioritize opportunities that AI
+        # recommends skipping so they don't clutter the top of the list.
+        from sqlalchemy import select, func as sa_func
+        from models.database import AsyncSessionLocal, OpportunityJudgment
+
+        skip_ids: set[str] = set()
+        try:
+            async with AsyncSessionLocal() as session:
+                subq = (
+                    select(
+                        OpportunityJudgment.opportunity_id,
+                        sa_func.max(OpportunityJudgment.judged_at).label("latest"),
+                    )
+                    .group_by(OpportunityJudgment.opportunity_id)
+                    .subquery()
+                )
+                rows = await session.execute(
+                    select(
+                        OpportunityJudgment.opportunity_id,
+                        OpportunityJudgment.recommendation,
+                    ).join(
+                        subq,
+                        (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
+                        & (OpportunityJudgment.judged_at == subq.c.latest),
+                    )
+                )
+                for row in rows:
+                    if row.recommendation in ("skip", "strong_skip"):
+                        skip_ids.add(row.opportunity_id)
+        except Exception:
+            pass
+
+        # Non-skip first (sorted by ROI), then skip (sorted by ROI)
+        opportunities.sort(
+            key=lambda o: (o.id in skip_ids, -o.roi_percent if reverse else o.roi_percent),
+        )
 
     # Apply pagination
     total = len(opportunities)

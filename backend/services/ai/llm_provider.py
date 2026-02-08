@@ -1677,6 +1677,7 @@ class LLMManager:
         provider = self._get_provider(provider_enum)
         self._check_spend_limit()
 
+        start_time = time.time()
         try:
             result = await provider.structured_output(
                 messages=messages,
@@ -1684,16 +1685,36 @@ class LLMManager:
                 model=model,
                 temperature=temperature,
             )
+
+            # Log successful structured_output usage.
+            # Provider structured_output returns a dict (no usage info),
+            # so estimate tokens from the schema prompt + response size.
+            latency_ms = int((time.time() - start_time) * 1000)
+            estimated_input = sum(len(m.content) // 4 for m in messages) + len(json.dumps(schema)) // 4
+            estimated_output = len(json.dumps(result)) // 4
+            cost = provider._estimate_cost(model, estimated_input, estimated_output)
+            await self._log_usage(
+                provider=provider_enum.value,
+                model=model,
+                input_tokens=estimated_input,
+                output_tokens=estimated_output,
+                cost_usd=cost,
+                latency_ms=latency_ms,
+                purpose=purpose,
+                session_id=session_id,
+            )
+
             return result
 
         except Exception as exc:
+            latency_ms = int((time.time() - start_time) * 1000)
             await self._log_usage(
                 provider=provider_enum.value,
                 model=model,
                 input_tokens=0,
                 output_tokens=0,
                 cost_usd=0.0,
-                latency_ms=0,
+                latency_ms=latency_ms,
                 purpose=purpose,
                 session_id=session_id,
                 success=False,

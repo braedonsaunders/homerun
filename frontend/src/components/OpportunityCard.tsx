@@ -48,6 +48,14 @@ const RECOMMENDATION_COLORS: Record<string, string> = {
   avoid: 'bg-red-500/15 text-red-400 border-red-500/20',
 }
 
+const RECOMMENDATION_BG: Record<string, string> = {
+  strong_execute: 'border-green-500/30',
+  execute: 'border-green-500/20',
+  review: 'border-yellow-500/20',
+  skip: 'border-red-500/20',
+  strong_skip: 'border-red-500/30',
+}
+
 interface Props {
   opportunity: Opportunity
   onExecute?: (opportunity: Opportunity) => void
@@ -56,7 +64,6 @@ interface Props {
 
 export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const [showAIInsights, setShowAIInsights] = useState(false)
 
   const riskColor = opportunity.risk_score < 0.3
     ? 'text-green-400'
@@ -64,11 +71,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
       ? 'text-yellow-400'
       : 'text-red-400'
 
-  // Fetch AI summary when card expands
+  // Always fetch AI summary for every card
   const { data: aiSummary, isLoading: aiSummaryLoading } = useQuery({
     queryKey: ['ai-opportunity-summary', opportunity.id],
     queryFn: () => getOpportunityAISummary(opportunity.id),
-    enabled: expanded,
     staleTime: 60000,
   })
 
@@ -83,48 +89,37 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
   const judgment = judgeMutation.data || aiSummary?.judgment
   const resolutions = aiSummary?.resolution_analyses || []
 
+  const recommendationBorder = judgment
+    ? RECOMMENDATION_BG[judgment.recommendation] || ''
+    : ''
+
   return (
-    <Card className="overflow-hidden">
-      {/* Header */}
+    <Card className={cn("overflow-hidden", recommendationBorder)}>
+      {/* Card Header - Always visible with key info */}
       <CardHeader
-        className="p-4 space-y-0 cursor-pointer hover:bg-muted transition-colors"
+        className="p-4 pb-0 space-y-0 cursor-pointer hover:bg-muted/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-start justify-between gap-4">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
               <Badge variant="outline" className={cn("text-xs", STRATEGY_COLORS[opportunity.strategy])}>
                 {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
               </Badge>
+              {opportunity.category && (
+                <Badge variant="outline" className="text-xs text-muted-foreground border-border">
+                  {opportunity.category}
+                </Badge>
+              )}
               {opportunity.event_title && (
-                <span className="text-xs text-muted-foreground">{opportunity.event_title}</span>
-              )}
-              {/* AI Score Badge - shows inline when available */}
-              {judgment && (
-                <Badge variant="outline" className={cn(
-                  'text-xs flex items-center gap-1',
-                  RECOMMENDATION_COLORS[judgment.recommendation] || 'bg-gray-500/10 text-muted-foreground'
-                )}>
-                  <Brain className="w-3 h-3" />
-                  {(judgment.overall_score * 100).toFixed(0)}
-                </Badge>
-              )}
-              {/* Resolution Safety Badge */}
-              {resolutions.length > 0 && (
-                <Badge variant="outline" className={cn(
-                  'text-xs flex items-center gap-1',
-                  RECOMMENDATION_COLORS[resolutions[0].recommendation] || 'bg-gray-500/10 text-muted-foreground'
-                )}>
-                  <Shield className="w-3 h-3" />
-                  {resolutions[0].recommendation}
-                </Badge>
+                <span className="text-xs text-muted-foreground truncate">{opportunity.event_title}</span>
               )}
             </div>
-            <h3 className="font-medium text-foreground">{opportunity.title}</h3>
-            <p className="text-sm text-muted-foreground mt-1">{opportunity.description}</p>
+            <h3 className="font-medium text-foreground leading-tight">{opportunity.title}</h3>
+            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{opportunity.description}</p>
           </div>
 
-          <div className="text-right">
+          <div className="text-right shrink-0">
             <div className="flex items-center gap-1 justify-end">
               <TrendingUp className="w-4 h-4 text-green-500" />
               <span className="text-xl font-bold text-green-500">
@@ -136,188 +131,198 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             </p>
           </div>
         </div>
+      </CardHeader>
 
-        {/* Quick Stats */}
-        <div className="flex items-center gap-4 mt-4 text-sm">
-          <div className="flex items-center gap-1">
-            <DollarSign className="w-4 h-4 text-muted-foreground" />
-            <span className="text-muted-foreground">
-              Cost: <span className="text-foreground">${opportunity.total_cost.toFixed(4)}</span>
-            </span>
+      {/* Stats + AI Analysis - Always visible */}
+      <CardContent className="p-4 pt-3 space-y-3">
+        {/* Stats Row */}
+        <div className="grid grid-cols-4 gap-3 text-sm">
+          <div className="flex items-center gap-1.5">
+            <DollarSign className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <div>
+              <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Cost</p>
+              <p className="text-foreground font-medium">${opportunity.total_cost.toFixed(4)}</p>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
-            <Target className="w-4 h-4 text-muted-foreground" />
-            <span className="text-muted-foreground">
-              Liquidity: <span className="text-foreground">${opportunity.min_liquidity.toFixed(0)}</span>
-            </span>
+          <div className="flex items-center gap-1.5">
+            <Target className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <div>
+              <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Liquidity</p>
+              <p className="text-foreground font-medium">${opportunity.min_liquidity.toFixed(0)}</p>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
-            <AlertTriangle className={cn("w-4 h-4", riskColor)} />
-            <span className="text-muted-foreground">
-              Risk: <span className={riskColor}>{(opportunity.risk_score * 100).toFixed(0)}%</span>
-            </span>
+          <div className="flex items-center gap-1.5">
+            <AlertTriangle className={cn("w-3.5 h-3.5 shrink-0", riskColor)} />
+            <div>
+              <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Risk</p>
+              <p className={cn("font-medium", riskColor)}>{(opportunity.risk_score * 100).toFixed(0)}%</p>
+            </div>
           </div>
-          <div className="ml-auto">
+          <div className="flex items-center gap-1.5">
+            <DollarSign className="w-3.5 h-3.5 text-green-500 shrink-0" />
+            <div>
+              <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Max Position</p>
+              <p className="text-foreground font-medium">${opportunity.max_position_size.toFixed(0)}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* AI Analysis Section - Always shown */}
+        <div className={cn(
+          "rounded-lg p-3 space-y-2",
+          judgment
+            ? "bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/15"
+            : "bg-muted/50 border border-border"
+        )}>
+          {aiSummaryLoading && !judgment && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Loading AI analysis...
+            </div>
+          )}
+
+          {judgeMutation.isPending && !judgment && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Running AI analysis...
+            </div>
+          )}
+
+          {judgment ? (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                  <Badge variant="outline" className={cn(
+                    'text-xs font-bold',
+                    RECOMMENDATION_COLORS[judgment.recommendation]
+                  )}>
+                    {judgment.recommendation?.replace('_', ' ').toUpperCase()}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    Score: {(judgment.overall_score * 100).toFixed(0)}/100
+                  </span>
+                  {/* Resolution badges */}
+                  {resolutions.map((r: any, i: number) => (
+                    <Badge key={i} variant="outline" className={cn(
+                      'text-[10px] px-1.5 py-0.5 flex items-center gap-1',
+                      RECOMMENDATION_COLORS[r.recommendation]
+                    )}>
+                      <Shield className="w-2.5 h-2.5" />
+                      {r.recommendation}
+                    </Badge>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      judgeMutation.mutate()
+                    }}
+                    disabled={judgeMutation.isPending}
+                    className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-purple-400 transition-colors"
+                  >
+                    <RefreshCw className={cn("w-3 h-3", judgeMutation.isPending && "animate-spin")} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Score breakdown */}
+              <div className="grid grid-cols-4 gap-2">
+                <ScoreMini label="Profit" value={judgment.profit_viability} />
+                <ScoreMini label="Resolution" value={judgment.resolution_safety} />
+                <ScoreMini label="Execution" value={judgment.execution_feasibility} />
+                <ScoreMini label="Efficiency" value={judgment.market_efficiency} />
+              </div>
+
+              {/* Reasoning */}
+              {judgment.reasoning && (
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {judgment.reasoning}
+                </p>
+              )}
+
+              {/* Resolution details if available */}
+              {resolutions.length > 0 && resolutions[0].summary && (
+                <div className="pt-1 border-t border-purple-500/10">
+                  <p className="text-xs text-muted-foreground">
+                    <span className="text-purple-400 font-medium">Resolution: </span>
+                    {resolutions[0].summary}
+                  </p>
+                  {resolutions[0].ambiguities?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {resolutions[0].ambiguities.slice(0, 2).map((a: string, j: number) => (
+                        <span key={j} className="text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">
+                          {a.length > 60 ? a.slice(0, 60) + '...' : a}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : !aiSummaryLoading && !judgeMutation.isPending ? (
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Brain className="w-3.5 h-3.5" />
+                No AI analysis yet
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  judgeMutation.mutate()
+                }}
+                className="h-6 px-2 text-[10px] bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20"
+              >
+                Analyze
+              </Button>
+            </div>
+          ) : null}
+
+          {judgeMutation.error && (
+            <div className="text-xs text-red-400">
+              Analysis failed: {(judgeMutation.error as Error).message}
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons row */}
+        <div className="flex items-center gap-2">
+          {onOpenCopilot && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCopilot(opportunity)
+              }}
+              className="h-7 text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
+            >
+              <MessageCircle className="w-3 h-3 mr-1" />
+              Ask AI
+            </Button>
+          )}
+          <div
+            className="ml-auto flex items-center gap-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? 'Less' : 'More details'}
             {expanded ? (
-              <ChevronUp className="w-5 h-5 text-muted-foreground" />
+              <ChevronUp className="w-4 h-4" />
             ) : (
-              <ChevronDown className="w-5 h-5 text-muted-foreground" />
+              <ChevronDown className="w-4 h-4" />
             )}
           </div>
         </div>
-      </CardHeader>
+      </CardContent>
 
       {/* Expanded Details */}
       {expanded && (
         <>
           <Separator />
           <CardContent className="p-4 pt-4 space-y-4">
-            {/* AI Actions Bar */}
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  const opening = !showAIInsights
-                  setShowAIInsights(opening)
-                  if (opening && !judgment && !judgeMutation.isPending) {
-                    judgeMutation.mutate()
-                  }
-                }}
-                disabled={judgeMutation.isPending && !showAIInsights}
-                className={cn(
-                  'flex items-center gap-1.5 text-xs font-medium',
-                  showAIInsights
-                    ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
-                    : 'bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20'
-                )}
-              >
-                {judgeMutation.isPending ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Brain className="w-3.5 h-3.5" />
-                )}
-                AI Analysis
-              </Button>
-              {onOpenCopilot && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenCopilot(opportunity)
-                  }}
-                  className="flex items-center gap-1.5 text-xs font-medium bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
-                >
-                  <MessageCircle className="w-3.5 h-3.5" />
-                  Ask AI
-                </Button>
-              )}
-              {aiSummaryLoading && (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto" />
-              )}
-            </div>
-
-            {/* AI Analysis Panel */}
-            {showAIInsights && (
-              <div className="bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/20 rounded-xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-medium text-purple-400 flex items-center gap-2">
-                    <Brain className="w-4 h-4" />
-                    AI Analysis
-                  </h4>
-                  {judgment && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        judgeMutation.mutate()
-                      }}
-                      disabled={judgeMutation.isPending}
-                      className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-purple-400 transition-colors"
-                    >
-                      <RefreshCw className={cn("w-3 h-3", judgeMutation.isPending && "animate-spin")} />
-                      Re-analyze
-                    </button>
-                  )}
-                </div>
-
-                {judgeMutation.isPending && !judgment && (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Running AI analysis...
-                  </div>
-                )}
-
-                {judgeMutation.error && (
-                  <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-xs text-red-400">
-                    Analysis failed: {(judgeMutation.error as Error).message}
-                  </div>
-                )}
-
-                {judgment && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={cn(
-                        'text-xs font-bold',
-                        RECOMMENDATION_COLORS[judgment.recommendation]
-                      )}>
-                        {judgment.recommendation?.replace('_', ' ').toUpperCase()}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        Overall: {(judgment.overall_score * 100).toFixed(0)}/100
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      <ScoreMini label="Profit" value={judgment.profit_viability} />
-                      <ScoreMini label="Resolution" value={judgment.resolution_safety} />
-                      <ScoreMini label="Execution" value={judgment.execution_feasibility} />
-                      <ScoreMini label="Efficiency" value={judgment.market_efficiency} />
-                    </div>
-                    {judgment.reasoning && (
-                      <p className="text-xs text-muted-foreground bg-muted p-2 rounded-lg">
-                        {judgment.reasoning}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {resolutions.length > 0 && (
-                  <div className="space-y-2 pt-2 border-t border-purple-500/10">
-                    <p className="text-xs text-muted-foreground font-medium">Resolution Analysis</p>
-                    {resolutions.map((r: any, i: number) => (
-                      <div key={i} className="bg-muted rounded-lg p-2 space-y-1">
-                        <div className="flex items-center gap-2">
-                          <Shield className="w-3 h-3 text-muted-foreground" />
-                          <Badge variant="outline" className={cn(
-                            'text-[10px] px-1.5 py-0.5',
-                            RECOMMENDATION_COLORS[r.recommendation]
-                          )}>
-                            {r.recommendation}
-                          </Badge>
-                          <span className="text-[10px] text-gray-600">
-                            Clarity: {(r.clarity_score * 100).toFixed(0)} | Risk: {(r.risk_score * 100).toFixed(0)}
-                          </span>
-                        </div>
-                        {r.summary && (
-                          <p className="text-xs text-muted-foreground">{r.summary}</p>
-                        )}
-                        {r.ambiguities?.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {r.ambiguities.slice(0, 3).map((a: string, j: number) => (
-                              <span key={j} className="text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">
-                                {a.length > 60 ? a.slice(0, 60) + '...' : a}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Positions to Take */}
             <div>
               <h4 className="text-sm font-medium text-muted-foreground mb-2">Positions to Take</h4>
@@ -418,11 +423,42 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               </div>
             </div>
 
-            {/* Max Position */}
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Max Position Size (10% of liquidity)</span>
-              <span className="font-mono text-foreground">${opportunity.max_position_size.toFixed(2)}</span>
-            </div>
+            {/* Extended Resolution Analysis */}
+            {resolutions.length > 0 && (
+              <div>
+                <h4 className="text-sm font-medium text-muted-foreground mb-2">Resolution Analysis</h4>
+                <div className="space-y-2">
+                  {resolutions.map((r: any, i: number) => (
+                    <div key={i} className="bg-muted rounded-lg p-3 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-3 h-3 text-muted-foreground" />
+                        <Badge variant="outline" className={cn(
+                          'text-[10px] px-1.5 py-0.5',
+                          RECOMMENDATION_COLORS[r.recommendation]
+                        )}>
+                          {r.recommendation}
+                        </Badge>
+                        <span className="text-[10px] text-gray-600">
+                          Clarity: {(r.clarity_score * 100).toFixed(0)} | Risk: {(r.risk_score * 100).toFixed(0)}
+                        </span>
+                      </div>
+                      {r.summary && (
+                        <p className="text-xs text-muted-foreground">{r.summary}</p>
+                      )}
+                      {r.ambiguities?.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {r.ambiguities.map((a: string, j: number) => (
+                            <span key={j} className="text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">
+                              {a.length > 60 ? a.slice(0, 60) + '...' : a}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Execute Button */}
             {onExecute && (
