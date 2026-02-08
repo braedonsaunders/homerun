@@ -1690,7 +1690,10 @@ class LLMManager:
             # Provider structured_output returns a dict (no usage info),
             # so estimate tokens from the schema prompt + response size.
             latency_ms = int((time.time() - start_time) * 1000)
-            estimated_input = sum(len(m.content) // 4 for m in messages) + len(json.dumps(schema)) // 4
+            estimated_input = (
+                sum(len(m.content) // 4 for m in messages)
+                + len(json.dumps(schema)) // 4
+            )
             estimated_output = len(json.dumps(result)) // 4
             cost = provider._estimate_cost(model, estimated_input, estimated_output)
             await self._log_usage(
