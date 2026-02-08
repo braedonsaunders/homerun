@@ -531,7 +531,7 @@ async def discover_by_win_rate(
         0, ge=0, description="Maximum trading volume (0 = no maximum)"
     ),
     scan_count: int = Query(
-        500,
+        200,
         ge=10,
         le=1050,
         description="Number of traders to scan per leaderboard sort (searches both PNL and VOL)",

@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
-from utils.rate_limiter import rate_limiter
 
 
 class PolymarketClient:
@@ -299,7 +298,6 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
-        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/positions", params={"user": address}
@@ -475,7 +473,6 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
-        await rate_limiter.acquire("data_trades")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
@@ -611,9 +608,10 @@ class PolymarketClient:
             if addr and uname:
                 self._username_cache[addr] = uname
 
-        # Verify each trader has real activity by fetching win rate data
-        semaphore = asyncio.Semaphore(5)
-        results = []
+        # Verify each trader has real activity using the fast
+        # closed-positions endpoint (single call per trader instead of
+        # fetching full trade history + open positions).
+        semaphore = asyncio.Semaphore(10)
 
         async def verify_trader(entry: dict):
             async with semaphore:
@@ -621,29 +619,26 @@ class PolymarketClient:
                 if not address:
                     return None
 
-                win_rate_data = await self.calculate_wallet_win_rate(address)
-
-                # Use actual closed positions (wins + losses) for min_trades
-                closed_positions = win_rate_data.get("wins", 0) + win_rate_data.get(
-                    "losses", 0
+                result = await self.calculate_win_rate_fast(
+                    address, min_positions=min_trades
                 )
-                if closed_positions < min_trades:
+                if not result:
                     return None
 
                 return {
                     "address": address,
                     "username": entry.get("userName", ""),
-                    "trades": win_rate_data.get("trade_count", 0),
+                    "trades": result["closed_positions"],
                     "volume": float(entry.get("vol", 0) or 0),
                     "pnl": float(entry.get("pnl", 0) or 0),
                     "rank": entry.get("rank", 0),
-                    "buys": win_rate_data.get("wins", 0),
-                    "sells": win_rate_data.get("losses", 0),
-                    "win_rate": win_rate_data.get("win_rate", 0),
-                    "wins": win_rate_data.get("wins", 0),
-                    "losses": win_rate_data.get("losses", 0),
-                    "total_markets": win_rate_data.get("total_markets", 0),
-                    "trade_count": win_rate_data.get("trade_count", 0),
+                    "buys": result["wins"],
+                    "sells": result["losses"],
+                    "win_rate": result["win_rate"],
+                    "wins": result["wins"],
+                    "losses": result["losses"],
+                    "total_markets": result["closed_positions"],
+                    "trade_count": result["closed_positions"],
                 }
 
         tasks = [verify_trader(entry) for entry in leaderboard]
@@ -829,7 +824,6 @@ class PolymarketClient:
         self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
-        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
         try:
             response = await client.get(
@@ -878,9 +872,9 @@ class PolymarketClient:
         pre-aggregated endpoint instead of fetching all raw trades.
         """
         try:
-            closed = await self.get_closed_positions_paginated(
-                address, max_positions=200
-            )
+            # Fetch a single page of 50 closed positions — enough to
+            # compute a reliable win rate without hammering the API.
+            closed = await self.get_closed_positions(address, limit=50)
 
             if len(closed) < min_positions:
                 return None
