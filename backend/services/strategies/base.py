@@ -150,6 +150,7 @@ class BaseStrategy(ABC):
             is_negrisk=is_negrisk,
             spread_bps=spread_bps,
             total_cost=total_cost,
+            maker_mode=settings.FEE_MODEL_MAKER_MODE,
         )
 
         # --- VWAP-adjusted realistic profit ---

@@ -17,6 +17,15 @@ from services.strategies import (
     CombinatorialStrategy,
     SettlementLagStrategy,
     BtcEthHighFreqStrategy,
+    CrossPlatformStrategy,
+    BayesianCascadeStrategy,
+    LiquidityVacuumStrategy,
+    EntropyArbStrategy,
+    EventDrivenStrategy,
+    TemporalDecayStrategy,
+    CorrelationArbStrategy,
+    MarketMakingStrategy,
+    StatArbStrategy,
 )
 from models.opportunity import MispricingType
 from sqlalchemy import select
@@ -37,6 +46,15 @@ class ArbitrageScanner:
             CombinatorialStrategy(),  # Cross-market arbitrage via integer programming
             SettlementLagStrategy(),  # Exploit delayed price adjustments (article Part IV)
             BtcEthHighFreqStrategy(),  # BTC/ETH 15min/1hr high-frequency arb
+            CrossPlatformStrategy(),  # Cross-platform arb (Polymarket vs Kalshi)
+            BayesianCascadeStrategy(),  # Probability graph belief propagation
+            LiquidityVacuumStrategy(),  # Order book imbalance exploitation
+            EntropyArbStrategy(),  # Information-theoretic mispricing detection
+            EventDrivenStrategy(),  # Price lag after catalyst moves
+            TemporalDecayStrategy(),  # Time-decay mispricing in deadline markets
+            CorrelationArbStrategy(),  # Mean-reversion on correlated pair spreads
+            MarketMakingStrategy(),  # Earn bid-ask spread as liquidity provider
+            StatArbStrategy(),  # Statistical edge from ensemble probability signals
         ]
 
         # Mispricing type mapping for strategies that don't set it themselves
@@ -50,6 +68,15 @@ class ArbitrageScanner:
             "combinatorial": MispricingType.CROSS_MARKET,
             "settlement_lag": MispricingType.SETTLEMENT_LAG,
             "btc_eth_highfreq": MispricingType.WITHIN_MARKET,
+            "cross_platform": MispricingType.CROSS_MARKET,
+            "bayesian_cascade": MispricingType.CROSS_MARKET,
+            "liquidity_vacuum": MispricingType.WITHIN_MARKET,
+            "entropy_arb": MispricingType.WITHIN_MARKET,
+            "event_driven": MispricingType.CROSS_MARKET,
+            "temporal_decay": MispricingType.WITHIN_MARKET,
+            "correlation_arb": MispricingType.CROSS_MARKET,
+            "market_making": MispricingType.WITHIN_MARKET,
+            "stat_arb": MispricingType.WITHIN_MARKET,
         }
         self._running = False
         self._enabled = True
@@ -62,6 +89,20 @@ class ArbitrageScanner:
 
         # Track the running AI scoring task so we can cancel it on pause
         self._ai_scoring_task: Optional[asyncio.Task] = None
+
+        # Auto AI scoring: when False (default), the scanner does NOT
+        # automatically score all opportunities with LLM after each scan.
+        # Manual per-opportunity analysis (via the Analyze button) still works.
+        self._auto_ai_scoring: bool = False
+
+    def set_auto_ai_scoring(self, enabled: bool):
+        """Enable or disable automatic AI scoring of all opportunities after each scan."""
+        self._auto_ai_scoring = enabled
+        print(f"Auto AI scoring {'enabled' if enabled else 'disabled'}")
+
+    @property
+    def auto_ai_scoring(self) -> bool:
+        return self._auto_ai_scoring
 
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new opportunities"""
@@ -203,23 +244,26 @@ class ArbitrageScanner:
             self._last_scan = datetime.utcnow()
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
-            try:
-                from services.ai import get_llm_manager
+            # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
+            # Manual per-opportunity analysis is always available via the UI.
+            if self._auto_ai_scoring:
+                try:
+                    from services.ai import get_llm_manager
 
-                manager = get_llm_manager()
-                if manager.is_available():
-                    # Cancel any still-running scoring task from a previous scan
-                    if self._ai_scoring_task and not self._ai_scoring_task.done():
-                        self._ai_scoring_task.cancel()
-                        try:
-                            await self._ai_scoring_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
-                    self._ai_scoring_task = asyncio.create_task(
-                        self._ai_score_opportunities(all_opportunities)
-                    )
-            except Exception:
-                pass  # AI scoring is non-critical
+                    manager = get_llm_manager()
+                    if manager.is_available():
+                        # Cancel any still-running scoring task from a previous scan
+                        if self._ai_scoring_task and not self._ai_scoring_task.done():
+                            self._ai_scoring_task.cancel()
+                            try:
+                                await self._ai_scoring_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        self._ai_scoring_task = asyncio.create_task(
+                            self._ai_score_opportunities(all_opportunities)
+                        )
+                except Exception:
+                    pass  # AI scoring is non-critical
 
             # Notify callbacks
             for callback in self._scan_callbacks:
@@ -505,6 +549,7 @@ class ArbitrageScanner:
             "running": self._running,
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
+            "auto_ai_scoring": self._auto_ai_scoring,
             "last_scan": (self._last_scan.isoformat() + "Z")
             if self._last_scan
             else None,

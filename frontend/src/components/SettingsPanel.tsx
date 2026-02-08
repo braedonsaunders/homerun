@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Activity,
   DollarSign,
+  Brain,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -33,7 +34,10 @@ import {
   testTelegramConnection,
   getLLMModels,
   refreshLLMModels,
-  type LLMModelOption
+  getAutoTraderStatus,
+  updateAutoTraderConfig,
+  type LLMModelOption,
+  type AutoTraderConfig,
 } from '../services/api'
 
 type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
@@ -80,6 +84,23 @@ function SecretInput({
     </div>
   )
 }
+
+const ALL_STRATEGIES = [
+  { key: 'basic', label: 'Basic Arb' },
+  { key: 'negrisk', label: 'NegRisk' },
+  { key: 'mutually_exclusive', label: 'Mutually Exclusive' },
+  { key: 'contradiction', label: 'Contradiction' },
+  { key: 'must_happen', label: 'Must-Happen' },
+  { key: 'cross_platform', label: 'Cross-Platform Oracle' },
+  { key: 'bayesian_cascade', label: 'Bayesian Cascade' },
+  { key: 'liquidity_vacuum', label: 'Liquidity Vacuum' },
+  { key: 'entropy_arb', label: 'Entropy Arbitrage' },
+  { key: 'event_driven', label: 'Event-Driven' },
+  { key: 'temporal_decay', label: 'Temporal Decay' },
+  { key: 'correlation_arb', label: 'Correlation Arb' },
+  { key: 'market_making', label: 'Market Making' },
+  { key: 'stat_arb', label: 'Statistical Arb' },
+]
 
 export default function SettingsPanel() {
   const [activeSection, setActiveSection] = useState<SettingsSection>('polymarket')
@@ -138,6 +159,14 @@ export default function SettingsPanel() {
     cleanup_resolved_trade_days: 30
   })
 
+  const [autotraderAiForm, setAutotraderAiForm] = useState({
+    llm_verify_trades: false,
+    llm_verify_strategies: '',
+    auto_ai_scoring: false,
+    enabled_strategies: [] as string[],
+  })
+  const [autotraderAiDirty, setAutotraderAiDirty] = useState(false)
+
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -145,6 +174,38 @@ export default function SettingsPanel() {
     queryFn: getSettings,
   })
 
+  const { data: autoTraderStatus } = useQuery({
+    queryKey: ['auto-trader-status'],
+    queryFn: getAutoTraderStatus,
+    refetchInterval: 10000,
+  })
+
+  const autoTraderConfigMutation = useMutation({
+    mutationFn: (updates: Partial<AutoTraderConfig>) => updateAutoTraderConfig(updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
+      setAutotraderAiDirty(false)
+      setSaveMessage({ type: 'success', text: 'Auto-Trader AI settings saved' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    },
+    onError: (error: any) => {
+      setSaveMessage({ type: 'error', text: error.message || 'Failed to save auto-trader settings' })
+      setTimeout(() => setSaveMessage(null), 5000)
+    }
+  })
+
+  // Sync auto-trader AI form from server config
+  useEffect(() => {
+    if (autoTraderStatus?.config && !autotraderAiDirty) {
+      const cfg = autoTraderStatus.config
+      setAutotraderAiForm({
+        llm_verify_trades: cfg.llm_verify_trades ?? false,
+        llm_verify_strategies: (cfg.llm_verify_strategies ?? []).join(', '),
+        auto_ai_scoring: cfg.auto_ai_scoring ?? false,
+        enabled_strategies: cfg.enabled_strategies ?? [],
+      })
+    }
+  }, [autoTraderStatus?.config, autotraderAiDirty])
 
   // Sync form state with loaded settings
   useEffect(() => {
@@ -291,8 +352,19 @@ export default function SettingsPanel() {
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
-      case 'autotrader':
+      case 'autotrader': {
+        const strategies = autotraderAiForm.llm_verify_strategies
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0)
+        autoTraderConfigMutation.mutate({
+          llm_verify_trades: autotraderAiForm.llm_verify_trades,
+          llm_verify_strategies: strategies,
+          auto_ai_scoring: autotraderAiForm.auto_ai_scoring,
+          enabled_strategies: autotraderAiForm.enabled_strategies,
+        })
         return
+      }
     }
 
     saveMutation.mutate(updates)
@@ -316,7 +388,7 @@ export default function SettingsPanel() {
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
-    { id: 'autotrader', icon: Activity, label: 'Auto Trader', description: 'Auto trading configuration' },
+    { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
 
@@ -897,29 +969,164 @@ export default function SettingsPanel() {
               </div>
             )}
 
-            {/* Auto Trader Config - Redirect to Trading tab */}
+            {/* Auto Trader AI Settings */}
             {activeSection === 'autotrader' && (
               <div className="space-y-6">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="p-2 bg-emerald-500/10 rounded-lg">
-                    <Activity className="w-5 h-5 text-emerald-500" />
+                    <Brain className="w-5 h-5 text-emerald-500" />
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
-                    <p className="text-sm text-muted-foreground">Auto trader settings have moved to the Trading tab for a unified experience</p>
+                    <h3 className="text-lg font-semibold">Auto-Trader AI Settings</h3>
+                    <p className="text-sm text-muted-foreground">Configure how AI is used in automated trading decisions</p>
                   </div>
                 </div>
 
-                <Card className="bg-muted">
-                  <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                    <Activity className="w-10 h-10 text-emerald-500 mb-3 opacity-50" />
-                    <p className="text-sm font-medium mb-1">Settings moved to Trading tab</p>
-                    <p className="text-xs text-muted-foreground max-w-sm">
-                      All auto trader configuration including spread trading exits, AI gates, position sizing,
-                      and risk management are now available under Trading &gt; Auto Trader &gt; Settings.
+                <div className="space-y-4">
+                  {/* LLM Verify Before Trading */}
+                  <Card className="bg-muted">
+                    <CardContent className="flex items-center justify-between p-4">
+                      <div>
+                        <p className="font-medium text-sm">LLM Verify Before Trading</p>
+                        <p className="text-xs text-muted-foreground">Consult AI before executing each auto-trade. Trades scored as &quot;skip&quot; or &quot;strong_skip&quot; are blocked.</p>
+                      </div>
+                      <Switch
+                        checked={autotraderAiForm.llm_verify_trades}
+                        onCheckedChange={(checked) => {
+                          setAutotraderAiForm(p => ({ ...p, llm_verify_trades: checked }))
+                          setAutotraderAiDirty(true)
+                        }}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  {/* Strategies to LLM-Verify */}
+                  {autotraderAiForm.llm_verify_trades && (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Strategies to LLM-Verify</Label>
+                      <Input
+                        type="text"
+                        value={autotraderAiForm.llm_verify_strategies}
+                        onChange={(e) => {
+                          setAutotraderAiForm(p => ({ ...p, llm_verify_strategies: e.target.value }))
+                          setAutotraderAiDirty(true)
+                        }}
+                        placeholder="e.g. basic, negrisk, miracle (empty = verify all)"
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Comma-separated list of strategy types to verify. Leave empty to verify all strategies.
+                      </p>
+                    </div>
+                  )}
+
+                  <Separator />
+
+                  {/* Auto AI Scoring */}
+                  <Card className="bg-muted">
+                    <CardContent className="flex items-center justify-between p-4">
+                      <div>
+                        <p className="font-medium text-sm">Auto AI Scoring</p>
+                        <p className="text-xs text-muted-foreground">Automatically AI-score all opportunities after each scan. Manual analysis per opportunity is always available regardless of this setting.</p>
+                      </div>
+                      <Switch
+                        checked={autotraderAiForm.auto_ai_scoring}
+                        onCheckedChange={(checked) => {
+                          setAutotraderAiForm(p => ({ ...p, auto_ai_scoring: checked }))
+                          setAutotraderAiDirty(true)
+                        }}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  {/* Info Note */}
+                  <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg">
+                    <Activity className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+                    <p className="text-xs text-muted-foreground">
+                      When LLM Verify is enabled, the auto-trader will consult AI before executing trades. Disable for faster execution.
+                      Additional auto-trader settings (position sizing, risk management, spread exits, AI resolution gate) are available under Trading &gt; Auto Trader &gt; Settings.
                     </p>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
+
+                <Separator />
+
+                {/* Enabled Strategies */}
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-semibold mb-1">Enabled Strategies</h4>
+                    <p className="text-xs text-muted-foreground mb-3">Select which strategies the auto trader should use</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {ALL_STRATEGIES.map(s => {
+                      const enabled = autotraderAiForm.enabled_strategies.includes(s.key)
+                      return (
+                        <button
+                          key={s.key}
+                          type="button"
+                          onClick={() => {
+                            setAutotraderAiForm(prev => ({
+                              ...prev,
+                              enabled_strategies: enabled
+                                ? prev.enabled_strategies.filter(k => k !== s.key)
+                                : [...prev.enabled_strategies, s.key]
+                            }))
+                            setAutotraderAiDirty(true)
+                          }}
+                          className={cn(
+                            "px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                            enabled
+                              ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                              : "bg-muted text-muted-foreground border-border hover:border-emerald-500/20"
+                          )}
+                        >
+                          {s.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-7"
+                      onClick={() => {
+                        setAutotraderAiForm(p => ({ ...p, enabled_strategies: ALL_STRATEGIES.map(s => s.key) }))
+                        setAutotraderAiDirty(true)
+                      }}
+                    >
+                      Select All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-7"
+                      onClick={() => {
+                        setAutotraderAiForm(p => ({ ...p, enabled_strategies: [] }))
+                        setAutotraderAiDirty(true)
+                      }}
+                    >
+                      Clear All
+                    </Button>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button
+                    onClick={() => handleSaveSection('autotrader')}
+                    disabled={autoTraderConfigMutation.isPending || !autotraderAiDirty}
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    {autoTraderConfigMutation.isPending ? 'Saving...' : 'Save Auto-Trader AI Settings'}
+                  </Button>
+                  {autotraderAiDirty && (
+                    <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-500/30 bg-yellow-500/10">
+                      Unsaved changes
+                    </Badge>
+                  )}
+                </div>
               </div>
             )}
 

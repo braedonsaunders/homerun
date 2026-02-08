@@ -21,6 +21,14 @@ class StrategyType(str, Enum):
     BTC_ETH_HIGHFREQ = (
         "btc_eth_highfreq"  # High-frequency BTC/ETH 15min/1hr binary market arbitrage
     )
+    BAYESIAN_CASCADE = "bayesian_cascade"
+    LIQUIDITY_VACUUM = "liquidity_vacuum"
+    ENTROPY_ARB = "entropy_arb"
+    EVENT_DRIVEN = "event_driven"
+    TEMPORAL_DECAY = "temporal_decay"
+    CORRELATION_ARB = "correlation_arb"
+    MARKET_MAKING = "market_making"
+    STAT_ARB = "stat_arb"
 
 
 class MispricingType(str, Enum):
