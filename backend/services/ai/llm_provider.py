@@ -1393,12 +1393,12 @@ class LLMManager:
                     LLMProvider.DEEPSEEK: "deepseek-chat",
                 }
 
-                if app_settings.ai_default_model:
-                    self._default_model = app_settings.ai_default_model
-                elif app_settings.llm_model:
-                    self._default_model = app_settings.llm_model
-                else:
-                    self._default_model = "gpt-4o-mini"
+                configured_model = (
+                    app_settings.ai_default_model
+                    or app_settings.llm_model
+                    or "gpt-4o-mini"
+                )
+                self._default_model = configured_model
 
                 # Validate that the default model's provider is actually
                 # configured.  If not, fall back to the first available
@@ -1407,6 +1407,14 @@ class LLMManager:
                 if default_provider not in self._providers and self._providers:
                     for p, m in _provider_default_models.items():
                         if p in self._providers:
+                            logger.warning(
+                                "Selected model '%s' requires provider %s which is not configured. "
+                                "Falling back to '%s' (%s).",
+                                configured_model,
+                                default_provider.value,
+                                m,
+                                p.value,
+                            )
                             self._default_model = m
                             break
 
@@ -1429,8 +1437,9 @@ class LLMManager:
 
         self._initialized = True
         logger.info(
-            "LLM manager initialized: %d providers, $%.2f spent this month (limit $%.2f)",
+            "LLM manager initialized: %d providers, default_model=%s, $%.2f spent this month (limit $%.2f)",
             len(self._providers),
+            self._default_model,
             self._monthly_spend,
             self._spend_limit,
         )
@@ -1803,6 +1812,7 @@ class LLMManager:
 
             return {
                 "month_start": month_start.isoformat(),
+                "active_model": self._default_model,
                 "total_cost_usd": total_cost,
                 "estimated_cost": total_cost,
                 "total_input_tokens": total_input,
