@@ -125,8 +125,22 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
-        # Check if this looks like an election/primary with non-exhaustive risk
+        # --- Structural non-exhaustiveness checks ---
         is_election = self._is_election_market(event.title)
+        is_open_ended = self._is_open_ended_event(event.title)
+
+        # Election markets with exactly 2 candidates (Dem vs Rep) are NEVER
+        # exhaustive — independent/third-party candidates can always win.
+        # Only accept election markets if they have enough candidates that
+        # the total YES sum is very close to 1.0.
+        if is_election and len(active_markets) <= 2:
+            return None
+
+        # Open-ended events (Nobel Prize, awards, "best X") where the outcome
+        # universe is inherently unbounded — anyone/anything could win.
+        # The listed outcomes can never be exhaustive.
+        if is_open_ended:
+            return None
 
         opp = self.create_opportunity(
             title=f"NegRisk: {event.title[:50]}...",
@@ -138,11 +152,10 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            # Warn about non-exhaustive risk even above threshold
             if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
                 opp.risk_factors.insert(
                     0,
-                    f"Total YES ({total_yes:.1%}) below 92% — possible missing outcomes",
+                    f"Total YES ({total_yes:.1%}) below 97% — possible missing outcomes",
                 )
             if is_election:
                 opp.risk_factors.insert(
@@ -156,11 +169,49 @@ class NegRiskStrategy(BaseStrategy):
         """Check if an event title suggests an election or primary."""
         title_lower = title.lower()
         election_keywords = [
-            "election", "primary", "winner", "governor", "house",
-            "senate", "congress", "mayor", "special election",
-            "presidential", "nominee", "caucus", "runoff",
+            "election",
+            "primary",
+            "governor",
+            "house",
+            "senate",
+            "congress",
+            "mayor",
+            "special election",
+            "presidential",
+            "nominee",
+            "caucus",
+            "runoff",
         ]
         return any(kw in title_lower for kw in election_keywords)
+
+    def _is_open_ended_event(self, title: str) -> bool:
+        """Check if an event has an inherently unbounded outcome universe.
+
+        These events can NEVER have an exhaustive listed outcome set because
+        the set of possible winners/results is effectively infinite.
+
+        Examples:
+        - "Nobel Peace Prize Winner 2026" (anyone in the world could win)
+        - "Which company has the best AI model" (subjective + any company)
+        - "Oscar Best Picture Winner" (nominees change)
+        """
+        title_lower = title.lower()
+        open_ended_keywords = [
+            "nobel",
+            "prize winner",
+            "award winner",
+            "best ai",
+            "best model",
+            "oscar",
+            "grammy",
+            "emmy",
+            "ballon d'or",
+            "mvp",
+            "player of the year",
+            "time person of the year",
+            "pulitzer",
+        ]
+        return any(kw in title_lower for kw in open_ended_keywords)
 
     def _detect_date_sweep(
         self, event: Event, prices: dict[str, dict]
@@ -362,6 +413,13 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
+        # Structural non-exhaustiveness checks (same as NegRisk)
+        is_election = self._is_election_market(event.title)
+        if is_election and len(exclusive_markets) <= 2:
+            return None
+        if self._is_open_ended_event(event.title):
+            return None
+
         opp = self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
             description=f"Buy YES on all {len(exclusive_markets)} outcomes for ${total_yes:.3f}, one wins = $1",
@@ -372,16 +430,15 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            # Always warn since we can't programmatically verify exhaustiveness
             opp.risk_factors.insert(
                 0, "Verify manually: ensure all possible outcomes are listed"
             )
             if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
                 opp.risk_factors.insert(
                     0,
-                    f"Total YES ({total_yes:.1%}) below 92% — possible missing outcomes",
+                    f"Total YES ({total_yes:.1%}) below 97% — possible missing outcomes",
                 )
-            if self._is_election_market(event.title):
+            if is_election:
                 opp.risk_factors.insert(
                     0,
                     "Election/primary market: unlisted candidates may not be covered",
