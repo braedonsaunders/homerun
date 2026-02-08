@@ -136,7 +136,10 @@ async def get_opportunities(
 
         # Non-skip first (sorted by ROI), then skip (sorted by ROI)
         opportunities.sort(
-            key=lambda o: (o.id in skip_ids, -o.roi_percent if reverse else o.roi_percent),
+            key=lambda o: (
+                o.id in skip_ids,
+                -o.roi_percent if reverse else o.roi_percent,
+            ),
         )
 
     # Apply pagination
