@@ -289,7 +289,9 @@ class MarketMonitor:
                 polymarket_client.get_all_markets(active=True),
             )
         except Exception as exc:
-            logger.error("Failed to fetch markets/events from Polymarket", error=str(exc))
+            logger.error(
+                "Failed to fetch markets/events from Polymarket", error=str(exc)
+            )
             return []
 
         # Build a market_id -> Event lookup for enrichment
@@ -313,7 +315,9 @@ class MarketMonitor:
         async with self._lock:
             new_market_alerts = self._detect_new_markets(combined, event_by_market)
             new_event_alerts = self._detect_new_events(events, combined)
-            dislocation_alerts = self._detect_price_dislocations(combined, event_by_market)
+            dislocation_alerts = self._detect_price_dislocations(
+                combined, event_by_market
+            )
             thin_book_alerts = self._detect_thin_books(combined, event_by_market)
 
             alerts.extend(new_market_alerts)
@@ -552,7 +556,9 @@ class MarketMonitor:
                 continue
 
             # Skip markets with zero prices (not yet initialised)
-            if not market.outcome_prices or all(p == 0.0 for p in market.outcome_prices):
+            if not market.outcome_prices or all(
+                p == 0.0 for p in market.outcome_prices
+            ):
                 continue
 
             snapshot = self._registry.get(market.id)
@@ -834,9 +840,7 @@ class MarketMonitor:
         """Return summary statistics about the current registry state."""
         now = datetime.now(timezone.utc)
         new_count = sum(
-            1
-            for s in self._registry.values()
-            if s.age_seconds(now) <= self._new_window
+            1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window
         )
         thin_count = sum(1 for s in self._registry.values() if s.has_thin_book)
         unstable_count = sum(
@@ -878,9 +882,7 @@ class MarketMonitor:
         """Return all snapshots that are still within the 'new' window."""
         now = datetime.now(timezone.utc)
         return [
-            s
-            for s in self._registry.values()
-            if s.age_seconds(now) <= self._new_window
+            s for s in self._registry.values() if s.age_seconds(now) <= self._new_window
         ]
 
 

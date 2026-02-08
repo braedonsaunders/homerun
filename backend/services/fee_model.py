@@ -89,7 +89,9 @@ class FeeModel:
             gas_cost_usd += self.negrisk_conversion_gas
 
         # 3. Spread cost: cost of crossing the bid-ask spread on total position
-        effective_spread_bps = spread_bps if spread_bps is not None else self.default_spread_bps
+        effective_spread_bps = (
+            spread_bps if spread_bps is not None else self.default_spread_bps
+        )
         spread_cost = total_cost * (effective_spread_bps / 10_000)
 
         # 4. Multi-leg slippage: modeled as compounding — each leg adds ~0.3%
@@ -106,7 +108,9 @@ class FeeModel:
         total_fees = winner_fee + gas_cost_usd + spread_cost + multi_leg_slippage
 
         # Express total fees as percentage of expected payout
-        fee_as_pct = (total_fees / expected_payout * 100) if expected_payout > 0 else 0.0
+        fee_as_pct = (
+            (total_fees / expected_payout * 100) if expected_payout > 0 else 0.0
+        )
 
         return FeeBreakdown(
             winner_fee=winner_fee,

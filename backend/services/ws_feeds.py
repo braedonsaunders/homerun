@@ -284,12 +284,16 @@ class PolymarketWSFeed:
     async def start(self) -> None:
         """Start the feed in the background.  Idempotent."""
         if not WEBSOCKETS_AVAILABLE:
-            logger.error("Cannot start PolymarketWSFeed: websockets library not installed")
+            logger.error(
+                "Cannot start PolymarketWSFeed: websockets library not installed"
+            )
             return
         if self._run_task is not None and not self._run_task.done():
             return
         self._stop_event.clear()
-        self._run_task = asyncio.create_task(self._run_loop(), name="polymarket-ws-feed")
+        self._run_task = asyncio.create_task(
+            self._run_loop(), name="polymarket-ws-feed"
+        )
         logger.info("PolymarketWSFeed started")
 
     async def stop(self) -> None:
@@ -357,7 +361,11 @@ class PolymarketWSFeed:
         attempt = 0
         while not self._stop_event.is_set():
             try:
-                self._state = ConnectionState.CONNECTING if attempt == 0 else ConnectionState.RECONNECTING
+                self._state = (
+                    ConnectionState.CONNECTING
+                    if attempt == 0
+                    else ConnectionState.RECONNECTING
+                )
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
@@ -367,7 +375,8 @@ class PolymarketWSFeed:
                 attempt += 1
                 self.stats.reconnections += 1
                 delay = min(
-                    self._reconnect_base_delay * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
+                    self._reconnect_base_delay
+                    * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
                     self._reconnect_max_delay,
                 )
                 logger.warning(
@@ -506,7 +515,9 @@ class PolymarketWSFeed:
 
     def _apply_book_update(self, data: dict, recv_time: float) -> None:
         """Parse bids/asks arrays and push into PriceCache."""
-        asset_id = data.get("asset_id") or data.get("token_id") or data.get("market", "")
+        asset_id = (
+            data.get("asset_id") or data.get("token_id") or data.get("market", "")
+        )
         if not asset_id:
             return
 
@@ -654,7 +665,11 @@ class KalshiWSFeed:
         attempt = 0
         while not self._stop_event.is_set():
             try:
-                self._state = ConnectionState.CONNECTING if attempt == 0 else ConnectionState.RECONNECTING
+                self._state = (
+                    ConnectionState.CONNECTING
+                    if attempt == 0
+                    else ConnectionState.RECONNECTING
+                )
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
@@ -664,7 +679,8 @@ class KalshiWSFeed:
                 attempt += 1
                 self.stats.reconnections += 1
                 delay = min(
-                    self._reconnect_base_delay * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
+                    self._reconnect_base_delay
+                    * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
                     self._reconnect_max_delay,
                 )
                 logger.warning(
@@ -1069,6 +1085,7 @@ class FeedManager:
 # ---------------------------------------------------------------------------
 # Module-level convenience accessor
 # ---------------------------------------------------------------------------
+
 
 def get_feed_manager() -> FeedManager:
     """Shorthand for ``FeedManager.get_instance()``."""

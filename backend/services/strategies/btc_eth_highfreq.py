@@ -77,22 +77,23 @@ _SLUG_REGEX = re.compile(
 )
 
 # Strategy selector thresholds
-_PURE_ARB_MAX_COMBINED = 0.98        # Use pure arb when YES+NO < this
-_DUMP_HEDGE_DROP_PCT = 0.05           # Minimum drop to trigger dump-hedge
-_DUMP_HEDGE_MAX_COMBINED = 0.97       # Combined cost target after dump-hedge
-_LIMIT_ORDER_TARGET_LOW = 0.45        # Lower limit order price
-_LIMIT_ORDER_TARGET_HIGH = 0.47       # Upper limit order price
-_THIN_LIQUIDITY_USD = 500.0           # Liquidity below which book is "thin"
+_PURE_ARB_MAX_COMBINED = 0.98  # Use pure arb when YES+NO < this
+_DUMP_HEDGE_DROP_PCT = 0.05  # Minimum drop to trigger dump-hedge
+_DUMP_HEDGE_MAX_COMBINED = 0.97  # Combined cost target after dump-hedge
+_LIMIT_ORDER_TARGET_LOW = 0.45  # Lower limit order price
+_LIMIT_ORDER_TARGET_HIGH = 0.47  # Upper limit order price
+_THIN_LIQUIDITY_USD = 500.0  # Liquidity below which book is "thin"
 
 # Price history defaults
-_DEFAULT_HISTORY_WINDOW_SEC = 300     # 5 minutes for 15-min markets
-_1HR_HISTORY_WINDOW_SEC = 600         # 10 minutes for 1-hr markets
-_MAX_HISTORY_ENTRIES = 200            # Maximum price snapshots per market
+_DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
+_1HR_HISTORY_WINDOW_SEC = 600  # 10 minutes for 1-hr markets
+_MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
 
 
 # ---------------------------------------------------------------------------
 # Sub-strategy enum
 # ---------------------------------------------------------------------------
+
 
 class SubStrategy(str, Enum):
     PURE_ARB = "pure_arb"
@@ -104,10 +105,12 @@ class SubStrategy(str, Enum):
 # Price history tracker
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PriceSnapshot:
     """A single price observation at a point in time."""
-    timestamp: float          # time.monotonic()
+
+    timestamp: float  # time.monotonic()
     yes_price: float
     no_price: float
 
@@ -115,17 +118,20 @@ class PriceSnapshot:
 @dataclass
 class MarketPriceHistory:
     """Rolling window of price snapshots for a single market."""
+
     window_seconds: float = _DEFAULT_HISTORY_WINDOW_SEC
     snapshots: deque[PriceSnapshot] = field(default_factory=deque)
 
     def record(self, yes_price: float, no_price: float) -> None:
         """Append a snapshot and evict stale entries."""
         now = time.monotonic()
-        self.snapshots.append(PriceSnapshot(
-            timestamp=now,
-            yes_price=yes_price,
-            no_price=no_price,
-        ))
+        self.snapshots.append(
+            PriceSnapshot(
+                timestamp=now,
+                yes_price=yes_price,
+                no_price=no_price,
+            )
+        )
         self._evict(now)
 
     def _evict(self, now: float) -> None:
@@ -165,12 +171,14 @@ class MarketPriceHistory:
 # Candidate detection helper
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class HighFreqCandidate:
     """A market identified as a BTC/ETH high-frequency binary market."""
+
     market: Market
-    asset: str          # "BTC" or "ETH"
-    timeframe: str      # "15min" or "1hr"
+    asset: str  # "BTC" or "ETH"
+    timeframe: str  # "15min" or "1hr"
     yes_price: float
     no_price: float
 
@@ -179,11 +187,13 @@ class HighFreqCandidate:
 # Sub-strategy scoring
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SubStrategyScore:
     """Score and metadata for a candidate sub-strategy."""
+
     strategy: SubStrategy
-    score: float                   # Higher is better (0-100 scale)
+    score: float  # Higher is better (0-100 scale)
     reason: str
     params: dict = field(default_factory=dict)
 
@@ -191,6 +201,7 @@ class SubStrategyScore:
 # ---------------------------------------------------------------------------
 # Main strategy class
 # ---------------------------------------------------------------------------
+
 
 class BtcEthHighFreqStrategy(BaseStrategy):
     """
@@ -268,9 +279,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 candidate.timeframe,
                 selected.strategy.value,
                 selected.score,
-                ", ".join(
-                    f"{s.strategy.value}={s.score:.1f}" for s in all_scores
-                ),
+                ", ".join(f"{s.strategy.value}={s.score:.1f}" for s in all_scores),
             )
 
             # Generate opportunity from the selected sub-strategy
@@ -321,13 +330,15 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             # Resolve live prices
             yes_price, no_price = self._resolve_prices(market, prices)
 
-            candidates.append(HighFreqCandidate(
-                market=market,
-                asset=asset,
-                timeframe=timeframe,
-                yes_price=yes_price,
-                no_price=no_price,
-            ))
+            candidates.append(
+                HighFreqCandidate(
+                    market=market,
+                    asset=asset,
+                    timeframe=timeframe,
+                    yes_price=yes_price,
+                    no_price=no_price,
+                )
+            )
 
         return candidates
 
@@ -597,10 +608,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             )
 
         # Check if prices are near the sweet spot (0.45-0.55 per side = new market)
-        both_near_half = (
-            _LIMIT_ORDER_TARGET_LOW <= c.yes_price <= (1.0 - _LIMIT_ORDER_TARGET_LOW)
-            and _LIMIT_ORDER_TARGET_LOW <= c.no_price <= (1.0 - _LIMIT_ORDER_TARGET_LOW)
-        )
+        both_near_half = _LIMIT_ORDER_TARGET_LOW <= c.yes_price <= (
+            1.0 - _LIMIT_ORDER_TARGET_LOW
+        ) and _LIMIT_ORDER_TARGET_LOW <= c.no_price <= (1.0 - _LIMIT_ORDER_TARGET_LOW)
 
         # Estimate profit if both limits fill at target prices
         target_combined = _LIMIT_ORDER_TARGET_HIGH * 2  # $0.94 if both fill at $0.47
@@ -701,8 +711,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         opp = self.create_opportunity(
             title=(
-                f"BTC/ETH HF Pure Arb: {c.asset} {c.timeframe} "
-                f"({market.question[:40]})"
+                f"BTC/ETH HF Pure Arb: {c.asset} {c.timeframe} ({market.question[:40]})"
             ),
             description=(
                 f"Pure arbitrage on {c.asset} {c.timeframe} market. "
@@ -799,10 +808,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             ]
 
         opp = self.create_opportunity(
-            title=(
-                f"BTC/ETH HF Pre-Limits: {c.asset} {c.timeframe} "
-                f"(thin book)"
-            ),
+            title=(f"BTC/ETH HF Pre-Limits: {c.asset} {c.timeframe} (thin book)"),
             description=(
                 f"Pre-placed limit orders on {c.asset} {c.timeframe} market "
                 f"(liquidity=${params.get('liquidity', 0):.0f}). "
@@ -816,7 +822,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         if opp is not None:
             self._attach_highfreq_metadata(
-                opp, c, SubStrategy.PRE_PLACED_LIMITS, params,
+                opp,
+                c,
+                SubStrategy.PRE_PLACED_LIMITS,
+                params,
             )
             opp.risk_factors.insert(
                 0,
@@ -864,10 +873,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         downstream consumers (execution engine, dashboard, logging)."""
         # Store in the existing positions_to_take metadata (which is a list
         # of dicts). We append a metadata entry at the end.
-        opp.positions_to_take.append({
-            "_highfreq_metadata": True,
-            "asset": candidate.asset,
-            "timeframe": candidate.timeframe,
-            "sub_strategy": sub_strategy.value,
-            "sub_strategy_params": params,
-        })
+        opp.positions_to_take.append(
+            {
+                "_highfreq_metadata": True,
+                "asset": candidate.asset,
+                "timeframe": candidate.timeframe,
+                "sub_strategy": sub_strategy.value,
+                "sub_strategy_params": params,
+            }
+        )

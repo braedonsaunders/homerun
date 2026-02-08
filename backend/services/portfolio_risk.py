@@ -308,9 +308,7 @@ class PortfolioRiskManager:
 
     # ---- Position checks ----
 
-    def check_position_allowed(
-        self, opportunity
-    ) -> tuple[bool, str, float]:
+    def check_position_allowed(self, opportunity) -> tuple[bool, str, float]:
         """Determine whether a new position is allowed given portfolio constraints.
 
         Returns:
@@ -324,9 +322,7 @@ class PortfolioRiskManager:
         # 1. Max open positions
         max_positions = getattr(settings, "MAX_OPEN_POSITIONS", 10)
         if state.num_positions >= max_positions:
-            reason = (
-                f"Maximum open positions reached ({max_positions})"
-            )
+            reason = f"Maximum open positions reached ({max_positions})"
             logger.warning(reason, opportunity_id=opportunity.id)
             return False, reason, 0.0
 
@@ -402,9 +398,7 @@ class PortfolioRiskManager:
 
     # ---- Size recommendation ----
 
-    def calculate_recommended_size(
-        self, opportunity, bankroll: float
-    ) -> float:
+    def calculate_recommended_size(self, opportunity, bankroll: float) -> float:
         """Calculate the final recommended position size incorporating Kelly sizing,
         portfolio constraints, liquidity limits, and correlation discounts.
 
