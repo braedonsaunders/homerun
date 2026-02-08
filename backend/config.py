@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     MAX_MARKETS_TO_SCAN: int = 500
     MIN_LIQUIDITY: float = 1000.0  # Minimum liquidity in USD
 
+    # Opportunity Quality Filters (hard rejection thresholds)
+    MIN_LIQUIDITY_HARD: float = 200.0  # Reject opportunities below this liquidity
+    MIN_POSITION_SIZE: float = 25.0  # Reject if max position < this (absolute profit too small)
+    MIN_ABSOLUTE_PROFIT: float = 5.0  # Reject if net profit on max position < this
+    MIN_ANNUALIZED_ROI: float = 10.0  # Reject if annualized ROI < this percent
+    MAX_RESOLUTION_MONTHS: int = 18  # Reject if resolution > this many months away (capital lockup)
+
+    # NegRisk Exhaustivity Thresholds
+    NEGRISK_MIN_TOTAL_YES: float = 0.85  # Skip NegRisk if total YES < this (likely missing outcomes)
+    NEGRISK_WARN_TOTAL_YES: float = 0.92  # Warn if total YES < this (possibly missing outcomes)
+
+    # Settlement Lag Timing
+    SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = 14  # Only detect settlement lag within this window
+
     # Wallet Tracking
     TRACKED_WALLETS: list[str] = []
 

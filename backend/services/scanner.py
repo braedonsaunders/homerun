@@ -186,6 +186,10 @@ class ArbitrageScanner:
                 except Exception as e:
                     print(f"  {strategy.name}: error - {e}")
 
+            # Deduplicate across strategies: when the same underlying markets
+            # are detected by multiple strategies, keep only the highest-ROI one.
+            all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
+
             # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
@@ -229,6 +233,38 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
             raise
+
+    def _deduplicate_cross_strategy(
+        self, opportunities: list[ArbitrageOpportunity]
+    ) -> list[ArbitrageOpportunity]:
+        """Remove duplicate opportunities that cover the same underlying markets.
+
+        When multiple strategies detect the same set of markets (e.g., NegRisk
+        and settlement_lag both find MI-07 House Election), keep only the one
+        with the highest ROI. This prevents the same trade from appearing
+        multiple times in the output.
+
+        Uses a market-ID fingerprint: sorted set of market IDs involved.
+        """
+        seen: dict[str, ArbitrageOpportunity] = {}  # fingerprint -> best opp
+
+        for opp in opportunities:
+            # Build a fingerprint from the sorted market IDs
+            market_ids = sorted(m.get("id", "") for m in opp.markets)
+            fingerprint = "|".join(market_ids)
+
+            if fingerprint in seen:
+                # Keep the opportunity with higher ROI
+                if opp.roi_percent > seen[fingerprint].roi_percent:
+                    seen[fingerprint] = opp
+            else:
+                seen[fingerprint] = opp
+
+        deduped = list(seen.values())
+        removed = len(opportunities) - len(deduped)
+        if removed > 0:
+            print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
+        return deduped
 
     # Maximum number of opportunities to score per scan cycle
     AI_SCORE_MAX_PER_SCAN = 50

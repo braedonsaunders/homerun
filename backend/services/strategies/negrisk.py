@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
+from config import settings
 from .base import BaseStrategy
 
 
@@ -71,7 +72,17 @@ class NegRiskStrategy(BaseStrategy):
     def _detect_negrisk_event(
         self, event: Event, prices: dict[str, dict]
     ) -> ArbitrageOpportunity | None:
-        """Detect arbitrage in official NegRisk events"""
+        """Detect arbitrage in official NegRisk events.
+
+        IMPORTANT: The NegRisk flag guarantees mutual exclusivity among LISTED
+        outcomes, but does NOT guarantee the list is EXHAUSTIVE. For example,
+        an election NegRisk bundle may list 6 candidates, but if a 7th (unlisted)
+        candidate wins, ALL listed outcomes resolve to $0 = 100% loss.
+
+        A low total YES price (e.g., $0.60-0.80) is a strong signal that the
+        market prices in a significant probability of an unlisted outcome winning.
+        This is NOT a mispricing — it's rational pricing of non-exhaustive risk.
+        """
         active_markets = [m for m in event.markets if m.active and not m.closed]
         if len(active_markets) < 2:
             return None
@@ -106,7 +117,18 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes >= 1.0:
             return None
 
-        return self.create_opportunity(
+        # --- Non-exhaustive outcome detection ---
+        # A total YES well below 1.0 indicates the market is pricing in a
+        # significant chance of an UNLISTED outcome winning. This is especially
+        # common in election primaries, special elections, and multi-candidate races.
+        # The "spread" is NOT a mispricing — it's rational non-exhaustive risk pricing.
+        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
+            return None
+
+        # Check if this looks like an election/primary with non-exhaustive risk
+        is_election = self._is_election_market(event.title)
+
+        opp = self.create_opportunity(
             title=f"NegRisk: {event.title[:50]}...",
             description=f"Buy YES on all {len(active_markets)} outcomes for ${total_yes:.3f}, one wins = $1",
             total_cost=total_yes,
@@ -114,6 +136,31 @@ class NegRiskStrategy(BaseStrategy):
             positions=positions,
             event=event,
         )
+
+        if opp:
+            # Warn about non-exhaustive risk even above threshold
+            if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+                opp.risk_factors.insert(
+                    0,
+                    f"Total YES ({total_yes:.1%}) below 92% — possible missing outcomes",
+                )
+            if is_election:
+                opp.risk_factors.insert(
+                    0,
+                    "Election/primary market: unlisted candidates or 'Other' outcome may not be covered",
+                )
+
+        return opp
+
+    def _is_election_market(self, title: str) -> bool:
+        """Check if an event title suggests an election or primary."""
+        title_lower = title.lower()
+        election_keywords = [
+            "election", "primary", "winner", "governor", "house",
+            "senate", "congress", "mayor", "special election",
+            "presidential", "nominee", "caucus", "runoff",
+        ]
+        return any(kw in title_lower for kw in election_keywords)
 
     def _detect_date_sweep(
         self, event: Event, prices: dict[str, dict]
@@ -311,29 +358,9 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes >= 1.0:
             return None
 
-        # Additional sanity check: if total is way below 1.0,
-        # these probably aren't exhaustive options
-        if total_yes < 0.7:
+        # Reject if total YES is too low — almost certainly non-exhaustive outcomes
+        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
-
-        # Stricter threshold for multi-outcome - require higher confidence
-        # that these are truly exhaustive options
-        if total_yes < 0.85:
-            # Lower totals suggest missing outcomes - add extra warning
-            opp = self.create_opportunity(
-                title=f"⚠️ Multi-Outcome: {event.title[:35]}...",
-                description=f"LOW CONFIDENCE: Total {total_yes:.0%} suggests missing outcomes. Buy all {len(exclusive_markets)} YES for ${total_yes:.3f}",
-                total_cost=total_yes,
-                markets=exclusive_markets,
-                positions=positions,
-                event=event,
-            )
-            if opp:
-                opp.risk_factors.insert(
-                    0,
-                    f"⚠️ LOW TOTAL ({total_yes:.0%}) - likely missing outcomes, HIGH RISK",
-                )
-            return opp
 
         opp = self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
@@ -344,10 +371,20 @@ class NegRiskStrategy(BaseStrategy):
             event=event,
         )
 
-        # Still add a warning since we can't verify exhaustiveness
         if opp:
+            # Always warn since we can't programmatically verify exhaustiveness
             opp.risk_factors.insert(
                 0, "Verify manually: ensure all possible outcomes are listed"
             )
+            if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+                opp.risk_factors.insert(
+                    0,
+                    f"Total YES ({total_yes:.1%}) below 92% — possible missing outcomes",
+                )
+            if self._is_election_market(event.title):
+                opp.risk_factors.insert(
+                    0,
+                    "Election/primary market: unlisted candidates may not be covered",
+                )
 
         return opp

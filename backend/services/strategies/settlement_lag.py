@@ -24,6 +24,7 @@ Detection approach:
 
 from typing import Optional
 from models import Market, Event, ArbitrageOpportunity, StrategyType, MispricingType
+from config import settings
 from .base import BaseStrategy, utcnow, make_aware
 from utils.logger import get_logger
 
@@ -102,10 +103,25 @@ class SettlementLagStrategy(BaseStrategy):
         yes_price: float,
         no_price: float,
     ) -> Optional[ArbitrageOpportunity]:
-        """Check a binary market for settlement lag opportunities."""
+        """Check a binary market for settlement lag opportunities.
+
+        Settlement lag requires the market to be AT or NEAR its resolution date.
+        A market months away from resolution with sum < 1.0 is NOT settlement lag —
+        it's normal market pricing reflecting uncertainty and time value of money.
+        """
 
         total = yes_price + no_price
         now = utcnow()
+        max_days = settings.SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION
+
+        # --- Gate: Resolution date must be near or past ---
+        # If the market has a known resolution date far in the future,
+        # any deviation from $1.00 is NOT settlement lag.
+        if market.end_date:
+            end_aware = make_aware(market.end_date)
+            days_until = (end_aware - now).days
+            if days_until > max_days:
+                return None  # Too far from resolution to be settlement lag
 
         # --- Signal 1: Market is past resolution date ---
         is_overdue = False
@@ -189,12 +205,41 @@ class SettlementLagStrategy(BaseStrategy):
         NegRisk events are especially vulnerable to settlement lag because
         they have multiple outcomes that must be coordinated. When one
         outcome is determined, the others don't instantly adjust.
+
+        CRITICAL: A NegRisk event with sum YES < 1.0 is NOT settlement lag
+        if the event hasn't occurred yet. Common causes of low sums:
+        - Non-exhaustive outcome lists (missing "Other" candidate)
+        - Time value of money / long-duration capital lockup
+        - Low liquidity / stale order books
+
+        True settlement lag requires evidence that the event HAS resolved
+        (near-zero/near-one prices) AND is near/past its resolution date.
         """
         opportunities = []
         active_markets = [m for m in event.markets if not m.closed and m.active]
 
         if len(active_markets) < 2:
             return []
+
+        # --- Gate: Event must be near resolution ---
+        # Check if ANY market in the event has a resolution date within the window.
+        # If all markets resolve far in the future, this is NOT settlement lag.
+        now = utcnow()
+        max_days = settings.SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION
+        any_near_resolution = False
+        any_overdue = False
+
+        for m in active_markets:
+            if m.end_date:
+                end_aware = make_aware(m.end_date)
+                days_until = (end_aware - now).days
+                if days_until <= max_days:
+                    any_near_resolution = True
+                if days_until <= 0:
+                    any_overdue = True
+
+        if not any_near_resolution:
+            return []  # Event is too far from resolution to be settlement lag
 
         # Get live prices for all outcomes
         total_yes = 0.0
@@ -227,6 +272,13 @@ class SettlementLagStrategy(BaseStrategy):
         if sum_deviation < self.MIN_SUM_DEVIATION:
             return []  # Prices look correct
 
+        # Require at least one concrete settlement signal beyond just sum deviation:
+        # either some outcomes are near zero/one (suggesting partial resolution),
+        # or the event is overdue
+        has_settlement_signal = near_zero_count > 0 or near_one_count > 0 or any_overdue
+        if not has_settlement_signal:
+            return []
+
         # If total YES < 1.0, buying YES on all outcomes is arbitrage
         if total_yes < 1.0:
             positions = []
@@ -247,6 +299,8 @@ class SettlementLagStrategy(BaseStrategy):
                 signals.append(f"{near_zero_count} outcomes near zero")
             if near_one_count > 0:
                 signals.append(f"{near_one_count} outcomes near one")
+            if any_overdue:
+                signals.append("past resolution date")
 
             opp = self.create_opportunity(
                 title=f"Settlement Lag (NegRisk): {event.title[:50]}",
