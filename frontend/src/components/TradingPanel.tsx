@@ -53,18 +53,7 @@ import {
   getOrders,
   getSimulationAccounts,
 } from '../services/api'
-import type { AutoTraderConfig } from '../services/api'
-
-interface TradingPosition {
-  token_id: string
-  market_id: string
-  market_question: string
-  outcome: string
-  size: number
-  average_cost: number
-  current_price: number
-  unrealized_pnl: number
-}
+import type { AutoTraderConfig, TradingPosition } from '../services/api'
 
 type DashboardTab = 'overview' | 'holdings' | 'orders' | 'settings'
 

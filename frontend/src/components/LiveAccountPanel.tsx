@@ -16,17 +16,7 @@ import {
   getTradingPositions,
   getTradingBalance,
 } from '../services/api'
-
-interface TradingPosition {
-  token_id: string
-  market_id: string
-  market_question: string
-  outcome: string
-  size: number
-  average_cost: number
-  current_price: number
-  unrealized_pnl: number
-}
+import type { TradingPosition } from '../services/api'
 
 export default function LiveAccountPanel() {
   const { data: tradingStatus } = useQuery({

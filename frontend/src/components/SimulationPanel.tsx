@@ -36,28 +36,9 @@ import {
   getAccountPositions,
   getAccountEquityHistory,
   getOpportunities,
-  SimulationAccount,
-  Opportunity,
 } from '../services/api'
+import type { SimulationAccount, SimulationPosition, Opportunity } from '../services/api'
 import TradeExecutionModal from './TradeExecutionModal'
-
-interface SimulationPosition {
-  id: string
-  market_id: string
-  market_question: string
-  token_id: string
-  side: string
-  quantity: number
-  entry_price: number
-  entry_cost: number
-  current_price: number | null
-  unrealized_pnl: number
-  opened_at: string
-  resolution_date: string | null
-  status: string
-  take_profit_price: number | null
-  stop_loss_price: number | null
-}
 
 type DetailTab = 'overview' | 'holdings' | 'trades' | 'execute'
 
