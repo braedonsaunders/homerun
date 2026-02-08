@@ -1078,6 +1078,14 @@ function UsageSection() {
           <EmptyState message="No usage data available yet." />
         ) : (
           <>
+            {usage.active_model && (
+              <div className="mb-4 flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Active model:</span>
+                <span className="font-mono font-medium text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                  {usage.active_model}
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <UsageStat
                 icon={<Zap className="w-4 h-4 text-blue-400" />}
@@ -1163,16 +1171,31 @@ function UsageSection() {
         <Card className="p-6">
           <h4 className="text-sm font-semibold text-muted-foreground mb-3">Usage by Model</h4>
           <div className="space-y-2">
-            {Object.entries(usage.by_model).map(([model, stats]: [string, any]) => (
-              <div key={model} className="flex items-center justify-between bg-muted p-3 rounded-lg border border-border">
-                <p className="text-sm font-medium font-mono">{model}</p>
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span>{stats.requests ?? 0} requests</span>
-                  <span>{formatNumber(stats.tokens ?? 0)} tokens</span>
-                  <span>${(stats.cost ?? 0).toFixed(4)}</span>
+            {Object.entries(usage.by_model).map(([model, stats]: [string, any]) => {
+              const isActive = usage.active_model && model === usage.active_model
+              return (
+                <div key={model} className={cn(
+                  "flex items-center justify-between p-3 rounded-lg border",
+                  isActive
+                    ? "bg-purple-500/5 border-purple-500/20"
+                    : "bg-muted border-border"
+                )}>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium font-mono">{model}</p>
+                    {isActive && (
+                      <span className="text-[10px] text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20">
+                        active
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span>{stats.requests ?? 0} requests</span>
+                    <span>{formatNumber(stats.tokens ?? 0)} tokens</span>
+                    <span>${(stats.cost ?? 0).toFixed(4)}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </Card>
       )}

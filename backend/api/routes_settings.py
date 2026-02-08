@@ -340,8 +340,17 @@ async def update_settings(request: UpdateSettingsRequest):
 
                     manager = get_llm_manager()
                     await manager.initialize()
-                except Exception:
-                    pass  # AI module may not be loaded
+                    logger.info(
+                        "LLM manager re-initialized, active model: %s",
+                        manager._default_model,
+                    )
+                except RuntimeError:
+                    pass  # AI module not loaded yet
+                except Exception as reinit_err:
+                    logger.error(
+                        "Failed to re-initialize LLM manager after settings update: %s",
+                        reinit_err,
+                    )
 
             logger.info("Settings updated successfully")
 
