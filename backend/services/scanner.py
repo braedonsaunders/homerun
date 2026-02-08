@@ -230,10 +230,8 @@ class ArbitrageScanner:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
             raise
 
-    # Minimum ROI (%) for an opportunity to be worth an LLM call
-    AI_SCORE_MIN_ROI = 2.0
     # Maximum number of opportunities to score per scan cycle
-    AI_SCORE_MAX_PER_SCAN = 20
+    AI_SCORE_MAX_PER_SCAN = 50
     # How many LLM calls can run concurrently
     AI_SCORE_CONCURRENCY = 3
     # Don't re-score an opportunity within this many seconds
@@ -246,21 +244,16 @@ class ArbitrageScanner:
         the judge itself) and looked up from there on subsequent scans.
 
         Cost controls:
-        - Only scores opportunities above AI_SCORE_MIN_ROI
         - Limits to AI_SCORE_MAX_PER_SCAN per scan cycle
         - Caps concurrency via AI_SCORE_CONCURRENCY semaphore
-        - Skips opportunities already judged within AI_SCORE_CACHE_TTL_SECONDS
+        - Skips opportunities already judged within AI_SCORE_CACHE_TTL_SECONDS (DB lookup)
         - Respects cancellation (e.g. on pause) between each scoring call
         """
         try:
             from services.ai.opportunity_judge import opportunity_judge
 
-            # Filter: unscored and above minimum ROI
-            candidates = [
-                o
-                for o in opportunities
-                if o.ai_analysis is None and o.roi_percent >= self.AI_SCORE_MIN_ROI
-            ]
+            # Filter: only unscored (DB dedup already attached scored ones)
+            candidates = [o for o in opportunities if o.ai_analysis is None]
 
             if not candidates:
                 return
@@ -270,9 +263,7 @@ class ArbitrageScanner:
             # Cap the number of LLM calls per scan cycle
             candidates = candidates[: self.AI_SCORE_MAX_PER_SCAN]
 
-            print(
-                f"  AI Judge: scoring {len(candidates)} opportunities (ROI >= {self.AI_SCORE_MIN_ROI}%)..."
-            )
+            print(f"  AI Judge: scoring {len(candidates)} unscored opportunities...")
 
             sem = asyncio.Semaphore(self.AI_SCORE_CONCURRENCY)
 
