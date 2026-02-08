@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: write
+
 jobs:
   backend-lint:
     name: Backend Lint
@@ -15,6 +18,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,8 +35,15 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
-      - name: Check formatting with ruff
-        run: ruff format --check .
+      - name: Auto-format with ruff
+        run: ruff format .
+
+      - name: Commit formatting fixes if any
+        run: |
+          cd ..
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet || (git add -A && git commit -m "style: auto-format with ruff" && git push)
 
   frontend-lint:
     name: Frontend Lint & Type Check
