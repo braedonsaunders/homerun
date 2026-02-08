@@ -156,9 +156,19 @@ class NegRiskStrategy(BaseStrategy):
         """Check if an event title suggests an election or primary."""
         title_lower = title.lower()
         election_keywords = [
-            "election", "primary", "winner", "governor", "house",
-            "senate", "congress", "mayor", "special election",
-            "presidential", "nominee", "caucus", "runoff",
+            "election",
+            "primary",
+            "winner",
+            "governor",
+            "house",
+            "senate",
+            "congress",
+            "mayor",
+            "special election",
+            "presidential",
+            "nominee",
+            "caucus",
+            "runoff",
         ]
         return any(kw in title_lower for kw in election_keywords)
 
