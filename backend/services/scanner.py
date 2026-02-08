@@ -257,7 +257,8 @@ class ArbitrageScanner:
 
             # Filter: unscored and above minimum ROI
             candidates = [
-                o for o in opportunities
+                o
+                for o in opportunities
                 if o.ai_analysis is None and o.roi_percent >= self.AI_SCORE_MIN_ROI
             ]
 
@@ -269,7 +270,9 @@ class ArbitrageScanner:
             # Cap the number of LLM calls per scan cycle
             candidates = candidates[: self.AI_SCORE_MAX_PER_SCAN]
 
-            print(f"  AI Judge: scoring {len(candidates)} opportunities (ROI >= {self.AI_SCORE_MIN_ROI}%)...")
+            print(
+                f"  AI Judge: scoring {len(candidates)} opportunities (ROI >= {self.AI_SCORE_MIN_ROI}%)..."
+            )
 
             sem = asyncio.Semaphore(self.AI_SCORE_CONCURRENCY)
 
@@ -335,7 +338,9 @@ class ArbitrageScanner:
         try:
             from sqlalchemy import func
 
-            cutoff = datetime.utcnow() - timedelta(seconds=self.AI_SCORE_CACHE_TTL_SECONDS)
+            cutoff = datetime.utcnow() - timedelta(
+                seconds=self.AI_SCORE_CACHE_TTL_SECONDS
+            )
 
             async with AsyncSessionLocal() as session:
                 # Get the most recent judgment per opportunity_id,
