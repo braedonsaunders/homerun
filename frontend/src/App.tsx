@@ -94,7 +94,7 @@ function App() {
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
-  const [sortBy, setSortBy] = useState<string>('roi')
+  const [sortBy, setSortBy] = useState<string>('ai_score')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)

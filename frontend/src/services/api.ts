@@ -6,8 +6,31 @@ const api = axios.create({
 
 // ==================== TYPES ====================
 
+export interface AIAnalysis {
+  overall_score: number
+  profit_viability: number
+  resolution_safety: number
+  execution_feasibility: number
+  market_efficiency: number
+  recommendation: string
+  reasoning: string | null
+  risk_factors: string[]
+  judged_at: string | null
+  resolution_analyses: Array<{
+    market_id: string
+    clarity_score: number
+    risk_score: number
+    confidence: number
+    recommendation: string
+    summary: string
+    ambiguities: string[]
+    edge_cases: string[]
+  }>
+}
+
 export interface Opportunity {
   id: string
+  stable_id: string
   strategy: string
   title: string
   description: string
@@ -28,6 +51,7 @@ export interface Opportunity {
   detected_at: string
   resolution_date?: string
   positions_to_take: Position[]
+  ai_analysis: AIAnalysis | null
 }
 
 export interface Market {

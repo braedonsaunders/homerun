@@ -37,10 +37,26 @@ class MispricingType(str, Enum):
     SETTLEMENT_LAG = "settlement_lag"
 
 
+class AIAnalysis(BaseModel):
+    """Inline AI judgment data attached to an opportunity."""
+
+    overall_score: float = 0.0
+    profit_viability: float = 0.0
+    resolution_safety: float = 0.0
+    execution_feasibility: float = 0.0
+    market_efficiency: float = 0.0
+    recommendation: str = "pending"  # strong_execute, execute, review, skip, strong_skip, pending
+    reasoning: Optional[str] = None
+    risk_factors: list[str] = []
+    judged_at: Optional[datetime] = None
+    resolution_analyses: list[dict] = []
+
+
 class ArbitrageOpportunity(BaseModel):
     """Represents a detected arbitrage opportunity"""
 
     id: str = Field(default_factory=lambda: "")
+    stable_id: str = Field(default_factory=lambda: "")  # Persists across scans (no timestamp)
     strategy: StrategyType
     title: str
     description: str
@@ -81,11 +97,15 @@ class ArbitrageOpportunity(BaseModel):
     # Execution details
     positions_to_take: list[dict] = []  # What to buy
 
+    # Inline AI analysis (populated by scanner, persisted across scans)
+    ai_analysis: Optional[AIAnalysis] = None
+
     def __init__(self, **data):
         super().__init__(**data)
+        market_ids = "_".join([m.get("id", "")[:8] for m in self.markets[:3]])
+        if not self.stable_id:
+            self.stable_id = f"{self.strategy.value}_{market_ids}"
         if not self.id:
-            # Generate ID from strategy and market IDs
-            market_ids = "_".join([m.get("id", "")[:8] for m in self.markets[:3]])
             self.id = f"{self.strategy.value}_{market_ids}_{int(self.detected_at.timestamp())}"
 
 

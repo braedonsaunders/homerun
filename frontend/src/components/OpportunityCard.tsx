@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import {
   ChevronDown,
   ChevronUp,
@@ -15,7 +15,7 @@ import {
   MessageCircle,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { Opportunity, judgeOpportunity, getOpportunityAISummary } from '../services/api'
+import { Opportunity, judgeOpportunity } from '../services/api'
 import { Card, CardContent, CardHeader } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -46,6 +46,7 @@ const RECOMMENDATION_COLORS: Record<string, string> = {
   safe: 'bg-green-500/15 text-green-400 border-green-500/20',
   caution: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
   avoid: 'bg-red-500/15 text-red-400 border-red-500/20',
+  pending: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
 }
 
 const RECOMMENDATION_BG: Record<string, string> = {
@@ -71,14 +72,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
       ? 'text-yellow-400'
       : 'text-red-400'
 
-  // Always fetch AI summary for every card
-  const { data: aiSummary, isLoading: aiSummaryLoading } = useQuery({
-    queryKey: ['ai-opportunity-summary', opportunity.id],
-    queryFn: () => getOpportunityAISummary(opportunity.id),
-    staleTime: 60000,
-  })
+  // Use inline ai_analysis from the opportunity (populated by scanner)
+  const inlineAnalysis = opportunity.ai_analysis
 
-  // Judge opportunity mutation
+  // Judge opportunity mutation (manual re-analysis)
   const judgeMutation = useMutation({
     mutationFn: async () => {
       const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
@@ -86,8 +83,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
     },
   })
 
-  const judgment = judgeMutation.data || aiSummary?.judgment
-  const resolutions = aiSummary?.resolution_analyses || []
+  // Prefer fresh mutation result, fall back to inline analysis
+  const judgment = judgeMutation.data || (inlineAnalysis && inlineAnalysis.recommendation !== 'pending' ? inlineAnalysis : null)
+  const resolutions = inlineAnalysis?.resolution_analyses || []
+  const isPending = inlineAnalysis?.recommendation === 'pending'
 
   const recommendationBorder = judgment
     ? RECOMMENDATION_BG[judgment.recommendation] || ''
@@ -174,10 +173,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             ? "bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/15"
             : "bg-muted/50 border border-border"
         )}>
-          {aiSummaryLoading && !judgment && (
+          {isPending && !judgeMutation.isPending && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <RefreshCw className="w-3 h-3 animate-spin" />
-              Loading AI analysis...
+              AI analysis queued...
             </div>
           )}
 
@@ -261,7 +260,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                 </div>
               )}
             </>
-          ) : !aiSummaryLoading && !judgeMutation.isPending ? (
+          ) : !isPending && !judgeMutation.isPending ? (
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground flex items-center gap-1.5">
                 <Brain className="w-3.5 h-3.5" />

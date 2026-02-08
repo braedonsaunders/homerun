@@ -21,7 +21,6 @@ import {
   getSimulationAccounts,
   executeOpportunity,
   executeOpportunityLive,
-  getOpportunityAISummary,
 } from '../services/api'
 import {
   Dialog,
@@ -479,15 +478,12 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
 function AITradeAdvisor({ opportunity }: { opportunity: Opportunity }) {
   const [showDetails, setShowDetails] = useState(false)
 
-  const { data: aiSummary, isLoading } = useQuery({
-    queryKey: ['ai-trade-advisor', opportunity.id],
-    queryFn: () => getOpportunityAISummary(opportunity.id),
-    staleTime: 60000,
-  })
-
-  const judgment = aiSummary?.judgment
-  const resolutions = aiSummary?.resolution_analyses || []
+  // Use inline ai_analysis from the opportunity (populated by scanner)
+  const inlineAnalysis = opportunity.ai_analysis
+  const judgment = inlineAnalysis && inlineAnalysis.recommendation !== 'pending' ? inlineAnalysis : null
+  const resolutions = inlineAnalysis?.resolution_analyses || []
   const hasData = judgment || resolutions.length > 0
+  const isLoading = inlineAnalysis?.recommendation === 'pending'
 
   // Compute overall signal
   const getSignal = () => {

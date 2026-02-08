@@ -4,7 +4,8 @@ from typing import Optional, Callable, List
 
 from config import settings
 from models import ArbitrageOpportunity, OpportunityFilter
-from models.database import AsyncSessionLocal, ScannerSettings
+from models.opportunity import AIAnalysis
+from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
 from services.polymarket import polymarket_client
 from services.strategies import (
     BasicArbStrategy,
@@ -55,6 +56,9 @@ class ArbitrageScanner:
         self._scan_callbacks: List[Callable] = []
         self._status_callbacks: List[Callable] = []
         self._scan_task: Optional[asyncio.Task] = None
+
+        # Cache of AI analyses keyed by stable_id — persists across scans
+        self._ai_cache: dict[str, "AIAnalysis"] = {}
 
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new opportunities"""
@@ -185,10 +189,16 @@ class ArbitrageScanner:
             # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
+            # Carry forward cached AI analyses from previous scans
+            for opp in all_opportunities:
+                cached = self._ai_cache.get(opp.stable_id)
+                if cached:
+                    opp.ai_analysis = cached
+
             self._opportunities = all_opportunities
             self._last_scan = datetime.utcnow()
 
-            # AI Intelligence: Score top opportunities (non-blocking)
+            # AI Intelligence: Score ALL unscored opportunities (non-blocking)
             try:
                 from services.ai import get_llm_manager
 
@@ -215,18 +225,38 @@ class ArbitrageScanner:
             raise
 
     async def _ai_score_opportunities(self, opportunities: list):
-        """Score top opportunities using AI (runs in background)."""
+        """Score ALL unscored opportunities using AI (runs in background).
+
+        Results are cached in self._ai_cache keyed by stable_id so they
+        persist across scans even when the opportunity ID changes.
+        """
         try:
             from services.ai.opportunity_judge import opportunity_judge
 
-            # Only score top 5 opportunities with ROI > 3% to manage costs
-            top_opps = [o for o in opportunities if o.roi_percent > 3.0][:5]
-            if not top_opps:
+            # Score opportunities that don't have AI analysis yet
+            unscored = [o for o in opportunities if o.ai_analysis is None]
+            if not unscored:
                 return
 
-            for opp in top_opps:
+            print(f"  AI Judge: scoring {len(unscored)} unscored opportunities...")
+
+            for opp in unscored:
                 try:
                     result = await opportunity_judge.judge_opportunity(opp)
+                    analysis = AIAnalysis(
+                        overall_score=result.get("overall_score", 0.0),
+                        profit_viability=result.get("profit_viability", 0.0),
+                        resolution_safety=result.get("resolution_safety", 0.0),
+                        execution_feasibility=result.get("execution_feasibility", 0.0),
+                        market_efficiency=result.get("market_efficiency", 0.0),
+                        recommendation=result.get("recommendation", "review"),
+                        reasoning=result.get("reasoning"),
+                        risk_factors=result.get("risk_factors", []),
+                        judged_at=datetime.utcnow(),
+                    )
+                    # Update the live opportunity and the cache
+                    opp.ai_analysis = analysis
+                    self._ai_cache[opp.stable_id] = analysis
                     print(
                         f"  AI Judge: {opp.title[:50]}... "
                         f"\u2192 {result.get('recommendation', 'unknown')} "
@@ -249,10 +279,70 @@ class ArbitrageScanner:
 
             await asyncio.sleep(self._interval_seconds)
 
+    async def _load_ai_cache_from_db(self):
+        """Load existing AI judgments from the database into the in-memory cache.
+
+        This ensures that when the server restarts, previously scored
+        opportunities retain their AI analysis without re-calling the LLM.
+        We build a mapping from opportunity_id -> judgment, and then
+        convert opportunity_id to stable_id format (strip the timestamp suffix).
+        """
+        try:
+            from sqlalchemy import func
+
+            async with AsyncSessionLocal() as session:
+                # Get the most recent judgment per opportunity_id
+                subq = (
+                    select(
+                        OpportunityJudgment.opportunity_id,
+                        func.max(OpportunityJudgment.judged_at).label("latest"),
+                    )
+                    .group_by(OpportunityJudgment.opportunity_id)
+                    .subquery()
+                )
+                rows = (
+                    await session.execute(
+                        select(OpportunityJudgment).join(
+                            subq,
+                            (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
+                            & (OpportunityJudgment.judged_at == subq.c.latest),
+                        )
+                    )
+                ).scalars().all()
+
+                for row in rows:
+                    # Convert opportunity_id to stable_id by stripping trailing _<timestamp>
+                    opp_id = row.opportunity_id or ""
+                    parts = opp_id.rsplit("_", 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        stable_id = parts[0]
+                    else:
+                        stable_id = opp_id
+
+                    self._ai_cache[stable_id] = AIAnalysis(
+                        overall_score=row.overall_score or 0.0,
+                        profit_viability=row.profit_viability or 0.0,
+                        resolution_safety=row.resolution_safety or 0.0,
+                        execution_feasibility=row.execution_feasibility or 0.0,
+                        market_efficiency=row.market_efficiency or 0.0,
+                        recommendation=row.recommendation or "review",
+                        reasoning=row.reasoning,
+                        risk_factors=row.risk_factors or [],
+                        judged_at=row.judged_at,
+                    )
+
+                if rows:
+                    print(f"Loaded {len(self._ai_cache)} AI judgments from database into cache")
+        except Exception as e:
+            print(f"Error loading AI cache from DB: {e}")
+
     async def start_continuous_scan(self, interval_seconds: int = None):
         """Start continuous scanning loop"""
         # Load persisted settings first
         await self.load_settings()
+
+        # Bootstrap AI cache from database so existing judgments survive restarts
+        await self._load_ai_cache_from_db()
 
         if interval_seconds is not None:
             self._interval_seconds = interval_seconds

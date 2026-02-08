@@ -25,7 +25,7 @@ async def get_opportunities(
     ),
     sort_by: Optional[str] = Query(
         None,
-        description="Sort field: roi (default), ai_score, profit, liquidity, risk",
+        description="Sort field: ai_score (default), roi, profit, liquidity, risk",
     ),
     sort_dir: Optional[str] = Query("desc", description="Sort direction: asc or desc"),
     limit: int = Query(50, description="Maximum results to return"),
@@ -53,91 +53,34 @@ async def get_opportunities(
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
         ]
 
-    # Sort opportunities
+    # Sort opportunities — uses inline ai_analysis (no DB queries needed)
     reverse = sort_dir != "asc"
-    if sort_by == "ai_score":
-        # Look up latest AI judgment scores from the database
-        from sqlalchemy import select, func
-        from models.database import AsyncSessionLocal, OpportunityJudgment
 
-        ai_scores: dict[str, float] = {}
-        try:
-            async with AsyncSessionLocal() as session:
-                # Get the most recent overall_score per opportunity_id
-                subq = (
-                    select(
-                        OpportunityJudgment.opportunity_id,
-                        func.max(OpportunityJudgment.judged_at).label("latest"),
-                    )
-                    .group_by(OpportunityJudgment.opportunity_id)
-                    .subquery()
-                )
-                rows = await session.execute(
-                    select(
-                        OpportunityJudgment.opportunity_id,
-                        OpportunityJudgment.overall_score,
-                    ).join(
-                        subq,
-                        (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
-                        & (OpportunityJudgment.judged_at == subq.c.latest),
-                    )
-                )
-                for row in rows:
-                    ai_scores[row.opportunity_id] = row.overall_score or 0.0
-        except Exception:
-            pass
+    # Default to ai_score sorting (LLM buy rating) when no sort specified
+    effective_sort = sort_by or "ai_score"
 
-        # Scored opportunities first, then unscored (sorted by ROI)
+    if effective_sort == "ai_score":
+        # Scored opportunities first, sorted by overall_score, unscored last (by ROI)
         opportunities.sort(
             key=lambda o: (
-                o.id in ai_scores,
-                ai_scores.get(o.id, 0.0),
+                o.ai_analysis is not None and o.ai_analysis.recommendation != "pending",
+                o.ai_analysis.overall_score if o.ai_analysis else 0.0,
+                o.roi_percent,
             ),
             reverse=reverse,
         )
-    elif sort_by == "profit":
+    elif effective_sort == "profit":
         opportunities.sort(key=lambda o: o.net_profit, reverse=reverse)
-    elif sort_by == "liquidity":
+    elif effective_sort == "liquidity":
         opportunities.sort(key=lambda o: o.min_liquidity, reverse=reverse)
-    elif sort_by == "risk":
+    elif effective_sort == "risk":
         opportunities.sort(key=lambda o: o.risk_score, reverse=reverse)
-    else:
-        # Default: sort by ROI, but deprioritize opportunities that AI
-        # recommends skipping so they don't clutter the top of the list.
-        from sqlalchemy import select, func as sa_func
-        from models.database import AsyncSessionLocal, OpportunityJudgment
-
-        skip_ids: set[str] = set()
-        try:
-            async with AsyncSessionLocal() as session:
-                subq = (
-                    select(
-                        OpportunityJudgment.opportunity_id,
-                        sa_func.max(OpportunityJudgment.judged_at).label("latest"),
-                    )
-                    .group_by(OpportunityJudgment.opportunity_id)
-                    .subquery()
-                )
-                rows = await session.execute(
-                    select(
-                        OpportunityJudgment.opportunity_id,
-                        OpportunityJudgment.recommendation,
-                    ).join(
-                        subq,
-                        (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
-                        & (OpportunityJudgment.judged_at == subq.c.latest),
-                    )
-                )
-                for row in rows:
-                    if row.recommendation in ("skip", "strong_skip"):
-                        skip_ids.add(row.opportunity_id)
-        except Exception:
-            pass
-
-        # Non-skip first (sorted by ROI), then skip (sorted by ROI)
+    elif effective_sort == "roi":
+        # ROI sort, but deprioritize AI skip recommendations
         opportunities.sort(
             key=lambda o: (
-                o.id in skip_ids,
+                o.ai_analysis is not None
+                and o.ai_analysis.recommendation in ("skip", "strong_skip"),
                 -o.roi_percent if reverse else o.roi_percent,
             ),
         )
