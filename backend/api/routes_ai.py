@@ -460,12 +460,14 @@ async def ai_chat(request: AIChatRequest):
             system_prompt += "\nCurrent context:\n" + "\n".join(context_parts)
 
         # Build messages with system prompt as first message
-        messages = [{"role": "system", "content": system_prompt}]
+        from services.ai.llm_provider import LLMMessage
+
+        messages = [LLMMessage(role="system", content=system_prompt)]
         for msg in request.history[-10:]:  # Keep last 10 messages
             messages.append(
-                {"role": msg.get("role", "user"), "content": msg.get("content", "")}
+                LLMMessage(role=msg.get("role", "user"), content=msg.get("content", ""))
             )
-        messages.append({"role": "user", "content": request.message})
+        messages.append(LLMMessage(role="user", content=request.message))
 
         response = await manager.chat(
             messages=messages,
