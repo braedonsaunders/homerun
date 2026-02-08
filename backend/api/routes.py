@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
 from services import scanner, wallet_tracker, polymarket_client
@@ -96,6 +96,91 @@ async def get_opportunities(
     response = JSONResponse(content=[o.model_dump(mode="json") for o in paginated])
     response.headers["X-Total-Count"] = str(total)
     return response
+
+
+@router.get("/opportunities/search-polymarket")
+async def search_polymarket_opportunities(
+    q: str = Query(..., min_length=1, description="Search query for Polymarket markets"),
+    limit: int = Query(20, ge=1, le=50, description="Maximum results to return"),
+):
+    """
+    Search all of Polymarket for markets matching a keyword, then run
+    arbitrage detection strategies on the results. Returns opportunities
+    in the same format as the main /opportunities endpoint.
+    """
+    try:
+        # Search Polymarket Gamma API for matching events
+        events = await polymarket_client.search_events(q, limit=limit)
+
+        if not events:
+            from fastapi.responses import JSONResponse
+
+            response = JSONResponse(content=[])
+            response.headers["X-Total-Count"] = "0"
+            return response
+
+        # Collect all markets from events and filter out expired ones
+        now = datetime.now(timezone.utc)
+        all_markets = []
+        for event in events:
+            event.markets = [
+                m for m in event.markets if m.end_date is None or m.end_date > now
+            ]
+            all_markets.extend(event.markets)
+
+        # Fetch live prices for tokens
+        all_token_ids = []
+        for market in all_markets:
+            all_token_ids.extend(market.clob_token_ids)
+
+        prices = {}
+        if all_token_ids:
+            token_sample = all_token_ids[:200]
+            prices = await polymarket_client.get_prices_batch(token_sample)
+
+        # Run arbitrage detection strategies
+        all_opportunities: list[ArbitrageOpportunity] = []
+        for strategy in scanner.strategies:
+            try:
+                opps = strategy.detect(events, all_markets, prices)
+                all_opportunities.extend(opps)
+            except Exception:
+                pass
+
+        # Deduplicate and sort by ROI
+        seen_fingerprints: dict[str, ArbitrageOpportunity] = {}
+        for opp in all_opportunities:
+            market_ids = sorted(m.get("id", "") for m in opp.markets)
+            fingerprint = "|".join(market_ids)
+            if fingerprint not in seen_fingerprints or opp.roi_percent > seen_fingerprints[fingerprint].roi_percent:
+                seen_fingerprints[fingerprint] = opp
+        all_opportunities = list(seen_fingerprints.values())
+        all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
+
+        # Kick off AI scoring in background (non-blocking)
+        import asyncio
+
+        try:
+            from services.ai import get_llm_manager
+
+            manager = get_llm_manager()
+            if manager.is_available():
+                asyncio.create_task(
+                    scanner._ai_score_opportunities(all_opportunities)
+                )
+        except Exception:
+            pass
+
+        total = len(all_opportunities)
+        from fastapi.responses import JSONResponse
+
+        response = JSONResponse(
+            content=[o.model_dump(mode="json") for o in all_opportunities[:limit]]
+        )
+        response.headers["X-Total-Count"] = str(total)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)

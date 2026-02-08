@@ -178,6 +178,7 @@ class BaseStrategy(ABC):
             markets=[
                 {
                     "id": m.id,
+                    "slug": m.slug,
                     "question": m.question,
                     "yes_price": m.yes_price,
                     "no_price": m.no_price,
@@ -186,6 +187,7 @@ class BaseStrategy(ABC):
                 for m in markets
             ],
             event_id=event.id if event else None,
+            event_slug=event.slug if event else None,
             event_title=event.title if event else None,
             category=event.category if event else None,
             min_liquidity=min_liquidity,
