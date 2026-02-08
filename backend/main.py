@@ -191,7 +191,7 @@ async def lifespan(app: FastAPI):
         # Cleanup
         logger.info("Shutting down...")
 
-        scanner.stop()
+        await scanner.stop()
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()

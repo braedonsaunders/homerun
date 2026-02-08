@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, List
 
 from config import settings
@@ -57,8 +57,8 @@ class ArbitrageScanner:
         self._status_callbacks: List[Callable] = []
         self._scan_task: Optional[asyncio.Task] = None
 
-        # Cache of AI analyses keyed by stable_id — persists across scans
-        self._ai_cache: dict[str, "AIAnalysis"] = {}
+        # Track the running AI scoring task so we can cancel it on pause
+        self._ai_scoring_task: Optional[asyncio.Task] = None
 
     def add_callback(self, callback: Callable):
         """Add callback to be notified of new opportunities"""
@@ -189,22 +189,28 @@ class ArbitrageScanner:
             # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
-            # Carry forward cached AI analyses from previous scans
-            for opp in all_opportunities:
-                cached = self._ai_cache.get(opp.stable_id)
-                if cached:
-                    opp.ai_analysis = cached
+            # Attach existing AI judgments from the database
+            await self._attach_ai_judgments(all_opportunities)
 
             self._opportunities = all_opportunities
             self._last_scan = datetime.utcnow()
 
-            # AI Intelligence: Score ALL unscored opportunities (non-blocking)
+            # AI Intelligence: Score unscored opportunities (non-blocking)
             try:
                 from services.ai import get_llm_manager
 
                 manager = get_llm_manager()
                 if manager.is_available():
-                    asyncio.create_task(self._ai_score_opportunities(all_opportunities))
+                    # Cancel any still-running scoring task from a previous scan
+                    if self._ai_scoring_task and not self._ai_scoring_task.done():
+                        self._ai_scoring_task.cancel()
+                        try:
+                            await self._ai_scoring_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    self._ai_scoring_task = asyncio.create_task(
+                        self._ai_score_opportunities(all_opportunities)
+                    )
             except Exception:
                 pass  # AI scoring is non-critical
 
@@ -224,26 +230,53 @@ class ArbitrageScanner:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
             raise
 
-    async def _ai_score_opportunities(self, opportunities: list):
-        """Score ALL unscored opportunities using AI (runs in background).
+    # Minimum ROI (%) for an opportunity to be worth an LLM call
+    AI_SCORE_MIN_ROI = 2.0
+    # Maximum number of opportunities to score per scan cycle
+    AI_SCORE_MAX_PER_SCAN = 20
+    # How many LLM calls can run concurrently
+    AI_SCORE_CONCURRENCY = 3
+    # Don't re-score an opportunity within this many seconds
+    AI_SCORE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
-        Results are cached in self._ai_cache keyed by stable_id so they
-        persist across scans even when the opportunity ID changes.
+    async def _ai_score_opportunities(self, opportunities: list):
+        """Score unscored opportunities using AI (runs in background).
+
+        Judgments are persisted in the OpportunityJudgment DB table (by
+        the judge itself) and looked up from there on subsequent scans.
+
+        Cost controls:
+        - Only scores opportunities above AI_SCORE_MIN_ROI
+        - Limits to AI_SCORE_MAX_PER_SCAN per scan cycle
+        - Caps concurrency via AI_SCORE_CONCURRENCY semaphore
+        - Skips opportunities already judged within AI_SCORE_CACHE_TTL_SECONDS
+        - Respects cancellation (e.g. on pause) between each scoring call
         """
         try:
             from services.ai.opportunity_judge import opportunity_judge
 
-            # Score opportunities that don't have AI analysis yet
-            unscored = [o for o in opportunities if o.ai_analysis is None]
-            if not unscored:
+            # Filter: unscored and above minimum ROI
+            candidates = [
+                o for o in opportunities
+                if o.ai_analysis is None and o.roi_percent >= self.AI_SCORE_MIN_ROI
+            ]
+
+            if not candidates:
                 return
 
-            print(f"  AI Judge: scoring {len(unscored)} unscored opportunities...")
+            # Prioritise by ROI descending — score the best opportunities first
+            candidates.sort(key=lambda x: x.roi_percent, reverse=True)
+            # Cap the number of LLM calls per scan cycle
+            candidates = candidates[: self.AI_SCORE_MAX_PER_SCAN]
 
-            for opp in unscored:
-                try:
+            print(f"  AI Judge: scoring {len(candidates)} opportunities (ROI >= {self.AI_SCORE_MIN_ROI}%)...")
+
+            sem = asyncio.Semaphore(self.AI_SCORE_CONCURRENCY)
+
+            async def _score_one(opp):
+                async with sem:
                     result = await opportunity_judge.judge_opportunity(opp)
-                    analysis = AIAnalysis(
+                    opp.ai_analysis = AIAnalysis(
                         overall_score=result.get("overall_score", 0.0),
                         profit_viability=result.get("profit_viability", 0.0),
                         resolution_safety=result.get("resolution_safety", 0.0),
@@ -254,17 +287,27 @@ class ArbitrageScanner:
                         risk_factors=result.get("risk_factors", []),
                         judged_at=datetime.utcnow(),
                     )
-                    # Update the live opportunity and the cache
-                    opp.ai_analysis = analysis
-                    self._ai_cache[opp.stable_id] = analysis
                     print(
                         f"  AI Judge: {opp.title[:50]}... "
                         f"\u2192 {result.get('recommendation', 'unknown')} "
                         f"(score: {result.get('overall_score', 0):.2f})"
                     )
-                except Exception as e:
-                    print(f"  AI Judge error for {opp.id}: {e}")
 
+            tasks = [asyncio.create_task(_score_one(opp)) for opp in candidates]
+
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    for t in tasks:
+                        t.cancel()
+                    raise
+                except Exception as e:
+                    print(f"  AI Judge error: {e}")
+
+        except asyncio.CancelledError:
+            print("  AI scoring cancelled")
+            raise
         except Exception as e:
             print(f"  AI scoring error: {e}")
 
@@ -279,24 +322,30 @@ class ArbitrageScanner:
 
             await asyncio.sleep(self._interval_seconds)
 
-    async def _load_ai_cache_from_db(self):
-        """Load existing AI judgments from the database into the in-memory cache.
+    async def _attach_ai_judgments(self, opportunities: list):
+        """Attach existing AI judgments from the DB to opportunity objects.
 
-        This ensures that when the server restarts, previously scored
-        opportunities retain their AI analysis without re-calling the LLM.
-        We build a mapping from opportunity_id -> judgment, and then
-        convert opportunity_id to stable_id format (strip the timestamp suffix).
+        Performs a single batch query for recent judgments and matches them
+        to opportunities by stable_id. This is the source of truth —
+        no in-memory cache needed.
         """
+        if not opportunities:
+            return
+
         try:
             from sqlalchemy import func
 
+            cutoff = datetime.utcnow() - timedelta(seconds=self.AI_SCORE_CACHE_TTL_SECONDS)
+
             async with AsyncSessionLocal() as session:
-                # Get the most recent judgment per opportunity_id
+                # Get the most recent judgment per opportunity_id,
+                # but only those within the TTL window
                 subq = (
                     select(
                         OpportunityJudgment.opportunity_id,
                         func.max(OpportunityJudgment.judged_at).label("latest"),
                     )
+                    .where(OpportunityJudgment.judged_at >= cutoff)
                     .group_by(OpportunityJudgment.opportunity_id)
                     .subquery()
                 )
@@ -317,41 +366,47 @@ class ArbitrageScanner:
                     .all()
                 )
 
-                for row in rows:
-                    # Convert opportunity_id to stable_id by stripping trailing _<timestamp>
-                    opp_id = row.opportunity_id or ""
-                    parts = opp_id.rsplit("_", 1)
-                    if len(parts) == 2 and parts[1].isdigit():
-                        stable_id = parts[0]
-                    else:
-                        stable_id = opp_id
+            # Build stable_id -> AIAnalysis lookup
+            judgment_map: dict[str, AIAnalysis] = {}
+            for row in rows:
+                opp_id = row.opportunity_id or ""
+                # Convert opportunity_id to stable_id by stripping trailing _<timestamp>
+                parts = opp_id.rsplit("_", 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    stable_id = parts[0]
+                else:
+                    stable_id = opp_id
 
-                    self._ai_cache[stable_id] = AIAnalysis(
-                        overall_score=row.overall_score or 0.0,
-                        profit_viability=row.profit_viability or 0.0,
-                        resolution_safety=row.resolution_safety or 0.0,
-                        execution_feasibility=row.execution_feasibility or 0.0,
-                        market_efficiency=row.market_efficiency or 0.0,
-                        recommendation=row.recommendation or "review",
-                        reasoning=row.reasoning,
-                        risk_factors=row.risk_factors or [],
-                        judged_at=row.judged_at,
-                    )
+                judgment_map[stable_id] = AIAnalysis(
+                    overall_score=row.overall_score or 0.0,
+                    profit_viability=row.profit_viability or 0.0,
+                    resolution_safety=row.resolution_safety or 0.0,
+                    execution_feasibility=row.execution_feasibility or 0.0,
+                    market_efficiency=row.market_efficiency or 0.0,
+                    recommendation=row.recommendation or "review",
+                    reasoning=row.reasoning,
+                    risk_factors=row.risk_factors or [],
+                    judged_at=row.judged_at,
+                )
 
-                if rows:
-                    print(
-                        f"Loaded {len(self._ai_cache)} AI judgments from database into cache"
-                    )
+            # Attach to matching opportunities
+            attached = 0
+            for opp in opportunities:
+                analysis = judgment_map.get(opp.stable_id)
+                if analysis:
+                    opp.ai_analysis = analysis
+                    attached += 1
+
+            if attached:
+                print(f"  Attached {attached} existing AI judgments from DB")
+
         except Exception as e:
-            print(f"Error loading AI cache from DB: {e}")
+            print(f"  Error loading AI judgments from DB: {e}")
 
     async def start_continuous_scan(self, interval_seconds: int = None):
         """Start continuous scanning loop"""
         # Load persisted settings first
         await self.load_settings()
-
-        # Bootstrap AI cache from database so existing judgments survive restarts
-        await self._load_ai_cache_from_db()
 
         if interval_seconds is not None:
             self._interval_seconds = interval_seconds
@@ -377,13 +432,26 @@ class ArbitrageScanner:
     async def pause(self):
         """Pause scanning (keeps loop running but doesn't scan)"""
         self._enabled = False
+        # Cancel any in-flight AI scoring task to stop incurring API costs
+        await self._cancel_ai_scoring()
         await self.save_settings()
         await self._notify_status_change()
 
-    def stop(self):
+    async def stop(self):
         """Stop continuous scanning loop completely"""
         self._running = False
         self._enabled = False
+        await self._cancel_ai_scoring()
+
+    async def _cancel_ai_scoring(self):
+        """Cancel any running AI scoring background task."""
+        if self._ai_scoring_task and not self._ai_scoring_task.done():
+            self._ai_scoring_task.cancel()
+            try:
+                await self._ai_scoring_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            print("  AI scoring task cancelled")
 
     async def set_interval(self, seconds: int):
         """Update scan interval"""
@@ -478,8 +546,6 @@ class ArbitrageScanner:
 
     def remove_old_opportunities(self, max_age_minutes: int = 60) -> int:
         """Remove opportunities older than max_age_minutes. Returns count removed."""
-        from datetime import timedelta
-
         cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
         before_count = len(self._opportunities)
 

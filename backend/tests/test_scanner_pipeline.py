@@ -792,10 +792,11 @@ class TestScannerProperties:
         scanner = _build_scanner()
         assert scanner.interval_seconds == 60  # default from settings
 
-    def test_stop_sets_flags(self):
+    @pytest.mark.asyncio
+    async def test_stop_sets_flags(self):
         scanner = _build_scanner()
         scanner._running = True
         scanner._enabled = True
-        scanner.stop()
+        await scanner.stop()
         assert scanner.is_running is False
         assert scanner.is_enabled is False
