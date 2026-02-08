@@ -993,6 +993,7 @@ export interface LLMSettings {
   xai_api_key: string | null
   deepseek_api_key: string | null
   model: string | null
+  max_monthly_spend: number | null
 }
 
 export interface NotificationSettings {
