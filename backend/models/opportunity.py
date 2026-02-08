@@ -18,6 +18,9 @@ class StrategyType(str, Enum):
     CROSS_PLATFORM = (
         "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
     )
+    BTC_ETH_HIGHFREQ = (
+        "btc_eth_highfreq"  # High-frequency BTC/ETH 15min/1hr binary market arbitrage
+    )
 
 
 class MispricingType(str, Enum):
