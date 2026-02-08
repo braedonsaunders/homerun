@@ -15,6 +15,13 @@ class Settings(BaseSettings):
 
     # WebSocket URLs
     CLOB_WS_URL: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    KALSHI_WS_URL: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+
+    # WebSocket Feed Settings
+    WS_FEED_ENABLED: bool = True  # Enable real-time WebSocket price feeds
+    WS_RECONNECT_MAX_DELAY: float = 60.0  # Max reconnect backoff seconds
+    WS_PRICE_STALE_SECONDS: float = 30.0  # Mark prices stale after this
+    WS_HEARTBEAT_INTERVAL: float = 15.0  # Ping interval to keep connection alive
 
     # Scanner Settings
     SCAN_INTERVAL_SECONDS: int = 60
@@ -37,12 +44,14 @@ class Settings(BaseSettings):
     )
 
     # NegRisk Exhaustivity Thresholds
-    NEGRISK_MIN_TOTAL_YES: float = (
-        0.85  # Skip NegRisk if total YES < this (likely missing outcomes)
-    )
-    NEGRISK_WARN_TOTAL_YES: float = (
-        0.92  # Warn if total YES < this (possibly missing outcomes)
-    )
+    # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
+    # Anything below 0.93 is almost always non-exhaustive outcomes, not mispricing.
+    NEGRISK_MIN_TOTAL_YES: float = 0.93  # Hard reject below this
+    NEGRISK_WARN_TOTAL_YES: float = 0.97  # Warn below this
+    # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
+    MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
+    # Max number of legs in a multi-leg trade (slippage compounds per leg)
+    MAX_TRADE_LEGS: int = 8
 
     # Settlement Lag Timing
     SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
@@ -129,6 +138,28 @@ class Settings(BaseSettings):
 
     # CSV Trade Logging
     CSV_TRADE_LOG_ENABLED: bool = True  # Enable append-only CSV trade log
+
+    # Portfolio Risk Management
+    PORTFOLIO_MAX_EXPOSURE_USD: float = 5000.0  # Maximum total portfolio exposure
+    PORTFOLIO_MAX_PER_CATEGORY_USD: float = 2000.0  # Max exposure per market category
+    PORTFOLIO_MAX_PER_EVENT_USD: float = 1000.0  # Max exposure per event
+    PORTFOLIO_BANKROLL_USD: float = 10000.0  # Total bankroll for Kelly sizing
+    PORTFOLIO_MAX_KELLY_FRACTION: float = 0.05  # Never bet >5% of bankroll per trade
+
+    # BTC/ETH High-Frequency Strategy
+    BTC_ETH_HF_ENABLED: bool = True  # Enable BTC/ETH high-freq scanning
+    BTC_ETH_HF_PURE_ARB_MAX_COMBINED: float = 0.98  # Max combined for pure arb
+    BTC_ETH_HF_DUMP_THRESHOLD: float = 0.05  # Min drop for dump-hedge trigger
+    BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
+
+    # New Market Detection
+    NEW_MARKET_DETECTION_ENABLED: bool = True  # Enable new market monitoring
+    NEW_MARKET_WINDOW_SECONDS: int = 300  # Markets seen within this = "new"
+
+    # Combinatorial Validation
+    COMBINATORIAL_MIN_CONFIDENCE: float = 0.75  # Min LLM confidence for trades
+    COMBINATORIAL_HIGH_CONFIDENCE: float = 0.90  # High confidence threshold
+    COMBINATORIAL_MIN_ACCURACY: float = 0.70  # Auto-raise threshold if below
 
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup

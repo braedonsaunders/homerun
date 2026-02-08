@@ -16,6 +16,7 @@ from services.strategies import (
     MiracleStrategy,
     CombinatorialStrategy,
     SettlementLagStrategy,
+    BtcEthHighFreqStrategy,
 )
 from models.opportunity import MispricingType
 from sqlalchemy import select
@@ -35,6 +36,7 @@ class ArbitrageScanner:
             MiracleStrategy(),  # Swisstony's garbage collection strategy
             CombinatorialStrategy(),  # Cross-market arbitrage via integer programming
             SettlementLagStrategy(),  # Exploit delayed price adjustments (article Part IV)
+            BtcEthHighFreqStrategy(),  # BTC/ETH 15min/1hr high-frequency arb
         ]
 
         # Mispricing type mapping for strategies that don't set it themselves
@@ -47,6 +49,7 @@ class ArbitrageScanner:
             "miracle": MispricingType.WITHIN_MARKET,
             "combinatorial": MispricingType.CROSS_MARKET,
             "settlement_lag": MispricingType.SETTLEMENT_LAG,
+            "btc_eth_highfreq": MispricingType.WITHIN_MARKET,
         }
         self._running = False
         self._enabled = True
