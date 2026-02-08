@@ -349,14 +349,14 @@ export const getWallets = async (): Promise<Wallet[]> => {
   return data
 }
 
-export const addWallet = async (address: string, label?: string) => {
+export const addWallet = async (address: string, label?: string): Promise<{ status: string; address: string; label: string | null }> => {
   const { data } = await api.post('/wallets', null, {
     params: { address, label }
   })
   return data
 }
 
-export const removeWallet = async (address: string) => {
+export const removeWallet = async (address: string): Promise<{ status: string; message: string }> => {
   const { data } = await api.delete(`/wallets/${address}`)
   return data
 }
@@ -399,12 +399,12 @@ export const getRecentTradesFromWallets = async (params?: {
   return data
 }
 
-export const getWalletPositions = async (address: string) => {
+export const getWalletPositions = async (address: string): Promise<{ address: string; positions: WalletPosition[] }> => {
   const { data } = await api.get(`/wallets/${address}/positions`)
   return data
 }
 
-export const getWalletTrades = async (address: string, limit = 100) => {
+export const getWalletTrades = async (address: string, limit = 100): Promise<{ address: string; trades: WalletTrade[] }> => {
   const { data } = await api.get(`/wallets/${address}/trades`, {
     params: { limit }
   })
@@ -417,7 +417,7 @@ export const getMarkets = async (params?: {
   active?: boolean
   limit?: number
   offset?: number
-}) => {
+}): Promise<Market[]> => {
   const { data } = await api.get('/markets', { params })
   return data
 }
@@ -426,7 +426,7 @@ export const getEvents = async (params?: {
   closed?: boolean
   limit?: number
   offset?: number
-}) => {
+}): Promise<Record<string, any>[]> => {
   const { data } = await api.get('/events', { params })
   return data
 }
@@ -438,7 +438,7 @@ export const createSimulationAccount = async (params: {
   initial_capital?: number
   max_position_pct?: number
   max_positions?: number
-}) => {
+}): Promise<{ account_id: string; name: string; initial_capital: number; message: string }> => {
   const { data } = await api.post('/simulation/accounts', params)
   return data
 }
@@ -453,12 +453,12 @@ export const getSimulationAccount = async (accountId: string): Promise<Simulatio
   return data
 }
 
-export const deleteSimulationAccount = async (accountId: string) => {
+export const deleteSimulationAccount = async (accountId: string): Promise<{ message: string; account_id: string }> => {
   const { data } = await api.delete(`/simulation/accounts/${accountId}`)
   return data
 }
 
-export const getAccountPositions = async (accountId: string) => {
+export const getAccountPositions = async (accountId: string): Promise<Record<string, any>[]> => {
   const { data } = await api.get(`/simulation/accounts/${accountId}/positions`)
   return data
 }
@@ -474,7 +474,7 @@ export const executeOpportunity = async (
   positionSize?: number,
   takeProfitPrice?: number,
   stopLossPrice?: number
-) => {
+): Promise<{ trade_id: string; status: string; total_cost: number; expected_profit: number; slippage: number; message: string }> => {
   const { data } = await api.post(`/simulation/accounts/${accountId}/execute`, {
     opportunity_id: opportunityId,
     position_size: positionSize,
@@ -484,7 +484,7 @@ export const executeOpportunity = async (
   return data
 }
 
-export const getAccountPerformance = async (accountId: string) => {
+export const getAccountPerformance = async (accountId: string): Promise<Record<string, any>> => {
   const { data } = await api.get(`/simulation/accounts/${accountId}/performance`)
   return data
 }
@@ -513,7 +513,7 @@ export const createCopyConfig = async (params: {
   proportional_multiplier?: number
   copy_buys?: boolean
   copy_sells?: boolean
-}) => {
+}): Promise<{ config_id: string; source_wallet: string; account_id: string; enabled: boolean; copy_mode: string; message: string }> => {
   const { data } = await api.post('/copy-trading/configs', params)
   return data
 }
@@ -529,27 +529,27 @@ export const updateCopyConfig = async (configId: string, params: {
   proportional_multiplier?: number
   copy_buys?: boolean
   copy_sells?: boolean
-}) => {
+}): Promise<{ message: string; config_id: string }> => {
   const { data } = await api.patch(`/copy-trading/configs/${configId}`, params)
   return data
 }
 
-export const deleteCopyConfig = async (configId: string) => {
+export const deleteCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
   const { data } = await api.delete(`/copy-trading/configs/${configId}`)
   return data
 }
 
-export const enableCopyConfig = async (configId: string) => {
+export const enableCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
   const { data } = await api.post(`/copy-trading/configs/${configId}/enable`)
   return data
 }
 
-export const disableCopyConfig = async (configId: string) => {
+export const disableCopyConfig = async (configId: string): Promise<{ message: string; config_id: string }> => {
   const { data } = await api.post(`/copy-trading/configs/${configId}/disable`)
   return data
 }
 
-export const forceSyncCopyConfig = async (configId: string) => {
+export const forceSyncCopyConfig = async (configId: string): Promise<Record<string, any>> => {
   const { data } = await api.post(`/copy-trading/configs/${configId}/sync`)
   return data
 }
@@ -581,7 +581,7 @@ export const findProfitableWallets = async (params?: {
   min_win_rate?: number
   min_pnl?: number
   max_anomaly_score?: number
-}) => {
+}): Promise<{ count: number; wallets: WalletAnalysis[] }> => {
   const { data } = await api.post('/anomaly/find-profitable', params || {})
   return data
 }
@@ -590,12 +590,12 @@ export const getAnomalies = async (params?: {
   severity?: string
   anomaly_type?: string
   limit?: number
-}) => {
+}): Promise<{ count: number; anomalies: Anomaly[] }> => {
   const { data } = await api.get('/anomaly/anomalies', { params })
   return data
 }
 
-export const quickCheckWallet = async (address: string) => {
+export const quickCheckWallet = async (address: string): Promise<{ wallet: string; is_suspicious: boolean; anomaly_score: number; critical_anomalies: number; win_rate: number; total_pnl: number; verdict: string; summary: string }> => {
   const { data } = await api.get(`/anomaly/check/${address}`)
   return data
 }
@@ -617,7 +617,7 @@ export const getWalletSummary = async (address: string): Promise<WalletSummary> 
 
 // ==================== HEALTH ====================
 
-export const getHealthStatus = async () => {
+export const getHealthStatus = async (): Promise<Record<string, any>> => {
   const { data } = await api.get('/health/detailed')
   return data
 }
@@ -802,7 +802,7 @@ export const getTradingStatus = async (): Promise<TradingStatus> => {
   return data
 }
 
-export const initializeTrading = async () => {
+export const initializeTrading = async (): Promise<{ status: string; message: string }> => {
   const { data } = await api.post('/trading/initialize')
   return data
 }
@@ -814,7 +814,7 @@ export const placeOrder = async (params: {
   size: number
   order_type?: string
   market_question?: string
-}) => {
+}): Promise<Order> => {
   const { data } = await api.post('/trading/orders', params)
   return data
 }
@@ -829,22 +829,22 @@ export const getOpenOrders = async (): Promise<Order[]> => {
   return data
 }
 
-export const cancelOrder = async (orderId: string) => {
+export const cancelOrder = async (orderId: string): Promise<{ status: string; order_id: string }> => {
   const { data } = await api.delete(`/trading/orders/${orderId}`)
   return data
 }
 
-export const cancelAllOrders = async () => {
+export const cancelAllOrders = async (): Promise<{ status: string; cancelled_count: number }> => {
   const { data } = await api.delete('/trading/orders')
   return data
 }
 
-export const getTradingPositions = async () => {
+export const getTradingPositions = async (): Promise<Record<string, any>[]> => {
   const { data } = await api.get('/trading/positions')
   return data
 }
 
-export const getTradingBalance = async () => {
+export const getTradingBalance = async (): Promise<{ balance: number; available: number; reserved: number; currency: string; timestamp: string }> => {
   const { data } = await api.get('/trading/balance')
   return data
 }
@@ -853,12 +853,12 @@ export const executeOpportunityLive = async (params: {
   opportunity_id: string
   positions: any[]
   size_usd: number
-}) => {
+}): Promise<{ status: string; orders: Order[]; message?: string }> => {
   const { data } = await api.post('/trading/execute-opportunity', params)
   return data
 }
 
-export const emergencyStopTrading = async () => {
+export const emergencyStopTrading = async (): Promise<{ status: string; cancelled_orders: number; message: string }> => {
   const { data } = await api.post('/trading/emergency-stop')
   return data
 }
@@ -918,12 +918,12 @@ export const getAutoTraderStatus = async (): Promise<AutoTraderStatus> => {
   return data
 }
 
-export const startAutoTrader = async (mode?: string, accountId?: string) => {
+export const startAutoTrader = async (mode?: string, accountId?: string): Promise<{ status: string; mode: string; message: string }> => {
   const { data } = await api.post('/auto-trader/start', null, { params: { mode, account_id: accountId } })
   return data
 }
 
-export const stopAutoTrader = async () => {
+export const stopAutoTrader = async (): Promise<{ status: string }> => {
   const { data } = await api.post('/auto-trader/stop')
   return data
 }
@@ -939,7 +939,7 @@ export const updateAutoTraderConfig = async (config: Partial<{
   max_daily_trades: number
   max_daily_loss_usd: number
   require_confirmation: boolean
-}>) => {
+}>): Promise<{ status: string; config: Record<string, any> }> => {
   const { data } = await api.put('/auto-trader/config', config)
   return data
 }
@@ -949,29 +949,29 @@ export const getAutoTraderTrades = async (limit = 100, status?: string): Promise
   return data
 }
 
-export const getAutoTraderStats = async () => {
+export const getAutoTraderStats = async (): Promise<AutoTraderStatus['stats']> => {
   const { data } = await api.get('/auto-trader/stats')
   return data
 }
 
-export const resetAutoTraderStats = async () => {
+export const resetAutoTraderStats = async (): Promise<{ status: string; message: string }> => {
   const { data } = await api.post('/auto-trader/reset-stats')
   return data
 }
 
-export const resetCircuitBreaker = async () => {
+export const resetCircuitBreaker = async (): Promise<{ status: string; message: string }> => {
   const { data } = await api.post('/auto-trader/reset-circuit-breaker')
   return data
 }
 
-export const enableLiveTrading = async (maxDailyLoss = 100) => {
+export const enableLiveTrading = async (maxDailyLoss = 100): Promise<{ status: string; warning: string; max_daily_loss: number; config: Record<string, any> }> => {
   const { data } = await api.post('/auto-trader/enable-live-trading', null, {
     params: { confirm: true, max_daily_loss: maxDailyLoss }
   })
   return data
 }
 
-export const emergencyStopAutoTrader = async () => {
+export const emergencyStopAutoTrader = async (): Promise<{ status: string; auto_trader: string; mode: string; cancelled_orders: number; message: string }> => {
   const { data } = await api.post('/auto-trader/emergency-stop')
   return data
 }
