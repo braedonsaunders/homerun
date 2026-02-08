@@ -15,41 +15,13 @@ import {
   getSimulationAccounts,
   getAccountPositions,
   getTradingPositions,
-  SimulationAccount
 } from '../services/api'
+import type { SimulationAccount, SimulationPosition, TradingPosition } from '../services/api'
 import { Card, CardContent } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Separator } from './ui/separator'
-
-interface SimulationPosition {
-  id: string
-  market_id: string
-  market_question: string
-  token_id: string
-  side: string
-  quantity: number
-  entry_price: number
-  entry_cost: number
-  current_price: number | null
-  unrealized_pnl: number
-  opened_at: string
-  resolution_date: string | null
-  status: string
-}
-
-// API response matches backend PositionResponse model
-interface TradingPosition {
-  token_id: string
-  market_id: string
-  market_question: string
-  outcome: string
-  size: number
-  average_cost: number
-  current_price: number
-  unrealized_pnl: number
-}
 
 type ViewMode = 'simulation' | 'live' | 'all'
 

@@ -87,6 +87,35 @@ export interface SimulationAccount {
   created_at: string | null
 }
 
+export interface TradingPosition {
+  token_id: string
+  market_id: string
+  market_question: string
+  outcome: string
+  size: number
+  average_cost: number
+  current_price: number
+  unrealized_pnl: number
+}
+
+export interface SimulationPosition {
+  id: string
+  market_id: string
+  market_question: string
+  token_id: string
+  side: string
+  quantity: number
+  entry_price: number
+  entry_cost: number
+  current_price: number | null
+  unrealized_pnl: number
+  opened_at: string
+  resolution_date: string | null
+  status: string
+  take_profit_price: number | null
+  stop_loss_price: number | null
+}
+
 export interface EquityPoint {
   date: string
   equity: number
@@ -458,7 +487,7 @@ export const deleteSimulationAccount = async (accountId: string): Promise<{ mess
   return data
 }
 
-export const getAccountPositions = async (accountId: string): Promise<Record<string, any>[]> => {
+export const getAccountPositions = async (accountId: string): Promise<SimulationPosition[]> => {
   const { data } = await api.get(`/simulation/accounts/${accountId}/positions`)
   return data
 }
@@ -839,7 +868,7 @@ export const cancelAllOrders = async (): Promise<{ status: string; cancelled_cou
   return data
 }
 
-export const getTradingPositions = async (): Promise<Record<string, any>[]> => {
+export const getTradingPositions = async (): Promise<TradingPosition[]> => {
   const { data } = await api.get('/trading/positions')
   return data
 }
