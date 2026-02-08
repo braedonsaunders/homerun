@@ -171,9 +171,19 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         """
         q_combined = (market_a.question + market_b.question).lower()
         election_keywords = [
-            "election", "house", "senate", "governor", "congress",
-            "president", "democrat", "republican", "gop",
-            "primary", "nominee", "caucus", "special election",
+            "election",
+            "house",
+            "senate",
+            "governor",
+            "congress",
+            "president",
+            "democrat",
+            "republican",
+            "gop",
+            "primary",
+            "nominee",
+            "caucus",
+            "special election",
         ]
         return any(kw in q_combined for kw in election_keywords)
 
