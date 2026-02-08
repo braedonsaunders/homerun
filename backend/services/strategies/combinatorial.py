@@ -61,19 +61,28 @@ except ImportError:
 # Research shows 62% failure rate for LLM-detected dependencies.
 # These tiers gate which opportunities are surfaced.
 # ---------------------------------------------------------------------------
-HIGH_CONFIDENCE = 0.90    # Heuristic + LLM agree, structural valid, price consistent
+HIGH_CONFIDENCE = 0.90  # Heuristic + LLM agree, structural valid, price consistent
 MEDIUM_CONFIDENCE = 0.75  # LLM confident + structural valid
-LOW_CONFIDENCE = 0.60     # LLM says yes but structural unclear
-REJECT_THRESHOLD = 0.60   # Below this: do not trade
+LOW_CONFIDENCE = 0.60  # LLM says yes but structural unclear
+REJECT_THRESHOLD = 0.60  # Below this: do not trade
 
 # Minimum LLM confidence to even consider executing
 MIN_LLM_CONFIDENCE = 0.85
 
 # Month ordering for date comparisons
 _MONTH_ORDER = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
 }
 
 
@@ -113,7 +122,8 @@ class KnownPatternMatcher:
 
     # Price threshold implies pattern: "above X" implies "above Y" when Y < X
     _PRICE_ABOVE = re.compile(
-        r"(?:above|over|more than|greater than|exceeds?)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE
+        r"(?:above|over|more than|greater than|exceeds?)\s+\$?([\d,]+(?:\.\d+)?)",
+        re.IGNORECASE,
     )
     _PRICE_BELOW = re.compile(
         r"(?:below|under|less than|fewer than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE
@@ -130,7 +140,9 @@ class KnownPatternMatcher:
     _WINS_PATTERN = re.compile(r"\b(?P<entity>.+?)\s+wins?\b", re.IGNORECASE)
 
     @classmethod
-    def match(cls, q_a: str, q_b: str, share_context: bool) -> Optional[tuple[DependencyType, str]]:
+    def match(
+        cls, q_a: str, q_b: str, share_context: bool
+    ) -> Optional[tuple[DependencyType, str]]:
         """
         Check two market questions against known patterns.
 
@@ -144,11 +156,17 @@ class KnownPatternMatcher:
         if share_context:
             for cand_re, party_re, label in cls._CANDIDATE_PARTY:
                 if re.search(cand_re, q_a_lower) and re.search(party_re, q_b_lower):
-                    return (DependencyType.IMPLIES, f"Known pattern: {label} (candidate implies party)")
+                    return (
+                        DependencyType.IMPLIES,
+                        f"Known pattern: {label} (candidate implies party)",
+                    )
                 # Also check reversed direction
                 if re.search(cand_re, q_b_lower) and re.search(party_re, q_a_lower):
                     # B implies A in this case, but we report direction for the caller
-                    return (DependencyType.IMPLIES, f"Known pattern: {label} (candidate implies party, reversed)")
+                    return (
+                        DependencyType.IMPLIES,
+                        f"Known pattern: {label} (candidate implies party, reversed)",
+                    )
 
         # 2. Event by Date A -> Event by Date B where A < B (CUMULATIVE)
         if share_context:
@@ -246,21 +264,25 @@ class DependencyAccuracyTracker:
         self._accuracy_cache: Optional[float] = None
         self._threshold_override: Optional[float] = None
 
-    def record_dependency(self, market_a_id: str, market_b_id: str,
-                          dep_type: str, acted_on: bool = True) -> str:
+    def record_dependency(
+        self, market_a_id: str, market_b_id: str, dep_type: str, acted_on: bool = True
+    ) -> str:
         """Record that a dependency was detected and (optionally) acted upon."""
         dep_key = f"{market_a_id}:{market_b_id}:{dep_type}"
-        self._records.append({
-            "dep_key": dep_key,
-            "correct": None,  # Unknown until resolution
-            "acted_on": acted_on,
-            "timestamp": time.time(),
-        })
+        self._records.append(
+            {
+                "dep_key": dep_key,
+                "correct": None,  # Unknown until resolution
+                "acted_on": acted_on,
+                "timestamp": time.time(),
+            }
+        )
         self._accuracy_cache = None
         return dep_key
 
-    def record_resolution(self, market_a_id: str, market_b_id: str,
-                          dep_type: str, was_correct: bool) -> None:
+    def record_resolution(
+        self, market_a_id: str, market_b_id: str, dep_type: str, was_correct: bool
+    ) -> None:
         """Record whether a dependency turned out to be correct after resolution."""
         dep_key = f"{market_a_id}:{market_b_id}:{dep_type}"
         for record in reversed(self._records):
@@ -276,7 +298,9 @@ class DependencyAccuracyTracker:
         if self._accuracy_cache is not None:
             return self._accuracy_cache
 
-        resolved = [r for r in self._records if r["correct"] is not None and r["acted_on"]]
+        resolved = [
+            r for r in self._records if r["correct"] is not None and r["acted_on"]
+        ]
         if not resolved:
             return None
 
@@ -290,7 +314,9 @@ class DependencyAccuracyTracker:
 
     @property
     def total_resolved(self) -> int:
-        return sum(1 for r in self._records if r["correct"] is not None and r["acted_on"])
+        return sum(
+            1 for r in self._records if r["correct"] is not None and r["acted_on"]
+        )
 
     @property
     def effective_threshold(self) -> float:
@@ -370,7 +396,9 @@ class DependencyValidator:
             return [], 0.0, "REJECT"
 
         # Step 1: Check for known patterns (bypass LLM entirely)
-        known = KnownPatternMatcher.match(market_a_question, market_b_question, share_context)
+        known = KnownPatternMatcher.match(
+            market_a_question, market_b_question, share_context
+        )
         known_pattern_match = known is not None
 
         # Step 2: Structural validation for each dependency
@@ -382,9 +410,7 @@ class DependencyValidator:
         structural_pass = structural_valid_count > 0
 
         # Step 3: Price sanity check
-        price_consistent = self._price_sanity_check(
-            dependencies, prices_a, prices_b
-        )
+        price_consistent = self._price_sanity_check(dependencies, prices_a, prices_b)
 
         # Step 4: LLM confidence gate
         effective_threshold = self.accuracy_tracker.effective_threshold
@@ -403,9 +429,7 @@ class DependencyValidator:
             return [], 0.0, "REJECT"
 
         # Step 6: Filter to structurally valid dependencies only
-        validated = [
-            dep for dep, ok in zip(dependencies, structural_results) if ok
-        ]
+        validated = [dep for dep, ok in zip(dependencies, structural_results) if ok]
 
         if not validated:
             return [], 0.0, "REJECT"
@@ -424,9 +448,7 @@ class DependencyValidator:
 
     # -- Structural Validation -----------------------------------------------
 
-    def _structural_check(
-        self, dep: Dependency, q_a: str, q_b: str
-    ) -> bool:
+    def _structural_check(self, dep: Dependency, q_a: str, q_b: str) -> bool:
         """
         Check if a dependency makes structural sense for its type.
 
@@ -458,11 +480,11 @@ class DependencyValidator:
         """
         # Specific-to-general: A has more restrictive terms than B
         specificity_markers = [
-            r"\bby\s+\d+\+?\s*points?\b",   # Margin of victory
-            r"\babove\s+\$?[\d,]+\b",         # Price threshold
+            r"\bby\s+\d+\+?\s*points?\b",  # Margin of victory
+            r"\babove\s+\$?[\d,]+\b",  # Price threshold
             r"\bover\s+\$?[\d,]+\b",
             r"\bmore\s+than\s+\$?[\d,]+\b",
-            r"\bwins?\s+championship\b",       # Championship implies playoffs
+            r"\bwins?\s+championship\b",  # Championship implies playoffs
             r"\bwins?\s+(?:the\s+)?finals\b",
         ]
 
@@ -474,8 +496,15 @@ class DependencyValidator:
             return True
 
         # Candidate -> Party relationship
-        candidates = [r"\btrump\b", r"\bbiden\b", r"\bharris\b", r"\bdesantis\b",
-                       r"\bhaley\b", r"\bnewsom\b", r"\bvance\b"]
+        candidates = [
+            r"\btrump\b",
+            r"\bbiden\b",
+            r"\bharris\b",
+            r"\bdesantis\b",
+            r"\bhaley\b",
+            r"\bnewsom\b",
+            r"\bvance\b",
+        ]
         parties = [r"\brepublican\b", r"\bdemocrat\b", r"\bgop\b"]
 
         a_has_candidate = any(re.search(c, q_a) for c in candidates)
@@ -484,7 +513,9 @@ class DependencyValidator:
             return True
 
         # Price thresholds: "above X" implies "above Y" where X > Y
-        above_re = re.compile(r"(?:above|over|more than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE)
+        above_re = re.compile(
+            r"(?:above|over|more than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE
+        )
         a_vals = above_re.findall(q_a)
         b_vals = above_re.findall(q_b)
         if a_vals and b_vals:
@@ -505,7 +536,10 @@ class DependencyValidator:
         """
         # Opposing directions on the same quantity
         opposing_pairs = [
-            (r"\babove\b|\bover\b|\bmore\s+than\b", r"\bbelow\b|\bunder\b|\bless\s+than\b"),
+            (
+                r"\babove\b|\bover\b|\bmore\s+than\b",
+                r"\bbelow\b|\bunder\b|\bless\s+than\b",
+            ),
             (r"\bbefore\b", r"\bafter\b"),
             (r"\bwin\b", r"\blose\b"),
         ]
@@ -575,8 +609,16 @@ class DependencyValidator:
         """
         for dep in dependencies:
             try:
-                p_a = prices_a[dep.outcome_a_idx] if dep.outcome_a_idx < len(prices_a) else None
-                p_b = prices_b[dep.outcome_b_idx] if dep.outcome_b_idx < len(prices_b) else None
+                p_a = (
+                    prices_a[dep.outcome_a_idx]
+                    if dep.outcome_a_idx < len(prices_a)
+                    else None
+                )
+                p_b = (
+                    prices_b[dep.outcome_b_idx]
+                    if dep.outcome_b_idx < len(prices_b)
+                    else None
+                )
 
                 if p_a is None or p_b is None:
                     continue
@@ -637,7 +679,10 @@ class DependencyValidator:
             node_a = (dep.market_a_idx, dep.outcome_a_idx)
             node_b = (dep.market_b_idx, dep.outcome_b_idx)
 
-            if dep.dep_type == DependencyType.IMPLIES or dep.dep_type == DependencyType.CUMULATIVE:
+            if (
+                dep.dep_type == DependencyType.IMPLIES
+                or dep.dep_type == DependencyType.CUMULATIVE
+            ):
                 implies_edges[node_a].add(node_b)
             elif dep.dep_type == DependencyType.EXCLUDES:
                 excludes_edges[node_a].add(node_b)
@@ -848,8 +893,14 @@ class CombinatorialStrategy(BaseStrategy):
 
             if result.arbitrage_found and result.profit > self.min_profit:
                 return self._create_combinatorial_opportunity(
-                    market_a, market_b, prices_a, prices_b, result,
-                    validated_deps, confidence, tier,
+                    market_a,
+                    market_b,
+                    prices_a,
+                    prices_b,
+                    result,
+                    validated_deps,
+                    confidence,
+                    tier,
                 )
 
         except Exception as e:
@@ -1201,9 +1252,7 @@ class CombinatorialStrategy(BaseStrategy):
                 continue
 
             # --- Validation pipeline ---
-            heuristic_found = heuristic_results.get(
-                (market_a.id, market_b.id), False
-            )
+            heuristic_found = heuristic_results.get((market_a.id, market_b.id), False)
             share_context = self._share_context(
                 market_a.question.lower(), market_b.question.lower()
             )
@@ -1258,8 +1307,11 @@ class CombinatorialStrategy(BaseStrategy):
         return opportunities
 
     def record_resolution(
-        self, market_a_id: str, market_b_id: str,
-        dep_type: str, was_correct: bool,
+        self,
+        market_a_id: str,
+        market_b_id: str,
+        dep_type: str,
+        was_correct: bool,
     ) -> None:
         """
         Record whether a dependency turned out to be correct after

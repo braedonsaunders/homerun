@@ -260,18 +260,61 @@ _RE_NUMBER_THRESHOLD = re.compile(
 
 # Simple capitalized-word heuristic for person/org names.  We look for
 # sequences of 2+ capitalized words that are NOT common English words.
-_COMMON_TITLE_WORDS = frozenset({
-    "Will", "The", "How", "What", "When", "Where", "Which", "Who",
-    "Does", "Did", "Can", "Could", "Would", "Should", "May", "Is",
-    "Are", "Was", "Were", "Has", "Have", "Had", "Do", "Be", "By",
-    "For", "And", "But", "Yes", "No", "Or", "Not", "Before", "After",
-    "Price", "Win", "Reach", "Above", "Below", "Over", "Under", "End",
-    "Day", "Week", "Month", "Year", "First", "Last", "Next",
-})
-
-_RE_CAPITALIZED_SEQUENCE = re.compile(
-    r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b"
+_COMMON_TITLE_WORDS = frozenset(
+    {
+        "Will",
+        "The",
+        "How",
+        "What",
+        "When",
+        "Where",
+        "Which",
+        "Who",
+        "Does",
+        "Did",
+        "Can",
+        "Could",
+        "Would",
+        "Should",
+        "May",
+        "Is",
+        "Are",
+        "Was",
+        "Were",
+        "Has",
+        "Have",
+        "Had",
+        "Do",
+        "Be",
+        "By",
+        "For",
+        "And",
+        "But",
+        "Yes",
+        "No",
+        "Or",
+        "Not",
+        "Before",
+        "After",
+        "Price",
+        "Win",
+        "Reach",
+        "Above",
+        "Below",
+        "Over",
+        "Under",
+        "End",
+        "Day",
+        "Week",
+        "Month",
+        "Year",
+        "First",
+        "Last",
+        "Next",
+    }
 )
+
+_RE_CAPITALIZED_SEQUENCE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b")
 
 # Event type keywords
 _EVENT_KEYWORDS: dict[str, str] = {
@@ -422,7 +465,15 @@ def _extract_entities(text: str) -> ExtractedEntities:
         elif suffix.startswith("t") or suffix.startswith("trillion"):
             val *= 1_000_000_000_000
         # Normalise direction
-        if direction in ("above", "over", "more than", "at least", "exceed", "reach", "hit"):
+        if direction in (
+            "above",
+            "over",
+            "more than",
+            "at least",
+            "exceed",
+            "reach",
+            "hit",
+        ):
             direction = "above"
         else:
             direction = "below"
@@ -684,9 +735,7 @@ class MarketMatcher:
         dates_ok = _resolution_dates_compatible(poly_market, kalshi_market)
         methods_ok, method_reason = _resolution_methods_compatible(e_poly, e_kalshi)
         resolution_match = dates_ok and methods_ok
-        reasoning_parts.append(
-            f"resolution_match={resolution_match} ({method_reason})"
-        )
+        reasoning_parts.append(f"resolution_match={resolution_match} ({method_reason})")
 
         # If resolution dates are incompatible, hard reject
         if not dates_ok:
@@ -1140,8 +1189,12 @@ class CrossPlatformScanner:
                     "no_price": k_no,
                 }
                 if match_result is not None:
-                    poly_market_dict["match_confidence"] = match_result.overall_confidence
-                    kalshi_market_dict["match_confidence"] = match_result.overall_confidence
+                    poly_market_dict["match_confidence"] = (
+                        match_result.overall_confidence
+                    )
+                    kalshi_market_dict["match_confidence"] = (
+                        match_result.overall_confidence
+                    )
                     poly_market_dict["match_reasoning"] = match_result.match_reasoning
                     kalshi_market_dict["match_reasoning"] = match_result.match_reasoning
 
