@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
+from config import settings
 from .base import BaseStrategy
 
 
@@ -161,6 +162,21 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
         return False
 
+    def _is_election_pair(self, market_a: Market, market_b: Market) -> bool:
+        """Check if a pair of markets is an election/political race.
+
+        Election markets with only 2 candidates listed (Dem vs Rep) are
+        NEVER truly exhaustive — independent/third-party candidates can win.
+        These should be rejected outright, not just warned about.
+        """
+        q_combined = (market_a.question + market_b.question).lower()
+        election_keywords = [
+            "election", "house", "senate", "governor", "congress",
+            "president", "democrat", "republican", "gop",
+            "primary", "nominee", "caucus", "special election",
+        ]
+        return any(kw in q_combined for kw in election_keywords)
+
     def _check_pair(
         self,
         market_a: Market,
@@ -169,6 +185,11 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         event: Event = None,
     ) -> ArbitrageOpportunity | None:
         """Check if a pair offers arbitrage opportunity"""
+
+        # Reject election markets outright — two candidates are never exhaustive
+        if self._is_election_pair(market_a, market_b):
+            return None
+
         # Get YES prices
         yes_a = market_a.yes_price
         yes_b = market_b.yes_price
@@ -186,10 +207,9 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
         total_cost = yes_a + yes_b
 
-        # If total is way below 1.0, these probably aren't exhaustive options
-        # (there might be other candidates/outcomes)
-        # Only consider if total is at least 0.85 (suggesting these are the main options)
-        if total_cost < 0.85:
+        # Require total very close to 1.0 — wider spreads indicate
+        # non-exhaustive outcomes rather than mispricing
+        if total_cost < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
         if total_cost >= 1.0:
@@ -225,19 +245,11 @@ class MutuallyExclusiveStrategy(BaseStrategy):
             event=event,
         )
 
-        # Add extra risk factors
         if opp:
             opp.risk_factors.insert(
-                0, "⚠️ REQUIRES MANUAL VERIFICATION - check for third-party outcomes"
+                0, "REQUIRES MANUAL VERIFICATION - check for third-party outcomes"
             )
-            # Warn about political markets
             q_combined = (market_a.question + market_b.question).lower()
-            if any(
-                p in q_combined for p in ["democrat", "republican", "trump", "biden"]
-            ):
-                opp.risk_factors.insert(
-                    1, "Political market: Independent candidates could win"
-                )
             if any(p in q_combined for p in ["win", "lose", "victory", "defeat"]):
                 opp.risk_factors.insert(1, "Win/lose market: Draw/tie outcome possible")
 

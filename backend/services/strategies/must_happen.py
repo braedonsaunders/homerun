@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
+from config import settings
 from .base import BaseStrategy
 
 
@@ -165,9 +166,8 @@ class MustHappenStrategy(BaseStrategy):
         if total_yes >= 1.0:
             return None
 
-        # Additional sanity check: if total is way below 1.0,
-        # these probably aren't exhaustive options (missing candidates)
-        if total_yes < 0.80:
+        # Reject if total YES is too low — non-exhaustive outcome list
+        if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
         opp = self.create_opportunity(
