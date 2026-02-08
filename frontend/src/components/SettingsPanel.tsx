@@ -226,6 +226,8 @@ export default function SettingsPanel() {
     mutationFn: updateSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['ai-usage'] })
+      queryClient.invalidateQueries({ queryKey: ['ai-status'] })
       setSaveMessage({ type: 'success', text: 'Settings saved successfully' })
       setTimeout(() => setSaveMessage(null), 3000)
     },
