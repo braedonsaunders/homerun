@@ -70,6 +70,23 @@ interface FeedEvent {
   icon: 'trade' | 'win' | 'loss' | 'scan' | 'alert' | 'system' | 'position'
 }
 
+const ALL_STRATEGIES = [
+  { key: 'basic', label: 'Basic Arb' },
+  { key: 'negrisk', label: 'NegRisk' },
+  { key: 'mutually_exclusive', label: 'Mutually Exclusive' },
+  { key: 'contradiction', label: 'Contradiction' },
+  { key: 'must_happen', label: 'Must-Happen' },
+  { key: 'cross_platform', label: 'Cross-Platform Oracle' },
+  { key: 'bayesian_cascade', label: 'Bayesian Cascade' },
+  { key: 'liquidity_vacuum', label: 'Liquidity Vacuum' },
+  { key: 'entropy_arb', label: 'Entropy Arbitrage' },
+  { key: 'event_driven', label: 'Event-Driven' },
+  { key: 'temporal_decay', label: 'Temporal Decay' },
+  { key: 'correlation_arb', label: 'Correlation Arb' },
+  { key: 'market_making', label: 'Market Making' },
+  { key: 'stat_arb', label: 'Statistical Arb' },
+]
+
 export default function TradingPanel() {
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview')
   const [tradeFilter, setTradeFilter] = useState<string>('all')
@@ -1311,6 +1328,93 @@ export default function TradingPanel() {
                       min={0} max={365} step={1}
                     />
                   </div>
+                </div>
+              </Card>
+
+              {/* AI Integration */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Brain className="w-4 h-4 text-purple-500" />
+                  AI Integration
+                </h4>
+                <div className="space-y-4">
+                  <SettingToggle
+                    label="LLM Verify Before Trading"
+                    description="Use AI to verify opportunities before executing trades"
+                    checked={configDraft.llm_verify_trades ?? false}
+                    onChange={v => updateDraft('llm_verify_trades', v)}
+                  />
+                  {configDraft.llm_verify_trades && (
+                    <div>
+                      <p className="text-sm font-medium mb-0.5">Strategies to LLM-Verify</p>
+                      <p className="text-[11px] text-muted-foreground mb-2">Comma-separated list (empty = verify all)</p>
+                      <input
+                        type="text"
+                        value={(configDraft.llm_verify_strategies || []).join(', ')}
+                        onChange={e => updateDraft('llm_verify_strategies', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                        placeholder="e.g. cross_platform, bayesian_cascade, stat_arb"
+                        className="w-full bg-card border border-border rounded-lg py-2 px-3 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50"
+                      />
+                    </div>
+                  )}
+                  <SettingToggle
+                    label="Auto AI Scoring"
+                    description="When enabled, scanner auto-scores all opportunities with AI. Disable for faster scans."
+                    checked={configDraft.auto_ai_scoring ?? false}
+                    onChange={v => updateDraft('auto_ai_scoring', v)}
+                  />
+                </div>
+              </Card>
+
+              {/* Enabled Strategies */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Target className="w-4 h-4 text-emerald-500" />
+                  Enabled Strategies
+                </h4>
+                <p className="text-[11px] text-muted-foreground mb-3">Select which strategies the auto trader should use</p>
+                <div className="flex flex-wrap gap-2">
+                  {ALL_STRATEGIES.map(s => {
+                    const enabled = (configDraft.enabled_strategies || []).includes(s.key)
+                    return (
+                      <button
+                        key={s.key}
+                        type="button"
+                        onClick={() => {
+                          const current = configDraft.enabled_strategies || []
+                          updateDraft('enabled_strategies', enabled
+                            ? current.filter((k: string) => k !== s.key)
+                            : [...current, s.key]
+                          )
+                        }}
+                        className={cn(
+                          "px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                          enabled
+                            ? "bg-green-500/15 text-green-400 border-green-500/30"
+                            : "bg-card text-muted-foreground border-border hover:border-green-500/20"
+                        )}
+                      >
+                        {s.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-2 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => updateDraft('enabled_strategies', ALL_STRATEGIES.map(s => s.key))}
+                    className="text-xs text-muted-foreground hover:text-green-400 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-muted-foreground text-xs">|</span>
+                  <button
+                    type="button"
+                    onClick={() => updateDraft('enabled_strategies', [])}
+                    className="text-xs text-muted-foreground hover:text-red-400 transition-colors"
+                  >
+                    Clear All
+                  </button>
                 </div>
               </Card>
             </div>

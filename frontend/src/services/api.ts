@@ -976,6 +976,9 @@ export interface AutoTraderConfig {
   ai_score_boost_threshold: number
   ai_score_boost_multiplier: number
   ai_judge_model: string | null
+  llm_verify_trades: boolean
+  llm_verify_strategies: string[]
+  auto_ai_scoring: boolean
 }
 
 export interface AutoTraderStatus {
@@ -1028,18 +1031,7 @@ export const stopAutoTrader = async (): Promise<{ status: string }> => {
   return data
 }
 
-export const updateAutoTraderConfig = async (config: Partial<{
-  mode: string
-  enabled_strategies: string[]
-  min_roi_percent: number
-  max_risk_score: number
-  min_liquidity_usd: number
-  base_position_size_usd: number
-  max_position_size_usd: number
-  max_daily_trades: number
-  max_daily_loss_usd: number
-  require_confirmation: boolean
-}>): Promise<{ status: string; config: Record<string, any> }> => {
+export const updateAutoTraderConfig = async (config: Partial<AutoTraderConfig>): Promise<{ status: string; config: Record<string, any> }> => {
   const { data } = await api.put('/auto-trader/config', config)
   return data
 }

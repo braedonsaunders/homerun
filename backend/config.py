@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Scanner Settings
     SCAN_INTERVAL_SECONDS: int = 60
-    MIN_PROFIT_THRESHOLD: float = 0.025  # 2.5% minimum profit after fees
+    MIN_PROFIT_THRESHOLD: float = 0.015  # 1.5% minimum profit after fees
     POLYMARKET_FEE: float = 0.02  # 2% winner fee
 
     # Market Settings
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # NegRisk Exhaustivity Thresholds
     # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
     # Anything below 0.93 is almost always non-exhaustive outcomes, not mispricing.
-    NEGRISK_MIN_TOTAL_YES: float = 0.93  # Hard reject below this
+    NEGRISK_MIN_TOTAL_YES: float = 0.90  # Hard reject below this
     NEGRISK_WARN_TOTAL_YES: float = 0.97  # Warn below this
     # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
     MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
@@ -160,6 +160,48 @@ class Settings(BaseSettings):
     COMBINATORIAL_MIN_CONFIDENCE: float = 0.75  # Min LLM confidence for trades
     COMBINATORIAL_HIGH_CONFIDENCE: float = 0.90  # High confidence threshold
     COMBINATORIAL_MIN_ACCURACY: float = 0.70  # Auto-raise threshold if below
+
+    # Maker Mode / Fee Model
+    MAKER_MODE_DEFAULT: bool = True  # Use limit orders (maker) by default
+    FEE_MODEL_MAKER_MODE: bool = True  # Pass maker_mode=True to fee model
+
+    # Cross-Platform Arbitrage
+    CROSS_PLATFORM_ENABLED: bool = True
+    KALSHI_API_URL: str = "https://api.elections.kalshi.com/trade-api/v2"
+
+    # Bayesian Cascade Strategy
+    BAYESIAN_CASCADE_ENABLED: bool = True  # Enable Bayesian Cascade strategy
+    BAYESIAN_MIN_EDGE_PERCENT: float = 5.0  # Min expected-vs-actual diff to flag (%)
+    BAYESIAN_PROPAGATION_DEPTH: int = 3  # Max hops through the dependency graph
+
+    # Liquidity Vacuum
+    LIQUIDITY_VACUUM_ENABLED: bool = True
+    LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO: float = 5.0
+    LIQUIDITY_VACUUM_MIN_DEPTH_USD: float = 100.0
+
+    # Entropy Arbitrage
+    ENTROPY_ARB_ENABLED: bool = True
+    ENTROPY_ARB_MIN_DEVIATION: float = 0.15
+
+    # Event-Driven Arbitrage
+    EVENT_DRIVEN_ENABLED: bool = True
+
+    # Temporal Decay
+    TEMPORAL_DECAY_ENABLED: bool = True
+
+    # Correlation Arbitrage
+    CORRELATION_ARB_ENABLED: bool = True
+    CORRELATION_ARB_MIN_CORRELATION: float = 0.7
+    CORRELATION_ARB_MIN_DIVERGENCE: float = 0.05
+
+    # Market Making
+    MARKET_MAKING_ENABLED: bool = True
+    MARKET_MAKING_SPREAD_BPS: float = 100.0
+    MARKET_MAKING_MAX_INVENTORY_USD: float = 500.0
+
+    # Statistical Arbitrage
+    STAT_ARB_ENABLED: bool = True
+    STAT_ARB_MIN_EDGE: float = 0.05
 
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup

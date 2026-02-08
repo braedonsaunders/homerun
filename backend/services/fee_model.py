@@ -53,11 +53,13 @@ class FeeModel:
         gas_cost_per_tx: float = 0.005,  # ~$0.005 per Polygon tx
         negrisk_conversion_gas: float = 0.01,  # Extra gas for NegRisk conversion
         default_spread_bps: float = 50.0,  # Default spread in basis points
+        maker_mode: bool = False,  # Maker mode: 0% winner fee, no spread cost
     ):
         self.winner_fee_rate = winner_fee_rate
         self.gas_cost_per_tx = gas_cost_per_tx
         self.negrisk_conversion_gas = negrisk_conversion_gas
         self.default_spread_bps = default_spread_bps
+        self.maker_mode = maker_mode
 
     def calculate_fees(
         self,
@@ -66,6 +68,7 @@ class FeeModel:
         is_negrisk: bool = False,
         spread_bps: Optional[float] = None,
         total_cost: float = 0.0,
+        maker_mode: Optional[bool] = None,
     ) -> FeeBreakdown:
         """Calculate all fees for a trade.
 
@@ -76,12 +79,22 @@ class FeeModel:
             spread_bps: Actual bid-ask spread in basis points. If None, uses
                 the default_spread_bps from construction.
             total_cost: Total cost of all positions (used for spread calculation).
+            maker_mode: If True, set spread_cost=0 (limit orders don't cross
+                spread) and winner_fee_rate=0 (makers pay 0% on Polymarket).
+                If None, falls back to the instance-level self.maker_mode.
 
         Returns:
             FeeBreakdown with all individual fee components and totals.
         """
+        # Resolve maker_mode: explicit arg > instance default
+        effective_maker_mode = maker_mode if maker_mode is not None else self.maker_mode
+
         # 1. Winner fee: applied to the payout on the winning leg
-        winner_fee = expected_payout * self.winner_fee_rate
+        #    Makers pay 0% on Polymarket
+        if effective_maker_mode:
+            winner_fee = 0.0
+        else:
+            winner_fee = expected_payout * self.winner_fee_rate
 
         # 2. Gas costs: one transaction per leg, plus NegRisk conversion overhead
         gas_cost_usd = self.gas_cost_per_tx * num_legs
@@ -89,17 +102,21 @@ class FeeModel:
             gas_cost_usd += self.negrisk_conversion_gas
 
         # 3. Spread cost: cost of crossing the bid-ask spread on total position
-        effective_spread_bps = (
-            spread_bps if spread_bps is not None else self.default_spread_bps
-        )
-        spread_cost = total_cost * (effective_spread_bps / 10_000)
+        #    Makers use limit orders and don't cross the spread
+        if effective_maker_mode:
+            spread_cost = 0.0
+        else:
+            effective_spread_bps = (
+                spread_bps if spread_bps is not None else self.default_spread_bps
+            )
+            spread_cost = total_cost * (effective_spread_bps / 10_000)
 
         # 4. Multi-leg slippage: modeled as compounding — each leg adds ~0.3%
-        #    slippage on top of the previous. For a single leg there is no
-        #    compounding effect; slippage starts from the second leg onward.
-        #    Formula: total_cost * ((1 + r)^n - 1) where r = per-leg rate, n = num_legs
-        if num_legs > 0 and total_cost > 0:
-            compounding_factor = (1 + self.SLIPPAGE_PER_LEG) ** num_legs - 1
+        #    slippage on top of the previous. The first leg has 0 compounding;
+        #    slippage starts from the second leg onward.
+        #    Formula: total_cost * ((1 + r)^(n-1) - 1) for n > 1, else 0
+        if num_legs > 1 and total_cost > 0:
+            compounding_factor = (1 + self.SLIPPAGE_PER_LEG) ** (num_legs - 1) - 1
             multi_leg_slippage = total_cost * compounding_factor
         else:
             multi_leg_slippage = 0.0
@@ -129,6 +146,7 @@ class FeeModel:
         is_negrisk: bool = False,
         spread_bps: Optional[float] = None,
         total_cost: float = 0.0,
+        maker_mode: Optional[bool] = None,
     ) -> tuple[float, FeeBreakdown]:
         """Calculate net profit after subtracting all fees.
 
@@ -153,6 +171,7 @@ class FeeModel:
             is_negrisk=is_negrisk,
             spread_bps=spread_bps,
             total_cost=total_cost,
+            maker_mode=maker_mode,
         )
         net_profit = gross_profit - breakdown.total_fees
         return net_profit, breakdown
