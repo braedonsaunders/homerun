@@ -133,7 +133,7 @@ class AutoTraderConfig:
     min_volume_usd: float = 0.0  # Minimum market trading volume
 
     # AI: Resolution analysis gate (Option B)
-    ai_resolution_gate: bool = True  # Require resolution analysis before trading
+    ai_resolution_gate: bool = False  # Disabled by default for spread trading (not holding to resolution)
     ai_max_resolution_risk: float = 0.5  # Block if resolution risk_score exceeds this
     ai_min_resolution_clarity: float = 0.5  # Block if clarity_score below this
     ai_resolution_block_avoid: bool = True  # Hard block if recommendation is "avoid"

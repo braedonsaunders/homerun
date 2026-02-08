@@ -27,6 +27,11 @@ import {
   Flame,
   Shield,
   Cpu,
+  Settings,
+  Save,
+  RotateCcw,
+  Brain,
+  Percent,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -41,12 +46,14 @@ import {
   getAutoTraderTrades,
   resetCircuitBreaker,
   emergencyStopAutoTrader,
+  updateAutoTraderConfig,
   getTradingStatus,
   getTradingPositions,
   getTradingBalance,
   getOrders,
   getSimulationAccounts,
 } from '../services/api'
+import type { AutoTraderConfig } from '../services/api'
 
 interface TradingPosition {
   token_id: string
@@ -59,7 +66,7 @@ interface TradingPosition {
   unrealized_pnl: number
 }
 
-type DashboardTab = 'overview' | 'holdings' | 'orders'
+type DashboardTab = 'overview' | 'holdings' | 'orders' | 'settings'
 
 // ==================== Activity Feed Event Types ====================
 
@@ -162,6 +169,54 @@ export default function TradingPanel() {
       addFeedEvent({ type: 'system', title: 'EMERGENCY STOP', detail: 'All trading halted, orders cancelled', icon: 'alert' })
     }
   })
+
+  const configMutation = useMutation({
+    mutationFn: (updates: Partial<AutoTraderConfig>) => updateAutoTraderConfig(updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
+      setConfigDirty(false)
+      addFeedEvent({ type: 'system', title: 'Config Updated', detail: 'Auto trader settings saved', icon: 'system' })
+    }
+  })
+
+  const [configDraft, setConfigDraft] = useState<Partial<AutoTraderConfig>>({})
+  const [configDirty, setConfigDirty] = useState(false)
+
+  // Sync draft from server config
+  useEffect(() => {
+    if (status?.config && !configDirty) {
+      setConfigDraft(status.config)
+    }
+  }, [status?.config, configDirty])
+
+  const updateDraft = (key: keyof AutoTraderConfig, value: unknown) => {
+    setConfigDraft(prev => ({ ...prev, [key]: value }))
+    setConfigDirty(true)
+  }
+
+  const saveDraft = () => {
+    if (!configDirty || !status?.config) return
+    // Only send changed fields
+    const changes: Partial<AutoTraderConfig> = {}
+    for (const [k, v] of Object.entries(configDraft)) {
+      const key = k as keyof AutoTraderConfig
+      if (JSON.stringify(v) !== JSON.stringify(status.config[key])) {
+        (changes as Record<string, unknown>)[key] = v
+      }
+    }
+    if (Object.keys(changes).length > 0) {
+      configMutation.mutate(changes)
+    } else {
+      setConfigDirty(false)
+    }
+  }
+
+  const resetDraft = () => {
+    if (status?.config) {
+      setConfigDraft(status.config)
+      setConfigDirty(false)
+    }
+  }
 
   // Close account picker when clicking outside
   const accountPickerRef = useRef<HTMLDivElement>(null)
@@ -576,6 +631,7 @@ export default function TradingPanel() {
                 { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
                 { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
                 { key: 'orders', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
+                { key: 'settings', label: 'Settings', icon: <Settings className="w-3.5 h-3.5" /> },
               ] as { key: DashboardTab; label: string; icon: React.ReactNode }[]).map(tab => (
                 <TabsTrigger
                   key={tab.key}
@@ -937,6 +993,337 @@ export default function TradingPanel() {
                   </CardContent>
                 </Card>
               )}
+            </div>
+          )}
+
+          {dashboardTab === 'settings' && (
+            <div className="space-y-4">
+              {/* Save/Reset Bar */}
+              {configDirty && (
+                <div className="flex items-center justify-between px-4 py-3 bg-blue-500/10 border border-blue-500/30 rounded-xl">
+                  <span className="text-sm text-blue-400 font-medium">Unsaved changes</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" onClick={resetDraft} className="gap-1.5 text-xs h-auto px-3 py-1.5">
+                      <RotateCcw className="w-3 h-3" /> Reset
+                    </Button>
+                    <Button
+                      onClick={saveDraft}
+                      disabled={configMutation.isPending}
+                      className="gap-1.5 text-xs h-auto px-4 py-1.5 bg-blue-500 hover:bg-blue-600 text-white"
+                    >
+                      <Save className="w-3 h-3" /> {configMutation.isPending ? 'Saving...' : 'Save'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Spread Trading Exits */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Percent className="w-4 h-4 text-green-500" />
+                  Spread Trading Exits
+                </h4>
+                <div className="space-y-4">
+                  <SettingToggle
+                    label="Enable Spread Exits"
+                    description="Automatically set take-profit & stop-loss on new positions"
+                    checked={configDraft.enable_spread_exits ?? true}
+                    onChange={v => updateDraft('enable_spread_exits', v)}
+                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <SettingNumber
+                      label="Take Profit %"
+                      description="Sell when price rises above entry"
+                      value={configDraft.take_profit_pct ?? 5}
+                      onChange={v => updateDraft('take_profit_pct', v)}
+                      min={0} max={100} step={0.5}
+                      suffix="%"
+                    />
+                    <SettingNumber
+                      label="Stop Loss %"
+                      description="Sell when price drops below entry"
+                      value={configDraft.stop_loss_pct ?? 10}
+                      onChange={v => updateDraft('stop_loss_pct', v)}
+                      min={0} max={100} step={0.5}
+                      suffix="%"
+                    />
+                  </div>
+                </div>
+              </Card>
+
+              {/* Position Sizing */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <DollarSign className="w-4 h-4 text-yellow-500" />
+                  Position Sizing
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <SettingNumber
+                    label="Base Position Size"
+                    description="Default trade size"
+                    value={configDraft.base_position_size_usd ?? 10}
+                    onChange={v => updateDraft('base_position_size_usd', v)}
+                    min={1} max={10000} step={1}
+                    prefix="$"
+                  />
+                  <SettingNumber
+                    label="Max Position Size"
+                    description="Maximum per trade"
+                    value={configDraft.max_position_size_usd ?? 100}
+                    onChange={v => updateDraft('max_position_size_usd', v)}
+                    min={1} max={50000} step={1}
+                    prefix="$"
+                  />
+                  <SettingNumber
+                    label="Paper Account Capital"
+                    description="Starting capital for paper trading"
+                    value={configDraft.paper_account_capital ?? 10000}
+                    onChange={v => updateDraft('paper_account_capital', v)}
+                    min={100} max={1000000} step={100}
+                    prefix="$"
+                  />
+                </div>
+              </Card>
+
+              {/* Entry Criteria */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Target className="w-4 h-4 text-cyan-500" />
+                  Entry Criteria
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <SettingNumber
+                    label="Min ROI %"
+                    description="Minimum return to trade"
+                    value={configDraft.min_roi_percent ?? 2.5}
+                    onChange={v => updateDraft('min_roi_percent', v)}
+                    min={0} max={100} step={0.5}
+                    suffix="%"
+                  />
+                  <SettingNumber
+                    label="Max Risk Score"
+                    description="Maximum acceptable risk (0-1)"
+                    value={configDraft.max_risk_score ?? 0.5}
+                    onChange={v => updateDraft('max_risk_score', v)}
+                    min={0} max={1} step={0.05}
+                  />
+                  <SettingNumber
+                    label="Min Liquidity"
+                    description="Minimum market liquidity"
+                    value={configDraft.min_liquidity_usd ?? 500}
+                    onChange={v => updateDraft('min_liquidity_usd', v)}
+                    min={0} max={100000} step={100}
+                    prefix="$"
+                  />
+                  <SettingNumber
+                    label="Min Volume"
+                    description="Minimum trading volume"
+                    value={configDraft.min_volume_usd ?? 0}
+                    onChange={v => updateDraft('min_volume_usd', v)}
+                    min={0} max={1000000} step={100}
+                    prefix="$"
+                  />
+                </div>
+              </Card>
+
+              {/* Risk Management */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Shield className="w-4 h-4 text-orange-500" />
+                  Risk Management
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <SettingNumber
+                    label="Max Daily Trades"
+                    description="Maximum trades per day"
+                    value={configDraft.max_daily_trades ?? 50}
+                    onChange={v => updateDraft('max_daily_trades', Math.round(v))}
+                    min={1} max={1000} step={1}
+                  />
+                  <SettingNumber
+                    label="Max Daily Loss"
+                    description="Stop trading if daily loss exceeds"
+                    value={configDraft.max_daily_loss_usd ?? 100}
+                    onChange={v => updateDraft('max_daily_loss_usd', v)}
+                    min={0} max={100000} step={10}
+                    prefix="$"
+                  />
+                  <SettingNumber
+                    label="Circuit Breaker"
+                    description="Pause after N consecutive losses"
+                    value={configDraft.circuit_breaker_losses ?? 3}
+                    onChange={v => updateDraft('circuit_breaker_losses', Math.round(v))}
+                    min={1} max={50} step={1}
+                  />
+                  <SettingNumber
+                    label="Max Per Event"
+                    description="Max trades per event"
+                    value={configDraft.max_trades_per_event ?? 3}
+                    onChange={v => updateDraft('max_trades_per_event', Math.round(v))}
+                    min={1} max={50} step={1}
+                  />
+                  <SettingNumber
+                    label="Max Event Exposure"
+                    description="Max $ exposure per event"
+                    value={configDraft.max_exposure_per_event_usd ?? 50}
+                    onChange={v => updateDraft('max_exposure_per_event_usd', v)}
+                    min={0} max={100000} step={10}
+                    prefix="$"
+                  />
+                </div>
+              </Card>
+
+              {/* AI Resolution Gate */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Brain className="w-4 h-4 text-purple-500" />
+                  AI Resolution Gate
+                  <Badge className={cn(
+                    "ml-auto rounded-md text-[10px] font-semibold border-0",
+                    configDraft.ai_resolution_gate ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
+                  )}>
+                    {configDraft.ai_resolution_gate ? 'ON' : 'OFF'}
+                  </Badge>
+                </h4>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Uses AI to analyze market resolution criteria before trading. For spread trading (buy/sell on price movement),
+                  this should be OFF since you&apos;re not holding to resolution.
+                </p>
+                <div className="space-y-4">
+                  <SettingToggle
+                    label="Enable Resolution Gate"
+                    description="Block trades that fail AI resolution analysis"
+                    checked={configDraft.ai_resolution_gate ?? false}
+                    onChange={v => updateDraft('ai_resolution_gate', v)}
+                  />
+                  {configDraft.ai_resolution_gate && (
+                    <>
+                      <SettingToggle
+                        label="Block 'Avoid' Recommendations"
+                        description="Hard block when AI recommends avoiding a market"
+                        checked={configDraft.ai_resolution_block_avoid ?? true}
+                        onChange={v => updateDraft('ai_resolution_block_avoid', v)}
+                      />
+                      <SettingToggle
+                        label="Skip on Analysis Failure"
+                        description="If true, block trade when AI fails. If false, allow through (fail-open)."
+                        checked={configDraft.ai_skip_on_analysis_failure ?? false}
+                        onChange={v => updateDraft('ai_skip_on_analysis_failure', v)}
+                      />
+                      <div className="grid grid-cols-2 gap-4">
+                        <SettingNumber
+                          label="Max Risk Score"
+                          description="Block if risk exceeds this"
+                          value={configDraft.ai_max_resolution_risk ?? 0.5}
+                          onChange={v => updateDraft('ai_max_resolution_risk', v)}
+                          min={0} max={1} step={0.05}
+                        />
+                        <SettingNumber
+                          label="Min Clarity Score"
+                          description="Block if clarity below this"
+                          value={configDraft.ai_min_resolution_clarity ?? 0.5}
+                          onChange={v => updateDraft('ai_min_resolution_clarity', v)}
+                          min={0} max={1} step={0.05}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              {/* AI Position Sizing */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Zap className="w-4 h-4 text-amber-500" />
+                  AI Position Sizing
+                  <Badge className={cn(
+                    "ml-auto rounded-md text-[10px] font-semibold border-0",
+                    configDraft.ai_position_sizing ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
+                  )}>
+                    {configDraft.ai_position_sizing ? 'ON' : 'OFF'}
+                  </Badge>
+                </h4>
+                <div className="space-y-4">
+                  <SettingToggle
+                    label="Enable AI Position Sizing"
+                    description="Use AI judge score to scale position sizes"
+                    checked={configDraft.ai_position_sizing ?? true}
+                    onChange={v => updateDraft('ai_position_sizing', v)}
+                  />
+                  {configDraft.ai_position_sizing && (
+                    <>
+                      <SettingToggle
+                        label="Score-Based Multiplier"
+                        description="Scale position size by AI score (0.8 score = 80% size)"
+                        checked={configDraft.ai_score_size_multiplier ?? true}
+                        onChange={v => updateDraft('ai_score_size_multiplier', v)}
+                      />
+                      <div className="grid grid-cols-2 gap-4">
+                        <SettingNumber
+                          label="Min Score to Trade"
+                          description="Block if AI score below this (0 = disabled)"
+                          value={configDraft.ai_min_score_to_trade ?? 0}
+                          onChange={v => updateDraft('ai_min_score_to_trade', v)}
+                          min={0} max={1} step={0.05}
+                        />
+                        <SettingNumber
+                          label="Boost Threshold"
+                          description="Boost size when score exceeds"
+                          value={configDraft.ai_score_boost_threshold ?? 0.85}
+                          onChange={v => updateDraft('ai_score_boost_threshold', v)}
+                          min={0} max={1} step={0.05}
+                        />
+                        <SettingNumber
+                          label="Boost Multiplier"
+                          description="Size multiplier for high confidence"
+                          value={configDraft.ai_score_boost_multiplier ?? 1.2}
+                          onChange={v => updateDraft('ai_score_boost_multiplier', v)}
+                          min={1} max={3} step={0.1}
+                          suffix="x"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              {/* Settlement Filters */}
+              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
+                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
+                  <Crosshair className="w-4 h-4 text-teal-500" />
+                  Settlement Filters
+                </h4>
+                <div className="space-y-4">
+                  <SettingToggle
+                    label="Prefer Near Settlement"
+                    description="Boost score for markets settling sooner"
+                    checked={configDraft.prefer_near_settlement ?? true}
+                    onChange={v => updateDraft('prefer_near_settlement', v)}
+                  />
+                  <SettingToggle
+                    label="Require Profit Guarantee"
+                    description="Only trade if guaranteed profit covers gas + slippage (Proposition 4.1)"
+                    checked={configDraft.use_profit_guarantee ?? true}
+                    onChange={v => updateDraft('use_profit_guarantee', v)}
+                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <SettingNumber
+                      label="Max Days to Settlement"
+                      description="Skip markets further out (0 = no limit)"
+                      value={configDraft.max_end_date_days ?? 0}
+                      onChange={v => updateDraft('max_end_date_days', v === 0 ? null : Math.round(v))}
+                      min={0} max={365} step={1}
+                    />
+                    <SettingNumber
+                      label="Min Days to Settlement"
+                      description="Skip markets settling too soon (0 = no limit)"
+                      value={configDraft.min_end_date_days ?? 0}
+                      onChange={v => updateDraft('min_end_date_days', v === 0 ? null : Math.round(v))}
+                      min={0} max={365} step={1}
+                    />
+                  </div>
+                </div>
+              </Card>
             </div>
           )}
         </div>
@@ -1366,4 +1753,75 @@ function timeAgo(date: Date): string {
   if (diffHr < 24) return `${diffHr}h ago`
   const diffDays = Math.floor(diffHr / 24)
   return `${diffDays}d ago`
+}
+
+// ==================== Settings Components ====================
+
+function SettingToggle({ label, description, checked, onChange }: {
+  label: string
+  description: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between py-2">
+      <div className="flex-1 min-w-0 mr-4">
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-[11px] text-muted-foreground">{description}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className={cn(
+          "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+          checked ? "bg-green-500" : "bg-gray-600"
+        )}
+      >
+        <span className={cn(
+          "pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform",
+          checked ? "translate-x-4" : "translate-x-0"
+        )} />
+      </button>
+    </div>
+  )
+}
+
+function SettingNumber({ label, description, value, onChange, min, max, step, prefix, suffix }: {
+  label: string
+  description: string
+  value: number | null
+  onChange: (v: number) => void
+  min: number
+  max: number
+  step: number
+  prefix?: string
+  suffix?: string
+}) {
+  return (
+    <div>
+      <p className="text-sm font-medium mb-0.5">{label}</p>
+      <p className="text-[11px] text-muted-foreground mb-2">{description}</p>
+      <div className="relative">
+        {prefix && (
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{prefix}</span>
+        )}
+        <input
+          type="number"
+          value={value ?? 0}
+          onChange={e => onChange(parseFloat(e.target.value) || 0)}
+          min={min}
+          max={max}
+          step={step}
+          className={cn(
+            "w-full bg-card border border-border rounded-lg py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50",
+            prefix ? "pl-7 pr-3" : "px-3",
+            suffix ? "pr-8" : ""
+          )}
+        />
+        {suffix && (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{suffix}</span>
+        )}
+      </div>
+    </div>
+  )
 }

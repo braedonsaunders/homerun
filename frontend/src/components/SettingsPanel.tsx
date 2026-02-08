@@ -32,8 +32,6 @@ import {
   testTelegramConnection,
   getLLMModels,
   refreshLLMModels,
-  getAutoTraderStatus,
-  updateAutoTraderConfig,
   type LLMModelOption
 } from '../services/api'
 
@@ -138,16 +136,6 @@ export default function SettingsPanel() {
     cleanup_resolved_trade_days: 30
   })
 
-  const [autoTraderForm, setAutoTraderForm] = useState({
-    min_roi_percent: 2.5,
-    max_risk_score: 0.5,
-    base_position_size_usd: 10,
-    max_position_size_usd: 100,
-    max_daily_trades: 50,
-    max_daily_loss_usd: 100,
-    paper_account_capital: 10000
-  })
-
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -155,26 +143,6 @@ export default function SettingsPanel() {
     queryFn: getSettings,
   })
 
-  const { data: autoTraderStatus } = useQuery({
-    queryKey: ['auto-trader-status'],
-    queryFn: getAutoTraderStatus,
-  })
-
-  // Sync auto trader form with loaded config
-  useEffect(() => {
-    if (autoTraderStatus?.config) {
-      const c = autoTraderStatus.config
-      setAutoTraderForm({
-        min_roi_percent: c.min_roi_percent ?? 2.5,
-        max_risk_score: c.max_risk_score ?? 0.5,
-        base_position_size_usd: c.base_position_size_usd ?? 10,
-        max_position_size_usd: c.max_position_size_usd ?? 100,
-        max_daily_trades: c.max_daily_trades ?? 50,
-        max_daily_loss_usd: c.max_daily_loss_usd ?? 100,
-        paper_account_capital: c.paper_account_capital ?? 10000
-      })
-    }
-  }, [autoTraderStatus])
 
   // Sync form state with loaded settings
   useEffect(() => {
@@ -264,18 +232,6 @@ export default function SettingsPanel() {
     }
   })
 
-  const autoTraderConfigMutation = useMutation({
-    mutationFn: updateAutoTraderConfig,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
-      setSaveMessage({ type: 'success', text: 'Auto trader config saved successfully' })
-      setTimeout(() => setSaveMessage(null), 3000)
-    },
-    onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save auto trader config' })
-      setTimeout(() => setSaveMessage(null), 5000)
-    }
-  })
 
   const testPolymarketMutation = useMutation({
     mutationFn: testPolymarketConnection,
@@ -330,7 +286,6 @@ export default function SettingsPanel() {
         updates.maintenance = maintenanceForm
         break
       case 'autotrader':
-        autoTraderConfigMutation.mutate(autoTraderForm)
         return
     }
 
@@ -914,7 +869,7 @@ export default function SettingsPanel() {
               </div>
             )}
 
-            {/* Auto Trader Config */}
+            {/* Auto Trader Config - Redirect to Trading tab */}
             {activeSection === 'autotrader' && (
               <div className="space-y-6">
                 <div className="flex items-center gap-3 mb-6">
@@ -923,135 +878,20 @@ export default function SettingsPanel() {
                   </div>
                   <div>
                     <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
-                    <p className="text-sm text-muted-foreground">Configure autonomous trading parameters and limits</p>
+                    <p className="text-sm text-muted-foreground">Auto trader settings have moved to the Trading tab for a unified experience</p>
                   </div>
                 </div>
 
-                {autoTraderStatus?.config && (
-                  <Card className="bg-muted">
-                    <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
-                      <div>
-                        <p className="text-xs text-muted-foreground">Mode</p>
-                        <p className="font-mono text-sm font-medium">{autoTraderStatus.config.mode?.toUpperCase()}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">Status</p>
-                        <Badge variant={autoTraderStatus.running ? "default" : "secondary"} className={cn(
-                          "font-mono text-sm font-medium",
-                          autoTraderStatus.running ? "bg-green-500/10 text-green-400" : "bg-muted text-muted-foreground"
-                        )}>
-                          {autoTraderStatus.running ? 'Running' : 'Stopped'}
-                        </Badge>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">Strategies</p>
-                        <p className="font-mono text-xs">{autoTraderStatus.config.enabled_strategies?.join(', ') || 'All'}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">Circuit Breaker</p>
-                        <p className="font-mono text-sm">{autoTraderStatus.config.circuit_breaker_losses} losses</p>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Min ROI %</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.min_roi_percent}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, min_roi_percent: parseFloat(e.target.value) || 0 }))}
-                      step="0.5"
-                      min={0}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Minimum return to execute a trade</p>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Max Risk Score</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.max_risk_score}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_risk_score: parseFloat(e.target.value) || 0 }))}
-                      step="0.1"
-                      min={0}
-                      max={1}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">0 = lowest risk, 1 = highest</p>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Base Position Size ($)</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.base_position_size_usd}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, base_position_size_usd: parseFloat(e.target.value) || 1 }))}
-                      min={1}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Default trade size</p>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Max Position Size ($)</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.max_position_size_usd}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_position_size_usd: parseFloat(e.target.value) || 1 }))}
-                      min={1}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Maximum single trade size</p>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Max Daily Trades</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.max_daily_trades}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_trades: parseInt(e.target.value) || 1 }))}
-                      min={1}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Daily trade count limit</p>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Max Daily Loss ($)</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.max_daily_loss_usd}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, max_daily_loss_usd: parseFloat(e.target.value) || 0 }))}
-                      min={0}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Stop trading after this daily loss</p>
-                  </div>
-
-                  <div className="col-span-2">
-                    <Label className="text-xs text-muted-foreground">Paper Account Capital ($)</Label>
-                    <Input
-                      type="number"
-                      value={autoTraderForm.paper_account_capital}
-                      onChange={(e) => setAutoTraderForm(p => ({ ...p, paper_account_capital: parseFloat(e.target.value) || 100 }))}
-                      min={100}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Starting capital for paper trading simulation</p>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('autotrader')} disabled={autoTraderConfigMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Auto Trader Config
-                  </Button>
-                </div>
+                <Card className="bg-muted">
+                  <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+                    <Activity className="w-10 h-10 text-emerald-500 mb-3 opacity-50" />
+                    <p className="text-sm font-medium mb-1">Settings moved to Trading tab</p>
+                    <p className="text-xs text-muted-foreground max-w-sm">
+                      All auto trader configuration including spread trading exits, AI gates, position sizing,
+                      and risk management are now available under Trading &gt; Auto Trader &gt; Settings.
+                    </p>
+                  </CardContent>
+                </Card>
               </div>
             )}
 
