@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, List
 
 from config import settings
@@ -141,7 +141,7 @@ class ArbitrageScanner:
             # Filter out markets whose end_date has already passed —
             # these are resolved events awaiting settlement and can't
             # be traded profitably.
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             markets = [m for m in markets if m.end_date is None or m.end_date > now]
 
             # Also prune expired markets inside events so strategies
