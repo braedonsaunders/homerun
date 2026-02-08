@@ -406,9 +406,6 @@ class DependencyValidator:
         validated = [
             dep for dep, ok in zip(dependencies, structural_results) if ok
         ]
-        # If no deps pass structural check, keep originals only if known pattern
-        if not validated and known_pattern_match:
-            validated = dependencies
 
         if not validated:
             return [], 0.0, "REJECT"
@@ -551,7 +548,8 @@ class DependencyValidator:
 
         if ord_a is not None and ord_b is not None:
             # Cumulative: earlier date being true implies later date true
-            return ord_a != ord_b
+            # Only valid when A's date is strictly before B's date
+            return ord_a < ord_b
 
         return False
 

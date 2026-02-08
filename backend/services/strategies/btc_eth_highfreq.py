@@ -28,8 +28,7 @@ from enum import Enum
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
-from config import settings
-from .base import BaseStrategy, utcnow
+from .base import BaseStrategy
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

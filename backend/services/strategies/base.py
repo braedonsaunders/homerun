@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from services.fee_model import fee_model, FeeBreakdown
+from services.fee_model import fee_model
 
 
 def utcnow() -> datetime:

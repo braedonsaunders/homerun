@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
@@ -100,8 +100,8 @@ class PriceCache:
         asks: List[OrderBookLevel],
     ) -> None:
         """Atomically replace the order book for *token_id*."""
-        bids_sorted = sorted(bids, key=lambda l: l.price, reverse=True)
-        asks_sorted = sorted(asks, key=lambda l: l.price)
+        bids_sorted = sorted(bids, key=lambda lvl: lvl.price, reverse=True)
+        asks_sorted = sorted(asks, key=lambda lvl: lvl.price)
 
         book = OrderBook(bids=bids_sorted, asks=asks_sorted)
         best_bid = bids_sorted[0].price if bids_sorted else 0.0

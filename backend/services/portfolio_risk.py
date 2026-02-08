@@ -9,8 +9,7 @@ Correlated positions are detected via shared event IDs, categories, and
 overlapping market IDs, and their recommended sizes are discounted accordingly.
 """
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
