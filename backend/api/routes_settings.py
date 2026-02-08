@@ -332,33 +332,35 @@ async def update_settings(request: UpdateSettingsRequest):
 
             settings.updated_at = datetime.utcnow()
             await session.commit()
+            updated_at = settings.updated_at.isoformat()
+            needs_llm_reinit = bool(request.llm)
 
-            # Reinitialize LLM manager to pick up new API keys / default model
-            if request.llm:
-                try:
-                    from services.ai import get_llm_manager
+        # Re-initialize LLM manager OUTSIDE the DB session so the new
+        # session inside initialize() can see the just-committed data
+        # (SQLite + aiosqlite share a single connection in the pool).
+        if needs_llm_reinit:
+            try:
+                from services.ai import get_llm_manager
 
-                    manager = get_llm_manager()
-                    await manager.initialize()
-                    logger.info(
-                        "LLM manager re-initialized, active model: %s",
-                        manager._default_model,
-                    )
-                except RuntimeError:
-                    pass  # AI module not loaded yet
-                except Exception as reinit_err:
-                    logger.error(
-                        "Failed to re-initialize LLM manager after settings update: %s",
-                        reinit_err,
-                    )
+                manager = get_llm_manager()
+                await manager.initialize()
+                logger.info(
+                    f"LLM manager re-initialized, active model: {manager._default_model}",
+                )
+            except RuntimeError:
+                pass  # AI module not loaded yet
+            except Exception as reinit_err:
+                logger.error(
+                    f"Failed to re-initialize LLM manager after settings update: {reinit_err}",
+                )
 
-            logger.info("Settings updated successfully")
+        logger.info("Settings updated successfully")
 
-            return {
-                "status": "success",
-                "message": "Settings updated successfully",
-                "updated_at": settings.updated_at.isoformat(),
-            }
+        return {
+            "status": "success",
+            "message": "Settings updated successfully",
+            "updated_at": updated_at,
+        }
     except Exception as e:
         logger.error("Failed to update settings", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
