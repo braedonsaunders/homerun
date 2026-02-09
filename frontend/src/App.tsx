@@ -492,7 +492,7 @@ function App() {
           </div>
 
           {/* Right Controls */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 ml-auto">
             {/* Unified Status Indicator */}
             <Tooltip>
               <TooltipTrigger asChild>
