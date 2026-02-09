@@ -589,6 +589,50 @@ class AppSettings(Base):
     miracle_max_no_price = Column(Float, default=0.995)
     miracle_min_impossibility_score = Column(Float, default=0.70)
 
+    # BTC/ETH High-Frequency Enable
+    btc_eth_hf_enabled = Column(Boolean, default=True)
+
+    # Cross-Platform Arbitrage
+    cross_platform_enabled = Column(Boolean, default=True)
+
+    # Combinatorial Arbitrage
+    combinatorial_min_confidence = Column(Float, default=0.75)
+    combinatorial_high_confidence = Column(Float, default=0.90)
+
+    # Bayesian Cascade
+    bayesian_cascade_enabled = Column(Boolean, default=True)
+    bayesian_min_edge_percent = Column(Float, default=5.0)
+    bayesian_propagation_depth = Column(Integer, default=3)
+
+    # Liquidity Vacuum
+    liquidity_vacuum_enabled = Column(Boolean, default=True)
+    liquidity_vacuum_min_imbalance_ratio = Column(Float, default=5.0)
+    liquidity_vacuum_min_depth_usd = Column(Float, default=100.0)
+
+    # Entropy Arbitrage
+    entropy_arb_enabled = Column(Boolean, default=True)
+    entropy_arb_min_deviation = Column(Float, default=0.25)
+
+    # Event-Driven Arbitrage
+    event_driven_enabled = Column(Boolean, default=True)
+
+    # Temporal Decay
+    temporal_decay_enabled = Column(Boolean, default=True)
+
+    # Correlation Arbitrage
+    correlation_arb_enabled = Column(Boolean, default=True)
+    correlation_arb_min_correlation = Column(Float, default=0.7)
+    correlation_arb_min_divergence = Column(Float, default=0.05)
+
+    # Market Making
+    market_making_enabled = Column(Boolean, default=True)
+    market_making_spread_bps = Column(Float, default=100.0)
+    market_making_max_inventory_usd = Column(Float, default=500.0)
+
+    # Statistical Arbitrage
+    stat_arb_enabled = Column(Boolean, default=True)
+    stat_arb_min_edge = Column(Float, default=0.05)
+
     # Database Maintenance
     auto_cleanup_enabled = Column(Boolean, default=False)
     cleanup_interval_hours = Column(Integer, default=24)
