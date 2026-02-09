@@ -22,7 +22,6 @@ strategies. The scanner calls detect_async() instead of detect().
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
 from config import settings
@@ -70,7 +69,7 @@ class NewsEdgeStrategy(BaseStrategy):
 
         try:
             # Step 1: Fetch new articles
-            new_articles = await news_feed_service.fetch_all()
+            await news_feed_service.fetch_all()
             all_articles = news_feed_service.get_articles(
                 max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS
             )
@@ -90,7 +89,7 @@ class NewsEdgeStrategy(BaseStrategy):
             semantic_matcher.update_market_index(market_infos)
 
             # Step 3: Embed new articles
-            embedded_count = semantic_matcher.embed_articles(all_articles)
+            semantic_matcher.embed_articles(all_articles)
 
             # Step 4: Match articles to markets
             matches = semantic_matcher.match_articles_to_markets(
@@ -246,7 +245,7 @@ class NewsEdgeStrategy(BaseStrategy):
         # Risk scoring for news-driven trades (higher risk than pure arb)
         risk_score = 0.4  # Base: news trades are inherently riskier
         risk_factors = [
-            f"News-driven directional bet (not structural arbitrage)",
+            "News-driven directional bet (not structural arbitrage)",
             f"Model confidence: {edge.confidence:.0%}",
             f"Semantic similarity: {edge.match.similarity:.2f}",
         ]
