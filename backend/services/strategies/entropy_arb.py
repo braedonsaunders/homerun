@@ -102,6 +102,10 @@ ENTROPY_SPIKE_THRESHOLD = 0.20  # Cross-scan spike considered significant
 class EntropyArbStrategy(BaseStrategy):
     """Information-theoretic mispricing via entropy analysis.
 
+    IMPORTANT: This is a PROBABILISTIC SIGNAL strategy, NOT risk-free arbitrage.
+    All trades are directional bets informed by entropy deviation. If the
+    predicted outcome does not occur, the entire position is lost.
+
     Scans binary markets and multi-outcome NegRisk events for deviations
     between actual entropy (derived from current prices) and the expected
     entropy implied by a square-root decay model tied to resolution timing.
@@ -119,8 +123,10 @@ class EntropyArbStrategy(BaseStrategy):
     """
 
     strategy_type = StrategyType.ENTROPY_ARB
-    name = "Entropy Arbitrage"
-    description = "Information-theoretic mispricing via entropy analysis"
+    name = "Entropy Signal"
+    description = (
+        "Directional edge via information-theoretic entropy analysis (NOT arbitrage)"
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -352,11 +358,11 @@ class EntropyArbStrategy(BaseStrategy):
 
         # --- Create opportunity ---
         # Use create_opportunity which applies all hard filters and fee model.
-        # For entropy arb the expected_payout is $1 if our side wins, but
-        # this is a probabilistic strategy, not guaranteed arb. We set
-        # total_cost to the buy price and let the base class compute ROI.
+        # IMPORTANT: This is a DIRECTIONAL BET, not guaranteed arbitrage.
+        # The price IS our estimated win probability. ROI is only realized
+        # if the bet wins; otherwise the entire position is lost.
         opp = self.create_opportunity(
-            title=f"Entropy Arb ({anomaly_type}): {market.question[:45]}...",
+            title=f"Entropy Signal ({anomaly_type}): {market.question[:45]}...",
             description=signal_desc,
             total_cost=total_cost,
             markets=[market],
@@ -364,9 +370,10 @@ class EntropyArbStrategy(BaseStrategy):
         )
 
         if opp is not None:
-            # Override risk score: entropy arb is probabilistic, not
-            # guaranteed, so inherently riskier than pure arb (0.35-0.55).
-            base_risk = 0.35
+            # Override risk score: entropy signals are probabilistic
+            # directional bets, not guaranteed arbitrage. If the chosen
+            # side doesn't win, the entire position is lost.
+            base_risk = 0.55
             # Increase risk for smaller deviations (less confident signal)
             deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
             # Increase risk for low-entropy (contrarian) trades
@@ -387,7 +394,11 @@ class EntropyArbStrategy(BaseStrategy):
                 opp.risk_factors.append(
                     f"Entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
                 )
-            opp.risk_factors.append("Probabilistic strategy (not guaranteed arbitrage)")
+            opp.risk_factors.insert(
+                0,
+                "DIRECTIONAL BET — not arbitrage. 100% loss if chosen side loses.",
+            )
+            opp.risk_factors.append("Probabilistic signal (not guaranteed arbitrage)")
 
         return opp
 
@@ -527,7 +538,7 @@ class EntropyArbStrategy(BaseStrategy):
         total_cost = target_price
 
         opp = self.create_opportunity(
-            title=f"Entropy Arb ({anomaly_type}): {event.title[:45]}...",
+            title=f"Entropy Signal ({anomaly_type}): {event.title[:45]}...",
             description=signal_desc,
             total_cost=total_cost,
             markets=[target_market],
@@ -536,16 +547,22 @@ class EntropyArbStrategy(BaseStrategy):
         )
 
         if opp is not None:
-            # Risk is slightly higher for multi-outcome since the
-            # distribution normalization introduces model risk.
-            base_risk = 0.40
+            # Risk is HIGH for multi-outcome entropy signals. This is a
+            # directional bet on the favorite (or a contrarian underdog),
+            # NOT a structural arbitrage. If the chosen outcome doesn't
+            # win, the entire position is lost.
+            base_risk = 0.60
             deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
-            contrarian_penalty = 0.10 if deviation < 0 else 0.0
+            contrarian_penalty = 0.15 if deviation < 0 else 0.0
             spike_bonus = -0.05 if spike else 0.0
             entropy_risk = (
                 base_risk + deviation_factor + contrarian_penalty + spike_bonus
             )
             opp.risk_score = min(max(opp.risk_score, entropy_risk), 1.0)
+            opp.risk_factors.insert(
+                0,
+                "DIRECTIONAL BET — not arbitrage. 100% loss if chosen outcome loses.",
+            )
             opp.risk_factors.append(
                 f"Multi-outcome entropy deviation: {deviation:+.3f} bits "
                 f"(actual={h_actual:.3f}, expected={h_expected:.3f}, "
@@ -555,6 +572,6 @@ class EntropyArbStrategy(BaseStrategy):
                 opp.risk_factors.append(
                     f"Multi-outcome entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
                 )
-            opp.risk_factors.append("Probabilistic strategy (not guaranteed arbitrage)")
+            opp.risk_factors.append("Probabilistic signal (not guaranteed arbitrage)")
 
         return opp

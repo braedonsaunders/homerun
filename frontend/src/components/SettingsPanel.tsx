@@ -18,7 +18,7 @@ import {
   Activity,
   DollarSign,
   Brain,
-  BarChart3,
+  Shield,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -33,6 +33,7 @@ import {
   updateSettings,
   testPolymarketConnection,
   testTelegramConnection,
+  testTradingProxy,
   getLLMModels,
   refreshLLMModels,
   getAutoTraderStatus,
@@ -41,7 +42,7 @@ import {
   type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'polymarket' | 'kalshi' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
+type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'maintenance'
 
 function SecretInput({
   label,
@@ -166,6 +167,14 @@ export default function SettingsPanel() {
     cleanup_resolved_trade_days: 30
   })
 
+  const [vpnForm, setVpnForm] = useState({
+    enabled: false,
+    proxy_url: '',
+    verify_ssl: true,
+    timeout: 30,
+    require_vpn: true
+  })
+
   const [autotraderAiForm, setAutotraderAiForm] = useState({
     llm_verify_trades: false,
     llm_verify_strategies: '',
@@ -265,6 +274,16 @@ export default function SettingsPanel() {
         cleanup_interval_hours: settings.maintenance.cleanup_interval_hours,
         cleanup_resolved_trade_days: settings.maintenance.cleanup_resolved_trade_days
       })
+
+      if (settings.trading_proxy) {
+        setVpnForm({
+          enabled: settings.trading_proxy.enabled,
+          proxy_url: '',  // Don't pre-fill masked URL
+          verify_ssl: settings.trading_proxy.verify_ssl,
+          timeout: settings.trading_proxy.timeout,
+          require_vpn: settings.trading_proxy.require_vpn
+        })
+      }
     }
   }, [settings])
 
@@ -312,6 +331,10 @@ export default function SettingsPanel() {
 
   const testTelegramMutation = useMutation({
     mutationFn: testTelegramConnection,
+  })
+
+  const testVpnMutation = useMutation({
+    mutationFn: testTradingProxy,
   })
 
   const handleSaveSection = (section: SettingsSection) => {
@@ -362,6 +385,18 @@ export default function SettingsPanel() {
       case 'trading':
         updates.trading = tradingForm
         break
+      case 'vpn':
+        updates.trading_proxy = {
+          enabled: vpnForm.enabled,
+          verify_ssl: vpnForm.verify_ssl,
+          timeout: vpnForm.timeout,
+          require_vpn: vpnForm.require_vpn,
+        } as any
+        // Only send proxy_url if the user entered a new value
+        if (vpnForm.proxy_url) {
+          (updates.trading_proxy as any).proxy_url = vpnForm.proxy_url
+        }
+        break
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
@@ -402,6 +437,7 @@ export default function SettingsPanel() {
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
+    { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
@@ -1046,6 +1082,122 @@ export default function SettingsPanel() {
                     <Save className="w-4 h-4 mr-2" />
                     Save Trading Settings
                   </Button>
+                </div>
+              </div>
+            )}
+
+            {/* VPN/Proxy Settings */}
+            {activeSection === 'vpn' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-indigo-500/10 rounded-lg">
+                    <Shield className="w-5 h-5 text-indigo-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Trading VPN / Proxy</h3>
+                    <p className="text-sm text-muted-foreground">Route only trading requests through a VPN proxy. Scanning and data fetching stay on your direct connection.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="bg-muted border-indigo-500/30">
+                    <CardContent className="flex items-center justify-between p-4">
+                      <div>
+                        <p className="font-medium text-sm">Enable Trading Proxy</p>
+                        <p className="text-xs text-muted-foreground">Route Polymarket/Kalshi trading requests through the proxy below</p>
+                      </div>
+                      <Switch
+                        checked={vpnForm.enabled}
+                        onCheckedChange={(checked) => setVpnForm(p => ({ ...p, enabled: checked }))}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <SecretInput
+                    label="Proxy URL"
+                    value={vpnForm.proxy_url}
+                    placeholder={settings?.trading_proxy?.proxy_url || 'socks5://user:pass@host:port'}
+                    onChange={(v) => setVpnForm(p => ({ ...p, proxy_url: v }))}
+                    showSecret={showSecrets['proxy_url']}
+                    onToggle={() => toggleSecret('proxy_url')}
+                    description="Supports socks5://, http://, https:// proxy URLs"
+                  />
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Request Timeout (seconds)</Label>
+                      <Input
+                        type="number"
+                        value={vpnForm.timeout}
+                        onChange={(e) => setVpnForm(p => ({ ...p, timeout: parseFloat(e.target.value) || 30 }))}
+                        min={5}
+                        max={120}
+                        className="mt-1"
+                      />
+                    </div>
+                  </div>
+
+                  <Card className="bg-muted">
+                    <CardContent className="flex items-center justify-between p-3">
+                      <div>
+                        <p className="text-sm font-medium">Verify SSL Certificates</p>
+                        <p className="text-xs text-muted-foreground">Verify SSL certs for requests through the proxy</p>
+                      </div>
+                      <Switch
+                        checked={vpnForm.verify_ssl}
+                        onCheckedChange={(checked) => setVpnForm(p => ({ ...p, verify_ssl: checked }))}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  <Card className="bg-muted border-yellow-500/20">
+                    <CardContent className="flex items-center justify-between p-3">
+                      <div>
+                        <p className="text-sm font-medium">Require VPN for Trading</p>
+                        <p className="text-xs text-muted-foreground">Block all trades if the VPN proxy is unreachable (recommended)</p>
+                      </div>
+                      <Switch
+                        checked={vpnForm.require_vpn}
+                        onCheckedChange={(checked) => setVpnForm(p => ({ ...p, require_vpn: checked }))}
+                      />
+                    </CardContent>
+                  </Card>
+
+                  {/* Info box */}
+                  <div className="flex items-start gap-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                    <Shield className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
+                    <p className="text-xs text-muted-foreground">
+                      Only actual trading requests (order placement, cancellation) are routed through the proxy.
+                      Market scanning, price feeds, and all other data remain on your direct connection for maximum speed.
+                    </p>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('vpn')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Proxy Settings
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => testVpnMutation.mutate()}
+                    disabled={testVpnMutation.isPending}
+                  >
+                    <Shield className="w-4 h-4 mr-2" />
+                    Test VPN
+                  </Button>
+                  {testVpnMutation.data && (
+                    <Badge variant={testVpnMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                      "text-sm",
+                      testVpnMutation.data.status === 'success' ? "bg-green-500/10 text-green-400"
+                        : testVpnMutation.data.status === 'warning' ? "bg-yellow-500/10 text-yellow-400"
+                        : "bg-red-500/10 text-red-400"
+                    )}>
+                      {testVpnMutation.data.message}
+                    </Badge>
+                  )}
                 </div>
               </div>
             )}

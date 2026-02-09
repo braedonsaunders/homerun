@@ -5,3 +5,7 @@
 py-clob-client>=0.18.0
 eth-account>=0.10.0
 web3>=6.0.0
+
+# SOCKS5 proxy support (needed if using socks5:// proxy URL for VPN)
+# Install with: pip install httpx[socks]
+socksio>=1.0.0

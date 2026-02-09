@@ -45,9 +45,17 @@ class Settings(BaseSettings):
 
     # NegRisk Exhaustivity Thresholds
     # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
-    # Anything below 0.93 is almost always non-exhaustive outcomes, not mispricing.
-    NEGRISK_MIN_TOTAL_YES: float = 0.90  # Hard reject below this
+    # A total YES below 0.95 almost always indicates non-exhaustive outcomes
+    # (unlisted candidates, "Other/Field"), not mispricing. The 5%+ gap is
+    # rational pricing of the probability that someone not listed wins.
+    NEGRISK_MIN_TOTAL_YES: float = 0.95  # Hard reject below this
     NEGRISK_WARN_TOTAL_YES: float = 0.97  # Warn below this
+    # Election/primary markets are especially prone to non-exhaustive outcomes
+    # because there are always unlisted candidates. Require higher total YES.
+    NEGRISK_ELECTION_MIN_TOTAL_YES: float = 0.97  # Hard reject elections below this
+    # Maximum spread between earliest and latest resolution dates in a bundle.
+    # Mismatched dates can create a gap where ALL outcomes resolve NO.
+    NEGRISK_MAX_RESOLUTION_SPREAD_DAYS: int = 7  # Reject if dates differ by more
     # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
     MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
     # Max number of legs in a multi-leg trade (slippage compounds per leg)

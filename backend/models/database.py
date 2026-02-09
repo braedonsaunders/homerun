@@ -553,6 +553,17 @@ class AppSettings(Base):
     cleanup_interval_hours = Column(Integer, default=24)
     cleanup_resolved_trade_days = Column(Integer, default=30)
 
+    # Trading VPN/Proxy (routes ONLY trading requests through proxy)
+    trading_proxy_enabled = Column(Boolean, default=False)
+    trading_proxy_url = Column(
+        String, nullable=True
+    )  # socks5://host:port, http://host:port
+    trading_proxy_verify_ssl = Column(Boolean, default=True)
+    trading_proxy_timeout = Column(Float, default=30.0)
+    trading_proxy_require_vpn = Column(
+        Boolean, default=True
+    )  # Block trades if VPN unreachable
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

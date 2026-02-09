@@ -2,7 +2,7 @@
 
 # Default target
 help:
-	@echo "Polymarket Arbitrage Scanner"
+	@echo "Autonomous Prediction Market Trading Platform"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make setup      - Install dependencies"

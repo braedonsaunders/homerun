@@ -632,27 +632,35 @@ class OpportunityJudge:
         if opportunity.markets:
             sections.append("\n### Markets Involved")
             for i, mkt in enumerate(opportunity.markets):
-                sections.append(f"\n**Market {i + 1}:**")
-                sections.append(
-                    f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
-                )
-                sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
-                yes_price = mkt.get(
-                    "yes_price",
-                    mkt.get("outcome_prices", [None, None])[0]
-                    if len(mkt.get("outcome_prices", [])) > 0
-                    else "N/A",
-                )
-                no_price = mkt.get(
-                    "no_price",
-                    mkt.get("outcome_prices", [None, None])[1]
-                    if len(mkt.get("outcome_prices", [])) > 1
-                    else "N/A",
-                )
-                sections.append(f"  - YES price: {yes_price}")
-                sections.append(f"  - NO price: {no_price}")
-                if mkt.get("liquidity"):
-                    sections.append(f"  - Liquidity: ${mkt['liquidity']:.2f}")
+                try:
+                    if not isinstance(mkt, dict):
+                        sections.append(f"\n**Market {i + 1}:** {mkt}")
+                        continue
+                    sections.append(f"\n**Market {i + 1}:**")
+                    sections.append(
+                        f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
+                    )
+                    sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
+                    yes_price = mkt.get("yes_price", "N/A")
+                    no_price = mkt.get("no_price", "N/A")
+                    if yes_price == "N/A":
+                        outcome_prices = mkt.get("outcome_prices")
+                        if isinstance(outcome_prices, list) and len(outcome_prices) > 0:
+                            yes_price = outcome_prices[0]
+                        if isinstance(outcome_prices, list) and len(outcome_prices) > 1:
+                            no_price = outcome_prices[1]
+                    sections.append(f"  - YES price: {yes_price}")
+                    sections.append(f"  - NO price: {no_price}")
+                    liquidity = mkt.get("liquidity")
+                    if liquidity is not None:
+                        try:
+                            sections.append(f"  - Liquidity: ${float(liquidity):.2f}")
+                        except (ValueError, TypeError):
+                            sections.append(f"  - Liquidity: {liquidity}")
+                except Exception as exc:
+                    sections.append(
+                        f"\n**Market {i + 1}:** (error reading market data: {exc})"
+                    )
 
         # Event context
         if opportunity.event_title:

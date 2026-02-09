@@ -278,7 +278,7 @@ function App() {
                 </div>
                 <div>
                   <h1 className="text-xl font-bold text-green-400">HOMERUN</h1>
-                  <p className="text-xs text-muted-foreground">Polymarket Arbitrage Scanner</p>
+                  <p className="text-xs text-muted-foreground">Autonomous Prediction Market Trading Platform</p>
                 </div>
               </div>
 
@@ -998,7 +998,10 @@ function App() {
                 <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
               </div>
               <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
-                <DiscoveryPanel />
+                <DiscoveryPanel
+                  parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
+                  onAnalyzeWallet={handleAnalyzeWallet}
+                />
               </div>
               <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
                 <WalletAnalysisPanel

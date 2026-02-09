@@ -17,12 +17,13 @@ into a composite "fair probability" and trade the deviation.
 NOT risk-free. This is informed speculation with statistical edge.
 """
 
+import re
 import statistics
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy
+from .base import BaseStrategy, utcnow
 
 
 # Round numbers where human anchoring bias is common
@@ -270,6 +271,44 @@ class StatArbStrategy(BaseStrategy):
         return 0.0
 
     # ------------------------------------------------------------------
+    # Temporal awareness
+    # ------------------------------------------------------------------
+    _YEAR_PATTERN = re.compile(r"\b(20[0-9]{2})\b")
+
+    def _is_likely_already_resolved(self, market: Market) -> bool:
+        """Detect if a market's subject matter has likely already occurred.
+
+        Markets about past events (e.g., "U.S. tariff revenue in 2025"
+        scanned in February 2026) should not be traded on statistical
+        signals, because the market price reflects actual known outcomes
+        while our base-rate model uses stale historical averages.
+
+        Also rejects markets whose resolution date has already passed.
+        """
+        now = utcnow()
+
+        # Check 1: Resolution date already passed (should be filtered
+        # upstream but double-check)
+        if market.end_date:
+            from .base import make_aware
+
+            end_aware = make_aware(market.end_date)
+            if end_aware < now:
+                return True
+
+        # Check 2: Question references a specific past year.
+        # E.g., "How much revenue will the U.S. raise from tariffs in 2025?"
+        # scanned in 2026 means the 2025 data is already known.
+        question = market.question or ""
+        current_year = now.year
+        for match in self._YEAR_PATTERN.finditer(question):
+            referenced_year = int(match.group(1))
+            if referenced_year < current_year:
+                return True
+
+        return False
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     def _live_yes_price(self, market: Market, prices: dict[str, dict]) -> float:
@@ -405,6 +444,13 @@ class StatArbStrategy(BaseStrategy):
 
             # Skip inactive or closed
             if market.closed or not market.active:
+                continue
+
+            # Skip markets whose subject matter has already occurred.
+            # Statistical base-rate signals are meaningless when the market
+            # price reflects actual known outcomes (e.g., "2025 revenue"
+            # scanned in 2026).
+            if self._is_likely_already_resolved(market):
                 continue
 
             # Get live prices
