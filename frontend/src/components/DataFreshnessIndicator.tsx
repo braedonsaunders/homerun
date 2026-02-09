@@ -40,8 +40,11 @@ const FRESHNESS_CONFIG: Record<FreshnessLevel, { color: string; bg: string; puls
   },
 }
 
-function getTimeSince(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
+function getTimeSince(dateStr: string): string | null {
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return null
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (seconds < 0) return 'just now'
   if (seconds < 5) return 'just now'
   if (seconds < 60) return `${seconds}s ago`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
@@ -66,7 +69,9 @@ export default function DataFreshnessIndicator({
 
   const getFreshnessLevel = (): FreshnessLevel => {
     if (!lastUpdated) return 'unknown'
-    const age = Date.now() - new Date(lastUpdated).getTime()
+    const date = new Date(lastUpdated)
+    if (isNaN(date.getTime())) return 'unknown'
+    const age = Date.now() - date.getTime()
     if (age < warningThresholdMs) return 'fresh'
     if (age < staleThresholdMs) return 'warning'
     return 'stale'
@@ -106,7 +111,7 @@ export default function DataFreshnessIndicator({
         </Badge>
       </TooltipTrigger>
       <TooltipContent>
-        {lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : 'No data received yet'}
+        {lastUpdated && !isNaN(new Date(lastUpdated).getTime()) ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : 'No data received yet'}
       </TooltipContent>
     </Tooltip>
   )
