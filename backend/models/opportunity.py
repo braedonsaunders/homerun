@@ -129,7 +129,9 @@ class ArbitrageOpportunity(BaseModel):
         if not self.stable_id:
             self.stable_id = f"{strategy_name}_{market_hash}"
         if not self.id:
-            self.id = f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
+            self.id = (
+                f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
+            )
 
 
 class OpportunityFilter(BaseModel):
