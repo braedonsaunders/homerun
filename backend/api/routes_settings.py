@@ -257,9 +257,13 @@ async def get_settings():
             trading_proxy=TradingProxySettings(
                 enabled=settings.trading_proxy_enabled or False,
                 proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
-                verify_ssl=settings.trading_proxy_verify_ssl if settings.trading_proxy_verify_ssl is not None else True,
+                verify_ssl=settings.trading_proxy_verify_ssl
+                if settings.trading_proxy_verify_ssl is not None
+                else True,
                 timeout=settings.trading_proxy_timeout or 30.0,
-                require_vpn=settings.trading_proxy_require_vpn if settings.trading_proxy_require_vpn is not None else True,
+                require_vpn=settings.trading_proxy_require_vpn
+                if settings.trading_proxy_require_vpn is not None
+                else True,
             ),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
@@ -538,9 +542,13 @@ async def get_trading_proxy_settings():
     return TradingProxySettings(
         enabled=settings.trading_proxy_enabled or False,
         proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
-        verify_ssl=settings.trading_proxy_verify_ssl if settings.trading_proxy_verify_ssl is not None else True,
+        verify_ssl=settings.trading_proxy_verify_ssl
+        if settings.trading_proxy_verify_ssl is not None
+        else True,
         timeout=settings.trading_proxy_timeout or 30.0,
-        require_vpn=settings.trading_proxy_require_vpn if settings.trading_proxy_require_vpn is not None else True,
+        require_vpn=settings.trading_proxy_require_vpn
+        if settings.trading_proxy_require_vpn is not None
+        else True,
     )
 
 

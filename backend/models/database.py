@@ -550,10 +550,14 @@ class AppSettings(Base):
 
     # Trading VPN/Proxy (routes ONLY trading requests through proxy)
     trading_proxy_enabled = Column(Boolean, default=False)
-    trading_proxy_url = Column(String, nullable=True)  # socks5://host:port, http://host:port
+    trading_proxy_url = Column(
+        String, nullable=True
+    )  # socks5://host:port, http://host:port
     trading_proxy_verify_ssl = Column(Boolean, default=True)
     trading_proxy_timeout = Column(Float, default=30.0)
-    trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
+    trading_proxy_require_vpn = Column(
+        Boolean, default=True
+    )  # Block trades if VPN unreachable
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
