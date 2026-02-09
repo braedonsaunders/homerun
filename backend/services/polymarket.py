@@ -88,9 +88,13 @@ class PolymarketClient:
 
             try:
                 response = await client.get(url, **kwargs)
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError) as exc:
+            except (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.ConnectError,
+            ) as exc:
                 if attempt < _MAX_RETRIES - 1:
-                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
                     delay *= 0.5 + random.random()
                     _logger.warning(
                         "Network error, retrying",
@@ -106,7 +110,7 @@ class PolymarketClient:
             if response.status_code == 429 or response.status_code >= 500:
                 last_response = response
                 if attempt < _MAX_RETRIES - 1:
-                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
                     delay *= 0.5 + random.random()
                     # Respect Retry-After header if present
                     retry_after = response.headers.get("Retry-After")
