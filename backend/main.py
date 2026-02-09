@@ -71,7 +71,9 @@ async def lifespan(app: FastAPI):
             await apply_search_filters()
             logger.info("Search filter settings loaded from database")
         except Exception as e:
-            logger.warning(f"Failed to load search filter settings (using defaults): {e}")
+            logger.warning(
+                f"Failed to load search filter settings (using defaults): {e}"
+            )
 
         # Pre-flight configuration validation
         from services.config_validator import config_validator

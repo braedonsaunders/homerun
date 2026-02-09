@@ -274,7 +274,11 @@ async def apply_search_filters():
         ("NEGRISK_WARN_TOTAL_YES", "negrisk_warn_total_yes", 0.97),
         ("NEGRISK_ELECTION_MIN_TOTAL_YES", "negrisk_election_min_total_yes", 0.97),
         ("NEGRISK_MAX_RESOLUTION_SPREAD_DAYS", "negrisk_max_resolution_spread_days", 7),
-        ("SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION", "settlement_lag_max_days_to_resolution", 14),
+        (
+            "SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION",
+            "settlement_lag_max_days_to_resolution",
+            14,
+        ),
         ("SETTLEMENT_LAG_NEAR_ZERO", "settlement_lag_near_zero", 0.05),
         ("SETTLEMENT_LAG_NEAR_ONE", "settlement_lag_near_one", 0.95),
         ("SETTLEMENT_LAG_MIN_SUM_DEVIATION", "settlement_lag_min_sum_deviation", 0.03),
