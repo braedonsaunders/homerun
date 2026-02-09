@@ -135,7 +135,9 @@ async def broadcast_scanner_status(status):
 
 async def broadcast_scanner_activity(activity: str):
     """Callback to broadcast scanning activity updates (live status line)"""
-    await manager.broadcast({"type": "scanner_activity", "data": {"activity": activity}})
+    await manager.broadcast(
+        {"type": "scanner_activity", "data": {"activity": activity}}
+    )
 
 
 # Register callbacks

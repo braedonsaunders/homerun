@@ -311,7 +311,9 @@ class ArbitrageScanner:
             # Batch price fetching (limit to avoid rate limits)
             prices = {}
             if all_token_ids:
-                await self._set_activity(f"Fetching prices for {min(len(all_token_ids), 500)} tokens...")
+                await self._set_activity(
+                    f"Fetching prices for {min(len(all_token_ids), 500)} tokens..."
+                )
                 # Sample tokens if too many
                 token_sample = all_token_ids[:500]
                 prices = await self.client.get_prices_batch(token_sample)
@@ -532,7 +534,9 @@ class ArbitrageScanner:
 
             hot_prices = {}
             if hot_token_ids:
-                await self._set_activity(f"Fast scan: fetching prices for {min(len(hot_token_ids), 200)} hot-tier tokens...")
+                await self._set_activity(
+                    f"Fast scan: fetching prices for {min(len(hot_token_ids), 200)} hot-tier tokens..."
+                )
                 hot_prices = await self.client.get_prices_batch(hot_token_ids[:200])
                 print(f"  Fetched prices for {len(hot_prices)} hot-tier tokens")
 
