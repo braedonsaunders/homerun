@@ -207,7 +207,7 @@ async def get_confluence_signals(
             min_strength=min_strength,
             limit=limit,
         )
-        return signals
+        return {"signals": signals}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -249,7 +249,7 @@ async def get_clusters(
         clusters = await wallet_intelligence.clusterer.get_clusters(
             min_wallets=min_wallets,
         )
-        return clusters
+        return {"clusters": clusters}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -289,7 +289,7 @@ async def get_all_tags():
     """
     try:
         tags = await wallet_intelligence.tagger.get_all_tags()
-        return tags
+        return {"tags": tags}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -310,7 +310,7 @@ async def get_wallets_by_tag(
             tag_name=tag_name,
             limit=limit,
         )
-        return wallets
+        return {"wallets": wallets}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
