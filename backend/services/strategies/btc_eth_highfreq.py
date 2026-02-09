@@ -185,7 +185,9 @@ class _CryptoMarketFetcher:
                         if resp.status_code == 200:
                             for event_data in resp.json():
                                 for mkt_data in event_data.get("markets", []):
-                                    mid = mkt_data.get("condition_id") or mkt_data.get("id", "")
+                                    mid = mkt_data.get("condition_id") or mkt_data.get(
+                                        "id", ""
+                                    )
                                     if mid and mid not in seen_ids:
                                         try:
                                             m = Market.from_gamma_response(mkt_data)
@@ -199,13 +201,21 @@ class _CryptoMarketFetcher:
 
                 # Strategy 2: Search for specific slug patterns
                 slug_searches = [
-                    "bitcoin-15-minute", "btc-15-min", "btc-15min",
-                    "ethereum-15-minute", "eth-15-min",
-                    "bitcoin-1-hour", "btc-1-hour",
-                    "ethereum-1-hour", "eth-1-hour",
-                    "bitcoin-up-or-down", "ethereum-up-or-down",
-                    "btc-up-or-down", "eth-up-or-down",
-                    "bitcoin-price", "ethereum-price",
+                    "bitcoin-15-minute",
+                    "btc-15-min",
+                    "btc-15min",
+                    "ethereum-15-minute",
+                    "eth-15-min",
+                    "bitcoin-1-hour",
+                    "btc-1-hour",
+                    "ethereum-1-hour",
+                    "eth-1-hour",
+                    "bitcoin-up-or-down",
+                    "ethereum-up-or-down",
+                    "btc-up-or-down",
+                    "eth-up-or-down",
+                    "bitcoin-price",
+                    "ethereum-price",
                 ]
                 for slug_query in slug_searches:
                     try:
@@ -220,7 +230,9 @@ class _CryptoMarketFetcher:
                         )
                         if resp.status_code == 200:
                             for mkt_data in resp.json():
-                                mid = mkt_data.get("condition_id") or mkt_data.get("id", "")
+                                mid = mkt_data.get("condition_id") or mkt_data.get(
+                                    "id", ""
+                                )
                                 if mid and mid not in seen_ids:
                                     try:
                                         m = Market.from_gamma_response(mkt_data)

@@ -635,13 +635,29 @@ _KALSHI_DRAW_SUFFIXES = ("-TIE", "-DRW", "-DRAW")
 _KALSHI_HOME_SUFFIXES = ("-WIN", "-HOM", "-HOME")
 _KALSHI_AWAY_SUFFIXES = ("-AWY", "-AWAY", "-VIS")
 
-_DRAW_KEYWORDS = frozenset({
-    "tie", "draw", "drawn", "tied", "ties", "draws",
-})
-_WIN_KEYWORDS = frozenset({
-    "win", "winner", "wins", "victory", "victorious",
-    "beat", "beats", "defeat", "defeats",
-})
+_DRAW_KEYWORDS = frozenset(
+    {
+        "tie",
+        "draw",
+        "drawn",
+        "tied",
+        "ties",
+        "draws",
+    }
+)
+_WIN_KEYWORDS = frozenset(
+    {
+        "win",
+        "winner",
+        "wins",
+        "victory",
+        "victorious",
+        "beat",
+        "beats",
+        "defeat",
+        "defeats",
+    }
+)
 
 
 def _extract_sport_outcome_type(market: Market) -> Optional[str]:
@@ -664,9 +680,7 @@ def _extract_sport_outcome_type(market: Market) -> Optional[str]:
     return None
 
 
-def _sport_outcome_types_compatible(
-    poly_market: Market, kalshi_market: Market
-) -> bool:
+def _sport_outcome_types_compatible(poly_market: Market, kalshi_market: Market) -> bool:
     """Return True if both markets have compatible sport outcome types.
 
     Prevents matching a 'Team Win' market against a 'Draw' market in

@@ -134,13 +134,29 @@ _KALSHI_HOME_SUFFIXES = ("-WIN", "-HOM", "-HOME")
 _KALSHI_AWAY_SUFFIXES = ("-AWY", "-AWAY", "-VIS")
 
 # Question-text keywords for outcome detection
-_DRAW_KEYWORDS = frozenset({
-    "tie", "draw", "drawn", "tied", "ties", "draws",
-})
-_WIN_KEYWORDS = frozenset({
-    "win", "winner", "wins", "victory", "victorious",
-    "beat", "beats", "defeat", "defeats",
-})
+_DRAW_KEYWORDS = frozenset(
+    {
+        "tie",
+        "draw",
+        "drawn",
+        "tied",
+        "ties",
+        "draws",
+    }
+)
+_WIN_KEYWORDS = frozenset(
+    {
+        "win",
+        "winner",
+        "wins",
+        "victory",
+        "victorious",
+        "beat",
+        "beats",
+        "defeat",
+        "defeats",
+    }
+)
 
 
 def _extract_sport_outcome_type(market: "Market") -> Optional[str]:
@@ -223,14 +239,29 @@ def _sport_outcomes_compatible(
 # matching is invalid.
 
 # Known sport-league prefixes in Kalshi tickers
-_KALSHI_SPORT_PREFIXES = frozenset({
-    "KXEPLGAME", "KXLALIGAGAME", "KXBUNDESLIGAGAME", "KXSERIEA",
-    "KXLIGUE1GAME", "KXSWISSLEAGUEGAME", "KXEREDIVISIEGAME",
-    "KXCHAMPIONSHIPGAME", "KXSCOTTISHPREMGAME", "KXDANISHSUPERGAME",
-    "KXARGENTINAGAME", "KXTURKISHSUPERGAME", "KXEFLGAME",
-    "KXNBAGAME", "KXNFLGAME", "KXMLBGAME", "KXNHLGAME",
-    "KXMLSGAME", "KXUFCFIGHT",
-})
+_KALSHI_SPORT_PREFIXES = frozenset(
+    {
+        "KXEPLGAME",
+        "KXLALIGAGAME",
+        "KXBUNDESLIGAGAME",
+        "KXSERIEA",
+        "KXLIGUE1GAME",
+        "KXSWISSLEAGUEGAME",
+        "KXEREDIVISIEGAME",
+        "KXCHAMPIONSHIPGAME",
+        "KXSCOTTISHPREMGAME",
+        "KXDANISHSUPERGAME",
+        "KXARGENTINAGAME",
+        "KXTURKISHSUPERGAME",
+        "KXEFLGAME",
+        "KXNBAGAME",
+        "KXNFLGAME",
+        "KXMLBGAME",
+        "KXNHLGAME",
+        "KXMLSGAME",
+        "KXUFCFIGHT",
+    }
+)
 
 
 def _parse_kalshi_event_prefix(ticker: str) -> Optional[str]:
@@ -245,7 +276,7 @@ def _parse_kalshi_event_prefix(ticker: str) -> Optional[str]:
     idx = ticker.rfind("-")
     if idx <= 0:
         return None
-    suffix = ticker[idx + 1:]
+    suffix = ticker[idx + 1 :]
     # Outcome suffixes are short uppercase codes
     if not (1 <= len(suffix) <= 5 and suffix.isalpha()):
         return None
@@ -285,15 +316,32 @@ def _detect_multiway_kalshi_events(
 # while another resolves on "who advances" (includes extra time + penalties,
 # so a tie is IMPOSSIBLE).  This breaks the hedge completely.
 
-_SOCCER_90MIN_KEYWORDS = frozenset({
-    "90 min", "90min", "regulation", "full time", "fulltime",
-    "regular time", "90 minutes",
-})
-_SOCCER_ADVANCE_KEYWORDS = frozenset({
-    "advance", "qualify", "progress", "next round",
-    "go through", "eliminate", "knock out", "knockout",
-    "extra time", "penalties", "penalty",
-})
+_SOCCER_90MIN_KEYWORDS = frozenset(
+    {
+        "90 min",
+        "90min",
+        "regulation",
+        "full time",
+        "fulltime",
+        "regular time",
+        "90 minutes",
+    }
+)
+_SOCCER_ADVANCE_KEYWORDS = frozenset(
+    {
+        "advance",
+        "qualify",
+        "progress",
+        "next round",
+        "go through",
+        "eliminate",
+        "knock out",
+        "knockout",
+        "extra time",
+        "penalties",
+        "penalty",
+    }
+)
 
 
 def _has_soccer_resolution_divergence_risk(q1: str, q2: str) -> bool:
@@ -314,6 +362,7 @@ def _has_soccer_resolution_divergence_risk(q1: str, q2: str) -> bool:
         return True
 
     return False
+
 
 # Common stop words that inflate the union and dilute Jaccard scores.
 # These add no discriminative value when matching market questions.
@@ -733,9 +782,7 @@ class CrossPlatformStrategy(BaseStrategy):
             if score > best_score:
                 # Determine if this Kalshi market is in a multiway event
                 km_prefix = _parse_kalshi_event_prefix(km.id)
-                is_multiway = (
-                    km_prefix is not None and km_prefix in multiway_events
-                )
+                is_multiway = km_prefix is not None and km_prefix in multiway_events
 
                 # Check sport-outcome compatibility (strict for multiway)
                 if not _sport_outcomes_compatible(
@@ -879,8 +926,7 @@ class CrossPlatformStrategy(BaseStrategy):
         # Kalshi cache — that produces false "cross-platform" signals where
         # the same platform is compared to itself.
         pm_only_markets = [
-            m for m in markets
-            if getattr(m, "platform", "polymarket") == "polymarket"
+            m for m in markets if getattr(m, "platform", "polymarket") == "polymarket"
         ]
 
         logger.info(
@@ -947,8 +993,11 @@ class CrossPlatformStrategy(BaseStrategy):
 
             # Find the best-matching Kalshi market
             match = self._find_best_match(
-                pm_market, pm_tokens, kalshi_markets,
-                kalshi_token_index, multiway_events,
+                pm_market,
+                pm_tokens,
+                kalshi_markets,
+                kalshi_token_index,
+                multiway_events,
             )
             if match is None:
                 # Track best near-miss for debugging
