@@ -86,10 +86,11 @@ class MarketMakingStrategy(BaseStrategy):
         enough that a maker can quote inside).
         """
         spread = 1.0 - (yes_price + no_price)
-        # The spread should be non-negative for a maker opportunity.
-        # If prices sum to > 1.0, there is still an implicit spread
-        # in the order book; use the absolute value as a proxy.
-        return abs(spread) if spread < 0 else spread
+        # A negative spread means overround (yes + no > 1.0).
+        # No genuine market-making opportunity exists in overround.
+        if spread < 0:
+            return 0.0
+        return spread
 
     def _calculate_inventory_risk(self, yes_price: float) -> float:
         """Score inventory risk based on how far the price is from 50/50.
@@ -273,16 +274,32 @@ class MarketMakingStrategy(BaseStrategy):
             if net_profit <= 0:
                 continue
 
+            # Position sizing (moved up for hard filter checks)
+            max_position = min(
+                market.liquidity * 0.05,
+                self.max_inventory_usd,
+            )
+
+            # --- Hard filters (matching create_opportunity gate) ---
+            if roi > settings.MAX_PLAUSIBLE_ROI:
+                continue
+            if market.liquidity < settings.MIN_LIQUIDITY_HARD:
+                continue
+            if max_position < settings.MIN_POSITION_SIZE:
+                continue
+            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
+                continue
+            if market.end_date:
+                resolution_aware = make_aware(market.end_date)
+                days_until = (resolution_aware - utcnow()).days
+                if days_until > settings.MAX_RESOLUTION_MONTHS * 30:
+                    continue
+
             # --- Risk score ---
             resolution_date = market.end_date
             risk_score, risk_factors = self._calculate_risk_score(
                 spread, yes_price, market, resolution_date
-            )
-
-            # --- Position sizing ---
-            max_position = min(
-                market.liquidity * 0.05,  # 5% of market liquidity
-                self.max_inventory_usd,  # Max inventory limit from settings
             )
 
             # --- Build positions ---
@@ -311,6 +328,7 @@ class MarketMakingStrategy(BaseStrategy):
             # --- Build the opportunity directly (like Miracle strategy) ---
             opp = ArbitrageOpportunity(
                 strategy=self.strategy_type,
+                is_guaranteed=False,
                 title=f"MM: {market.question[:60]}",
                 description=(
                     f"Market make YES @ bid ${buy_price:.3f} / ask ${sell_price:.3f} | "

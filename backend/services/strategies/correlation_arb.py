@@ -256,19 +256,14 @@ class CorrelationArbStrategy(BaseStrategy):
             if len(prices_a) < _MIN_DATA_POINTS:
                 continue
 
-            # Check cache
             pair_key = (min(id_a, id_b), max(id_a, id_b))
-            if pair_key in self._pair_cache:
-                corr = self._pair_cache[pair_key]
-            else:
-                corr, var_a, var_b = _pearson_correlation(prices_a, prices_b)
-                self._pair_cache[pair_key] = corr
+            corr, var_a, var_b = _pearson_correlation(prices_a, prices_b)
+            self._pair_cache[pair_key] = corr
 
-                # Reject pairs where either series has near-zero variance.
-                # Static prices that barely move produce spurious r≈1.0
-                # correlations that have no predictive value.
-                if var_a < _MIN_PRICE_VARIANCE or var_b < _MIN_PRICE_VARIANCE:
-                    continue
+            # Reject pairs where either series has near-zero variance.
+            # Static prices produce spurious r≈1.0 correlations.
+            if var_a < _MIN_PRICE_VARIANCE or var_b < _MIN_PRICE_VARIANCE:
+                continue
 
             if corr < min_corr:
                 continue  # Not sufficiently correlated
@@ -544,6 +539,7 @@ class CorrelationArbStrategy(BaseStrategy):
             total_cost=total_cost,
             markets=[market_a, market_b],
             positions=positions,
+            is_guaranteed=False,
         )
 
         if opp:

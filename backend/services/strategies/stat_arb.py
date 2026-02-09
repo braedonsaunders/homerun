@@ -516,6 +516,30 @@ class StatArbStrategy(BaseStrategy):
             if net_profit <= 0:
                 continue
 
+            # Liquidity & position sizing (moved up for hard filter checks)
+            min_liquidity = market.liquidity
+            max_position = min_liquidity * 0.05  # Conservative: 5% of liquidity
+
+            # --- Hard filters (matching create_opportunity gate) ---
+            if roi > settings.MAX_PLAUSIBLE_ROI:
+                continue
+            if market.liquidity < settings.MIN_LIQUIDITY_HARD:
+                continue
+            if max_position < settings.MIN_POSITION_SIZE:
+                continue
+            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
+                continue
+            if market.end_date:
+                from .base import make_aware, utcnow
+                resolution_aware = make_aware(market.end_date)
+                days_until = (resolution_aware - utcnow()).days
+                if days_until > settings.MAX_RESOLUTION_MONTHS * 30:
+                    continue
+                annualized_roi = roi * (365.0 / max(days_until, 1))
+                if annualized_roi < settings.MIN_ANNUALIZED_ROI:
+                    continue
+
             # Risk assessment: stat arb is uncertain by nature
             # Risk score between 0.40 and 0.60 depending on edge strength
             # Stronger edge = slightly lower risk
@@ -546,10 +570,6 @@ class StatArbStrategy(BaseStrategy):
             if abs(signal_breakdown.get("volume_price", 0)) > 0.3:
                 risk_factors.append("Volume-price divergence detected")
 
-            # Liquidity
-            min_liquidity = market.liquidity
-            max_position = min_liquidity * 0.05  # Conservative: 5% of liquidity
-
             # Build position
             positions = [
                 {
@@ -565,6 +585,7 @@ class StatArbStrategy(BaseStrategy):
 
             opp = ArbitrageOpportunity(
                 strategy=self.strategy_type,
+                is_guaranteed=False,
                 title=f"Stat Arb: {market.question[:60]}",
                 description=(
                     f"Buy {outcome} @ ${buy_price:.3f} | "

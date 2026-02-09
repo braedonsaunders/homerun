@@ -283,9 +283,10 @@ class EntropyArbStrategy(BaseStrategy):
         if days_remaining < 1.0:
             return None
 
-        # Estimate total market lifespan. Without a creation date we
-        # default to DEFAULT_TOTAL_DAYS.
-        total_days = max(days_remaining, DEFAULT_TOTAL_DAYS)
+        # Estimate total market lifespan. Prefer 2x remaining days as a
+        # heuristic for total lifespan, falling back to DEFAULT_TOTAL_DAYS
+        # to reduce the bias from always using a fixed 90-day window.
+        total_days = max(days_remaining * 2.0, DEFAULT_TOTAL_DAYS)
 
         h_expected = self._expected_entropy_binary(days_remaining, total_days)
 
@@ -383,6 +384,7 @@ class EntropyArbStrategy(BaseStrategy):
             total_cost=total_cost,
             markets=[market],
             positions=positions,
+            is_guaranteed=False,
         )
 
         if opp is not None:
@@ -577,6 +579,7 @@ class EntropyArbStrategy(BaseStrategy):
             markets=[target_market],
             positions=positions,
             event=event,
+            is_guaranteed=False,
         )
 
         if opp is not None:

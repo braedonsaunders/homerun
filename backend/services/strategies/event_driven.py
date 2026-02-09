@@ -341,11 +341,11 @@ class EventDrivenStrategy(BaseStrategy):
         if entry_price < 0.05 or entry_price > 0.95:
             return None
 
-        # Risk score: 0.35 - 0.50 depending on magnitude of catalyst
-        base_risk = 0.35
+        # Risk score: 0.55 - 0.65 depending on magnitude of catalyst
+        base_risk = 0.65
         # Larger catalyst moves are more convincing -> slightly lower risk
-        risk_adjustment = max(0, 0.15 - catalyst_magnitude * 0.5)
-        risk_score = min(base_risk + risk_adjustment, 0.50)
+        risk_adjustment = max(0, 0.10 - catalyst_magnitude * 0.3)
+        risk_score = max(base_risk - risk_adjustment, 0.55)
 
         catalyst_q = catalyst_market.question[:50]
         lagging_q = lagging_market.question[:50]
@@ -381,6 +381,7 @@ class EventDrivenStrategy(BaseStrategy):
             markets=[lagging_market],
             positions=positions,
             event=event,
+            is_guaranteed=False,
         )
 
         if opp:
@@ -391,6 +392,11 @@ class EventDrivenStrategy(BaseStrategy):
             )
             opp.risk_factors.append(
                 "Price lag may reflect legitimate market disagreement"
+            )
+            opp.risk_factors.insert(
+                0,
+                "DIRECTIONAL BET — not arbitrage. "
+                "Price lag may reflect legitimate market disagreement.",
             )
 
         return opp

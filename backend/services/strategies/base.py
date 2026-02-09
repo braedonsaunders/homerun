@@ -117,7 +117,7 @@ class BaseStrategy(ABC):
         if not resolution_date:
             return None
         resolution_aware = make_aware(resolution_date)
-        days_until = max((resolution_aware - utcnow()).days, 1)
+        days_until = max((resolution_aware - utcnow()).total_seconds() / 86400.0, 1.0)
         return roi_percent * (365.0 / days_until)
 
     def create_opportunity(
@@ -128,6 +128,8 @@ class BaseStrategy(ABC):
         markets: list[Market],
         positions: list[dict],
         event: Optional[Event] = None,
+        expected_payout: float = 1.0,  # Override for strategies with non-$1 payouts
+        is_guaranteed: bool = True,  # False for directional/statistical strategies
         # VWAP-adjusted parameters (all optional for backward compatibility)
         vwap_total_cost: Optional[float] = None,  # Realistic cost from order book
         spread_bps: Optional[float] = None,  # Actual spread in basis points
@@ -144,7 +146,6 @@ class BaseStrategy(ABC):
         6. Resolution must be within MAX_RESOLUTION_MONTHS
         """
 
-        expected_payout = 1.0
         gross_profit = expected_payout - total_cost
         fee = expected_payout * self.fee
         net_profit = gross_profit - fee
@@ -219,7 +220,7 @@ class BaseStrategy(ABC):
         # --- Hard filter: maximum resolution timeframe ---
         if resolution_date:
             resolution_aware = make_aware(resolution_date)
-            days_until = (resolution_aware - utcnow()).days
+            days_until = (resolution_aware - utcnow()).total_seconds() / 86400.0
             max_days = settings.MAX_RESOLUTION_MONTHS * 30
             if days_until > max_days:
                 return None
@@ -284,6 +285,7 @@ class BaseStrategy(ABC):
             fee=fee,
             net_profit=net_profit,
             roi_percent=roi,
+            is_guaranteed=is_guaranteed,
             risk_score=risk_score,
             risk_factors=risk_factors,
             markets=market_dicts,
