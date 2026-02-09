@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import {
   Wallet,
@@ -11,9 +11,9 @@ import {
   BarChart3,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { selectedAccountIdAtom } from '../store/atoms'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
-import { Button } from './ui/button'
 import {
   getTradingStatus,
   getTradingPositions,
@@ -24,49 +24,20 @@ import {
 } from '../services/api'
 import type { TradingPosition, KalshiPosition } from '../services/api'
 
-type LiveAccountTab = 'polymarket' | 'kalshi'
-
 export default function LiveAccountPanel() {
-  const [activeAccount, setActiveAccount] = useState<LiveAccountTab>('polymarket')
+  const [selectedAccountId] = useAtom(selectedAccountIdAtom)
+  const platform = selectedAccountId === 'live:kalshi' ? 'kalshi' : 'polymarket'
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Live Accounts</h2>
-        <p className="text-sm text-muted-foreground">Connected exchange accounts and real positions</p>
+        <h2 className="text-xl font-bold">Live Account</h2>
+        <p className="text-sm text-muted-foreground">
+          Viewing {platform === 'polymarket' ? 'Polymarket' : 'Kalshi'} — change account in the header
+        </p>
       </div>
 
-      {/* Account Selector */}
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          onClick={() => setActiveAccount('polymarket')}
-          className={cn(
-            "flex items-center gap-2",
-            activeAccount === 'polymarket'
-              ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-              : "bg-card text-muted-foreground hover:text-foreground border-border"
-          )}
-        >
-          <DollarSign className="w-4 h-4" />
-          Polymarket
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => setActiveAccount('kalshi')}
-          className={cn(
-            "flex items-center gap-2",
-            activeAccount === 'kalshi'
-              ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30 hover:text-indigo-400"
-              : "bg-card text-muted-foreground hover:text-foreground border-border"
-          )}
-        >
-          <BarChart3 className="w-4 h-4" />
-          Kalshi
-        </Button>
-      </div>
-
-      {activeAccount === 'polymarket' ? (
+      {platform === 'polymarket' ? (
         <PolymarketAccount />
       ) : (
         <KalshiAccount />

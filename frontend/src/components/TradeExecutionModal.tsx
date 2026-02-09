@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 import {
   Play,
@@ -17,10 +17,9 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { accountModeAtom } from '../store/atoms'
+import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
 import {
   Opportunity,
-  getSimulationAccounts,
   executeOpportunity,
   executeOpportunityLive,
 } from '../services/api'
@@ -45,9 +44,9 @@ interface TradeExecutionModalProps {
 }
 
 export default function TradeExecutionModal({ opportunity, onClose }: TradeExecutionModalProps) {
-  const [globalMode] = useAtom(accountModeAtom)
-  const [mode, setMode] = useState<'paper' | 'live'>(globalMode === 'live' ? 'live' : 'paper')
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const [accountMode] = useAtom(accountModeAtom)
+  const [selectedAccountId] = useAtom(selectedAccountIdAtom)
+  const isLive = accountMode === 'live'
   const [positionSize, setPositionSize] = useState<number>(opportunity.max_position_size)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [takeProfitEnabled, setTakeProfitEnabled] = useState(false)
@@ -56,19 +55,6 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
   const [stopLossPercent, setStopLossPercent] = useState(25)
   const [executionResult, setExecutionResult] = useState<{ success: boolean; message: string } | null>(null)
   const queryClient = useQueryClient()
-
-  const { data: accounts = [] } = useQuery({
-    queryKey: ['simulation-accounts'],
-    queryFn: getSimulationAccounts,
-    enabled: mode === 'paper',
-  })
-
-  // Auto-select first account
-  useEffect(() => {
-    if (accounts.length > 0 && !selectedAccountId) {
-      setSelectedAccountId(accounts[0].id)
-    }
-  }, [accounts, selectedAccountId])
 
   // Clamp position size to max
   useEffect(() => {
@@ -83,7 +69,6 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
   const paperMutation = useMutation({
     mutationFn: () => {
       if (!selectedAccountId) throw new Error('No account selected')
-      // Calculate take-profit/stop-loss as price thresholds from entry
       const avgEntryPrice = opportunity.positions_to_take.length > 0
         ? opportunity.positions_to_take.reduce((sum, p) => sum + p.price, 0) / opportunity.positions_to_take.length
         : 0.5
@@ -141,17 +126,17 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
   })
 
   const isPending = paperMutation.isPending || liveMutation.isPending
-  const canExecute = mode === 'paper'
-    ? !!selectedAccountId && positionSize > 0 && !isPending
-    : positionSize > 0 && !isPending
+  const canExecute = isLive
+    ? positionSize > 0 && !isPending
+    : !!selectedAccountId && positionSize > 0 && !isPending
 
   const handleExecute = () => {
     setExecutionResult(null)
-    if (mode === 'paper') {
-      paperMutation.mutate()
-    } else {
+    if (isLive) {
       if (!confirm('You are about to execute a LIVE trade with REAL MONEY. Continue?')) return
       liveMutation.mutate()
+    } else {
+      paperMutation.mutate()
     }
   }
 
@@ -209,72 +194,38 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
           {/* AI Trade Advisor */}
           <AITradeAdvisor opportunity={opportunity} />
 
-          {/* Mode Toggle */}
-          <div>
-            <Label className="block text-xs text-muted-foreground mb-2">Trading Mode</Label>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setMode('paper')}
-                className={cn(
-                  "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all",
-                  mode === 'paper'
-                    ? "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-400"
-                    : "bg-muted/50 text-muted-foreground border-border hover:border-border"
-                )}
-              >
-                <Play className="w-4 h-4" />
-                Sandbox Trading
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setMode('live')}
-                className={cn(
-                  "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all",
-                  mode === 'live'
-                    ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
-                    : "bg-muted/50 text-muted-foreground border-border hover:border-border"
-                )}
-              >
-                <Zap className="w-4 h-4" />
-                Live Trading
-              </Button>
-            </div>
+          {/* Account Mode Indicator */}
+          <div className={cn(
+            "rounded-xl p-3 text-sm flex items-center gap-2",
+            isLive
+              ? "bg-green-500/10 border border-green-500/20 text-green-400"
+              : "bg-amber-500/10 border border-amber-500/20 text-amber-400"
+          )}>
+            {isLive ? <Zap className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
+            <span className="font-medium">
+              {isLive ? 'Live Trading' : 'Sandbox Trading'}
+            </span>
+            <span className="text-muted-foreground text-xs ml-auto">
+              Change account in the header dropdown
+            </span>
           </div>
 
-          {/* Sandbox Account Selector */}
-          {mode === 'paper' && (
-            <div>
-              <Label className="block text-xs text-muted-foreground mb-2">Sandbox Account</Label>
-              {accounts.length === 0 ? (
-                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-sm text-yellow-400">
-                  <div className="flex items-center gap-2">
-                    <Info className="w-4 h-4" />
-                    No sandbox accounts. Create one in the Sandbox Trading tab first.
-                  </div>
-                </div>
-              ) : (
-                <select
-                  value={selectedAccountId || ''}
-                  onChange={(e) => setSelectedAccountId(e.target.value)}
-                  className="w-full bg-muted/50 border border-border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500/50"
-                >
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} — ${(acc.current_capital ?? 0).toFixed(2)} available
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
-
           {/* Live Mode Warning */}
-          {mode === 'live' && (
+          {isLive && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-sm text-red-400">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                 <span>Live trading uses real money. Make sure the trading client is initialized and funded.</span>
+              </div>
+            </div>
+          )}
+
+          {/* No account warning */}
+          {!isLive && !selectedAccountId && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-sm text-yellow-400">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4" />
+                No sandbox account selected. Select one from the header dropdown.
               </div>
             </div>
           )}
@@ -453,9 +404,9 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
               disabled={!canExecute}
               className={cn(
                 "flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold rounded-xl transition-all",
-                mode === 'paper'
-                  ? "bg-amber-500 hover:bg-amber-600 text-white"
-                  : "bg-green-500 hover:bg-green-600 text-white"
+                isLive
+                  ? "bg-green-500 hover:bg-green-600 text-white"
+                  : "bg-amber-500 hover:bg-amber-600 text-white"
               )}
             >
               {isPending ? (
@@ -465,8 +416,8 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                 </>
               ) : (
                 <>
-                  {mode === 'paper' ? <Play className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
-                  {mode === 'paper' ? 'Execute Sandbox Trade' : 'Execute Live Trade'}
+                  {isLive ? <Zap className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                  {isLive ? 'Execute Live Trade' : 'Execute Sandbox Trade'}
                 </>
               )}
             </Button>
