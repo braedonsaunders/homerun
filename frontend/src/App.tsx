@@ -567,6 +567,8 @@ function App() {
           opportunities={displayOpportunities}
           isConnected={isConnected}
           totalOpportunities={totalOpportunities}
+          lastScan={status?.last_scan}
+          activeStrategies={strategies.length}
         />
 
         {/* ==================== Main Layout ==================== */}
