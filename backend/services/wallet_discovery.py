@@ -17,6 +17,8 @@ Pipeline:
     8. Refresh leaderboard positions
 """
 
+from __future__ import annotations
+
 import asyncio
 import math
 from datetime import datetime, timedelta
