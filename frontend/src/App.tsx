@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
+// framer-motion used in AnimatedNumber component
 import {
   TrendingUp,
   RefreshCw,
@@ -77,6 +78,8 @@ import DataFreshnessIndicator from './components/DataFreshnessIndicator'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 import DiscoveryPanel from './components/DiscoveryPanel'
+import LiveTickerTape from './components/LiveTickerTape'
+import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
@@ -278,35 +281,35 @@ function App() {
     <TooltipProvider>
       <div className="h-screen flex flex-col overflow-hidden bg-background">
         {/* ==================== Top Bar ==================== */}
-        <header className="h-12 border-b border-border/50 bg-background/80 backdrop-blur-xl flex items-center px-4 shrink-0 z-50">
+        <header className="h-12 border-b border-border/40 bg-background/70 backdrop-blur-xl flex items-center px-4 shrink-0 z-50">
           <div className="flex items-center gap-3 mr-6">
-            <div className="w-7 h-7 bg-green-500/20 rounded-lg flex items-center justify-center">
-              <Terminal className="w-4 h-4 text-green-500" />
+            <div className="w-7 h-7 bg-green-500/15 rounded-lg flex items-center justify-center border border-green-500/20">
+              <Terminal className="w-4 h-4 text-green-400" />
             </div>
-            <span className="text-sm font-bold text-green-400 tracking-wide">HOMERUN</span>
+            <span className="text-sm font-bold text-green-400 tracking-wider font-data">HOMERUN</span>
           </div>
 
-          {/* Inline Stats */}
-          <div className="hidden md:flex items-center gap-4 mr-auto text-xs">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+          {/* Inline Stats — Enhanced with animated numbers */}
+          <div className="hidden md:flex items-center gap-3 mr-auto text-xs">
+            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <Target className="w-3 h-3 text-blue-400" />
               <span className="text-muted-foreground">Opps</span>
-              <span className="font-mono font-semibold">{totalOpportunities}</span>
+              <AnimatedNumber value={totalOpportunities} decimals={0} className="font-data font-semibold text-foreground data-glow-blue" />
             </div>
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <TrendingUp className="w-3 h-3 text-green-400" />
               <span className="text-muted-foreground">ROI</span>
-              <span className={cn("font-mono font-semibold", avgROI >= 0 ? "text-green-400" : "text-red-400")}>{avgROI.toFixed(1)}%</span>
+              <FlashNumber value={avgROI} suffix="%" decimals={1} className={cn("font-data font-semibold", avgROI >= 0 ? "text-green-400" : "text-red-400")} />
             </div>
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <DollarSign className="w-3 h-3 text-yellow-400" />
               <span className="text-muted-foreground">Profit</span>
-              <span className={cn("font-mono font-semibold", totalProfit >= 0 ? "text-green-400" : "text-red-400")}>${totalProfit.toFixed(2)}</span>
+              <FlashNumber value={totalProfit} prefix="$" decimals={2} className={cn("font-data font-semibold", totalProfit >= 0 ? "text-green-400" : "text-red-400")} />
             </div>
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <Clock className="w-3 h-3 text-purple-400" />
               <span className="text-muted-foreground">Scan</span>
-              <span className="font-mono text-muted-foreground">
+              <span className="font-data text-muted-foreground">
                 {status?.last_scan ? new Date(status.last_scan).toLocaleTimeString() : 'Never'}
               </span>
             </div>
@@ -314,7 +317,7 @@ function App() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-1.5">
-            {/* Connection Status */}
+            {/* Connection Status — Enhanced with live dot */}
             <Badge
               variant="outline"
               className={cn(
@@ -326,7 +329,7 @@ function App() {
             >
               <span className={cn(
                 "w-1.5 h-1.5 rounded-full",
-                isConnected ? "bg-green-500" : "bg-red-500"
+                isConnected ? "bg-green-500 live-dot" : "bg-red-500"
               )} />
               {isConnected ? 'Live' : 'Off'}
             </Badge>
@@ -423,10 +426,17 @@ function App() {
           </div>
         </header>
 
+        {/* ==================== Live Ticker Tape ==================== */}
+        <LiveTickerTape
+          opportunities={displayOpportunities}
+          isConnected={isConnected}
+          totalOpportunities={totalOpportunities}
+        />
+
         {/* ==================== Main Layout ==================== */}
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar Navigation */}
-          <nav className="w-[88px] border-r border-border/50 bg-card/30 flex flex-col items-center py-3 gap-0.5 shrink-0">
+          <nav className="w-[88px] border-r border-border/30 bg-card/20 backdrop-blur-sm flex flex-col items-center py-3 gap-0.5 shrink-0">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon
               const isActive = activeTab === item.id
@@ -438,20 +448,20 @@ function App() {
                       className={cn(
                         "w-[72px] h-12 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all relative group",
                         isActive
-                          ? "bg-green-500/15 text-green-400"
-                          : "text-muted-foreground hover:text-foreground hover:bg-card/80"
+                          ? "sidebar-item-active text-green-400"
+                          : "text-muted-foreground hover:text-foreground hover:bg-card/60"
                       )}
                     >
                       {isActive && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-green-500 rounded-r" />
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-green-400 rounded-r shadow-[0_0_8px_rgba(0,255,136,0.3)]" />
                       )}
-                      <Icon className="w-4 h-4" />
+                      <Icon className={cn("w-4 h-4", isActive && "drop-shadow-[0_0_4px_rgba(0,255,136,0.3)]")} />
                       <span className="text-[9px] font-medium leading-none truncate max-w-full">{item.label}</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right" className="flex items-center gap-2">
                     {item.label}
-                    <kbd className="px-1 py-0.5 text-[9px] font-mono bg-muted rounded border border-border">{item.shortcut}</kbd>
+                    <kbd className="px-1 py-0.5 text-[9px] font-data bg-muted rounded border border-border">{item.shortcut}</kbd>
                   </TooltipContent>
                 </Tooltip>
               )
@@ -459,7 +469,7 @@ function App() {
           </nav>
 
           {/* Content Area */}
-          <main className="flex-1 overflow-hidden flex flex-col">
+          <main className="flex-1 overflow-hidden flex flex-col dot-grid-bg">
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
               <div className="flex-1 overflow-y-auto section-enter">
@@ -612,7 +622,7 @@ function App() {
                                   {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
                                 </Badge>
                               </div>
-                              <div className="space-y-4">
+                              <div className="space-y-4 card-stagger">
                                 {polymarketResults.map((opp) => (
                                   <OpportunityCard
                                     key={opp.id}
@@ -737,7 +747,7 @@ function App() {
                             </div>
                           ) : (
                             <>
-                              <div className="space-y-3">
+                              <div className="space-y-3 card-stagger">
                                 {displayOpportunities.map((opp) => (
                                   <OpportunityCard
                                     key={opp.id}
