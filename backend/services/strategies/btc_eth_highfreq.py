@@ -79,10 +79,11 @@ _SLUG_REGEX = re.compile(
 # Strategy selector thresholds
 _PURE_ARB_MAX_COMBINED = 0.98  # Use pure arb when YES+NO < this
 _DUMP_HEDGE_DROP_PCT = 0.05  # Minimum drop to trigger dump-hedge
-_DUMP_HEDGE_MAX_COMBINED = 0.97  # Combined cost target after dump-hedge
+_DUMP_HEDGE_MAX_COMBINED = 0.98  # Combined cost target after dump-hedge
 _LIMIT_ORDER_TARGET_LOW = 0.45  # Lower limit order price
 _LIMIT_ORDER_TARGET_HIGH = 0.47  # Upper limit order price
 _THIN_LIQUIDITY_USD = 500.0  # Liquidity below which book is "thin"
+_NEW_MARKET_VOLUME_THRESHOLD = 5000.0  # Markets with volume below this are "new"
 
 # Price history defaults
 _DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
@@ -585,6 +586,44 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
     # -- Sub-strategy C: Pre-Placed Limits scoring --
 
+    def _calculate_dynamic_limit_prices(
+        self, c: HighFreqCandidate
+    ) -> tuple[float, float]:
+        """Calculate optimal limit order prices based on current market state.
+
+        Instead of fixed $0.45-$0.47, adjusts based on:
+        - Current market prices (bid closer to current for fill probability)
+        - Liquidity level (thinner book = can be more aggressive)
+        - Required minimum profit margin
+        """
+        # Base targets
+        min_target = 0.42  # Absolute minimum (most aggressive)
+        max_target = 0.48  # Closest to mid (least aggressive)
+
+        # Start from the aggressive end
+        base_price = 0.45
+
+        # Adjust based on liquidity: thinner book = can be more aggressive
+        if c.market.liquidity < 100:
+            base_price = min_target  # Very thin, be aggressive
+        elif c.market.liquidity < 250:
+            base_price = 0.44
+        elif c.market.liquidity < 400:
+            base_price = 0.45
+        else:
+            base_price = 0.46  # Moderate book, bid closer to fill
+
+        # Ensure combined still profits: need combined < 1.0 - fee
+        # If we bid base_price on both sides, combined = 2 * base_price
+        # Need: 2 * base_price + fee < 1.0
+        max_combined = 1.0 - self.fee - 0.01  # Leave 1% minimum profit
+        max_per_side = max_combined / 2.0
+
+        target_price = min(base_price, max_per_side)
+        target_price = max(target_price, min_target)  # Never go below absolute min
+
+        return target_price, target_price
+
     def _score_pre_placed_limits(self, c: HighFreqCandidate) -> SubStrategyScore:
         """Score pre-placed limit order opportunity.
 
@@ -612,8 +651,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             1.0 - _LIMIT_ORDER_TARGET_LOW
         ) and _LIMIT_ORDER_TARGET_LOW <= c.no_price <= (1.0 - _LIMIT_ORDER_TARGET_LOW)
 
-        # Estimate profit if both limits fill at target prices
-        target_combined = _LIMIT_ORDER_TARGET_HIGH * 2  # $0.94 if both fill at $0.47
+        # Calculate dynamic limit prices based on market conditions
+        target_yes, target_no = self._calculate_dynamic_limit_prices(c)
+        target_combined = target_yes + target_no
         target_profit = 1.0 - target_combined - self.fee
 
         if target_profit <= 0:
@@ -638,6 +678,14 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         if both_near_half:
             base_score += 15.0
 
+        # Market age proxy: very low volume = likely just opened
+        if c.market.volume < 100:
+            base_score += 20.0  # Almost certainly a new market
+        elif c.market.volume < 500:
+            base_score += 12.0  # Very new
+        elif c.market.volume < _NEW_MARKET_VOLUME_THRESHOLD:
+            base_score += 5.0   # Relatively new
+
         # Bonus for the expected profit
         base_score += target_profit * 300.0
 
@@ -656,8 +704,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 f"prices_near_half={both_near_half}"
             ),
             params={
-                "target_yes_price": _LIMIT_ORDER_TARGET_HIGH,
-                "target_no_price": _LIMIT_ORDER_TARGET_HIGH,
+                "target_yes_price": target_yes,
+                "target_no_price": target_no,
                 "target_combined": target_combined,
                 "target_profit": target_profit,
                 "current_yes_price": c.yes_price,

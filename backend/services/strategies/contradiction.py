@@ -38,16 +38,18 @@ class ContradictionStrategy(BaseStrategy):
     # WARNING: These are HEURISTICS that may produce false positives!
     # "above/below" is particularly dangerous - doesn't cover "exactly equal"
     CONTRADICTION_PAIRS = [
-        # DANGEROUS: These don't cover the boundary case (exactly equal)
-        # ("above", "below"),  # REMOVED - not exhaustive
-        # ("over", "under"),   # REMOVED - not exhaustive
-        # ("more", "less"),    # REMOVED - not exhaustive
-        # ("higher", "lower"), # REMOVED - not exhaustive
         # SAFER: These are more likely to be true contradictions
         ("before", "after"),  # Still risky if "on the date" is possible
         ("win", "lose"),  # Usually exhaustive in head-to-head
         ("pass", "fail"),  # Usually binary
         ("approve", "reject"),  # Usually binary
+        # Additional pairs
+        ("confirm", "deny"),
+        ("guilty", "acquitted"),
+        ("increase", "decrease"),
+        ("stay", "leave"),
+        ("accept", "decline"),
+        ("rise", "fall"),
     ]
 
     def detect(
@@ -122,7 +124,7 @@ class ContradictionStrategy(BaseStrategy):
                 continue
 
             words = market.question.lower().split()
-            key_words = [w for w in words if w not in stop_words and len(w) > 3]
+            key_words = [w for w in words if w not in stop_words and len(w) > 2]
 
             for word in key_words:
                 if word not in index:
@@ -153,7 +155,7 @@ class ContradictionStrategy(BaseStrategy):
             "are",
             "of",
         }
-        words = [w for w in question.split() if w not in stop_words and len(w) > 3]
+        words = [w for w in question.split() if w not in stop_words and len(w) > 2]
 
         for word in words:
             if word in topic_index:
@@ -211,9 +213,9 @@ class ContradictionStrategy(BaseStrategy):
         words_a = set(q_a.split()) - stop_words
         words_b = set(q_b.split()) - stop_words
 
-        # Filter to meaningful words (length > 3)
-        words_a = {w for w in words_a if len(w) > 3}
-        words_b = {w for w in words_b if len(w) > 3}
+        # Filter to meaningful words (length > 2)
+        words_a = {w for w in words_a if len(w) > 2}
+        words_b = {w for w in words_b if len(w) > 2}
 
         common = words_a & words_b
 

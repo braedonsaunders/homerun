@@ -63,6 +63,19 @@ class MustHappenStrategy(BaseStrategy):
         "first",
         "next",
         "wins",
+        # Additional keywords
+        "who wins",
+        "which team",
+        "which country",
+        "which company",
+        "which candidate",
+        "who becomes",
+        "who is the next",
+        "what color",
+        "what is the",
+        "who gets",
+        "mvp",
+        "finals winner",
     ]
 
     def detect(
@@ -106,6 +119,15 @@ class MustHappenStrategy(BaseStrategy):
         # Check for exhaustive keywords
         if any(kw in title_lower for kw in self.EXHAUSTIVE_KEYWORDS):
             return True
+
+        # Check if markets include an explicit "Other" / "None of the above" outcome
+        # which strongly suggests the event is designed to be exhaustive
+        other_keywords = ["other", "none of the above", "someone else", "no one",
+                          "field", "another", "different"]
+        for m in event.markets:
+            q_lower = m.question.lower()
+            if any(kw in q_lower for kw in other_keywords):
+                return True
 
         # Check if markets look like choices (A, B, C pattern)
         questions = [m.question.lower() for m in event.markets]

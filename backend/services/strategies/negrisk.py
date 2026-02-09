@@ -115,7 +115,8 @@ class NegRiskStrategy(BaseStrategy):
 
         # In NegRisk, exactly one outcome wins, so total YES should = $1
         if total_yes >= 1.0:
-            return None
+            # Check for SHORT arbitrage (total YES > $1 means NOs are cheap)
+            return self._detect_negrisk_short(event, active_markets, prices)
 
         # --- Non-exhaustive outcome detection ---
         # A total YES well below 1.0 indicates the market is pricing in a
@@ -162,6 +163,103 @@ class NegRiskStrategy(BaseStrategy):
                     0,
                     "Election/primary market: unlisted candidates or 'Other' outcome may not be covered",
                 )
+
+        return opp
+
+    def _detect_negrisk_short(
+        self, event: Event, active_markets: list[Market], prices: dict[str, dict]
+    ) -> ArbitrageOpportunity | None:
+        """Detect short-side NegRisk arbitrage.
+
+        When total YES > $1.00, buying NO on all outcomes can be profitable.
+        In a NegRisk event with N outcomes where exactly 1 wins:
+        - Buy NO on all N outcomes
+        - Exactly N-1 outcomes resolve to NO, each paying $1
+        - Total payout = N - 1
+        - Profit = (N - 1) - total_no_cost
+        """
+        n = len(active_markets)
+        if n < 2:
+            return None
+
+        total_no = 0.0
+        positions = []
+
+        for market in active_markets:
+            no_price = market.no_price
+
+            # Use live price if available
+            if market.clob_token_ids and len(market.clob_token_ids) > 1:
+                no_token = market.clob_token_ids[1]
+                if no_token in prices:
+                    no_price = prices[no_token].get("mid", no_price)
+
+            total_no += no_price
+            positions.append(
+                {
+                    "action": "BUY",
+                    "outcome": "NO",
+                    "market": market.question[:50],
+                    "price": no_price,
+                    "token_id": market.clob_token_ids[1]
+                    if (market.clob_token_ids and len(market.clob_token_ids) > 1)
+                    else None,
+                }
+            )
+
+        expected_payout = float(n - 1)  # N-1 NOs win
+        gross_profit = expected_payout - total_no
+
+        if gross_profit <= 0:
+            return None
+
+        # Calculate metrics manually since payout != $1
+        fee = expected_payout * self.fee
+        net_profit = gross_profit - fee
+        roi = (net_profit / total_no) * 100 if total_no > 0 else 0
+
+        if roi < self.min_profit * 100:
+            return None
+
+        # Calculate risk
+        risk_score, risk_factors = self.calculate_risk_score(active_markets)
+        risk_factors.insert(0, f"Short NegRisk: buying NO on all {n} outcomes")
+
+        min_liquidity = min((m.liquidity for m in active_markets), default=0)
+        max_position = min_liquidity * 0.1
+
+        opp = ArbitrageOpportunity(
+            strategy=self.strategy_type,
+            title=f"NegRisk Short: {event.title[:50]}...",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            total_cost=total_no,
+            expected_payout=expected_payout,
+            gross_profit=gross_profit,
+            fee=fee,
+            net_profit=net_profit,
+            roi_percent=roi,
+            risk_score=risk_score,
+            risk_factors=risk_factors,
+            markets=[
+                {
+                    "id": m.id,
+                    "slug": m.slug,
+                    "question": m.question,
+                    "yes_price": m.yes_price,
+                    "no_price": m.no_price,
+                    "liquidity": m.liquidity,
+                }
+                for m in active_markets
+            ],
+            event_id=event.id,
+            event_slug=event.slug,
+            event_title=event.title,
+            category=event.category,
+            min_liquidity=min_liquidity,
+            max_position_size=max_position,
+            resolution_date=active_markets[0].end_date if active_markets else None,
+            positions_to_take=positions,
+        )
 
         return opp
 
@@ -407,7 +505,8 @@ class NegRiskStrategy(BaseStrategy):
             )
 
         if total_yes >= 1.0:
-            return None
+            # Check for SHORT arbitrage (total YES > $1 means NOs are cheap)
+            return self._detect_multi_outcome_short(event, exclusive_markets, prices)
 
         # Reject if total YES is too low — almost certainly non-exhaustive outcomes
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
@@ -443,5 +542,107 @@ class NegRiskStrategy(BaseStrategy):
                     0,
                     "Election/primary market: unlisted candidates may not be covered",
                 )
+
+        return opp
+
+    def _detect_multi_outcome_short(
+        self, event: Event, exclusive_markets: list[Market], prices: dict[str, dict]
+    ) -> ArbitrageOpportunity | None:
+        """Detect short-side multi-outcome arbitrage.
+
+        When total YES > $1.00, buying NO on all outcomes can be profitable.
+        In a multi-outcome event with N outcomes where exactly 1 wins:
+        - Buy NO on all N outcomes
+        - Exactly N-1 outcomes resolve to NO, each paying $1
+        - Total payout = N - 1
+        - Profit = (N - 1) - total_no_cost
+        """
+        n = len(exclusive_markets)
+        if n < 3:
+            return None
+
+        total_no = 0.0
+        positions = []
+
+        for market in exclusive_markets:
+            no_price = market.no_price
+
+            # Use live price if available
+            if market.clob_token_ids and len(market.clob_token_ids) > 1:
+                no_token = market.clob_token_ids[1]
+                if no_token in prices:
+                    no_price = prices[no_token].get("mid", no_price)
+
+            total_no += no_price
+            positions.append(
+                {
+                    "action": "BUY",
+                    "outcome": "NO",
+                    "market": market.question[:50],
+                    "price": no_price,
+                    "token_id": market.clob_token_ids[1]
+                    if (market.clob_token_ids and len(market.clob_token_ids) > 1)
+                    else None,
+                }
+            )
+
+        expected_payout = float(n - 1)  # N-1 NOs win
+        gross_profit = expected_payout - total_no
+
+        if gross_profit <= 0:
+            return None
+
+        # Calculate metrics manually since payout != $1
+        fee = expected_payout * self.fee
+        net_profit = gross_profit - fee
+        roi = (net_profit / total_no) * 100 if total_no > 0 else 0
+
+        if roi < self.min_profit * 100:
+            return None
+
+        # Calculate risk
+        risk_score, risk_factors = self.calculate_risk_score(exclusive_markets)
+        risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
+        risk_factors.insert(
+            1, "Verify manually: ensure all possible outcomes are listed"
+        )
+
+        min_liquidity = min((m.liquidity for m in exclusive_markets), default=0)
+        max_position = min_liquidity * 0.1
+
+        opp = ArbitrageOpportunity(
+            strategy=self.strategy_type,
+            title=f"Multi-Outcome Short: {event.title[:40]}...",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            total_cost=total_no,
+            expected_payout=expected_payout,
+            gross_profit=gross_profit,
+            fee=fee,
+            net_profit=net_profit,
+            roi_percent=roi,
+            risk_score=risk_score,
+            risk_factors=risk_factors,
+            markets=[
+                {
+                    "id": m.id,
+                    "slug": m.slug,
+                    "question": m.question,
+                    "yes_price": m.yes_price,
+                    "no_price": m.no_price,
+                    "liquidity": m.liquidity,
+                }
+                for m in exclusive_markets
+            ],
+            event_id=event.id,
+            event_slug=event.slug,
+            event_title=event.title,
+            category=event.category,
+            min_liquidity=min_liquidity,
+            max_position_size=max_position,
+            resolution_date=exclusive_markets[0].end_date
+            if exclusive_markets
+            else None,
+            positions_to_take=positions,
+        )
 
         return opp

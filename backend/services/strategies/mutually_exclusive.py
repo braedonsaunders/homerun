@@ -47,16 +47,22 @@ class MutuallyExclusiveStrategy(BaseStrategy):
     EXCLUSIVE_PATTERNS = [
         # Political - RISKY: ignores third-party candidates!
         (["democrat", "biden", "harris", "democratic"], ["republican", "trump", "gop"]),
-        # REMOVED: Too many false positives
-        # (["yes", "will"], ["no", "won't", "will not"]),
         # Sports - RISKY: ignores draws/ties!
         (["home", "team a"], ["away", "team b"]),
-        # REMOVED: Boundary case issues (exactly equal)
-        # (["above", "over", "more than", "higher"], ["below", "under", "less than", "lower"]),
-        # Time-based - RISKY: "on the date" could be neither before nor after
-        # (["before", "by"], ["after", "not by"]),
         # Win/lose - RISKY: ignores draws
-        (["win", "victory"], ["lose", "defeat"]),
+        (["win", "victory", "wins"], ["lose", "defeat", "loses"]),
+        # Pass/fail - usually binary
+        (["pass", "passes", "passed", "approve", "approves", "approved"],
+         ["fail", "fails", "failed", "reject", "rejects", "rejected"]),
+        # Confirmed/denied
+        (["confirm", "confirmed", "confirms"], ["deny", "denied", "denies"]),
+        # Guilty/not guilty - legal proceedings
+        (["guilty", "convicted"], ["acquitted", "not guilty", "innocent"]),
+        # Increase/decrease - economic
+        (["increase", "increases", "raise", "raises", "hike", "hikes"],
+         ["decrease", "decreases", "cut", "cuts", "lower", "lowers"]),
+        # Stay/leave
+        (["stay", "stays", "remain", "remains"], ["leave", "leaves", "depart", "departs"]),
     ]
 
     def detect(

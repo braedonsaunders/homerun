@@ -374,12 +374,15 @@ class TestNegRiskStrategy:
         assert len(opps) == 0
 
     def test_negrisk_event_with_sum_above_one(self):
-        """NegRisk event: sum > 1.0 should NOT find opportunity."""
+        """NegRisk event: sum > 1.0 should find SHORT arbitrage opportunity."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.55)
         m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.55)
         event = make_event(markets=[m1, m2], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 0
+        assert len(opps) == 1
+        opp = opps[0]
+        assert "Short" in opp.title
+        assert all(p["outcome"] == "NO" for p in opp.positions_to_take)
 
     def test_non_negrisk_event_skipped_for_negrisk_detection(self):
         """Non-neg_risk event should not be processed by _detect_negrisk_event."""

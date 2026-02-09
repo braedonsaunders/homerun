@@ -52,7 +52,7 @@ class SettlementLagStrategy(BaseStrategy):
     description = "Exploit delayed price updates after outcome determination"
 
     # Thresholds calibrated from research
-    NEAR_ZERO_THRESHOLD = 0.05  # Price below this suggests resolved to NO
+    NEAR_ZERO_THRESHOLD = 0.02  # Price below this suggests resolved to NO
     NEAR_ONE_THRESHOLD = 0.95  # Price above this suggests resolved to YES
     MIN_SUM_DEVIATION = 0.03  # Minimum deviation from 1.0 to be interesting
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
@@ -195,6 +195,26 @@ class SettlementLagStrategy(BaseStrategy):
 
         if opp:
             opp.mispricing_type = MispricingType.SETTLEMENT_LAG
+
+            # Urgency scoring: fresher settlements are more valuable
+            urgency = "LOW"
+            if is_overdue:
+                end_aware = make_aware(market.end_date)
+                hours_overdue = (now - end_aware).total_seconds() / 3600
+                if hours_overdue < 1:
+                    urgency = "CRITICAL"  # Just resolved
+                elif hours_overdue < 6:
+                    urgency = "HIGH"
+                elif hours_overdue < 24:
+                    urgency = "MEDIUM"
+                else:
+                    urgency = "LOW"  # Likely already captured
+            elif appears_resolved:
+                urgency = "HIGH"  # Price signal but not overdue yet
+
+            opp.risk_factors.append(f"Settlement urgency: {urgency}")
+            if urgency == "LOW":
+                opp.risk_factors.append("WARNING: Opportunity may already be captured by faster bots")
         return opp
 
     def _check_negrisk_settlement(
@@ -301,6 +321,14 @@ class SettlementLagStrategy(BaseStrategy):
                         }
                     )
 
+            # Identify the likely winner for sizing/execution priority
+            likely_winner = None
+            likely_winner_price = 0.0
+            for m, price in market_prices:
+                if price > likely_winner_price:
+                    likely_winner = m.question[:50]
+                    likely_winner_price = price
+
             signals = [f"sum YES = ${total_yes:.3f}"]
             if near_zero_count > 0:
                 signals.append(f"{near_zero_count} outcomes near zero")
@@ -308,6 +336,8 @@ class SettlementLagStrategy(BaseStrategy):
                 signals.append(f"{near_one_count} outcomes near one")
             if any_overdue:
                 signals.append("past resolution date")
+            if likely_winner and likely_winner_price > self.NEAR_ONE_THRESHOLD:
+                signals.append(f"likely winner: {likely_winner} (${likely_winner_price:.3f})")
 
             opp = self.create_opportunity(
                 title=f"Settlement Lag (NegRisk): {event.title[:50]}",
@@ -323,6 +353,17 @@ class SettlementLagStrategy(BaseStrategy):
 
             if opp:
                 opp.mispricing_type = MispricingType.SETTLEMENT_LAG
+
+                # Urgency scoring for NegRisk settlement
+                urgency = "MEDIUM"
+                if any_overdue:
+                    urgency = "HIGH"
+                if near_one_count > 0 and any_overdue:
+                    urgency = "CRITICAL"
+                opp.risk_factors.append(f"Settlement urgency: {urgency}")
+                if likely_winner:
+                    opp.risk_factors.append(f"Likely winner: {likely_winner}")
+
                 opportunities.append(opp)
 
         return opportunities

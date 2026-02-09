@@ -16,7 +16,24 @@ logger = get_logger("cross_platform_scanner")
 
 # Fee schedules (conservative estimates)
 POLYMARKET_FEE = 0.02  # 2 % winner-take fee
-KALSHI_FEE = 0.07  # 7 % Kalshi fee on winnings (per their fee schedule)
+# Kalshi fee schedule is tiered by volume. Using a conservative mid-tier
+# estimate rather than the worst-case 7%.
+# Tier breakdown: <$100 = 7%, $100-$999 = 5%, $1K-$9.9K = 3%, $10K+ = 1%
+KALSHI_FEE = 0.05  # 5% default (mid-tier conservative estimate)
+KALSHI_FEE_TIERS = [
+    (10_000, 0.01),  # $10K+ volume: 1%
+    (1_000, 0.03),   # $1K-$9.9K volume: 3%
+    (100, 0.05),     # $100-$999 volume: 5%
+    (0, 0.07),       # <$100 volume: 7%
+]
+
+
+def kalshi_fee_for_volume(volume: float) -> float:
+    """Return the Kalshi fee rate for a given volume tier."""
+    for threshold, rate in KALSHI_FEE_TIERS:
+        if volume >= threshold:
+            return rate
+    return 0.07
 
 
 # ====================================================================== #
@@ -582,10 +599,12 @@ def _resolution_methods_compatible(
     m2 = e2.resolution_methods
 
     if not m1 and not m2:
-        return True, "no explicit resolution method detected on either side"
+        return True, "no explicit resolution method detected on either side (proceed with caution)"
 
     if not m1 or not m2:
-        return True, "resolution method detected on only one side; assuming compatible"
+        # One side has explicit resolution criteria, the other doesn't.
+        # This is a risk - they might resolve differently.
+        return True, "WARNING: resolution method detected on only one side; compatibility unconfirmed"
 
     # Both sides have resolution methods -- check for conflicts
     if m1 == m2:
@@ -743,6 +762,11 @@ class MarketMatcher:
 
         # ---- Stage 4: Confidence scoring ----
         resolution_score = 1.0 if resolution_match else 0.4
+        # Penalize when resolution compatibility is uncertain
+        if resolution_match and "unconfirmed" in method_reason.lower():
+            resolution_score = 0.7
+        elif resolution_match and "caution" in method_reason.lower():
+            resolution_score = 0.85
         overall = (
             self.w_text * text_sim
             + self.w_entity * entity_score
@@ -1047,6 +1071,10 @@ class CrossPlatformScanner:
             return None
         if not (0 < k_yes < 1 and 0 < k_no < 1):
             return None
+
+        # Adjust Kalshi fee based on market volume if available
+        if hasattr(kalshi_market, 'volume') and kalshi_market.volume > 0:
+            kalshi_fee = kalshi_fee_for_volume(kalshi_market.volume)
 
         best_opportunity: Optional[ArbitrageOpportunity] = None
         best_net = 0.0
