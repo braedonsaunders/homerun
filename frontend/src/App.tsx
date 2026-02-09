@@ -32,6 +32,7 @@ import {
   Keyboard,
   Copy,
   Globe,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -77,6 +78,8 @@ import DataFreshnessIndicator from './components/DataFreshnessIndicator'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 import DiscoveryPanel from './components/DiscoveryPanel'
+import AccountSettingsFlyout from './components/AccountSettingsFlyout'
+import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
@@ -119,6 +122,8 @@ function App() {
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
   const [commandBarOpen, setCommandBarOpen] = useState(false)
+  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
+  const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
   const [simulationEnabled] = useAtom(simulationEnabledAtom)
   const queryClient = useQueryClient()
@@ -261,6 +266,8 @@ function App() {
       setCommandBarOpen(false)
       setCopilotOpen(false)
       setExecutingOpportunity(null)
+      setAccountSettingsOpen(false)
+      setSearchFiltersOpen(false)
     }},
   ], [scanMutation, setShortcutsHelpOpen])
 
@@ -494,6 +501,17 @@ function App() {
                       <Activity className="w-3.5 h-3.5" />
                       Tracked Traders
                     </Button>
+                    <div className="ml-auto">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSearchFiltersOpen(true)}
+                        className="gap-1.5 text-xs h-8 bg-card text-muted-foreground hover:text-orange-400 border-border hover:border-orange-500/30"
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        Search Filters
+                      </Button>
+                    </div>
                   </div>
 
                   {opportunitiesView === 'recent_trades' ? (
@@ -870,6 +888,17 @@ function App() {
                     <DollarSign className="w-3.5 h-3.5" />
                     Live Accounts
                   </Button>
+                  <div className="ml-auto">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAccountSettingsOpen(true)}
+                      className="gap-1.5 text-xs h-8 bg-card text-muted-foreground hover:text-green-400 border-border hover:border-green-500/30"
+                    >
+                      <Settings className="w-3.5 h-3.5" />
+                      Account Settings
+                    </Button>
+                  </div>
                 </div>
                 <div className="flex-1 overflow-y-auto px-6 py-4">
                   <div className={accountsSubTab === 'paper' ? '' : 'hidden'}>
@@ -1024,6 +1053,18 @@ function App() {
           isOpen={shortcutsHelpOpen}
           onClose={() => setShortcutsHelpOpen(false)}
           shortcuts={shortcuts}
+        />
+
+        {/* Account Settings Flyout */}
+        <AccountSettingsFlyout
+          isOpen={accountSettingsOpen}
+          onClose={() => setAccountSettingsOpen(false)}
+        />
+
+        {/* Search Filters Flyout */}
+        <SearchFiltersFlyout
+          isOpen={searchFiltersOpen}
+          onClose={() => setSearchFiltersOpen(false)}
         />
       </div>
     </TooltipProvider>
