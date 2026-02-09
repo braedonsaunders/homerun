@@ -281,7 +281,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   onClick={() => setShowFilters(!showFilters)}
                   className={cn(
                     "h-auto gap-2 px-3 py-1.5 rounded-lg text-sm",
-                    showFilters ? "bg-blue-500/20 text-blue-400" : "bg-muted hover:bg-gray-700"
+                    showFilters ? "bg-blue-500/20 text-blue-400" : "bg-muted hover:bg-accent"
                   )}
                 >
                   <Filter className="w-4 h-4" />
@@ -291,7 +291,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   variant="ghost"
                   onClick={() => refreshCurrentTraders()}
                   disabled={isLoadingTraders}
-                  className="h-auto gap-2 px-3 py-1.5 bg-muted rounded-lg text-sm hover:bg-gray-700"
+                  className="h-auto gap-2 px-3 py-1.5 bg-muted rounded-lg text-sm hover:bg-accent"
                 >
                   <RefreshCw className={cn("w-4 h-4", isLoadingTraders && "animate-spin")} />
                   Refresh
@@ -509,12 +509,12 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 {currentTraders.map((trader, idx) => (
                   <div
                     key={trader.address}
-                    className="flex items-center justify-between p-3 rounded-lg transition-colors bg-muted hover:bg-[#222]"
+                    className="flex items-center justify-between p-3 rounded-lg transition-colors bg-muted hover:bg-accent"
                   >
                     <div className="flex items-center gap-3">
                       <div className={cn(
                         "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
-                        currentDiscoverMode === 'winrate' ? "bg-emerald-900" : "bg-gray-700"
+                        currentDiscoverMode === 'winrate' ? "bg-emerald-500/20" : "bg-muted"
                       )}>
                         #{trader.rank || idx + 1}
                       </div>
@@ -579,7 +579,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         href={`https://polymarket.com/profile/${trader.address}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="p-1 hover:bg-gray-700 rounded"
+                        className="p-1 hover:bg-accent rounded"
                         title="View on Polymarket"
                       >
                         <ExternalLink className="w-3 h-3 text-muted-foreground" />
@@ -663,7 +663,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
       {/* Copy Trade Account Selection Modal */}
       {showCopyModal && selectedTrader && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
           <div className="bg-muted border border-border rounded-xl w-full max-w-md mx-4 overflow-hidden">
             {/* Modal Header */}
             <div className="flex items-center justify-between p-4 border-b border-border">
@@ -680,7 +680,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   setShowCopyModal(false)
                   setSelectedTrader(null)
                 }}
-                className="h-auto p-2 hover:bg-gray-700 rounded-lg"
+                className="h-auto p-2 hover:bg-accent rounded-lg"
               >
                 <X className="w-5 h-5 text-muted-foreground" />
               </Button>
@@ -688,7 +688,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
             {/* Modal Content */}
             <div className="p-4 space-y-4">
-              <p className="text-sm text-gray-300">
+              <p className="text-sm text-foreground/80">
                 Choose how you want to copy trades from this trader:
               </p>
 
@@ -699,7 +699,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                     "p-4 rounded-lg border-2 cursor-pointer transition-all",
                     simAccounts.length > 0
                       ? "border-blue-500/50 bg-blue-500/10 hover:bg-blue-500/20"
-                      : "border-border bg-gray-800/50 opacity-60 cursor-not-allowed"
+                      : "border-border bg-muted/50 opacity-60 cursor-not-allowed"
                   )}
                   onClick={() => simAccounts.length > 0 && handleCopyTradeConfirm(true)}
                 >
@@ -771,7 +771,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                   setShowCopyModal(false)
                   setSelectedTrader(null)
                 }}
-                className="w-full h-auto py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium"
+                className="w-full h-auto py-2 bg-muted hover:bg-accent rounded-lg text-sm font-medium"
               >
                 Cancel
               </Button>
@@ -830,7 +830,7 @@ function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRem
             href={`https://polymarket.com/profile/${wallet.address}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            className="p-2 hover:bg-accent rounded-lg transition-colors"
             title="View on Polymarket"
           >
             <ExternalLink className="w-4 h-4 text-muted-foreground" />

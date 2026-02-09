@@ -103,7 +103,7 @@ export default function DataFreshnessIndicator({
               level === 'fresh' && 'text-green-400',
               level === 'warning' && 'text-yellow-400',
               level === 'stale' && 'text-red-400',
-              level === 'unknown' && 'text-gray-400',
+              level === 'unknown' && 'text-muted-foreground',
             )}>
               {timeSince || config.label}
             </span>

@@ -461,7 +461,7 @@ export default function TradingPanel() {
               ? status?.config.mode === 'live'
                 ? "bg-green-500/5 border-green-500/30"
                 : "bg-blue-500/5 border-blue-500/30"
-              : "bg-gray-800/50 border-border/40"
+              : "bg-muted/50 border-border/40"
           )}>
             <div className="relative">
               <div className={cn(
@@ -557,7 +557,7 @@ export default function TradingPanel() {
                   <ChevronDown className="w-2.5 h-2.5" />
                 </Button>
                 {showAccountPicker && (
-                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-gray-800 border border-border rounded-lg shadow-xl overflow-hidden">
+                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-popover border border-border rounded-lg shadow-xl overflow-hidden">
                     <div className="px-3 py-2 border-b border-border">
                       <span className="text-xs font-medium text-muted-foreground">Select Paper Account</span>
                     </div>
@@ -566,9 +566,9 @@ export default function TradingPanel() {
                         <button
                           key={acc.id}
                           onClick={() => startMutation.mutate({ mode: 'paper', accountId: acc.id })}
-                          className="w-full text-left px-3 py-2 hover:bg-gray-700/50 transition-colors border-b border-border/50 last:border-b-0"
+                          className="w-full text-left px-3 py-2 hover:bg-accent transition-colors border-b border-border/50 last:border-b-0"
                         >
-                          <div className="text-sm text-gray-200">{acc.name}</div>
+                          <div className="text-sm text-foreground">{acc.name}</div>
                           <div className="text-xs text-muted-foreground">${acc.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital</div>
                         </button>
                       ))}
@@ -958,7 +958,7 @@ export default function TradingPanel() {
                         }}
                         className={cn(
                           "px-2 py-1 h-auto rounded-md text-[10px]",
-                          tradeSort === s ? "bg-green-500/15 text-green-400" : "hover:bg-gray-800"
+                          tradeSort === s ? "bg-green-500/15 text-green-400" : "hover:bg-muted"
                         )}
                       >
                         {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -1228,7 +1228,7 @@ export default function TradingPanel() {
                   <Button
                     variant="ghost"
                     onClick={() => setDashboardTab('holdings')}
-                    className="text-[10px] text-muted-foreground hover:text-gray-300 w-full h-auto pt-1 justify-center"
+                    className="text-[10px] text-muted-foreground hover:text-foreground w-full h-auto pt-1 justify-center"
                   >
                     +{livePositions.length - 5} more...
                   </Button>
@@ -1244,7 +1244,7 @@ export default function TradingPanel() {
         <>
           {/* Backdrop */}
           <div
-            className="fixed inset-0 bg-black/40 z-40 transition-opacity"
+            className="fixed inset-0 bg-background/80 z-40 transition-opacity"
             onClick={() => setDashboardTab('overview')}
           />
           {/* Drawer */}
@@ -1862,7 +1862,7 @@ function PnlChart({ points }: { points: { date: string; equity: number }[] }) {
         <line
           x1="0" y1={zeroY}
           x2={chartWidth} y2={zeroY}
-          stroke="#374151"
+          stroke="currentColor" opacity={0.15}
           strokeWidth="0.3"
           strokeDasharray="1,1"
         />
@@ -1948,7 +1948,7 @@ function SettingToggle({ label, description, checked, onChange }: {
         onClick={() => onChange(!checked)}
         className={cn(
           "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
-          checked ? "bg-green-500" : "bg-gray-600"
+          checked ? "bg-green-500" : "bg-muted-foreground/40"
         )}
       >
         <span className={cn(

@@ -51,7 +51,7 @@ export default function AnomalyPanel() {
       {/* Header */}
       <div>
         <h2 className="text-xl font-bold">Anomaly Detection</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           Detect suspicious trading patterns and identify potential manipulation
         </p>
       </div>
@@ -98,16 +98,16 @@ export default function AnomalyPanel() {
             <AlertOctagon className="w-4 h-4" />
             Recent Anomalies Detected
           </h3>
-          <span className="text-xs text-gray-500">
+          <span className="text-xs text-muted-foreground">
             {anomalies.count || 0} found
           </span>
         </div>
 
         {!anomalies.anomalies?.length ? (
           <div className="text-center py-8">
-            <Shield className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-            <p className="text-gray-500">No anomalies detected</p>
-            <p className="text-xs text-gray-600 mt-1">
+            <Shield className="w-12 h-12 text-muted-foreground/50 mx-auto mb-3" />
+            <p className="text-muted-foreground">No anomalies detected</p>
+            <p className="text-xs text-muted-foreground/50 mt-1">
               Analyze wallets to detect suspicious patterns
             </p>
           </div>
@@ -179,7 +179,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div>
-          <p className="font-mono text-sm text-gray-400">Wallet Scanned</p>
+          <p className="font-mono text-sm text-muted-foreground">Wallet Scanned</p>
           <p className="font-mono font-medium">{analysis.wallet}</p>
         </div>
         <div className={cn(
@@ -197,10 +197,10 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Risk Score */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-gray-500">Anomaly Score</span>
+          <span className="text-sm text-muted-foreground">Anomaly Score</span>
           <span className="font-mono font-medium">{(analysis.anomaly_score * 100).toFixed(0)}%</span>
         </div>
-        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div className="h-2 bg-muted rounded-full overflow-hidden">
           <div
             className={cn(
               "h-full transition-all",
@@ -217,15 +217,15 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Quick Stats */}
       <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-muted rounded-lg">
         <div className="text-center">
-          <p className="text-xs text-gray-500">Trades</p>
+          <p className="text-xs text-muted-foreground">Trades</p>
           <p className="font-mono font-medium">{analysis.stats.total_trades}</p>
         </div>
         <div className="text-center">
-          <p className="text-xs text-gray-500">Win Rate</p>
+          <p className="text-xs text-muted-foreground">Win Rate</p>
           <p className="font-mono font-medium">{(analysis.stats.win_rate * 100).toFixed(1)}%</p>
         </div>
         <div className="text-center">
-          <p className="text-xs text-gray-500">Total PnL</p>
+          <p className="text-xs text-muted-foreground">Total PnL</p>
           <p className={cn(
             "font-mono font-medium",
             analysis.stats.total_pnl >= 0 ? "text-green-400" : "text-red-400"
@@ -234,7 +234,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
           </p>
         </div>
         <div className="text-center">
-          <p className="text-xs text-gray-500">Avg ROI</p>
+          <p className="text-xs text-muted-foreground">Avg ROI</p>
           <p className="font-mono font-medium">{analysis.stats.avg_roi.toFixed(1)}%</p>
         </div>
       </div>
@@ -242,7 +242,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Detected Strategies */}
       {analysis.strategies_detected.length > 0 && (
         <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Trading Strategies Detected</p>
+          <p className="text-xs text-muted-foreground mb-2">Trading Strategies Detected</p>
           <div className="flex flex-wrap gap-2">
             {analysis.strategies_detected.map((strategy) => (
               <span key={strategy} className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
@@ -256,7 +256,7 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
       {/* Anomalies */}
       {hasAnomalies && (
         <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Anomalies Detected ({analysis.anomalies.length})</p>
+          <p className="text-xs text-muted-foreground mb-2">Anomalies Detected ({analysis.anomalies.length})</p>
           <div className="space-y-2">
             {analysis.anomalies.map((anomaly, idx) => (
               <div key={idx} className="flex items-start gap-2 p-2 bg-muted rounded">
@@ -265,16 +265,16 @@ function AnomalyResultCard({ analysis }: { analysis: WalletAnalysis }) {
                   anomaly.severity === 'critical' ? 'text-red-500' :
                   anomaly.severity === 'high' ? 'text-orange-500' :
                   anomaly.severity === 'medium' ? 'text-yellow-500' :
-                  'text-gray-500'
+                  'text-muted-foreground'
                 )} />
                 <div>
-                  <p className="text-sm text-gray-300">{anomaly.description}</p>
+                  <p className="text-sm text-foreground/80">{anomaly.description}</p>
                   <span className={cn(
                     "text-xs px-1.5 py-0.5 rounded mt-1 inline-block",
                     anomaly.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
                     anomaly.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
                     anomaly.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-gray-500/20 text-gray-400'
+                    'bg-muted-foreground/20 text-muted-foreground'
                   )}>
                     {anomaly.severity}
                   </span>
@@ -303,7 +303,7 @@ function AnomalyRow({ anomaly }: { anomaly: any }) {
     critical: { bg: 'bg-red-500/20', text: 'text-red-400', icon: 'text-red-500' },
     high: { bg: 'bg-orange-500/20', text: 'text-orange-400', icon: 'text-orange-500' },
     medium: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', icon: 'text-yellow-500' },
-    low: { bg: 'bg-gray-500/20', text: 'text-gray-400', icon: 'text-gray-500' }
+    low: { bg: 'bg-muted-foreground/20', text: 'text-muted-foreground', icon: 'text-muted-foreground' }
   }
 
   const config = severityConfig[anomaly.severity] || severityConfig.low
@@ -314,7 +314,7 @@ function AnomalyRow({ anomaly }: { anomaly: any }) {
         <AlertTriangle className={cn("w-4 h-4", config.icon)} />
         <div>
           <p className="text-sm font-medium">{anomaly.type.replace(/_/g, ' ')}</p>
-          <p className="text-xs text-gray-500 font-mono">
+          <p className="text-xs text-muted-foreground font-mono">
             {anomaly.wallet?.slice(0, 10)}...{anomaly.wallet?.slice(-6)}
           </p>
         </div>
@@ -323,7 +323,7 @@ function AnomalyRow({ anomaly }: { anomaly: any }) {
         <span className={cn("px-2 py-0.5 rounded text-xs", config.bg, config.text)}>
           {anomaly.severity}
         </span>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-muted-foreground">
           {new Date(anomaly.detected_at).toLocaleDateString()}
         </span>
       </div>
@@ -343,8 +343,8 @@ function AnomalyTypeCard({ title, items, severity }: { title: string; items: str
       <h4 className="font-medium text-sm mb-2">{title}</h4>
       <ul className="space-y-1">
         {items.map((item, idx) => (
-          <li key={idx} className="text-xs text-gray-400 flex items-center gap-2">
-            <span className="w-1 h-1 rounded-full bg-gray-500" />
+          <li key={idx} className="text-xs text-muted-foreground flex items-center gap-2">
+            <span className="w-1 h-1 rounded-full bg-muted-foreground" />
             {item}
           </li>
         ))}

@@ -64,7 +64,7 @@ const RECOMMENDATION_COLORS: Record<string, string> = {
   safe: 'bg-green-500/15 text-green-400 border-green-500/20',
   caution: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
   avoid: 'bg-red-500/15 text-red-400 border-red-500/20',
-  pending: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
+  pending: 'bg-muted-foreground/15 text-muted-foreground border-muted-foreground/20',
 }
 
 const RECOMMENDATION_BG: Record<string, string> = {
@@ -413,7 +413,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                             {positionPlatform === 'kalshi' ? 'Kalshi' : 'Polymarket'}
                           </Badge>
                         )}
-                        <span className="text-sm text-gray-300">{pos.market}</span>
+                        <span className="text-sm text-foreground/80">{pos.market}</span>
                       </div>
                       <span className="font-data text-foreground">${pos.price.toFixed(4)}</span>
                     </div>
@@ -455,7 +455,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                     >
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm text-gray-300">{market.question}</p>
+                          <p className="text-sm text-foreground/80">{market.question}</p>
                           {isKalshi && (
                             <Badge variant="outline" className="text-[10px] bg-indigo-500/10 text-indigo-400 border-indigo-500/20">
                               Kalshi
@@ -478,7 +478,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                         rel="noopener noreferrer"
                         className={cn(
                           "p-2 rounded-lg transition-colors",
-                          isKalshi ? "hover:bg-indigo-500/20" : "hover:bg-gray-700"
+                          isKalshi ? "hover:bg-indigo-500/20" : "hover:bg-accent"
                         )}
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -536,7 +536,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                         )}>
                           {r.recommendation}
                         </Badge>
-                        <span className="text-[10px] text-gray-600">
+                        <span className="text-[10px] text-muted-foreground/50">
                           Clarity: {(r.clarity_score * 100).toFixed(0)} | Risk: {(r.risk_score * 100).toFixed(0)}
                         </span>
                       </div>

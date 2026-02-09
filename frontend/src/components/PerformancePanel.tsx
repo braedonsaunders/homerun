@@ -636,28 +636,28 @@ function SimplePnlChart({
             <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
         <XAxis
           dataKey="date"
           tickFormatter={formatDate}
-          stroke="#6b7280"
+          stroke="hsl(var(--muted-foreground))"
           tick={{ fontSize: 11 }}
-          axisLine={{ stroke: '#374151' }}
+          axisLine={{ stroke: 'hsl(var(--border))' }}
         />
         <YAxis
           tickFormatter={formatDollar}
-          stroke="#6b7280"
+          stroke="hsl(var(--muted-foreground))"
           tick={{ fontSize: 11 }}
-          axisLine={{ stroke: '#374151' }}
+          axisLine={{ stroke: 'hsl(var(--border))' }}
           width={65}
         />
         <Tooltip
           contentStyle={{
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #374151',
+            backgroundColor: 'hsl(var(--popover))',
+            border: '1px solid hsl(var(--border))',
             borderRadius: '8px',
             fontSize: '12px',
-            color: '#fff',
+            color: 'hsl(var(--popover-foreground))',
           }}
           labelFormatter={(label) => `Date: ${label}`}
           formatter={(value: any, name: any) => [
@@ -677,7 +677,7 @@ function SimplePnlChart({
             strokeWidth={2}
             fill="url(#simGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: '#1a1a1a' }}
+            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
         {showAuto && (
@@ -688,7 +688,7 @@ function SimplePnlChart({
             strokeWidth={2}
             fill="url(#autoGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: '#1a1a1a' }}
+            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
       </AreaChart>

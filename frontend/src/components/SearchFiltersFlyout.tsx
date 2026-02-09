@@ -88,7 +88,7 @@ export default function SearchFiltersFlyout({ isOpen, onClose }: { isOpen: boole
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/40 z-40 transition-opacity"
+        className="fixed inset-0 bg-background/80 z-40 transition-opacity"
         onClick={onClose}
       />
       {/* Drawer */}

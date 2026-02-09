@@ -107,7 +107,7 @@ function LargeSparkline({ data, color = '#22c55e', height = 80 }: { data: number
         cy={lastY}
         r="6"
         fill={color}
-        stroke="#0a0a0a"
+        stroke="hsl(var(--card))"
         strokeWidth="2"
       />
     </svg>
@@ -133,7 +133,7 @@ function CircularProgress({ percentage, size = 80, strokeWidth = 6, color = '#22
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(255,255,255,0.1)"
+          stroke="currentColor" opacity={0.1}
           strokeWidth={strokeWidth}
         />
         <circle
@@ -285,7 +285,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               <Button
                 onClick={handleAnalyze}
                 disabled={!searchAddress.trim()}
-                className="flex items-center gap-2 bg-cyan-500 hover:bg-cyan-600 text-white"
+                className="flex items-center gap-2 bg-cyan-500 hover:bg-cyan-600 text-foreground"
               >
                 <Search className="w-4 h-4" />
                 Analyze
@@ -496,7 +496,7 @@ function WalletHeroCard({
               </div>
               {isProfitable && (
                 <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center border-2 border-card">
-                  <TrendingUp className="w-2.5 h-2.5 text-white" />
+                  <TrendingUp className="w-2.5 h-2.5 text-foreground" />
                 </div>
               )}
             </div>
@@ -712,7 +712,7 @@ function SummaryTab({
     <div className="space-y-6">
       {/* Performance Grid */}
       <div>
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Performance Breakdown</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Performance Breakdown</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Realized PnL */}
           <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-green-500/10 to-emerald-500/5 border border-green-500/20 p-5">
@@ -720,7 +720,7 @@ function SummaryTab({
             <div className="relative">
               <div className="flex items-center gap-2 mb-2">
                 <CheckCircle2 className="w-4 h-4 text-green-400" />
-                <p className="text-sm text-gray-400">Realized P&L</p>
+                <p className="text-sm text-muted-foreground">Realized P&L</p>
               </div>
               <p className={cn(
                 "text-2xl font-bold",
@@ -728,7 +728,7 @@ function SummaryTab({
               )}>
                 {realizedPnl >= 0 ? '+' : ''}${realizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
-              <p className="text-xs text-gray-500 mt-1">From closed positions</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">From closed positions</p>
             </div>
           </div>
 
@@ -738,7 +738,7 @@ function SummaryTab({
             <div className="relative">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="w-4 h-4 text-blue-400" />
-                <p className="text-sm text-gray-400">Unrealized P&L</p>
+                <p className="text-sm text-muted-foreground">Unrealized P&L</p>
               </div>
               <p className={cn(
                 "text-2xl font-bold",
@@ -746,7 +746,7 @@ function SummaryTab({
               )}>
                 {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
-              <p className="text-xs text-gray-500 mt-1">From open positions</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">From open positions</p>
             </div>
           </div>
 
@@ -756,7 +756,7 @@ function SummaryTab({
             <div className="relative">
               <div className="flex items-center gap-2 mb-2">
                 <DollarSign className="w-4 h-4 text-purple-400" />
-                <p className="text-sm text-gray-400">Total P&L</p>
+                <p className="text-sm text-muted-foreground">Total P&L</p>
               </div>
               <p className={cn(
                 "text-2xl font-bold",
@@ -764,7 +764,7 @@ function SummaryTab({
               )}>
                 {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground/70 mt-1">
                 {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}% ROI
               </p>
             </div>
@@ -780,39 +780,39 @@ function SummaryTab({
             <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
               <ArrowRight className="w-4 h-4 text-blue-400" />
             </div>
-            <h4 className="font-semibold text-white">Investment Flow</h4>
+            <h4 className="font-semibold text-foreground">Investment Flow</h4>
           </div>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-red-400" />
-                <span className="text-sm text-gray-400">Total Invested</span>
+                <span className="text-sm text-muted-foreground">Total Invested</span>
               </div>
-              <span className="font-mono font-medium text-white">
+              <span className="font-mono font-medium text-foreground">
                 ${totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-green-400" />
-                <span className="text-sm text-gray-400">Total Returned</span>
+                <span className="text-sm text-muted-foreground">Total Returned</span>
               </div>
-              <span className="font-mono font-medium text-white">
+              <span className="font-mono font-medium text-foreground">
                 ${totalReturned.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-blue-400" />
-                <span className="text-sm text-gray-400">Position Value</span>
+                <span className="text-sm text-muted-foreground">Position Value</span>
               </div>
-              <span className="font-mono font-medium text-white">
+              <span className="font-mono font-medium text-foreground">
                 ${positionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
             <div className="pt-3 mt-3 border-t border-border">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-300">Net Flow</span>
+                <span className="text-sm font-medium text-foreground/80">Net Flow</span>
                 <span className={cn(
                   "font-mono font-bold text-lg",
                   totalPnl >= 0 ? "text-green-400" : "text-red-400"
@@ -830,22 +830,22 @@ function SummaryTab({
             <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
               <Activity className="w-4 h-4 text-purple-400" />
             </div>
-            <h4 className="font-semibold text-white">Trading Activity</h4>
+            <h4 className="font-semibold text-foreground">Trading Activity</h4>
           </div>
 
           {/* Trade Counts */}
           <div className="grid grid-cols-3 gap-4 mb-4">
             <div className="text-center p-3 rounded-lg bg-green-500/10 border border-green-500/20">
               <p className="text-2xl font-bold text-green-400">{buys}</p>
-              <p className="text-xs text-gray-500">Buys</p>
+              <p className="text-xs text-muted-foreground/70">Buys</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-red-500/10 border border-red-500/20">
               <p className="text-2xl font-bold text-red-400">{sells}</p>
-              <p className="text-xs text-gray-500">Sells</p>
+              <p className="text-xs text-muted-foreground/70">Sells</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-gray-500/10 border border-gray-500/20">
-              <p className="text-2xl font-bold text-gray-300">{totalTrades}</p>
-              <p className="text-xs text-gray-500">Total</p>
+              <p className="text-2xl font-bold text-foreground/80">{totalTrades}</p>
+              <p className="text-xs text-muted-foreground/70">Total</p>
             </div>
           </div>
 
@@ -853,7 +853,7 @@ function SummaryTab({
           {winRate && (
             <div className="pt-3 border-t border-border">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-400">Win Rate</span>
+                <span className="text-sm text-muted-foreground">Win Rate</span>
                 <span className={cn(
                   "font-medium",
                   winRate.win_rate >= 70 ? "text-green-400" :
@@ -862,7 +862,7 @@ function SummaryTab({
                   {winRate.win_rate.toFixed(1)}%
                 </span>
               </div>
-              <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
                 <div
                   className={cn(
                     "h-full rounded-full transition-all duration-500",
@@ -970,26 +970,26 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
               )}>
                 {trade.side}
               </span>
-              <span className="text-sm font-medium text-white">{trade.outcome || 'Unknown'}</span>
+              <span className="text-sm font-medium text-foreground">{trade.outcome || 'Unknown'}</span>
             </div>
-            <p className="text-xs text-gray-500 mt-1">{timestamp}</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">{timestamp}</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
-            <p className="font-mono font-semibold text-white">${trade.cost.toFixed(2)}</p>
-            <p className="text-xs text-gray-500">
+            <p className="font-mono font-semibold text-foreground">${trade.cost.toFixed(2)}</p>
+            <p className="text-xs text-muted-foreground/70">
               {trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}
             </p>
           </div>
           <div className={cn(
             "p-2 rounded-lg transition-colors",
-            isExpanded ? "bg-purple-500/20" : "bg-white/5"
+            isExpanded ? "bg-purple-500/20" : "bg-muted/50"
           )}>
             {isExpanded ? (
               <ChevronUp className="w-4 h-4 text-purple-400" />
             ) : (
-              <ChevronDown className="w-4 h-4 text-gray-500" />
+              <ChevronDown className="w-4 h-4 text-muted-foreground/70" />
             )}
           </div>
         </div>
@@ -998,23 +998,23 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
       {isExpanded && (
         <div className="px-4 pb-4 border-t border-border/50">
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div className="bg-black/20 rounded-lg p-3">
-              <p className="text-xs text-gray-500 mb-1">Market</p>
-              <p className="font-mono text-xs text-gray-300 truncate" title={trade.market}>
+            <div className="bg-muted/60 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground/70 mb-1">Market</p>
+              <p className="font-mono text-xs text-foreground/80 truncate" title={trade.market}>
                 {trade.market.length > 30 ? trade.market.slice(0, 30) + '...' : trade.market}
               </p>
             </div>
-            <div className="bg-black/20 rounded-lg p-3">
-              <p className="text-xs text-gray-500 mb-1">Size</p>
-              <p className="font-mono text-white">{trade.size.toFixed(4)}</p>
+            <div className="bg-muted/60 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground/70 mb-1">Size</p>
+              <p className="font-mono text-foreground">{trade.size.toFixed(4)}</p>
             </div>
-            <div className="bg-black/20 rounded-lg p-3">
-              <p className="text-xs text-gray-500 mb-1">Price</p>
-              <p className="font-mono text-white">${trade.price.toFixed(4)}</p>
+            <div className="bg-muted/60 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground/70 mb-1">Price</p>
+              <p className="font-mono text-foreground">${trade.price.toFixed(4)}</p>
             </div>
             {trade.transaction_hash && (
-              <div className="bg-black/20 rounded-lg p-3">
-                <p className="text-xs text-gray-500 mb-1">Transaction</p>
+              <div className="bg-muted/60 rounded-lg p-3">
+                <p className="text-xs text-muted-foreground/70 mb-1">Transaction</p>
                 <a
                   href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
                   target="_blank"
@@ -1045,7 +1045,7 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
                 href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground/80"
               >
                 <ExternalLink className="w-3 h-3" />
                 Transaction
@@ -1083,15 +1083,15 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
         <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border border-blue-500/20 p-5">
           <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Position Value</p>
-            <p className="text-2xl font-bold text-white">${data.total_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-            <p className="text-xs text-gray-500 mt-1">{data.total_positions} open positions</p>
+            <p className="text-xs text-muted-foreground/70 uppercase tracking-wider mb-1">Total Position Value</p>
+            <p className="text-2xl font-bold text-foreground">${data.total_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">{data.total_positions} open positions</p>
           </div>
         </div>
         <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-purple-500/10 to-pink-500/5 border border-purple-500/20 p-5">
           <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Unrealized P&L</p>
+            <p className="text-xs text-muted-foreground/70 uppercase tracking-wider mb-1">Unrealized P&L</p>
             <p className={cn(
               "text-2xl font-bold",
               data.total_unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
@@ -1144,7 +1144,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
       case 'high': return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
       case 'medium': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
       case 'low': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+      default: return 'bg-gray-500/20 text-muted-foreground border-gray-500/30'
     }
   }
 
@@ -1165,7 +1165,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
                   ) : (
                     <ShieldCheck className="w-5 h-5 text-green-400" />
                   )}
-                  <p className="text-sm text-gray-400">Anomaly Score</p>
+                  <p className="text-sm text-muted-foreground">Anomaly Score</p>
                 </div>
                 <p className={cn("text-3xl font-bold", scoreColor)}>
                   {(data.anomaly_score * 100).toFixed(0)}%
@@ -1186,15 +1186,15 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
         <div className="rounded-xl bg-muted border border-border p-5">
           <div className="flex items-center gap-2 mb-3">
             <Eye className="w-5 h-5 text-purple-400" />
-            <p className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Recommendation</p>
+            <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recommendation</p>
           </div>
-          <p className="text-white leading-relaxed">{data.recommendation}</p>
+          <p className="text-foreground leading-relaxed">{data.recommendation}</p>
           <div className="mt-3 flex items-center gap-2">
             <span className={cn(
               "px-2.5 py-1 rounded-full text-xs font-medium border",
               data.is_profitable_pattern
                 ? "bg-green-500/20 text-green-400 border-green-500/30"
-                : "bg-gray-500/20 text-gray-400 border-gray-500/30"
+                : "bg-gray-500/20 text-muted-foreground border-gray-500/30"
             )}>
               {data.is_profitable_pattern ? 'Profitable Pattern' : 'Not Profitable'}
             </span>
@@ -1204,25 +1204,25 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
 
       {/* Stats Grid */}
       <div>
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Trading Profile</h3>
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Trading Profile</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-gray-500 mb-1">Total Trades</p>
-            <p className="text-xl font-bold text-white">{data.stats.total_trades}</p>
+            <p className="text-xs text-muted-foreground/70 mb-1">Total Trades</p>
+            <p className="text-xl font-bold text-foreground">{data.stats.total_trades}</p>
           </div>
           <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-gray-500 mb-1">Win Rate</p>
-            <p className="text-xl font-bold text-white">{(data.stats.win_rate * 100).toFixed(1)}%</p>
+            <p className="text-xs text-muted-foreground/70 mb-1">Win Rate</p>
+            <p className="text-xl font-bold text-foreground">{(data.stats.win_rate * 100).toFixed(1)}%</p>
           </div>
           <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-gray-500 mb-1">Avg ROI</p>
+            <p className="text-xs text-muted-foreground/70 mb-1">Avg ROI</p>
             <p className={cn("text-xl font-bold", data.stats.avg_roi >= 0 ? "text-green-400" : "text-red-400")}>
               {data.stats.avg_roi >= 0 ? '+' : ''}{data.stats.avg_roi.toFixed(1)}%
             </p>
           </div>
           <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-gray-500 mb-1">Markets Traded</p>
-            <p className="text-xl font-bold text-white">{data.stats.markets_traded ?? '-'}</p>
+            <p className="text-xs text-muted-foreground/70 mb-1">Markets Traded</p>
+            <p className="text-xl font-bold text-foreground">{data.stats.markets_traded ?? '-'}</p>
           </div>
         </div>
       </div>
@@ -1230,7 +1230,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
       {/* Strategies Detected */}
       {data.strategies_detected.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Detected Strategies</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Detected Strategies</h3>
           <div className="flex flex-wrap gap-2">
             {data.strategies_detected.map((strategy, idx) => (
               <span
@@ -1247,14 +1247,14 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
 
       {/* Anomalies Found */}
       <div>
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
           Anomalies Detected ({data.anomalies.length})
         </h3>
         {data.anomalies.length === 0 ? (
           <div className="text-center py-8 rounded-xl bg-green-500/5 border border-green-500/20">
             <ShieldCheck className="w-10 h-10 text-green-400 mx-auto mb-3" />
             <p className="text-green-400 font-medium">No anomalies detected</p>
-            <p className="text-xs text-gray-500 mt-1">This wallet shows normal trading patterns</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">This wallet shows normal trading patterns</p>
           </div>
         ) : (
           <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
@@ -1271,7 +1271,7 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
                       anomaly.severity === 'high' ? 'text-orange-400' :
                       anomaly.severity === 'medium' ? 'text-yellow-400' : 'text-blue-400'
                     )} />
-                    <span className="font-medium text-white text-sm">
+                    <span className="font-medium text-foreground text-sm">
                       {anomaly.type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
                     </span>
                   </div>
@@ -1282,12 +1282,12 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
                     {anomaly.severity}
                   </span>
                 </div>
-                <p className="text-sm text-gray-400 mb-2">{anomaly.description}</p>
+                <p className="text-sm text-muted-foreground mb-2">{anomaly.description}</p>
                 {anomaly.evidence && Object.keys(anomaly.evidence).length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
                     {Object.entries(anomaly.evidence).map(([key, value]) => (
-                      <span key={key} className="text-xs bg-black/30 rounded px-2 py-1 text-gray-500">
-                        {key.replace(/_/g, ' ')}: <span className="text-gray-300">
+                      <span key={key} className="text-xs bg-muted/70 rounded px-2 py-1 text-muted-foreground/70">
+                        {key.replace(/_/g, ' ')}: <span className="text-foreground/80">
                           {typeof value === 'number' ? value.toFixed(2) : String(value)}
                         </span>
                       </span>
@@ -1316,10 +1316,10 @@ function PositionRow({ position }: { position: WalletPosition }) {
     <div className="rounded-xl bg-muted border border-border p-5 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
-          <p className="font-medium text-white truncate" title={displayTitle}>
+          <p className="font-medium text-foreground truncate" title={displayTitle}>
             {position.title || (isConditionId ? `${position.market.slice(0, 20)}...` : position.market)}
           </p>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-muted-foreground/70 mt-1">
             {position.outcome || 'Unknown'}
           </p>
         </div>
@@ -1339,20 +1339,20 @@ function PositionRow({ position }: { position: WalletPosition }) {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-black/20 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Size</p>
-          <p className="font-mono font-medium text-white">{position.size.toFixed(2)}</p>
+        <div className="bg-muted/60 rounded-lg p-3">
+          <p className="text-xs text-muted-foreground/70 mb-1">Size</p>
+          <p className="font-mono font-medium text-foreground">{position.size.toFixed(2)}</p>
         </div>
-        <div className="bg-black/20 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Avg Price</p>
-          <p className="font-mono font-medium text-white">${position.avg_price.toFixed(4)}</p>
+        <div className="bg-muted/60 rounded-lg p-3">
+          <p className="text-xs text-muted-foreground/70 mb-1">Avg Price</p>
+          <p className="font-mono font-medium text-foreground">${position.avg_price.toFixed(4)}</p>
         </div>
-        <div className="bg-black/20 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Current Price</p>
-          <p className="font-mono font-medium text-white">${position.current_price.toFixed(4)}</p>
+        <div className="bg-muted/60 rounded-lg p-3">
+          <p className="text-xs text-muted-foreground/70 mb-1">Current Price</p>
+          <p className="font-mono font-medium text-foreground">${position.current_price.toFixed(4)}</p>
         </div>
-        <div className="bg-black/20 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Unrealized P&L</p>
+        <div className="bg-muted/60 rounded-lg p-3">
+          <p className="text-xs text-muted-foreground/70 mb-1">Unrealized P&L</p>
           <p className={cn(
             "font-mono font-medium",
             isProfitable ? "text-green-400" : "text-red-400"
