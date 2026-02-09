@@ -369,6 +369,21 @@ export const getOpportunities = async (params?: {
   }
 }
 
+export interface OpportunityCounts {
+  strategies: Record<string, number>
+  categories: Record<string, number>
+}
+
+export const getOpportunityCounts = async (params?: {
+  min_profit?: number
+  max_risk?: number
+  min_liquidity?: number
+  search?: string
+}): Promise<OpportunityCounts> => {
+  const { data } = await api.get('/opportunities/counts', { params })
+  return data
+}
+
 export const searchPolymarketOpportunities = async (params: {
   q: string
   limit?: number

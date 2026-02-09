@@ -36,6 +36,7 @@ import {
 import { cn } from './lib/utils'
 import {
   getOpportunities,
+  getOpportunityCounts,
   searchPolymarketOpportunities,
   getScannerStatus,
   triggerScan,
@@ -57,6 +58,7 @@ import { Badge } from './components/ui/badge'
 import { Input } from './components/ui/input'
 import { Separator } from './components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './components/ui/tooltip'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
 
 // App components
 import OpportunityCard from './components/OpportunityCard'
@@ -263,6 +265,16 @@ function App() {
   const { data: strategies = [] } = useQuery({
     queryKey: ['strategies'],
     queryFn: getStrategies,
+  })
+
+  const { data: opportunityCounts } = useQuery({
+    queryKey: ['opportunity-counts', minProfit, maxRisk, searchQuery],
+    queryFn: () => getOpportunityCounts({
+      min_profit: minProfit,
+      max_risk: maxRisk,
+      search: searchQuery || undefined,
+    }),
+    refetchInterval: 30000,
   })
 
   // Polymarket search query (only runs when user submits a search)
@@ -820,34 +832,60 @@ function App() {
                           <div className="flex gap-3 mb-4">
                             <div className="flex-1">
                               <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
-                              <select
-                                value={selectedStrategy}
-                                onChange={(e) => setSelectedStrategy(e.target.value)}
-                                className="w-full bg-card border border-border rounded-lg px-3 py-1.5 text-sm"
-                              >
-                                <option value="">All Strategies</option>
-                                {strategies.map((s) => (
-                                  <option key={s.type} value={s.type}>{s.name}</option>
-                                ))}
-                              </select>
+                              <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
+                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                  <SelectValue placeholder="All Strategies" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="_all">All Strategies</SelectItem>
+                                  {strategies.map((s) => (
+                                    <SelectItem
+                                      key={s.type}
+                                      value={s.type}
+                                      suffix={opportunityCounts?.strategies[s.type] != null ? (
+                                        <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
+                                          {opportunityCounts.strategies[s.type]}
+                                        </span>
+                                      ) : undefined}
+                                    >
+                                      {s.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="flex-1">
                               <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
-                              <select
-                                value={selectedCategory}
-                                onChange={(e) => setSelectedCategory(e.target.value)}
-                                className="w-full bg-card border border-border rounded-lg px-3 py-1.5 text-sm"
-                              >
-                                <option value="">All Categories</option>
-                                <option value="politics">Politics</option>
-                                <option value="sports">Sports</option>
-                                <option value="crypto">Crypto</option>
-                                <option value="culture">Culture</option>
-                                <option value="economics">Economics</option>
-                                <option value="tech">Tech</option>
-                                <option value="finance">Finance</option>
-                                <option value="weather">Weather</option>
-                              </select>
+                              <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
+                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                  <SelectValue placeholder="All Categories" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="_all">All Categories</SelectItem>
+                                  {[
+                                    { value: 'politics', label: 'Politics' },
+                                    { value: 'sports', label: 'Sports' },
+                                    { value: 'crypto', label: 'Crypto' },
+                                    { value: 'culture', label: 'Culture' },
+                                    { value: 'economics', label: 'Economics' },
+                                    { value: 'tech', label: 'Tech' },
+                                    { value: 'finance', label: 'Finance' },
+                                    { value: 'weather', label: 'Weather' },
+                                  ].map((cat) => (
+                                    <SelectItem
+                                      key={cat.value}
+                                      value={cat.value}
+                                      suffix={opportunityCounts?.categories[cat.value] != null ? (
+                                        <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
+                                          {opportunityCounts.categories[cat.value]}
+                                        </span>
+                                      ) : undefined}
+                                    >
+                                      {cat.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                             </div>
                             <div className="w-32">
                               <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Min Profit %</label>
