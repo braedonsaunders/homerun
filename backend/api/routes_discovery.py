@@ -17,7 +17,7 @@ discovery_router = APIRouter()
 async def get_leaderboard(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    min_trades: int = Query(default=10, ge=0),
+    min_trades: int = Query(default=0, ge=0),
     min_pnl: float = Query(default=0.0),
     sort_by: str = Query(
         default="rank_score",

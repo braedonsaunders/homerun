@@ -23,7 +23,6 @@ import {
   Terminal,
   Briefcase,
   BarChart3,
-  Trophy,
   Users,
   Brain,
   Sparkles,
@@ -87,7 +86,7 @@ import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
-type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
+type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
 type TradingSubTab = 'auto' | 'copy'
 
 const ITEMS_PER_PAGE = 20
@@ -106,7 +105,7 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [accountMode] = useAtom(accountModeAtom)
-  const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('leaderboard')
+  const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
   const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
@@ -467,7 +466,7 @@ function App() {
                     type="button"
                     onClick={() => {
                       setActiveTab('traders')
-                      setTradersSubTab('discover')
+                      setTradersSubTab('discovery')
                       setHeaderSearchQuery('')
                       setHeaderSearchOpen(false)
                     }}
@@ -1058,6 +1057,20 @@ function App() {
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => setTradersSubTab('discovery')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'discovery'
+                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Target className="w-3.5 h-3.5" />
+                    Discovery
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setTradersSubTab('tracked')}
                     className={cn(
                       "gap-1.5 text-xs h-8",
@@ -1068,34 +1081,6 @@ function App() {
                   >
                     <Users className="w-3.5 h-3.5" />
                     Tracked
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTradersSubTab('leaderboard')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      tradersSubTab === 'leaderboard'
-                        ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <Trophy className="w-3.5 h-3.5" />
-                    Leaderboard
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTradersSubTab('discover')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      tradersSubTab === 'discover'
-                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <Target className="w-3.5 h-3.5" />
-                    Discover
                   </Button>
                   <Button
                     variant="outline"
@@ -1113,15 +1098,14 @@ function App() {
                   </Button>
                 </div>
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
-                    <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
-                  </div>
-                  <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
+                  <div className={tradersSubTab === 'discovery' ? '' : 'hidden'}>
                     <DiscoveryPanel
-                      parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
                       onAnalyzeWallet={handleAnalyzeWallet}
                       onExecuteTrade={setExecutingOpportunity}
                     />
+                  </div>
+                  <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
+                    <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
                   </div>
                   <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
                     <WalletAnalysisPanel
