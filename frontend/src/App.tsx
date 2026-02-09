@@ -998,7 +998,10 @@ function App() {
                 <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
               </div>
               <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
-                <DiscoveryPanel />
+                <DiscoveryPanel
+                  parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
+                  onAnalyzeWallet={handleAnalyzeWallet}
+                />
               </div>
               <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
                 <WalletAnalysisPanel
