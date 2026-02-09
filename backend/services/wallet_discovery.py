@@ -875,6 +875,11 @@ class WalletDiscoveryEngine:
             6. Store/update in DB
             7. Refresh leaderboard
         """
+        if self._running:
+            logger.warning("Discovery already running, skipping")
+            return
+
+        self._running = True
         run_start = datetime.utcnow()
         logger.info(
             "Starting discovery run",
@@ -882,128 +887,131 @@ class WalletDiscoveryEngine:
             max_wallets_per_market=max_wallets_per_market,
         )
 
-        # --- Step 1: Fetch active markets ---
         try:
-            markets = await self.client.get_markets(
-                active=True, limit=min(max_markets, 100), offset=0
-            )
-        except Exception as e:
-            logger.error("Failed to fetch markets", error=str(e))
-            markets = []
-
-        # Paginate if we need more
-        if len(markets) < max_markets:
-            offset = len(markets)
-            while offset < max_markets:
-                try:
-                    page = await self.client.get_markets(
-                        active=True,
-                        limit=min(100, max_markets - offset),
-                        offset=offset,
-                    )
-                    if not page:
-                        break
-                    markets.extend(page)
-                    offset += len(page)
-                    await asyncio.sleep(DELAY_BETWEEN_MARKETS)
-                except Exception:
-                    break
-
-        logger.info("Fetched markets", count=len(markets))
-
-        # --- Step 2 & 3: Discover wallet addresses ---
-        all_addresses: set[str] = set()
-
-        # From market trades (with concurrency limiter)
-        semaphore = asyncio.Semaphore(5)
-
-        async def discover_from_market(market):
-            async with semaphore:
-                addrs = await self._discover_wallets_from_market(
-                    market, max_wallets=max_wallets_per_market
+            # --- Step 1: Fetch active markets ---
+            try:
+                markets = await self.client.get_markets(
+                    active=True, limit=min(max_markets, 100), offset=0
                 )
-                await asyncio.sleep(DELAY_BETWEEN_MARKETS)
-                return addrs
+            except Exception as e:
+                logger.error("Failed to fetch markets", error=str(e))
+                markets = []
 
-        market_tasks = [discover_from_market(m) for m in markets]
-        market_results = await asyncio.gather(*market_tasks, return_exceptions=True)
+            # Paginate if we need more
+            if len(markets) < max_markets:
+                offset = len(markets)
+                while offset < max_markets:
+                    try:
+                        page = await self.client.get_markets(
+                            active=True,
+                            limit=min(100, max_markets - offset),
+                            offset=offset,
+                        )
+                        if not page:
+                            break
+                        markets.extend(page)
+                        offset += len(page)
+                        await asyncio.sleep(DELAY_BETWEEN_MARKETS)
+                    except Exception:
+                        break
 
-        for result in market_results:
-            if isinstance(result, set):
-                all_addresses.update(result)
+            logger.info("Fetched markets", count=len(markets))
 
-        # From leaderboard
-        leaderboard_addrs = await self._discover_wallets_from_leaderboard(
-            scan_count=200
-        )
-        all_addresses.update(leaderboard_addrs)
+            # --- Step 2 & 3: Discover wallet addresses ---
+            all_addresses: set[str] = set()
 
-        self._wallets_discovered_last_run = len(all_addresses)
-        logger.info(
-            "Wallet addresses discovered",
-            total=len(all_addresses),
-            from_markets=len(all_addresses) - len(leaderboard_addrs),
-            from_leaderboard=len(leaderboard_addrs),
-        )
+            # From market trades (with concurrency limiter)
+            semaphore = asyncio.Semaphore(5)
 
-        # --- Step 4: Filter to new/stale wallets ---
-        addresses_to_analyze: list[str] = []
-        for addr in all_addresses:
-            if await self._is_stale(addr):
-                addresses_to_analyze.append(addr)
-
-        logger.info(
-            "Wallets requiring analysis",
-            total=len(addresses_to_analyze),
-            skipped_fresh=len(all_addresses) - len(addresses_to_analyze),
-        )
-
-        # --- Step 5 & 6: Analyze and store ---
-        analyzed_count = 0
-        analysis_semaphore = asyncio.Semaphore(5)
-
-        async def analyze_and_store(addr: str):
-            nonlocal analyzed_count
-            async with analysis_semaphore:
-                try:
-                    profile = await self.analyze_wallet(addr)
-                    if profile is not None:
-                        await self._upsert_wallet(profile)
-                        analyzed_count += 1
-                    await asyncio.sleep(DELAY_BETWEEN_WALLETS)
-                except Exception as e:
-                    logger.warning(
-                        "Wallet analysis failed",
-                        address=addr,
-                        error=str(e),
+            async def discover_from_market(market):
+                async with semaphore:
+                    addrs = await self._discover_wallets_from_market(
+                        market, max_wallets=max_wallets_per_market
                     )
+                    await asyncio.sleep(DELAY_BETWEEN_MARKETS)
+                    return addrs
 
-        # Process in batches to avoid overwhelming the API
-        batch_size = 50
-        for i in range(0, len(addresses_to_analyze), batch_size):
-            batch = addresses_to_analyze[i : i + batch_size]
-            await asyncio.gather(*[analyze_and_store(a) for a in batch])
+            market_tasks = [discover_from_market(m) for m in markets]
+            market_results = await asyncio.gather(*market_tasks, return_exceptions=True)
+
+            for result in market_results:
+                if isinstance(result, set):
+                    all_addresses.update(result)
+
+            # From leaderboard
+            leaderboard_addrs = await self._discover_wallets_from_leaderboard(
+                scan_count=200
+            )
+            all_addresses.update(leaderboard_addrs)
+
+            self._wallets_discovered_last_run = len(all_addresses)
             logger.info(
-                "Batch complete",
-                progress=min(i + batch_size, len(addresses_to_analyze)),
-                total=len(addresses_to_analyze),
-                analyzed=analyzed_count,
+                "Wallet addresses discovered",
+                total=len(all_addresses),
+                from_markets=len(all_addresses) - len(leaderboard_addrs),
+                from_leaderboard=len(leaderboard_addrs),
             )
 
-        # --- Step 7: Refresh leaderboard ---
-        await self.refresh_leaderboard()
+            # --- Step 4: Filter to new/stale wallets ---
+            addresses_to_analyze: list[str] = []
+            for addr in all_addresses:
+                if await self._is_stale(addr):
+                    addresses_to_analyze.append(addr)
 
-        # --- Record run metadata ---
-        self._last_run_at = datetime.utcnow()
-        self._wallets_analyzed_last_run = analyzed_count
-        duration = (self._last_run_at - run_start).total_seconds()
+            logger.info(
+                "Wallets requiring analysis",
+                total=len(addresses_to_analyze),
+                skipped_fresh=len(all_addresses) - len(addresses_to_analyze),
+            )
 
-        logger.info(
-            "Discovery run complete",
-            wallets_discovered=self._wallets_discovered_last_run,
-            wallets_analyzed=analyzed_count,
-            duration_seconds=round(duration, 1),
-        )
+            # --- Step 5 & 6: Analyze and store ---
+            analyzed_count = 0
+            analysis_semaphore = asyncio.Semaphore(5)
+
+            async def analyze_and_store(addr: str):
+                nonlocal analyzed_count
+                async with analysis_semaphore:
+                    try:
+                        profile = await self.analyze_wallet(addr)
+                        if profile is not None:
+                            await self._upsert_wallet(profile)
+                            analyzed_count += 1
+                        await asyncio.sleep(DELAY_BETWEEN_WALLETS)
+                    except Exception as e:
+                        logger.warning(
+                            "Wallet analysis failed",
+                            address=addr,
+                            error=str(e),
+                        )
+
+            # Process in batches to avoid overwhelming the API
+            batch_size = 50
+            for i in range(0, len(addresses_to_analyze), batch_size):
+                batch = addresses_to_analyze[i : i + batch_size]
+                await asyncio.gather(*[analyze_and_store(a) for a in batch])
+                logger.info(
+                    "Batch complete",
+                    progress=min(i + batch_size, len(addresses_to_analyze)),
+                    total=len(addresses_to_analyze),
+                    analyzed=analyzed_count,
+                )
+
+            # --- Step 7: Refresh leaderboard ---
+            await self.refresh_leaderboard()
+
+            # --- Record run metadata ---
+            self._last_run_at = datetime.utcnow()
+            self._wallets_analyzed_last_run = analyzed_count
+            duration = (self._last_run_at - run_start).total_seconds()
+
+            logger.info(
+                "Discovery run complete",
+                wallets_discovered=self._wallets_discovered_last_run,
+                wallets_analyzed=analyzed_count,
+                duration_seconds=round(duration, 1),
+            )
+        finally:
+            self._running = False
 
     # ------------------------------------------------------------------
     # 11. Background Scheduler
@@ -1044,7 +1052,7 @@ class WalletDiscoveryEngine:
         sort_dir: str = "desc",
         tags: list[str] | None = None,
         recommendation: str | None = None,
-    ) -> list[dict]:
+    ) -> dict:
         """
         Get the wallet leaderboard with filtering and sorting.
 
@@ -1059,16 +1067,27 @@ class WalletDiscoveryEngine:
             recommendation: If provided, filter to this recommendation level.
 
         Returns:
-            List of wallet dicts.
+            Dict with 'wallets' list and 'total' count.
         """
         async with AsyncSessionLocal() as session:
-            query = select(DiscoveredWallet).where(
+            base_filter = [
                 DiscoveredWallet.total_trades >= min_trades,
                 DiscoveredWallet.total_pnl >= min_pnl,
-            )
-
+            ]
             if recommendation:
-                query = query.where(DiscoveredWallet.recommendation == recommendation)
+                base_filter.append(
+                    DiscoveredWallet.recommendation == recommendation
+                )
+
+            # Get total count for pagination
+            count_query = select(func.count(DiscoveredWallet.address)).where(
+                *base_filter
+            )
+            count_result = await session.execute(count_query)
+            total_count = count_result.scalar() or 0
+
+            # Build main query
+            query = select(DiscoveredWallet).where(*base_filter)
 
             # Determine sort column
             sort_column = getattr(DiscoveredWallet, sort_by, None)
@@ -1097,7 +1116,7 @@ class WalletDiscoveryEngine:
 
                 rows.append(row)
 
-            return rows
+            return {"wallets": rows, "total": total_count}
 
     async def get_wallet_profile(self, address: str) -> dict | None:
         """
@@ -1152,9 +1171,9 @@ class WalletDiscoveryEngine:
             avg_win_rate = avg_wr_q.scalar() or 0.0
 
         return {
-            "total_wallets": total_wallets,
-            "profitable_wallets": profitable_count,
-            "copy_candidates": copy_candidates,
+            "total_discovered": total_wallets,
+            "total_profitable": profitable_count,
+            "total_copy_candidates": copy_candidates,
             "avg_rank_score": round(avg_rank_score, 4),
             "avg_win_rate": round(avg_win_rate, 4),
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,

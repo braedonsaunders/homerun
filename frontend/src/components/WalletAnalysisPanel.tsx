@@ -19,7 +19,6 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
-  Sparkles,
   User,
   ShieldAlert,
   ShieldCheck,
@@ -28,6 +27,10 @@ import {
   Eye
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { Card, CardContent } from './ui/card'
+import { Button } from './ui/button'
+import { Badge } from './ui/badge'
+import { Input } from './ui/input'
 import {
   getWalletTradesAnalysis,
   getWalletPositionsAnalysis,
@@ -256,63 +259,51 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <Sparkles className="w-6 h-6 text-purple-400" />
-            Wallet Analysis
-          </h2>
-          <p className="text-sm text-gray-500 mt-1">
+          <h2 className="text-xl font-bold">Wallet Analysis</h2>
+          <p className="text-sm text-muted-foreground">
             Deep dive into any trader's performance and strategy
           </p>
         </div>
       </div>
 
       {/* Search Card */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-500/10 via-blue-500/10 to-cyan-500/10 border border-white/10 p-6">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-500/5 via-transparent to-transparent" />
-        <div className="relative">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
-              <Search className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-white">Analyze a Wallet</h3>
-              <p className="text-xs text-gray-400">Enter any Polymarket wallet address</p>
-            </div>
-          </div>
+      <Card className="border-border">
+        <CardContent className="p-6">
           <div className="flex flex-col gap-3">
             <div className="flex gap-3">
               <div className="flex-1 relative">
-                <input
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
                   type="text"
                   value={searchAddress}
                   onChange={(e) => setSearchAddress(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="0x..."
-                  className="w-full bg-black/30 backdrop-blur border border-white/10 rounded-xl px-4 py-3 font-mono text-sm focus:outline-none focus:border-purple-500/50 focus:ring-2 focus:ring-purple-500/20 transition-all placeholder:text-gray-600"
+                  placeholder="Enter wallet address (0x...) or username"
+                  className="pl-10 bg-card border-border font-mono text-sm"
                 />
               </div>
-              <button
+              <Button
                 onClick={handleAnalyze}
                 disabled={!searchAddress.trim()}
-                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-500/25"
+                className="flex items-center gap-2 bg-cyan-500 hover:bg-cyan-600 text-white"
               >
                 <Search className="w-4 h-4" />
                 Analyze
-              </button>
+              </Button>
             </div>
             {/* Time Period Filter */}
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Time Period:</span>
-              <div className="flex gap-1 p-1 bg-black/30 rounded-lg">
+              <span className="text-xs text-muted-foreground">Time Period:</span>
+              <div className="flex gap-1">
                 {TIME_PERIOD_OPTIONS.map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setTimePeriod(option.value)}
                     className={cn(
-                      "px-3 py-1.5 text-xs font-medium rounded-md transition-all",
+                      "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
                       timePeriod === option.value
-                        ? "bg-purple-500/30 text-purple-300 border border-purple-500/30"
-                        : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                        ? "bg-primary/20 text-primary"
+                        : "bg-muted/50 text-muted-foreground hover:bg-muted"
                     )}
                   >
                     {option.label}
@@ -321,8 +312,8 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               </div>
             </div>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Results */}
       {activeWallet && (
@@ -349,32 +340,34 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
           />
 
           {/* Tab Navigation */}
-          <div className="flex gap-2 p-1 bg-card rounded-xl border border-border">
+          <div className="flex items-center gap-2">
             {[
               { id: 'summary' as const, label: 'Overview', icon: BarChart3 },
               { id: 'trades' as const, label: 'Trade History', icon: History },
               { id: 'positions' as const, label: 'Open Positions', icon: Briefcase },
               { id: 'anomaly' as const, label: 'Risk Analysis', icon: ShieldAlert },
             ].map((tab) => (
-              <button
+              <Button
                 key={tab.id}
+                variant="outline"
+                size="sm"
                 onClick={() => setActiveTab(tab.id)}
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-medium transition-all",
+                  "flex items-center gap-2",
                   activeTab === tab.id
-                    ? "bg-gradient-to-r from-purple-500/20 to-blue-500/20 text-white border border-purple-500/30"
-                    : "text-gray-400 hover:text-white hover:bg-white/5"
+                    ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
+                    : "bg-card text-muted-foreground hover:text-foreground border-border"
                 )}
               >
                 <tab.icon className="w-4 h-4" />
                 {tab.label}
-              </button>
+              </Button>
             ))}
           </div>
 
           {/* Tab Content */}
-          <div className="bg-card border border-border rounded-2xl overflow-hidden">
-            <div className="p-6">
+          <Card className="border-border">
+            <CardContent className="p-6">
               {activeTab === 'summary' && (
                 <SummaryTab
                   pnlData={pnlQuery.data}
@@ -392,22 +385,22 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
               {activeTab === 'anomaly' && (
                 <AnomalyTab data={anomalyQuery.data} isLoading={anomalyQuery.isLoading} />
               )}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
       {/* Empty State */}
       {!activeWallet && (
-        <div className="text-center py-16">
-          <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center">
-            <Wallet className="w-10 h-10 text-purple-400" />
-          </div>
-          <h3 className="text-xl font-semibold text-white mb-2">No wallet selected</h3>
-          <p className="text-gray-500 max-w-md mx-auto">
-            Enter a wallet address above to analyze trading performance, win rates, and strategy patterns.
-          </p>
-        </div>
+        <Card className="border-border">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Wallet className="w-12 h-12 text-muted-foreground/30 mb-4" />
+            <p className="text-muted-foreground">No wallet selected</p>
+            <p className="text-sm text-muted-foreground/70 mt-1">
+              Enter a wallet address above to analyze trading performance, win rates, and strategy patterns
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   )
@@ -478,37 +471,32 @@ function WalletHeroCard({
 
   if (isLoading) {
     return (
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#1a1a2e] to-[#16162a] border border-white/10 p-8">
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-purple-400" />
-        </div>
-      </div>
+      <Card className="border-border">
+        <CardContent className="flex items-center justify-center py-12">
+          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
     )
   }
 
   return (
-    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#1a1a2e] via-[#1e1e3f] to-[#16162a] border border-white/10">
-      {/* Background Effects */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-purple-500/10 via-transparent to-transparent" />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_right,_var(--tw-gradient-stops))] from-blue-500/10 via-transparent to-transparent" />
-      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-purple-500/50 to-transparent" />
-
-      <div className="relative p-6 md:p-8">
+    <Card className="border-border">
+      <CardContent className="p-6">
         {/* Header Row */}
         <div className="flex items-start justify-between mb-6">
           <div className="flex items-center gap-4">
             {/* Avatar */}
             <div className="relative">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center shadow-xl shadow-purple-500/20">
+              <div className="p-3 bg-cyan-500/10 rounded-lg">
                 {username ? (
-                  <User className="w-8 h-8 text-white" />
+                  <User className="w-6 h-6 text-cyan-500" />
                 ) : (
-                  <Wallet className="w-8 h-8 text-white" />
+                  <Wallet className="w-6 h-6 text-cyan-500" />
                 )}
               </div>
               {isProfitable && (
-                <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center border-2 border-[#1a1a2e]">
-                  <TrendingUp className="w-3 h-3 text-white" />
+                <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center border-2 border-card">
+                  <TrendingUp className="w-2.5 h-2.5 text-white" />
                 </div>
               )}
             </div>
@@ -518,36 +506,36 @@ function WalletHeroCard({
               {username ? (
                 <>
                   <div className="flex items-center gap-2 mb-1">
-                    <h2 className="text-2xl font-bold text-white">{username}</h2>
+                    <h2 className="text-lg font-bold text-foreground">{username}</h2>
                     <a
                       href={`https://polymarket.com/profile/${address}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                      className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
                       title="View on Polymarket"
                     >
-                      <ExternalLink className="w-4 h-4 text-gray-400" />
+                      <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   </div>
-                  <p className="text-sm text-gray-400 font-mono">{`${address.slice(0, 6)}...${address.slice(-4)}`}</p>
+                  <p className="text-xs text-muted-foreground font-mono">{`${address.slice(0, 6)}...${address.slice(-4)}`}</p>
                 </>
               ) : (
                 <>
                   <div className="flex items-center gap-2 mb-1">
-                    <h2 className="text-xl font-bold text-white">
+                    <h2 className="text-lg font-bold text-foreground font-mono">
                       {`${address.slice(0, 6)}...${address.slice(-4)}`}
                     </h2>
                     <a
                       href={`https://polymarket.com/profile/${address}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                      className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
                       title="View on Polymarket"
                     >
-                      <ExternalLink className="w-4 h-4 text-gray-400" />
+                      <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   </div>
-                  <p className="text-xs text-gray-500 font-mono truncate max-w-[300px]">{address}</p>
+                  <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[300px]">{address}</p>
                 </>
               )}
             </div>
@@ -556,90 +544,92 @@ function WalletHeroCard({
           {/* Badges & Refresh */}
           <div className="flex items-center gap-2">
             {anomalyData && (
-              <span className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium",
+              <Badge variant="outline" className={cn(
+                "text-xs",
                 anomalyData.anomaly_score > 0.7
-                  ? "bg-red-500/20 border-red-500/30 text-red-300"
+                  ? "bg-red-500/15 text-red-400 border-red-500/20"
                   : anomalyData.anomaly_score > 0.3
-                  ? "bg-yellow-500/20 border-yellow-500/30 text-yellow-300"
-                  : "bg-green-500/20 border-green-500/30 text-green-300"
+                  ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/20"
+                  : "bg-green-500/15 text-green-400 border-green-500/20"
               )}>
                 {anomalyData.anomaly_score > 0.7 ? (
-                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <ShieldAlert className="w-3 h-3 mr-1" />
                 ) : anomalyData.anomaly_score > 0.3 ? (
-                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <AlertTriangle className="w-3 h-3 mr-1" />
                 ) : (
-                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <ShieldCheck className="w-3 h-3 mr-1" />
                 )}
                 Risk: {(anomalyData.anomaly_score * 100).toFixed(0)}%
-              </span>
+              </Badge>
             )}
-            <span className="px-3 py-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 text-xs font-medium text-purple-300">
+            <Badge variant="outline" className="text-xs bg-muted text-muted-foreground border-border">
               {timePeriodLabel}
-            </span>
-            <button
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={onRefresh}
-              className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-              title="Refresh data"
+              className="flex items-center gap-1.5"
             >
-              <RefreshCw className="w-5 h-5 text-gray-400" />
-            </button>
+              <RefreshCw className="w-3.5 h-3.5" />
+              Refresh
+            </Button>
           </div>
         </div>
 
         {/* Key Metrics Row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {/* Total P&L - Primary metric */}
-          <div className="col-span-2 bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+          <div className="col-span-2 bg-muted rounded-lg p-4 border border-border">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total P&L</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Total P&L</p>
                 <p className={cn(
-                  "text-3xl font-bold",
+                  "text-2xl font-bold",
                   isProfitable ? "text-green-400" : "text-red-400"
                 )}>
                   {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
-                <p className="text-sm text-gray-500 mt-1">
+                <p className="text-sm text-muted-foreground mt-1">
                   ROI: <span className={isProfitable ? "text-green-400" : "text-red-400"}>
                     {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}%
                   </span>
                 </p>
               </div>
               <div className={cn(
-                "w-14 h-14 rounded-xl flex items-center justify-center",
-                isProfitable ? "bg-green-500/20" : "bg-red-500/20"
+                "p-3 rounded-lg",
+                isProfitable ? "bg-green-500/10" : "bg-red-500/10"
               )}>
                 {isProfitable ? (
-                  <TrendingUp className="w-7 h-7 text-green-400" />
+                  <TrendingUp className="w-6 h-6 text-green-400" />
                 ) : (
-                  <TrendingDown className="w-7 h-7 text-red-400" />
+                  <TrendingDown className="w-6 h-6 text-red-400" />
                 )}
               </div>
             </div>
           </div>
 
           {/* Volume */}
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Volume</p>
-            <p className="text-2xl font-bold text-white">
+          <div className="bg-muted rounded-lg p-4 border border-border">
+            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Volume</p>
+            <p className="text-xl font-bold text-foreground">
               ${volume.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             </p>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               {totalTrades} trades
             </p>
           </div>
 
           {/* Win Rate */}
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Win Rate</p>
-                <p className="text-2xl font-bold" style={{ color: winRateColor }}>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Win Rate</p>
+                <p className="text-xl font-bold" style={{ color: winRateColor }}>
                   {winRateValue.toFixed(1)}%
                 </p>
                 {winRate && (
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     <span className="text-green-400">{winRate.wins}W</span>
                     {' / '}
                     <span className="text-red-400">{winRate.losses}L</span>
@@ -658,10 +648,10 @@ function WalletHeroCard({
 
         {/* Sparkline Section - Full Width */}
         {sparklineData.length > 1 && (
-          <div className="bg-black/20 backdrop-blur rounded-xl p-4 border border-white/5">
+          <div className="bg-muted rounded-lg p-4 border border-border">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-sm text-gray-400">Performance Trend</p>
-              <p className="text-xs text-gray-500">Last {sparklineData.length} trades</p>
+              <p className="text-sm text-muted-foreground">Performance Trend</p>
+              <p className="text-xs text-muted-foreground">Last {sparklineData.length} trades</p>
             </div>
             <LargeSparkline
               data={sparklineData}
@@ -670,8 +660,8 @@ function WalletHeroCard({
             />
           </div>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -688,11 +678,8 @@ function SummaryTab({
 }) {
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-4" />
-          <p className="text-gray-500">Analyzing wallet...</p>
-        </div>
+      <div className="flex items-center justify-center py-12">
+        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
@@ -712,9 +699,9 @@ function SummaryTab({
 
   if (!data && !pnlData) {
     return (
-      <div className="text-center py-16">
-        <Activity className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-        <p className="text-gray-500">No data available for this wallet</p>
+      <div className="text-center py-12">
+        <Activity className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+        <p className="text-muted-foreground">No data available for this wallet</p>
       </div>
     )
   }
@@ -903,20 +890,17 @@ function TradesTab({ data, isLoading }: { data?: { wallet: string; total: number
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-4" />
-          <p className="text-gray-500">Loading trade history...</p>
-        </div>
+      <div className="flex items-center justify-center py-12">
+        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (!data || data.trades.length === 0) {
     return (
-      <div className="text-center py-16">
-        <History className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-        <p className="text-gray-500">No trades found for this wallet</p>
+      <div className="text-center py-12">
+        <History className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+        <p className="text-muted-foreground">No trades found for this wallet</p>
       </div>
     )
   }
@@ -934,7 +918,7 @@ function TradesTab({ data, isLoading }: { data?: { wallet: string; total: number
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           Showing {data.trades.length} of {data.total} trades
         </p>
       </div>
@@ -1077,20 +1061,17 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
 function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_positions: number; total_value: number; total_unrealized_pnl: number; positions: WalletPosition[] }; isLoading: boolean }) {
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-4" />
-          <p className="text-gray-500">Loading positions...</p>
-        </div>
+      <div className="flex items-center justify-center py-12">
+        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (!data || data.positions.length === 0) {
     return (
-      <div className="text-center py-16">
-        <Briefcase className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-        <p className="text-gray-500">No open positions</p>
+      <div className="text-center py-12">
+        <Briefcase className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+        <p className="text-muted-foreground">No open positions</p>
       </div>
     )
   }
@@ -1134,20 +1115,17 @@ function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_posi
 function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boolean }) {
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <div className="text-center">
-          <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mx-auto mb-4" />
-          <p className="text-gray-500">Running anomaly detection...</p>
-        </div>
+      <div className="flex items-center justify-center py-12">
+        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (!data) {
     return (
-      <div className="text-center py-16">
-        <ShieldAlert className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-        <p className="text-gray-500">No analysis data available</p>
+      <div className="text-center py-12">
+        <ShieldAlert className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+        <p className="text-muted-foreground">No analysis data available</p>
       </div>
     )
   }

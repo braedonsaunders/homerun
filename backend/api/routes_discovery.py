@@ -43,6 +43,10 @@ async def get_leaderboard(
             "win_rate",
             "sharpe_ratio",
             "profit_factor",
+            "total_trades",
+            "avg_roi",
+            "sortino_ratio",
+            "trades_per_day",
         ]
         if sort_by not in valid_sort_fields:
             raise HTTPException(
