@@ -327,7 +327,7 @@ class PolymarketClient:
 
         # Batch lookup unknown condition_ids with concurrency limit
         if unknown_ids:
-            semaphore = asyncio.Semaphore(5)
+            semaphore = asyncio.Semaphore(15)
 
             async def lookup(cid: str):
                 async with semaphore:
@@ -441,7 +441,7 @@ class PolymarketClient:
         prices = {}
 
         # Batch requests with concurrency limit
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(25)
 
         async def fetch_price(token_id: str):
             async with semaphore:
@@ -767,7 +767,7 @@ class PolymarketClient:
         # Verify each trader has real activity using the fast
         # closed-positions endpoint (single call per trader instead of
         # fetching full trade history + open positions).
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(10)
 
         async def verify_trader(entry: dict):
             async with semaphore:
@@ -1118,7 +1118,7 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(10)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
