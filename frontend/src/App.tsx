@@ -51,7 +51,7 @@ import { shortcutsHelpOpenAtom, simulationEnabledAtom } from './store/atoms'
 
 // shadcn/ui components
 import { Button } from './components/ui/button'
-import { Card, CardContent } from './components/ui/card'
+
 import { Badge } from './components/ui/badge'
 import { Input } from './components/ui/input'
 import { Separator } from './components/ui/separator'
@@ -530,7 +530,7 @@ function App() {
                             )}
                           >
                             <Globe className="w-3.5 h-3.5" />
-                            Search All Polymarket
+                            Search All Markets
                           </button>
                         </div>
 
@@ -559,7 +559,7 @@ function App() {
                               <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-blue-400" />
                               <Input
                                 type="text"
-                                placeholder="Search all Polymarket markets (e.g. 'bitcoin', 'election', 'FIFA')..."
+                                placeholder="Search Polymarket & Kalshi markets (e.g. 'bitcoin', 'election', 'FIFA')..."
                                 value={polymarketSearchQuery}
                                 onChange={(e) => setPolymarketSearchQuery(e.target.value)}
                                 className="pl-10 bg-card border-blue-500/20 focus:border-blue-500/40 h-9"
@@ -587,12 +587,12 @@ function App() {
                           {polySearchLoading ? (
                             <div className="flex items-center justify-center py-12">
                               <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
-                              <span className="ml-3 text-muted-foreground">Searching Polymarket and analyzing opportunities...</span>
+                              <span className="ml-3 text-muted-foreground">Searching Polymarket & Kalshi and analyzing opportunities...</span>
                             </div>
                           ) : !polymarketSearchSubmitted ? (
                             <div className="text-center py-12">
                               <Globe className="w-12 h-12 text-blue-400/30 mx-auto mb-4" />
-                              <p className="text-muted-foreground">Search all of Polymarket for arbitrage opportunities</p>
+                              <p className="text-muted-foreground">Search Polymarket & Kalshi for arbitrage opportunities</p>
                               <p className="text-sm text-muted-foreground/70 mt-1">
                                 Enter a keyword above and press Search to find markets and analyze them
                               </p>

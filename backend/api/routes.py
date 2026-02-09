@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
 from services import scanner, wallet_tracker, polymarket_client
+from services.kalshi_client import kalshi_client
 
 router = APIRouter()
 
@@ -101,18 +102,32 @@ async def get_opportunities(
 @router.get("/opportunities/search-polymarket")
 async def search_polymarket_opportunities(
     q: str = Query(
-        ..., min_length=1, description="Search query for Polymarket markets"
+        ..., min_length=1, description="Search query for Polymarket and Kalshi markets"
     ),
     limit: int = Query(20, ge=1, le=50, description="Maximum results to return"),
 ):
     """
-    Search all of Polymarket for markets matching a keyword, then run
+    Search Polymarket and Kalshi for markets matching a keyword, then run
     arbitrage detection strategies on the results. Returns opportunities
     in the same format as the main /opportunities endpoint.
     """
+    import asyncio
+
     try:
-        # Search Polymarket Gamma API for matching events
-        events = await polymarket_client.search_events(q, limit=limit)
+        # Search both platforms concurrently
+        poly_task = polymarket_client.search_events(q, limit=limit)
+        kalshi_task = kalshi_client.search_events(q, limit=limit)
+        poly_events, kalshi_events = await asyncio.gather(
+            poly_task, kalshi_task, return_exceptions=True
+        )
+
+        # Handle errors gracefully - use empty list if a platform fails
+        if isinstance(poly_events, BaseException):
+            poly_events = []
+        if isinstance(kalshi_events, BaseException):
+            kalshi_events = []
+
+        events = list(poly_events) + list(kalshi_events)
 
         if not events:
             from fastapi.responses import JSONResponse
@@ -130,15 +145,34 @@ async def search_polymarket_opportunities(
             ]
             all_markets.extend(event.markets)
 
-        # Fetch live prices for tokens
-        all_token_ids = []
+        # Separate markets by platform for price fetching
+        poly_token_ids = []
+        kalshi_token_ids = []
         for market in all_markets:
-            all_token_ids.extend(market.clob_token_ids)
+            if getattr(market, "platform", None) == "kalshi":
+                kalshi_token_ids.extend(market.clob_token_ids)
+            else:
+                poly_token_ids.extend(market.clob_token_ids)
 
+        # Fetch live prices from both platforms concurrently
         prices = {}
-        if all_token_ids:
-            token_sample = all_token_ids[:200]
-            prices = await polymarket_client.get_prices_batch(token_sample)
+        price_tasks = []
+        if poly_token_ids:
+            price_tasks.append(
+                polymarket_client.get_prices_batch(poly_token_ids[:200])
+            )
+        if kalshi_token_ids:
+            price_tasks.append(
+                kalshi_client.get_prices_batch(kalshi_token_ids[:200])
+            )
+
+        if price_tasks:
+            price_results = await asyncio.gather(
+                *price_tasks, return_exceptions=True
+            )
+            for result in price_results:
+                if isinstance(result, dict):
+                    prices.update(result)
 
         # Run arbitrage detection strategies
         all_opportunities: list[ArbitrageOpportunity] = []
@@ -163,8 +197,6 @@ async def search_polymarket_opportunities(
         all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
         # Kick off AI scoring in background (non-blocking)
-        import asyncio
-
         try:
             from services.ai import get_llm_manager
 

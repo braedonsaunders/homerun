@@ -304,6 +304,55 @@ class KalshiClient:
         logger.info("Fetched Kalshi events", count=len(all_events))
         return all_events
 
+    async def search_events(
+        self, query: str, limit: int = 20
+    ) -> list[Event]:
+        """Search Kalshi events by keyword.
+
+        Kalshi's API does not provide native text search, so we fetch
+        events in pages and filter by title match on the client side.
+        For each matching event we also fetch its markets.
+        """
+        query_lower = query.lower()
+        matching_events: list[Event] = []
+        cursor: Optional[str] = None
+        max_pages = 10  # safety cap
+
+        for _ in range(max_pages):
+            events, next_cursor = await self.get_events(
+                closed=False, limit=200, cursor=cursor
+            )
+            if not events:
+                break
+
+            for event in events:
+                if query_lower in event.title.lower():
+                    matching_events.append(event)
+                    if len(matching_events) >= limit:
+                        break
+
+            if len(matching_events) >= limit:
+                break
+
+            cursor = next_cursor
+            if cursor is None:
+                break
+
+        # For events with no nested markets, fetch markets by event_ticker
+        for event in matching_events:
+            if not event.markets:
+                markets, _ = await self.get_markets_page(
+                    limit=200, event_ticker=event.id, status="open"
+                )
+                event.markets = markets
+
+        logger.info(
+            "Kalshi search complete",
+            query=query,
+            events_found=len(matching_events),
+        )
+        return matching_events[:limit]
+
     # ------------------------------------------------------------------ #
     #  Public API: markets
     # ------------------------------------------------------------------ #
