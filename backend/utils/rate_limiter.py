@@ -61,7 +61,9 @@ class RateLimiter:
         "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10),
         "clob_general": RateLimitConfig(requests_per_window=9000, window_seconds=10),
         "clob_market": RateLimitConfig(requests_per_window=1500, window_seconds=10),
-        "clob_markets_batch": RateLimitConfig(requests_per_window=500, window_seconds=10),
+        "clob_markets_batch": RateLimitConfig(
+            requests_per_window=500, window_seconds=10
+        ),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
         "data_positions": RateLimitConfig(requests_per_window=150, window_seconds=10),
