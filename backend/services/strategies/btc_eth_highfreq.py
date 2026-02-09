@@ -79,14 +79,18 @@ _SLUG_REGEX = re.compile(
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
 
+
 def _pure_arb_max_combined():
     return _cfg.BTC_ETH_HF_PURE_ARB_MAX_COMBINED
+
 
 def _dump_hedge_drop_pct():
     return _cfg.BTC_ETH_HF_DUMP_THRESHOLD
 
+
 def _thin_liquidity_usd():
     return _cfg.BTC_ETH_HF_THIN_LIQUIDITY_USD
+
 
 _DUMP_HEDGE_MAX_COMBINED = 0.97  # Combined cost target after dump-hedge
 _LIMIT_ORDER_TARGET_LOW = 0.45  # Lower limit order price
