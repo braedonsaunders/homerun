@@ -440,6 +440,7 @@ export interface RecentTradeFromWallet {
   market?: string
   market_title?: string
   market_slug?: string
+  event_slug?: string
   outcome?: string
   side?: string
   size?: number
