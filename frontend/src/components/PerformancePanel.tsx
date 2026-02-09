@@ -279,7 +279,7 @@ export default function PerformancePanel() {
       ) : (
         <>
           {/* Summary Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 card-stagger">
             {(viewMode === 'simulation' || viewMode === 'all') && (
               <>
                 <MetricCard
@@ -473,7 +473,7 @@ function MetricCard({
         <div className="p-2 bg-muted rounded-lg">{icon}</div>
         <div>
           <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={cn("text-lg font-semibold", valueColor)}>{value}</p>
+          <p className={cn("text-lg font-semibold font-data", valueColor)}>{value}</p>
           {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
         </div>
       </CardContent>
@@ -511,8 +511,8 @@ function StrategyRow({
       </div>
       <div className="text-right">
         <p className={cn(
-          "font-mono font-medium",
-          isProfitable ? "text-green-400" : "text-red-400"
+          "font-data font-medium",
+          isProfitable ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
         )}>
           {isProfitable ? '+' : ''}${pnl.toFixed(2)}
         </p>
@@ -588,7 +588,7 @@ function TradeRow({
         </Badge>
         {pnl != null && (
           <p className={cn(
-            "font-mono text-sm mt-1",
+            "font-data text-sm mt-1",
             isProfitable ? "text-green-400" : "text-red-400"
           )}>
             {isProfitable ? '+' : ''}${pnl.toFixed(2)}

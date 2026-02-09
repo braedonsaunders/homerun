@@ -138,12 +138,12 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
 
           <div className="text-right shrink-0">
             <div className="flex items-center gap-1 justify-end">
-              <TrendingUp className="w-4 h-4 text-green-500" />
-              <span className="text-xl font-bold text-green-500">
+              <TrendingUp className="w-4 h-4 text-green-400" />
+              <span className="text-xl font-bold text-green-400 font-data data-glow-green">
                 {opportunity.roi_percent.toFixed(2)}%
               </span>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
+            <p className="text-xs text-muted-foreground mt-1 font-data">
               ${opportunity.net_profit.toFixed(4)} profit
             </p>
           </div>
@@ -158,28 +158,28 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             <DollarSign className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
             <div>
               <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Cost</p>
-              <p className="text-foreground font-medium">${opportunity.total_cost.toFixed(4)}</p>
+              <p className="text-foreground font-medium font-data">${opportunity.total_cost.toFixed(4)}</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">
             <Target className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
             <div>
               <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Liquidity</p>
-              <p className="text-foreground font-medium">${opportunity.min_liquidity.toFixed(0)}</p>
+              <p className="text-foreground font-medium font-data">${opportunity.min_liquidity.toFixed(0)}</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">
             <AlertTriangle className={cn("w-3.5 h-3.5 shrink-0", riskColor)} />
             <div>
               <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Risk</p>
-              <p className={cn("font-medium", riskColor)}>{(opportunity.risk_score * 100).toFixed(0)}%</p>
+              <p className={cn("font-medium font-data", riskColor)}>{(opportunity.risk_score * 100).toFixed(0)}%</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <DollarSign className="w-3.5 h-3.5 text-green-500 shrink-0" />
+            <DollarSign className="w-3.5 h-3.5 text-green-400 shrink-0" />
             <div>
               <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Max Position</p>
-              <p className="text-foreground font-medium">${opportunity.max_position_size.toFixed(0)}</p>
+              <p className="text-foreground font-medium font-data">${opportunity.max_position_size.toFixed(0)}</p>
             </div>
           </div>
         </div>
@@ -410,7 +410,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                         )}
                         <span className="text-sm text-gray-300">{pos.market}</span>
                       </div>
-                      <span className="font-mono text-foreground">${pos.price.toFixed(4)}</span>
+                      <span className="font-data text-foreground">${pos.price.toFixed(4)}</span>
                     </div>
                   )
                 })}
@@ -491,27 +491,27 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-muted-foreground">Total Cost</p>
-                  <p className="font-mono text-foreground">${opportunity.total_cost.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${opportunity.total_cost.toFixed(4)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Expected Payout</p>
-                  <p className="font-mono text-foreground">${opportunity.expected_payout.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${opportunity.expected_payout.toFixed(4)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Gross Profit</p>
-                  <p className="font-mono text-foreground">${opportunity.gross_profit.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${opportunity.gross_profit.toFixed(4)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Fee (2%)</p>
-                  <p className="font-mono text-red-400">-${opportunity.fee.toFixed(4)}</p>
+                  <p className="font-data text-red-400">-${opportunity.fee.toFixed(4)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Net Profit</p>
-                  <p className="font-mono text-green-400">${opportunity.net_profit.toFixed(4)}</p>
+                  <p className="font-data text-green-400 data-glow-green">${opportunity.net_profit.toFixed(4)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">ROI</p>
-                  <p className="font-mono text-green-400">{opportunity.roi_percent.toFixed(2)}%</p>
+                  <p className="font-data text-green-400 data-glow-green">{opportunity.roi_percent.toFixed(2)}%</p>
                 </div>
               </div>
             </div>
