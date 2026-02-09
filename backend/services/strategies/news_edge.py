@@ -21,6 +21,7 @@ strategies. The scanner calls detect_async() instead of detect().
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -84,18 +85,19 @@ class NewsEdgeStrategy(BaseStrategy):
                 return []
 
             if not semantic_matcher._initialized:
-                semantic_matcher.initialize()
+                await asyncio.to_thread(semantic_matcher.initialize)
 
-            semantic_matcher.update_market_index(market_infos)
+            await asyncio.to_thread(semantic_matcher.update_market_index, market_infos)
 
             # Step 3: Embed new articles
-            semantic_matcher.embed_articles(all_articles)
+            await asyncio.to_thread(semantic_matcher.embed_articles, all_articles)
 
             # Step 4: Match articles to markets
-            matches = semantic_matcher.match_articles_to_markets(
+            matches = await asyncio.to_thread(
+                semantic_matcher.match_articles_to_markets,
                 all_articles,
-                top_k=3,
-                threshold=settings.NEWS_SIMILARITY_THRESHOLD,
+                3,
+                settings.NEWS_SIMILARITY_THRESHOLD,
             )
 
             if not matches:
