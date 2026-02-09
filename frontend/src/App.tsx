@@ -951,6 +951,7 @@ function App() {
                     <DiscoveryPanel
                       parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
                       onAnalyzeWallet={handleAnalyzeWallet}
+                      onExecuteTrade={setExecutingOpportunity}
                     />
                   </div>
                   <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>

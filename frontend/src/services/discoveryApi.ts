@@ -38,6 +38,7 @@ export interface ConfluenceSignal {
   id: string
   market_id: string
   market_question: string | null
+  market_slug: string | null
   signal_type: string
   strength: number
   wallet_count: number
@@ -45,6 +46,7 @@ export interface ConfluenceSignal {
   outcome: string | null
   avg_entry_price: number | null
   total_size: number | null
+  avg_wallet_rank: number | null
   is_active: boolean
   detected_at: string
 }

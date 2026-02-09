@@ -1037,6 +1037,7 @@ class MarketConfluenceSignal(Base):
     id = Column(String, primary_key=True)
     market_id = Column(String, nullable=False)
     market_question = Column(Text, nullable=True)
+    market_slug = Column(String, nullable=True)
 
     # Signal details
     signal_type = Column(

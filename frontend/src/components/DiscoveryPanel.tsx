@@ -20,6 +20,8 @@ import {
   ExternalLink,
   Activity,
   UserPlus,
+  DollarSign,
+  ArrowUpRight,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -44,7 +46,7 @@ import {
   type TagInfo,
   type DiscoveryStats,
 } from '../services/discoveryApi'
-import { analyzeAndTrackWallet } from '../services/api'
+import { analyzeAndTrackWallet, type Opportunity, getOpportunities } from '../services/api'
 
 // ==================== TYPES ====================
 
@@ -121,9 +123,10 @@ function timeAgo(dateStr: string | null): string {
 interface DiscoveryPanelProps {
   parentTab?: 'leaderboard' | 'discover'
   onAnalyzeWallet?: (address: string, username?: string) => void
+  onExecuteTrade?: (opportunity: Opportunity) => void
 }
 
-export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWallet }: DiscoveryPanelProps) {
+export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWallet, onExecuteTrade }: DiscoveryPanelProps) {
   const [discoverSubTab, setDiscoverSubTab] = useState<'confluence' | 'tags' | 'clusters'>('confluence')
   const activeTab: DiscoveryTab = parentTab === 'leaderboard' ? 'leaderboard' : discoverSubTab
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
@@ -678,7 +681,13 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {confluenceSignals.map(signal => (
-                <ConfluenceCard key={signal.id} signal={signal} />
+                <ConfluenceCard
+                  key={signal.id}
+                  signal={signal}
+                  onExecuteTrade={onExecuteTrade}
+                  onAnalyzeWallet={onAnalyzeWallet}
+                  onTrackWallet={(address, username) => trackWalletMutation.mutate({ address, username })}
+                />
               ))}
             </div>
           )}
@@ -754,6 +763,7 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
                               <TableHead>Win Rate</TableHead>
                               <TableHead>Trades</TableHead>
                               <TableHead>Recommendation</TableHead>
+                              <TableHead>Actions</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -783,6 +793,48 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
                                 </TableCell>
                                 <TableCell>
                                   <RecommendationBadge recommendation={wallet.recommendation} />
+                                </TableCell>
+                                <TableCell>
+                                  <div className="flex items-center gap-1">
+                                    {onAnalyzeWallet && (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <button
+                                            onClick={() => onAnalyzeWallet(wallet.address, wallet.username || undefined)}
+                                            className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                                          >
+                                            <Activity className="w-3.5 h-3.5" />
+                                          </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Analyze wallet</TooltipContent>
+                                      </Tooltip>
+                                    )}
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <button
+                                          onClick={() => trackWalletMutation.mutate({ address: wallet.address, username: wallet.username })}
+                                          disabled={trackWalletMutation.isPending}
+                                          className="p-1.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+                                        >
+                                          <UserPlus className="w-3.5 h-3.5" />
+                                        </button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>Track wallet</TooltipContent>
+                                    </Tooltip>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <a
+                                          href={`https://polymarket.com/profile/${wallet.address}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                                        >
+                                          <ExternalLink className="w-3.5 h-3.5" />
+                                        </a>
+                                      </TooltipTrigger>
+                                      <TooltipContent>View on Polymarket</TooltipContent>
+                                    </Tooltip>
+                                  </div>
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -1138,7 +1190,19 @@ function LeaderboardRow({
   )
 }
 
-function ConfluenceCard({ signal }: { signal: ConfluenceSignal }) {
+function ConfluenceCard({
+  signal,
+  onExecuteTrade,
+  onAnalyzeWallet,
+  onTrackWallet,
+}: {
+  signal: ConfluenceSignal
+  onExecuteTrade?: (opportunity: Opportunity) => void
+  onAnalyzeWallet?: (address: string, username?: string) => void
+  onTrackWallet?: (address: string, username?: string | null) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [searchingOpportunity, setSearchingOpportunity] = useState(false)
   const strengthPercent = Math.round(signal.strength * 100)
   const signalColor = SIGNAL_TYPE_COLORS[signal.signal_type] || 'bg-gray-500/15 text-gray-400 border-gray-500/20'
 
@@ -1146,6 +1210,24 @@ function ConfluenceCard({ signal }: { signal: ConfluenceSignal }) {
     strengthPercent >= 80 ? 'bg-green-500' :
     strengthPercent >= 50 ? 'bg-yellow-500' :
     'bg-red-500'
+
+  const polymarketMarketUrl = signal.market_slug
+    ? `https://polymarket.com/event/${signal.market_slug}`
+    : null
+
+  const handleFindOpportunity = async () => {
+    if (!onExecuteTrade) return
+    setSearchingOpportunity(true)
+    try {
+      const searchTerm = signal.market_question || signal.market_id
+      const resp = await getOpportunities({ search: searchTerm, limit: 5 })
+      if (resp.opportunities.length > 0) {
+        onExecuteTrade(resp.opportunities[0])
+      }
+    } finally {
+      setSearchingOpportunity(false)
+    }
+  }
 
   return (
     <Card className={cn(
@@ -1166,9 +1248,23 @@ function ConfluenceCard({ signal }: { signal: ConfluenceSignal }) {
                 </Badge>
               )}
             </div>
-            <p className="text-sm text-foreground leading-tight line-clamp-2">
-              {signal.market_question || signal.market_id}
-            </p>
+            {polymarketMarketUrl ? (
+              <a
+                href={polymarketMarketUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-foreground leading-tight line-clamp-2 hover:text-primary transition-colors inline-flex items-start gap-1 group"
+              >
+                <span className="group-hover:underline">
+                  {signal.market_question || signal.market_id}
+                </span>
+                <ArrowUpRight className="w-3 h-3 mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </a>
+            ) : (
+              <p className="text-sm text-foreground leading-tight line-clamp-2">
+                {signal.market_question || signal.market_id}
+              </p>
+            )}
           </div>
           <div className="text-right shrink-0">
             {signal.outcome && (
@@ -1225,9 +1321,128 @@ function ConfluenceCard({ signal }: { signal: ConfluenceSignal }) {
           )}
         </div>
 
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2 pt-1">
+          {onExecuteTrade && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleFindOpportunity}
+                  disabled={searchingOpportunity}
+                  className="flex items-center gap-1.5 text-xs bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20 hover:text-green-400"
+                >
+                  {searchingOpportunity ? (
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <DollarSign className="w-3 h-3" />
+                  )}
+                  Execute Trade
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Find matching opportunity and execute trade</TooltipContent>
+            </Tooltip>
+          )}
+          {polymarketMarketUrl && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href={polymarketMarketUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border bg-muted/50 text-muted-foreground hover:text-foreground border-border hover:border-border transition-colors"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Polymarket
+                </a>
+              </TooltipTrigger>
+              <TooltipContent>View market on Polymarket</TooltipContent>
+            </Tooltip>
+          )}
+          <div className="flex-1" />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className={cn(
+                  "p-1.5 rounded text-muted-foreground hover:text-foreground transition-colors",
+                  expanded && "bg-muted"
+                )}
+              >
+                {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{expanded ? 'Hide wallets' : 'Show participating wallets'}</TooltipContent>
+          </Tooltip>
+        </div>
+
+        {/* Expanded Wallet List */}
+        {expanded && signal.wallets.length > 0 && (
+          <div className="pt-2 border-t border-border space-y-1.5">
+            <p className="text-[10px] text-muted-foreground font-medium">
+              Participating Wallets ({signal.wallets.length})
+            </p>
+            {signal.wallets.map(address => (
+              <div
+                key={address}
+                className="flex items-center justify-between bg-muted/30 px-2.5 py-1.5 rounded-lg"
+              >
+                <span className="font-mono text-xs text-muted-foreground">
+                  {truncateAddress(address)}
+                </span>
+                <div className="flex items-center gap-1">
+                  {onAnalyzeWallet && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={() => onAnalyzeWallet(address)}
+                          className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                        >
+                          <Activity className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Analyze wallet</TooltipContent>
+                    </Tooltip>
+                  )}
+                  {onTrackWallet && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={() => onTrackWallet(address)}
+                          className="p-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
+                        >
+                          <UserPlus className="w-3 h-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Track wallet</TooltipContent>
+                    </Tooltip>
+                  )}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <a
+                        href={`https://polymarket.com/profile/${address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </TooltipTrigger>
+                    <TooltipContent>View on Polymarket</TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Detected Time */}
-        <div className="text-[10px] text-muted-foreground pt-1 border-t border-border">
-          Detected {timeAgo(signal.detected_at)}
+        <div className="text-[10px] text-muted-foreground pt-1 border-t border-border flex items-center justify-between">
+          <span>Detected {timeAgo(signal.detected_at)}</span>
+          {signal.avg_wallet_rank != null && (
+            <span>Avg Rank Score: {(signal.avg_wallet_rank * 100).toFixed(0)}</span>
+          )}
         </div>
       </CardContent>
     </Card>
