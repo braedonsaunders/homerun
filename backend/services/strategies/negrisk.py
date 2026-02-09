@@ -641,7 +641,9 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            opp.risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
+            opp.risk_factors.insert(
+                0, f"Short Multi-Outcome: buying NO on all {n} outcomes"
+            )
             opp.risk_factors.insert(
                 1, "Verify manually: ensure all possible outcomes are listed"
             )
