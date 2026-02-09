@@ -214,6 +214,50 @@ async def search_polymarket_opportunities(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/opportunities/counts")
+async def get_opportunity_counts(
+    min_profit: float = Query(0.0, description="Minimum profit percentage"),
+    max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
+    min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
+    search: Optional[str] = Query(None, description="Search query for market titles"),
+):
+    """Get counts of opportunities grouped by strategy and category.
+
+    Applies base filters (profit, risk, liquidity, search) but NOT strategy/category
+    filters, so the UI can show how many opportunities each filter value would match.
+    """
+    filter = OpportunityFilter(
+        min_profit=min_profit / 100,
+        max_risk=max_risk,
+        min_liquidity=min_liquidity,
+    )
+
+    opportunities = scanner.get_opportunities(filter)
+
+    # Apply search filter if provided
+    if search:
+        search_lower = search.lower()
+        opportunities = [
+            opp
+            for opp in opportunities
+            if search_lower in opp.title.lower()
+            or (opp.event_title and search_lower in opp.event_title.lower())
+            or any(search_lower in m.get("question", "").lower() for m in opp.markets)
+        ]
+
+    # Count by strategy
+    strategy_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    for opp in opportunities:
+        s = opp.strategy.value if hasattr(opp.strategy, "value") else str(opp.strategy)
+        strategy_counts[s] = strategy_counts.get(s, 0) + 1
+        if opp.category:
+            cat = opp.category.lower()
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    return {"strategies": strategy_counts, "categories": category_counts}
+
+
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
 async def get_opportunity(opportunity_id: str):
     """Get a specific opportunity by ID"""
