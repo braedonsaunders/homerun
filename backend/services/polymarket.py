@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
+from utils.rate_limiter import rate_limiter
 
 
 class PolymarketClient:
@@ -344,6 +345,7 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
+        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/positions", params={"user": address}
@@ -519,6 +521,7 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
+        await rate_limiter.acquire("data_trades")
         client = await self._get_client()
         response = await client.get(
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
@@ -657,7 +660,8 @@ class PolymarketClient:
         # Verify each trader has real activity using the fast
         # closed-positions endpoint (single call per trader instead of
         # fetching full trade history + open positions).
-        semaphore = asyncio.Semaphore(10)
+        # Keep concurrency low to stay within Polymarket rate limits.
+        semaphore = asyncio.Semaphore(5)
 
         async def verify_trader(entry: dict):
             async with semaphore:
@@ -870,22 +874,39 @@ class PolymarketClient:
         self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
+        await rate_limiter.acquire("data_positions")
         client = await self._get_client()
-        try:
-            response = await client.get(
-                f"{self.data_url}/closed-positions",
-                params={
-                    "user": address,
-                    "limit": min(limit, 50),
-                    "offset": offset,
-                    "sortBy": "TIMESTAMP",
-                    "sortDirection": "DESC",
-                },
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception:
-            return []
+        last_err = None
+        for attempt in range(3):
+            try:
+                response = await client.get(
+                    f"{self.data_url}/closed-positions",
+                    params={
+                        "user": address,
+                        "limit": min(limit, 50),
+                        "offset": offset,
+                        "sortBy": "TIMESTAMP",
+                        "sortDirection": "DESC",
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                if e.response.status_code in (429, 403):
+                    await asyncio.sleep(2 ** attempt)
+                    await rate_limiter.acquire("data_positions")
+                    continue
+                break
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ProxyError) as e:
+                last_err = e
+                await asyncio.sleep(2 ** attempt)
+                continue
+            except Exception:
+                return []
+        if last_err:
+            print(f"closed-positions failed for {address[:10]}... after retries: {last_err}")
+        return []
 
     async def get_closed_positions_paginated(
         self, address: str, max_positions: int = 200
@@ -1009,7 +1030,7 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
