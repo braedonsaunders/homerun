@@ -53,13 +53,17 @@ class TokenBucket:
 class RateLimiter:
     """Rate limiter using token bucket algorithm"""
 
-    # Polymarket API rate limits
+    # Polymarket API rate limits (from docs.polymarket.com)
     LIMITS = {
         "gamma_general": RateLimitConfig(requests_per_window=4000, window_seconds=10),
         "gamma_markets": RateLimitConfig(requests_per_window=300, window_seconds=10),
-        "gamma_search": RateLimitConfig(requests_per_window=900, window_seconds=10),
-        "clob_general": RateLimitConfig(requests_per_window=1500, window_seconds=10),
-        "clob_market": RateLimitConfig(requests_per_window=500, window_seconds=10),
+        "gamma_events": RateLimitConfig(requests_per_window=500, window_seconds=10),
+        "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10),
+        "clob_general": RateLimitConfig(requests_per_window=9000, window_seconds=10),
+        "clob_market": RateLimitConfig(requests_per_window=1500, window_seconds=10),
+        "clob_markets_batch": RateLimitConfig(
+            requests_per_window=500, window_seconds=10
+        ),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
         "data_positions": RateLimitConfig(requests_per_window=150, window_seconds=10),
@@ -138,17 +142,22 @@ def endpoint_for_url(url: str) -> str:
     if "gamma-api" in url:
         if "/markets" in url:
             return "gamma_markets"
+        if "/events" in url:
+            return "gamma_events"
         if "/search" in url:
             return "gamma_search"
         return "gamma_general"
     elif "clob" in url:
+        # Batch endpoints (/books, /prices, /midprices) have a lower limit
+        if "/books" in url or "/prices" in url or "/midprices" in url:
+            return "clob_markets_batch"
         if "/book" in url or "/price" in url or "/midpoint" in url:
             return "clob_market"
         return "clob_general"
     elif "data-api" in url:
         if "/trades" in url:
             return "data_trades"
-        if "/positions" in url:
+        if "positions" in url:  # matches /positions AND /closed-positions
             return "data_positions"
         return "data_general"
     return "default"

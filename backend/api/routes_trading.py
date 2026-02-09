@@ -21,6 +21,7 @@ from services.trading import (
     OrderType,
     OrderStatus,
 )
+from services.trading_proxy import verify_vpn_active, _get_config as get_proxy_config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -107,6 +108,7 @@ class TradingStatusResponse(BaseModel):
     wallet_address: Optional[str]
     stats: dict
     limits: dict
+    vpn: dict
 
 
 # ==================== ENDPOINTS ====================
@@ -141,7 +143,23 @@ async def get_trading_status():
             "min_order_size_usd": settings.MIN_ORDER_SIZE_USD,
             "max_slippage_percent": settings.MAX_SLIPPAGE_PERCENT,
         },
+        vpn={
+            "proxy_enabled": get_proxy_config().enabled,
+            "require_vpn": get_proxy_config().require_vpn,
+        },
     )
+
+
+@router.get("/vpn-status")
+async def get_vpn_status():
+    """
+    Check trading VPN proxy status.
+
+    Verifies proxy connectivity and compares direct vs proxy IP
+    to confirm the VPN is active.
+    """
+    status = await verify_vpn_active()
+    return status
 
 
 @router.post("/initialize")

@@ -50,36 +50,44 @@ class BaseStrategy(ABC):
         if resolution_date:
             resolution_aware = make_aware(resolution_date)
             days_until = (resolution_aware - utcnow()).days
-            if days_until < 2:
+            very_short = getattr(settings, "RISK_VERY_SHORT_DAYS", 2)
+            short = getattr(settings, "RISK_SHORT_DAYS", 7)
+            long_lockup = getattr(settings, "RISK_LONG_LOCKUP_DAYS", 180)
+            ext_lockup = getattr(settings, "RISK_EXTENDED_LOCKUP_DAYS", 90)
+            if days_until < very_short:
                 score += 0.4
-                factors.append("Very short time to resolution (<2 days)")
-            elif days_until < 7:
+                factors.append(f"Very short time to resolution (<{very_short} days)")
+            elif days_until < short:
                 score += 0.2
-                factors.append("Short time to resolution (<7 days)")
+                factors.append(f"Short time to resolution (<{short} days)")
             # Long-duration capital lockup risk
-            elif days_until > 180:
+            elif days_until > long_lockup:
                 score += 0.3
                 factors.append(f"Long capital lockup ({days_until} days to resolution)")
-            elif days_until > 90:
+            elif days_until > ext_lockup:
                 score += 0.2
                 factors.append(
                     f"Extended capital lockup ({days_until} days to resolution)"
                 )
 
         # Liquidity risk
+        low_liq = getattr(settings, "RISK_LOW_LIQUIDITY", 1000.0)
+        mod_liq = getattr(settings, "RISK_MODERATE_LIQUIDITY", 5000.0)
         min_liquidity = min((m.liquidity for m in markets), default=0)
-        if min_liquidity < 1000:
+        if min_liquidity < low_liq:
             score += 0.3
             factors.append(f"Low liquidity (${min_liquidity:.0f})")
-        elif min_liquidity < 5000:
+        elif min_liquidity < mod_liq:
             score += 0.15
             factors.append(f"Moderate liquidity (${min_liquidity:.0f})")
 
         # Number of markets (complexity risk) — slippage compounds per leg
-        if len(markets) > 5:
+        complex_legs = getattr(settings, "RISK_COMPLEX_LEGS", 5)
+        multi_legs = getattr(settings, "RISK_MULTIPLE_LEGS", 3)
+        if len(markets) > complex_legs:
             score += 0.2
             factors.append(f"Complex trade ({len(markets)} legs — high slippage risk)")
-        elif len(markets) > 3:
+        elif len(markets) > multi_legs:
             score += 0.1
             factors.append(f"Multiple positions ({len(markets)} markets)")
 
@@ -109,7 +117,7 @@ class BaseStrategy(ABC):
         if not resolution_date:
             return None
         resolution_aware = make_aware(resolution_date)
-        days_until = max((resolution_aware - utcnow()).days, 1)
+        days_until = max((resolution_aware - utcnow()).total_seconds() / 86400.0, 1.0)
         return roi_percent * (365.0 / days_until)
 
     def create_opportunity(
@@ -120,6 +128,8 @@ class BaseStrategy(ABC):
         markets: list[Market],
         positions: list[dict],
         event: Optional[Event] = None,
+        expected_payout: float = 1.0,  # Override for strategies with non-$1 payouts
+        is_guaranteed: bool = True,  # False for directional/statistical strategies
         # VWAP-adjusted parameters (all optional for backward compatibility)
         vwap_total_cost: Optional[float] = None,  # Realistic cost from order book
         spread_bps: Optional[float] = None,  # Actual spread in basis points
@@ -136,7 +146,6 @@ class BaseStrategy(ABC):
         6. Resolution must be within MAX_RESOLUTION_MONTHS
         """
 
-        expected_payout = 1.0
         gross_profit = expected_payout - total_cost
         fee = expected_payout * self.fee
         net_profit = gross_profit - fee
@@ -150,6 +159,7 @@ class BaseStrategy(ABC):
             is_negrisk=is_negrisk,
             spread_bps=spread_bps,
             total_cost=total_cost,
+            maker_mode=settings.FEE_MODEL_MAKER_MODE,
         )
 
         # --- VWAP-adjusted realistic profit ---
@@ -171,7 +181,9 @@ class BaseStrategy(ABC):
         # In efficient prediction markets, genuine arbitrage is 1-5%.
         # ROI > 30% almost always indicates non-exhaustive outcomes, stale
         # order books, or missing data — not a real mispricing.
-        if effective_roi > settings.MAX_PLAUSIBLE_ROI:
+        # Skip this check for directional/statistical strategies where
+        # "ROI" represents potential return, not guaranteed profit.
+        if is_guaranteed and effective_roi > settings.MAX_PLAUSIBLE_ROI:
             return None
 
         # --- Hard filter: too many legs ---
@@ -210,7 +222,7 @@ class BaseStrategy(ABC):
         # --- Hard filter: maximum resolution timeframe ---
         if resolution_date:
             resolution_aware = make_aware(resolution_date)
-            days_until = (resolution_aware - utcnow()).days
+            days_until = (resolution_aware - utcnow()).total_seconds() / 86400.0
             max_days = settings.MAX_RESOLUTION_MONTHS * 30
             if days_until > max_days:
                 return None
@@ -237,6 +249,7 @@ class BaseStrategy(ABC):
                 "yes_price": m.yes_price,
                 "no_price": m.no_price,
                 "liquidity": m.liquidity,
+                "platform": getattr(m, "platform", "polymarket"),
             }
             market_dicts.append(entry)
 
@@ -274,6 +287,7 @@ class BaseStrategy(ABC):
             fee=fee,
             net_profit=net_profit,
             roi_percent=roi,
+            is_guaranteed=is_guaranteed,
             risk_score=risk_score,
             risk_factors=risk_factors,
             markets=market_dicts,

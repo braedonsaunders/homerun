@@ -62,6 +62,7 @@ export interface Market {
   yes_price: number
   no_price: number
   liquidity: number
+  platform?: string  // "polymarket" | "kalshi"
 }
 
 export interface Position {
@@ -70,6 +71,9 @@ export interface Position {
   market: string
   price: number
   token_id?: string
+  platform?: string  // "polymarket" | "kalshi"
+  ticker?: string    // Kalshi market ticker
+  market_id?: string
 }
 
 export interface ScannerStatus {
@@ -78,6 +82,7 @@ export interface ScannerStatus {
   interval_seconds: number
   last_scan: string | null
   opportunities_count: number
+  current_activity?: string
   strategies: Strategy[]
 }
 
@@ -296,6 +301,7 @@ export interface WalletTrade {
   id: string
   market: string
   market_slug: string
+  market_title: string
   outcome: string
   side: string
   size: number
@@ -361,6 +367,21 @@ export const getOpportunities = async (params?: {
     opportunities: response.data,
     total
   }
+}
+
+export interface OpportunityCounts {
+  strategies: Record<string, number>
+  categories: Record<string, number>
+}
+
+export const getOpportunityCounts = async (params?: {
+  min_profit?: number
+  max_risk?: number
+  min_liquidity?: number
+  search?: string
+}): Promise<OpportunityCounts> => {
+  const { data } = await api.get('/opportunities/counts', { params })
+  return data
 }
 
 export const searchPolymarketOpportunities = async (params: {
@@ -434,6 +455,7 @@ export interface RecentTradeFromWallet {
   market?: string
   market_title?: string
   market_slug?: string
+  event_slug?: string
   outcome?: string
   side?: string
   size?: number
@@ -976,6 +998,9 @@ export interface AutoTraderConfig {
   ai_score_boost_threshold: number
   ai_score_boost_multiplier: number
   ai_judge_model: string | null
+  llm_verify_trades: boolean
+  llm_verify_strategies: string[]
+  auto_ai_scoring: boolean
 }
 
 export interface AutoTraderStatus {
@@ -1028,18 +1053,7 @@ export const stopAutoTrader = async (): Promise<{ status: string }> => {
   return data
 }
 
-export const updateAutoTraderConfig = async (config: Partial<{
-  mode: string
-  enabled_strategies: string[]
-  min_roi_percent: number
-  max_risk_score: number
-  min_liquidity_usd: number
-  base_position_size_usd: number
-  max_position_size_usd: number
-  max_daily_trades: number
-  max_daily_loss_usd: number
-  require_confirmation: boolean
-}>): Promise<{ status: string; config: Record<string, any> }> => {
+export const updateAutoTraderConfig = async (config: Partial<AutoTraderConfig>): Promise<{ status: string; config: Record<string, any> }> => {
   const { data } = await api.put('/auto-trader/config', config)
   return data
 }
@@ -1085,6 +1099,12 @@ export interface PolymarketSettings {
   private_key: string | null
 }
 
+export interface KalshiSettings {
+  email: string | null
+  password: string | null
+  api_key: string | null
+}
+
 export interface LLMSettings {
   provider: string
   openai_api_key: string | null
@@ -1126,23 +1146,107 @@ export interface MaintenanceSettings {
   cleanup_resolved_trade_days: number
 }
 
+export interface TradingProxySettings {
+  enabled: boolean
+  proxy_url: string | null
+  verify_ssl: boolean
+  timeout: number
+  require_vpn: boolean
+}
+
+export interface SearchFilterSettings {
+  // Hard rejection filters
+  min_liquidity_hard: number
+  min_position_size: number
+  min_absolute_profit: number
+  min_annualized_roi: number
+  max_resolution_months: number
+  max_plausible_roi: number
+  max_trade_legs: number
+  // NegRisk
+  negrisk_min_total_yes: number
+  negrisk_warn_total_yes: number
+  negrisk_election_min_total_yes: number
+  negrisk_max_resolution_spread_days: number
+  // Settlement lag
+  settlement_lag_max_days_to_resolution: number
+  settlement_lag_near_zero: number
+  settlement_lag_near_one: number
+  settlement_lag_min_sum_deviation: number
+  // Risk scoring
+  risk_very_short_days: number
+  risk_short_days: number
+  risk_long_lockup_days: number
+  risk_extended_lockup_days: number
+  risk_low_liquidity: number
+  risk_moderate_liquidity: number
+  risk_complex_legs: number
+  risk_multiple_legs: number
+  // BTC/ETH high-frequency
+  btc_eth_hf_enabled: boolean
+  btc_eth_pure_arb_max_combined: number
+  btc_eth_dump_hedge_drop_pct: number
+  btc_eth_thin_liquidity_usd: number
+  // Miracle strategy
+  miracle_min_no_price: number
+  miracle_max_no_price: number
+  miracle_min_impossibility_score: number
+  // Cross-platform
+  cross_platform_enabled: boolean
+  // Combinatorial
+  combinatorial_min_confidence: number
+  combinatorial_high_confidence: number
+  // Bayesian cascade
+  bayesian_cascade_enabled: boolean
+  bayesian_min_edge_percent: number
+  bayesian_propagation_depth: number
+  // Liquidity vacuum
+  liquidity_vacuum_enabled: boolean
+  liquidity_vacuum_min_imbalance_ratio: number
+  liquidity_vacuum_min_depth_usd: number
+  // Entropy arb
+  entropy_arb_enabled: boolean
+  entropy_arb_min_deviation: number
+  // Event-driven
+  event_driven_enabled: boolean
+  // Temporal decay
+  temporal_decay_enabled: boolean
+  // Correlation arb
+  correlation_arb_enabled: boolean
+  correlation_arb_min_correlation: number
+  correlation_arb_min_divergence: number
+  // Market making
+  market_making_enabled: boolean
+  market_making_spread_bps: number
+  market_making_max_inventory_usd: number
+  // Statistical arb
+  stat_arb_enabled: boolean
+  stat_arb_min_edge: number
+}
+
 export interface AllSettings {
   polymarket: PolymarketSettings
+  kalshi: KalshiSettings
   llm: LLMSettings
   notifications: NotificationSettings
   scanner: ScannerSettings
   trading: TradingSettingsConfig
   maintenance: MaintenanceSettings
+  trading_proxy: TradingProxySettings
+  search_filters: SearchFilterSettings
   updated_at: string | null
 }
 
 export interface UpdateSettingsRequest {
   polymarket?: Partial<PolymarketSettings>
+  kalshi?: Partial<KalshiSettings>
   llm?: Partial<LLMSettings>
   notifications?: Partial<NotificationSettings>
   scanner?: Partial<ScannerSettings>
   trading?: Partial<TradingSettingsConfig>
   maintenance?: Partial<MaintenanceSettings>
+  trading_proxy?: Partial<TradingProxySettings>
+  search_filters?: Partial<SearchFilterSettings>
 }
 
 export const getSettings = async (): Promise<AllSettings> => {
@@ -1220,12 +1324,19 @@ export const testTelegramConnection = async (): Promise<{ status: string; messag
   return data
 }
 
+export const testTradingProxy = async (): Promise<{ status: string; message: string; proxy_enabled?: boolean; proxy_ip?: string; direct_ip?: string; vpn_active?: boolean }> => {
+  const { data } = await api.post('/settings/test/trading-proxy')
+  return data
+}
+
 // ==================== AI INTELLIGENCE ====================
 
 export const getAIStatus = () => api.get('/ai/status')
 export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data)
 export const getResolutionAnalysis = (marketId: string) => api.get(`/ai/resolution/${marketId}`)
 export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data)
+export const judgeOpportunitiesBulk = (data?: { opportunity_ids?: string[] }) =>
+  api.post('/ai/judge/opportunities/bulk', data || {})
 export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history', { params })
 export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')
 export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data)
@@ -1299,6 +1410,69 @@ export const sendAIChat = async (params: {
   history?: AIChatMessage[]
 }): Promise<AIChatResponse> => {
   const { data } = await api.post('/ai/chat', params)
+  return data
+}
+
+// ==================== KALSHI ACCOUNT ====================
+
+export interface KalshiAccountStatus {
+  platform: string
+  authenticated: boolean
+  member_id: string | null
+  email: string | null
+  balance: {
+    balance: number
+    payout: number
+    available: number
+    reserved: number
+    currency: string
+  } | null
+  positions_count: number
+}
+
+export interface KalshiPosition {
+  token_id: string
+  market_id: string
+  market_question: string
+  outcome: string
+  size: number
+  average_cost: number
+  current_price: number
+  unrealized_pnl: number
+  platform: string
+}
+
+export const getKalshiStatus = async (): Promise<KalshiAccountStatus> => {
+  const { data } = await api.get('/kalshi/status')
+  return data
+}
+
+export const loginKalshi = async (params: {
+  email?: string
+  password?: string
+  api_key?: string
+}): Promise<{ status: string; message: string; authenticated: boolean; member_id?: string }> => {
+  const { data } = await api.post('/kalshi/login', params)
+  return data
+}
+
+export const logoutKalshi = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/kalshi/logout')
+  return data
+}
+
+export const getKalshiBalance = async (): Promise<{ balance: number; available: number; reserved: number; currency: string }> => {
+  const { data } = await api.get('/kalshi/balance')
+  return data
+}
+
+export const getKalshiPositions = async (): Promise<KalshiPosition[]> => {
+  const { data } = await api.get('/kalshi/positions')
+  return data
+}
+
+export const updateKalshiSettings = async (settings: Partial<KalshiSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/kalshi', settings)
   return data
 }
 

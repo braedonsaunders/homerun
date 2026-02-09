@@ -15,6 +15,8 @@ Key capabilities:
   - Score price stability to gauge remaining arb window
 """
 
+from __future__ import annotations
+
 import asyncio
 import re
 from dataclasses import dataclass, field
@@ -884,6 +886,81 @@ class MarketMonitor:
         return [
             s for s in self._registry.values() if s.age_seconds(now) <= self._new_window
         ]
+
+    def get_high_priority_market_ids(self) -> set[str]:
+        """Return IDs of markets that currently warrant elevated scan priority.
+
+        A market is high-priority if any of:
+          - It's still within the "new market" window (< 5 min)
+          - It has low price stability (< 0.5)
+          - It has a thin order book
+        """
+        now = datetime.now(timezone.utc)
+        priority_ids: set[str] = set()
+
+        for market_id, snapshot in self._registry.items():
+            # New market
+            if snapshot.age_seconds(now) <= self._new_window:
+                priority_ids.add(market_id)
+                continue
+
+            # Unstable prices
+            if snapshot.price_stability_score < 0.5:
+                priority_ids.add(market_id)
+                continue
+
+            # Thin order book
+            if snapshot.has_thin_book:
+                priority_ids.add(market_id)
+
+        return priority_ids
+
+    def get_priority_signals(self) -> dict:
+        """Return a summary of priority signals for scanner integration.
+
+        Includes counts, predicted crypto times, and the full set of
+        high-priority market IDs.
+        """
+        now = datetime.now(timezone.utc)
+        hp_ids = self.get_high_priority_market_ids()
+
+        new_count = sum(
+            1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window
+        )
+        unstable_count = sum(
+            1 for s in self._registry.values() if s.price_stability_score < 0.5
+        )
+        thin_count = sum(1 for s in self._registry.values() if s.has_thin_book)
+
+        # Predicted crypto creation times
+        btc_predictions = self.predict_next_btc_market()
+        eth_predictions = self.predict_next_eth_market()
+
+        # Check if any crypto creation is imminent
+        crypto_imminent = False
+        for pred_time in list(btc_predictions.values()) + list(
+            eth_predictions.values()
+        ):
+            if pred_time is not None:
+                seconds_until = (pred_time - now).total_seconds()
+                if 0 <= seconds_until <= 60:
+                    crypto_imminent = True
+                    break
+
+        return {
+            "high_priority_count": len(hp_ids),
+            "high_priority_ids": hp_ids,
+            "new_market_count": new_count,
+            "unstable_count": unstable_count,
+            "thin_book_count": thin_count,
+            "crypto_imminent": crypto_imminent,
+            "btc_predictions": {
+                k: v.isoformat() if v else None for k, v in btc_predictions.items()
+            },
+            "eth_predictions": {
+                k: v.isoformat() if v else None for k, v in eth_predictions.items()
+            },
+        }
 
 
 # ---------------------------------------------------------------------------

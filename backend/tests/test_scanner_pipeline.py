@@ -6,7 +6,7 @@ sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from models.market import Market
@@ -557,7 +557,7 @@ class TestClearAndRemove:
         scanner = _build_scanner()
         # Manually set detected_at to 5 minutes ago
         opp = sample_opportunity.model_copy()
-        opp.detected_at = datetime.utcnow() - timedelta(minutes=5)
+        opp.detected_at = datetime.now(timezone.utc) - timedelta(minutes=5)
         scanner._opportunities = [opp]
 
         removed = scanner.remove_old_opportunities(max_age_minutes=3)

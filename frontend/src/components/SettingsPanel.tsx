@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Key,
   Bot,
   Bell,
   Scan,
@@ -13,10 +12,12 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Zap,
   MessageSquare,
   Activity,
   DollarSign,
+  Brain,
+  Shield,
+  ChevronDown,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -29,14 +30,17 @@ import { Badge } from './ui/badge'
 import {
   getSettings,
   updateSettings,
-  testPolymarketConnection,
   testTelegramConnection,
+  testTradingProxy,
   getLLMModels,
   refreshLLMModels,
-  type LLMModelOption
+  getAutoTraderStatus,
+  updateAutoTraderConfig,
+  type LLMModelOption,
+  type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
+type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'maintenance'
 
 function SecretInput({
   label,
@@ -64,7 +68,7 @@ function SecretInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="pr-10 font-mono"
+          className="pr-10 font-mono text-sm"
         />
         <Button
           type="button"
@@ -73,27 +77,37 @@ function SecretInput({
           className="absolute right-0 top-0 h-full px-3"
           onClick={onToggle}
         >
-          {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
         </Button>
       </div>
-      {description && <p className="text-xs text-muted-foreground mt-1">{description}</p>}
+      {description && <p className="text-[11px] text-muted-foreground/70 mt-1">{description}</p>}
     </div>
   )
 }
 
+const ALL_STRATEGIES = [
+  { key: 'basic', label: 'Basic Arb' },
+  { key: 'negrisk', label: 'NegRisk' },
+  { key: 'mutually_exclusive', label: 'Mutually Exclusive' },
+  { key: 'contradiction', label: 'Contradiction' },
+  { key: 'must_happen', label: 'Must-Happen' },
+  { key: 'cross_platform', label: 'Cross-Platform Oracle' },
+  { key: 'bayesian_cascade', label: 'Bayesian Cascade' },
+  { key: 'liquidity_vacuum', label: 'Liquidity Vacuum' },
+  { key: 'entropy_arb', label: 'Entropy Arbitrage' },
+  { key: 'event_driven', label: 'Event-Driven' },
+  { key: 'temporal_decay', label: 'Temporal Decay' },
+  { key: 'correlation_arb', label: 'Correlation Arb' },
+  { key: 'market_making', label: 'Market Making' },
+  { key: 'stat_arb', label: 'Statistical Arb' },
+]
+
 export default function SettingsPanel() {
-  const [activeSection, setActiveSection] = useState<SettingsSection>('polymarket')
+  const [expandedSections, setExpandedSections] = useState<Set<SettingsSection>>(new Set())
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   // Form state for each section
-  const [polymarketForm, setPolymarketForm] = useState({
-    api_key: '',
-    api_secret: '',
-    api_passphrase: '',
-    private_key: ''
-  })
-
   const [llmForm, setLlmForm] = useState({
     provider: 'none',
     openai_api_key: '',
@@ -138,6 +152,22 @@ export default function SettingsPanel() {
     cleanup_resolved_trade_days: 30
   })
 
+  const [vpnForm, setVpnForm] = useState({
+    enabled: false,
+    proxy_url: '',
+    verify_ssl: true,
+    timeout: 30,
+    require_vpn: true
+  })
+
+  const [autotraderAiForm, setAutotraderAiForm] = useState({
+    llm_verify_trades: false,
+    llm_verify_strategies: '',
+    auto_ai_scoring: false,
+    enabled_strategies: [] as string[],
+  })
+  const [autotraderAiDirty, setAutotraderAiDirty] = useState(false)
+
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -145,18 +175,42 @@ export default function SettingsPanel() {
     queryFn: getSettings,
   })
 
+  const { data: autoTraderStatus } = useQuery({
+    queryKey: ['auto-trader-status'],
+    queryFn: getAutoTraderStatus,
+    refetchInterval: 10000,
+  })
+
+  const autoTraderConfigMutation = useMutation({
+    mutationFn: (updates: Partial<AutoTraderConfig>) => updateAutoTraderConfig(updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
+      setAutotraderAiDirty(false)
+      setSaveMessage({ type: 'success', text: 'Auto-Trader AI settings saved' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    },
+    onError: (error: any) => {
+      setSaveMessage({ type: 'error', text: error.message || 'Failed to save auto-trader settings' })
+      setTimeout(() => setSaveMessage(null), 5000)
+    }
+  })
+
+  // Sync auto-trader AI form from server config
+  useEffect(() => {
+    if (autoTraderStatus?.config && !autotraderAiDirty) {
+      const cfg = autoTraderStatus.config
+      setAutotraderAiForm({
+        llm_verify_trades: cfg.llm_verify_trades ?? false,
+        llm_verify_strategies: (cfg.llm_verify_strategies ?? []).join(', '),
+        auto_ai_scoring: cfg.auto_ai_scoring ?? false,
+        enabled_strategies: cfg.enabled_strategies ?? [],
+      })
+    }
+  }, [autoTraderStatus?.config, autotraderAiDirty])
 
   // Sync form state with loaded settings
   useEffect(() => {
     if (settings) {
-      // Only update if form hasn't been modified (checking for empty values)
-      setPolymarketForm(prev => ({
-        api_key: prev.api_key || '',
-        api_secret: prev.api_secret || '',
-        api_passphrase: prev.api_passphrase || '',
-        private_key: prev.private_key || ''
-      }))
-
       setLlmForm({
         provider: settings.llm.provider || 'none',
         openai_api_key: '',
@@ -197,6 +251,17 @@ export default function SettingsPanel() {
         cleanup_interval_hours: settings.maintenance.cleanup_interval_hours,
         cleanup_resolved_trade_days: settings.maintenance.cleanup_resolved_trade_days
       })
+
+      if (settings.trading_proxy) {
+        setVpnForm({
+          enabled: settings.trading_proxy.enabled,
+          proxy_url: '',  // Don't pre-fill masked URL
+          verify_ssl: settings.trading_proxy.verify_ssl,
+          timeout: settings.trading_proxy.timeout,
+          require_vpn: settings.trading_proxy.require_vpn
+        })
+      }
+
     }
   }, [settings])
 
@@ -238,26 +303,18 @@ export default function SettingsPanel() {
   })
 
 
-  const testPolymarketMutation = useMutation({
-    mutationFn: testPolymarketConnection,
-  })
-
   const testTelegramMutation = useMutation({
     mutationFn: testTelegramConnection,
+  })
+
+  const testVpnMutation = useMutation({
+    mutationFn: testTradingProxy,
   })
 
   const handleSaveSection = (section: SettingsSection) => {
     const updates: any = {}
 
     switch (section) {
-      case 'polymarket':
-        // Only include non-empty values
-        updates.polymarket = {}
-        if (polymarketForm.api_key) updates.polymarket.api_key = polymarketForm.api_key
-        if (polymarketForm.api_secret) updates.polymarket.api_secret = polymarketForm.api_secret
-        if (polymarketForm.api_passphrase) updates.polymarket.api_passphrase = polymarketForm.api_passphrase
-        if (polymarketForm.private_key) updates.polymarket.private_key = polymarketForm.private_key
-        break
       case 'llm':
         updates.llm = {
           provider: llmForm.provider,
@@ -288,11 +345,34 @@ export default function SettingsPanel() {
       case 'trading':
         updates.trading = tradingForm
         break
+      case 'vpn':
+        updates.trading_proxy = {
+          enabled: vpnForm.enabled,
+          verify_ssl: vpnForm.verify_ssl,
+          timeout: vpnForm.timeout,
+          require_vpn: vpnForm.require_vpn,
+        } as any
+        // Only send proxy_url if the user entered a new value
+        if (vpnForm.proxy_url) {
+          (updates.trading_proxy as any).proxy_url = vpnForm.proxy_url
+        }
+        break
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
-      case 'autotrader':
+      case 'autotrader': {
+        const strategies = autotraderAiForm.llm_verify_strategies
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0)
+        autoTraderConfigMutation.mutate({
+          llm_verify_trades: autotraderAiForm.llm_verify_trades,
+          llm_verify_strategies: strategies,
+          auto_ai_scoring: autotraderAiForm.auto_ai_scoring,
+          enabled_strategies: autotraderAiForm.enabled_strategies,
+        })
         return
+      }
     }
 
     saveMutation.mutate(updates)
@@ -310,685 +390,868 @@ export default function SettingsPanel() {
     )
   }
 
+  const toggleSection = (id: SettingsSection) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  // Compute status summaries for each collapsed section
+  const getSectionStatus = (id: SettingsSection): string => {
+    switch (id) {
+      case 'llm':
+        return llmForm.provider !== 'none' ? `${llmForm.provider}` : 'Disabled'
+      case 'notifications':
+        return notificationsForm.enabled ? 'Enabled' : 'Disabled'
+      case 'scanner':
+        return `${scannerForm.scan_interval_seconds}s interval`
+      case 'trading':
+        return tradingForm.trading_enabled ? 'Live' : 'Disabled'
+      case 'vpn':
+        return vpnForm.enabled ? 'Active' : 'Disabled'
+      case 'autotrader': {
+        const count = autotraderAiForm.enabled_strategies.length
+        return count > 0 ? `${count} strateg${count !== 1 ? 'ies' : 'y'}` : 'No strategies'
+      }
+      case 'maintenance':
+        return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
+      default:
+        return ''
+    }
+  }
+
+  const getStatusColor = (id: SettingsSection): string => {
+    switch (id) {
+      case 'llm':
+        return llmForm.provider !== 'none' ? 'text-purple-400 bg-purple-500/10' : 'text-muted-foreground bg-muted'
+      case 'notifications':
+        return notificationsForm.enabled ? 'text-blue-400 bg-blue-500/10' : 'text-muted-foreground bg-muted'
+      case 'scanner':
+        return 'text-cyan-400 bg-cyan-500/10'
+      case 'trading':
+        return tradingForm.trading_enabled ? 'text-yellow-400 bg-yellow-500/10' : 'text-muted-foreground bg-muted'
+      case 'vpn':
+        return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
+      case 'autotrader':
+        return autotraderAiForm.enabled_strategies.length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
+      case 'maintenance':
+        return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
+      default:
+        return 'text-muted-foreground bg-muted'
+    }
+  }
+
   const sections: { id: SettingsSection; icon: any; label: string; description: string }[] = [
-    { id: 'polymarket', icon: Key, label: 'Polymarket Account', description: 'API credentials for trading' },
     { id: 'llm', icon: Bot, label: 'AI / LLM Services', description: 'Configure AI providers' },
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
-    { id: 'autotrader', icon: Activity, label: 'Auto Trader', description: 'Auto trading configuration' },
+    { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
+    { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 relative">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">Settings</h2>
-          <p className="text-sm text-muted-foreground">
-            Configure application settings and integrations
-          </p>
-        </div>
+        <h2 className="text-lg font-bold tracking-tight">Settings</h2>
         {settings?.updated_at && (
-          <div className="text-xs text-muted-foreground">
-            Last updated: {new Date(settings.updated_at).toLocaleString()}
-          </div>
+          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            Updated {new Date(settings.updated_at).toLocaleString()}
+          </span>
         )}
       </div>
 
-      {/* Save Message */}
+      {/* Floating toast for save messages */}
       {saveMessage && (
         <div className={cn(
-          "flex items-center gap-2 p-3 rounded-lg text-sm",
-          saveMessage.type === 'success' ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+          "fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm shadow-lg border backdrop-blur-sm animate-in fade-in slide-in-from-top-2 duration-300",
+          saveMessage.type === 'success'
+            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+            : "bg-red-500/10 text-red-400 border-red-500/20"
         )}>
           {saveMessage.type === 'success' ? (
-            <CheckCircle className="w-4 h-4" />
+            <CheckCircle className="w-4 h-4 shrink-0" />
           ) : (
-            <AlertCircle className="w-4 h-4" />
+            <AlertCircle className="w-4 h-4 shrink-0" />
           )}
           {saveMessage.text}
         </div>
       )}
 
-      <div className="flex gap-6">
-        {/* Sidebar Navigation */}
-        <div className="w-64 space-y-1">
-          {sections.map(section => (
-            <Button
+      {/* Two-column grid of collapsible sections */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {sections.map(section => {
+          const isExpanded = expandedSections.has(section.id)
+          const Icon = section.icon
+          const status = getSectionStatus(section.id)
+          const statusColor = getStatusColor(section.id)
+
+          return (
+            <div
               key={section.id}
-              variant={activeSection === section.id ? "default" : "ghost"}
               className={cn(
-                "w-full justify-start gap-3 h-auto py-3",
-                activeSection === section.id && "bg-primary/10 text-primary"
+                "bg-card/60 border border-border/40 rounded-xl overflow-hidden transition-all duration-200",
+                isExpanded && "lg:col-span-2"
               )}
-              onClick={() => setActiveSection(section.id)}
             >
-              <section.icon className="w-5 h-5" />
-              <div className="text-left">
-                <div className="font-medium text-sm">{section.label}</div>
-                <div className="text-xs text-muted-foreground">{section.description}</div>
-              </div>
-            </Button>
-          ))}
-        </div>
-
-        {/* Main Content */}
-        <Card className="flex-1">
-          <CardContent className="p-6">
-            {/* Polymarket Settings */}
-            {activeSection === 'polymarket' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-green-500/10 rounded-lg">
-                    <Key className="w-5 h-5 text-green-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Polymarket Account</h3>
-                    <p className="text-sm text-muted-foreground">Configure your Polymarket API credentials for live trading</p>
-                  </div>
+              {/* Section Header - clickable */}
+              <button
+                type="button"
+                onClick={() => toggleSection(section.id)}
+                className="w-full flex items-center gap-3 p-3 hover:bg-muted/40 transition-colors cursor-pointer"
+              >
+                <div className="shrink-0">
+                  <Icon className="w-4 h-4 text-muted-foreground" />
                 </div>
-
-                <div className="space-y-4">
-                  <SecretInput
-                    label="API Key"
-                    value={polymarketForm.api_key}
-                    placeholder={settings?.polymarket.api_key || 'Enter API key'}
-                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_key: v }))}
-                    showSecret={showSecrets['pm_key']}
-                    onToggle={() => toggleSecret('pm_key')}
-                  />
-
-                  <SecretInput
-                    label="API Secret"
-                    value={polymarketForm.api_secret}
-                    placeholder={settings?.polymarket.api_secret || 'Enter API secret'}
-                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_secret: v }))}
-                    showSecret={showSecrets['pm_secret']}
-                    onToggle={() => toggleSecret('pm_secret')}
-                  />
-
-                  <SecretInput
-                    label="API Passphrase"
-                    value={polymarketForm.api_passphrase}
-                    placeholder={settings?.polymarket.api_passphrase || 'Enter API passphrase'}
-                    onChange={(v) => setPolymarketForm(p => ({ ...p, api_passphrase: v }))}
-                    showSecret={showSecrets['pm_pass']}
-                    onToggle={() => toggleSecret('pm_pass')}
-                  />
-
-                  <SecretInput
-                    label="Private Key"
-                    value={polymarketForm.private_key}
-                    placeholder={settings?.polymarket.private_key || 'Enter wallet private key'}
-                    onChange={(v) => setPolymarketForm(p => ({ ...p, private_key: v }))}
-                    showSecret={showSecrets['pm_pk']}
-                    onToggle={() => toggleSecret('pm_pk')}
-                    description="Your wallet private key for signing transactions"
-                  />
+                <div className="flex-1 text-left min-w-0">
+                  <div className="text-sm font-medium leading-tight">{section.label}</div>
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground truncate">{section.description}</div>
                 </div>
+                <Badge variant="outline" className={cn("text-[10px] px-2 py-0.5 border-0 shrink-0", statusColor)}>
+                  {status}
+                </Badge>
+                <ChevronDown className={cn(
+                  "w-4 h-4 text-muted-foreground shrink-0 transition-transform duration-200",
+                  isExpanded && "rotate-180"
+                )} />
+              </button>
 
-                <Separator />
+              {/* Section Content - animated */}
+              <div
+                className={cn(
+                  "overflow-hidden transition-all duration-300 ease-in-out",
+                  isExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+                )}
+              >
+                <div className="p-4 pt-1 border-t border-border/30">
 
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('polymarket')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Polymarket Settings
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => testPolymarketMutation.mutate()}
-                    disabled={testPolymarketMutation.isPending}
-                  >
-                    <Zap className="w-4 h-4 mr-2" />
-                    Test Connection
-                  </Button>
-                  {testPolymarketMutation.data && (
-                    <Badge variant={testPolymarketMutation.data.status === 'success' ? "default" : "outline"} className={cn(
-                      "text-sm",
-                      testPolymarketMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
-                    )}>
-                      {testPolymarketMutation.data.message}
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            )}
+                  {/* LLM Settings */}
+                  {section.id === 'llm' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">LLM Provider</Label>
+                          <select
+                            value={llmForm.provider}
+                            onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value, model: '' }))}
+                            className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm mt-1"
+                          >
+                            <option value="none">None (Disabled)</option>
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="google">Google (Gemini)</option>
+                            <option value="xai">xAI (Grok)</option>
+                            <option value="deepseek">DeepSeek</option>
+                          </select>
+                        </div>
 
-            {/* LLM Settings */}
-            {activeSection === 'llm' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-purple-500/10 rounded-lg">
-                    <Bot className="w-5 h-5 text-purple-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">AI / LLM Services</h3>
-                    <p className="text-sm text-muted-foreground">Configure AI providers for analysis and insights</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">LLM Provider</Label>
-                    <select
-                      value={llmForm.provider}
-                      onChange={(e) => setLlmForm(p => ({ ...p, provider: e.target.value, model: '' }))}
-                      className="w-full bg-muted border border-border rounded-lg px-3 py-2 text-sm mt-1"
-                    >
-                      <option value="none">None (Disabled)</option>
-                      <option value="openai">OpenAI</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="google">Google (Gemini)</option>
-                      <option value="xai">xAI (Grok)</option>
-                      <option value="deepseek">DeepSeek</option>
-                    </select>
-                  </div>
-
-                  {(llmForm.provider === 'openai' || llmForm.provider === 'none') && (
-                    <SecretInput
-                      label="OpenAI API Key"
-                      value={llmForm.openai_api_key}
-                      placeholder={settings?.llm.openai_api_key || 'sk-...'}
-                      onChange={(v) => setLlmForm(p => ({ ...p, openai_api_key: v }))}
-                      showSecret={showSecrets['openai_key']}
-                      onToggle={() => toggleSecret('openai_key')}
-                    />
-                  )}
-
-                  {(llmForm.provider === 'anthropic' || llmForm.provider === 'none') && (
-                    <SecretInput
-                      label="Anthropic API Key"
-                      value={llmForm.anthropic_api_key}
-                      placeholder={settings?.llm.anthropic_api_key || 'sk-ant-...'}
-                      onChange={(v) => setLlmForm(p => ({ ...p, anthropic_api_key: v }))}
-                      showSecret={showSecrets['anthropic_key']}
-                      onToggle={() => toggleSecret('anthropic_key')}
-                    />
-                  )}
-
-                  {(llmForm.provider === 'google' || llmForm.provider === 'none') && (
-                    <SecretInput
-                      label="Google (Gemini) API Key"
-                      value={llmForm.google_api_key}
-                      placeholder={settings?.llm.google_api_key || 'AIza...'}
-                      onChange={(v) => setLlmForm(p => ({ ...p, google_api_key: v }))}
-                      showSecret={showSecrets['google_key']}
-                      onToggle={() => toggleSecret('google_key')}
-                    />
-                  )}
-
-                  {(llmForm.provider === 'xai' || llmForm.provider === 'none') && (
-                    <SecretInput
-                      label="xAI (Grok) API Key"
-                      value={llmForm.xai_api_key}
-                      placeholder={settings?.llm.xai_api_key || 'xai-...'}
-                      onChange={(v) => setLlmForm(p => ({ ...p, xai_api_key: v }))}
-                      showSecret={showSecrets['xai_key']}
-                      onToggle={() => toggleSecret('xai_key')}
-                    />
-                  )}
-
-                  {(llmForm.provider === 'deepseek' || llmForm.provider === 'none') && (
-                    <SecretInput
-                      label="DeepSeek API Key"
-                      value={llmForm.deepseek_api_key}
-                      placeholder={settings?.llm.deepseek_api_key || 'sk-...'}
-                      onChange={(v) => setLlmForm(p => ({ ...p, deepseek_api_key: v }))}
-                      showSecret={showSecrets['deepseek_key']}
-                      onToggle={() => toggleSecret('deepseek_key')}
-                    />
-                  )}
-
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Model</Label>
-                    <div className="flex gap-2 mt-1">
-                      <select
-                        value={llmForm.model}
-                        onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
-                        className="flex-1 bg-muted border border-border rounded-lg px-3 py-2 text-sm"
-                      >
-                        <option value="">Select a model...</option>
-                        {modelsForProvider.map(m => (
-                          <option key={m.id} value={m.id}>{m.name}</option>
-                        ))}
-                        {llmForm.model && !modelsForProvider.find(m => m.id === llmForm.model) && (
-                          <option value={llmForm.model}>{llmForm.model} (current)</option>
+                        {(llmForm.provider === 'openai' || llmForm.provider === 'none') && (
+                          <SecretInput
+                            label="OpenAI API Key"
+                            value={llmForm.openai_api_key}
+                            placeholder={settings?.llm.openai_api_key || 'sk-...'}
+                            onChange={(v) => setLlmForm(p => ({ ...p, openai_api_key: v }))}
+                            showSecret={showSecrets['openai_key']}
+                            onToggle={() => toggleSecret('openai_key')}
+                          />
                         )}
-                      </select>
-                      <Button
-                        variant="secondary"
-                        size="icon"
-                        onClick={handleRefreshModels}
-                        disabled={isRefreshingModels || llmForm.provider === 'none'}
-                        title="Refresh models from provider API"
-                      >
-                        <RefreshCw className={cn("w-4 h-4", isRefreshingModels && "animate-spin")} />
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {modelsForProvider.length > 0
-                        ? `${modelsForProvider.length} models available`
-                        : llmForm.provider !== 'none'
-                          ? 'Click refresh to fetch available models from the API'
-                          : 'Select a provider first'}
-                    </p>
-                  </div>
-                </div>
 
-                <Separator />
+                        {(llmForm.provider === 'anthropic' || llmForm.provider === 'none') && (
+                          <SecretInput
+                            label="Anthropic API Key"
+                            value={llmForm.anthropic_api_key}
+                            placeholder={settings?.llm.anthropic_api_key || 'sk-ant-...'}
+                            onChange={(v) => setLlmForm(p => ({ ...p, anthropic_api_key: v }))}
+                            showSecret={showSecrets['anthropic_key']}
+                            onToggle={() => toggleSecret('anthropic_key')}
+                          />
+                        )}
 
-                <div className="space-y-4">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Monthly Spend Limit (USD)</Label>
-                    <div className="flex items-center gap-3 mt-1">
-                      <DollarSign className="w-4 h-4 text-muted-foreground" />
-                      <Input
-                        type="number"
-                        min={0}
-                        step={5}
-                        value={llmForm.max_monthly_spend}
-                        onChange={(e) => setLlmForm(p => ({ ...p, max_monthly_spend: parseFloat(e.target.value) || 0 }))}
-                        className="w-40"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      LLM requests will be blocked once monthly spend reaches this limit. Set to 0 to disable the limit.
-                    </p>
-                  </div>
-                </div>
+                        {(llmForm.provider === 'google' || llmForm.provider === 'none') && (
+                          <SecretInput
+                            label="Google (Gemini) API Key"
+                            value={llmForm.google_api_key}
+                            placeholder={settings?.llm.google_api_key || 'AIza...'}
+                            onChange={(v) => setLlmForm(p => ({ ...p, google_api_key: v }))}
+                            showSecret={showSecrets['google_key']}
+                            onToggle={() => toggleSecret('google_key')}
+                          />
+                        )}
 
-                <Separator />
+                        {(llmForm.provider === 'xai' || llmForm.provider === 'none') && (
+                          <SecretInput
+                            label="xAI (Grok) API Key"
+                            value={llmForm.xai_api_key}
+                            placeholder={settings?.llm.xai_api_key || 'xai-...'}
+                            onChange={(v) => setLlmForm(p => ({ ...p, xai_api_key: v }))}
+                            showSecret={showSecrets['xai_key']}
+                            onToggle={() => toggleSecret('xai_key')}
+                          />
+                        )}
 
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('llm')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save LLM Settings
-                  </Button>
-                </div>
-              </div>
-            )}
+                        {(llmForm.provider === 'deepseek' || llmForm.provider === 'none') && (
+                          <SecretInput
+                            label="DeepSeek API Key"
+                            value={llmForm.deepseek_api_key}
+                            placeholder={settings?.llm.deepseek_api_key || 'sk-...'}
+                            onChange={(v) => setLlmForm(p => ({ ...p, deepseek_api_key: v }))}
+                            showSecret={showSecrets['deepseek_key']}
+                            onToggle={() => toggleSecret('deepseek_key')}
+                          />
+                        )}
 
-            {/* Notification Settings */}
-            {activeSection === 'notifications' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <Bell className="w-5 h-5 text-blue-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Notifications</h3>
-                    <p className="text-sm text-muted-foreground">Configure Telegram alerts for opportunities and trades</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <Card className="bg-muted">
-                    <CardContent className="flex items-center justify-between p-3">
-                      <div>
-                        <p className="font-medium text-sm">Enable Notifications</p>
-                        <p className="text-xs text-muted-foreground">Receive alerts via Telegram</p>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Model</Label>
+                          <div className="flex gap-2 mt-1">
+                            <select
+                              value={llmForm.model}
+                              onChange={(e) => setLlmForm(p => ({ ...p, model: e.target.value }))}
+                              className="flex-1 bg-muted border border-border rounded-lg px-3 py-2 text-sm"
+                            >
+                              <option value="">Select a model...</option>
+                              {modelsForProvider.map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                              {llmForm.model && !modelsForProvider.find(m => m.id === llmForm.model) && (
+                                <option value={llmForm.model}>{llmForm.model} (current)</option>
+                              )}
+                            </select>
+                            <Button
+                              variant="secondary"
+                              size="icon"
+                              onClick={handleRefreshModels}
+                              disabled={isRefreshingModels || llmForm.provider === 'none'}
+                              title="Refresh models from provider API"
+                            >
+                              <RefreshCw className={cn("w-4 h-4", isRefreshingModels && "animate-spin")} />
+                            </Button>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">
+                            {modelsForProvider.length > 0
+                              ? `${modelsForProvider.length} models available`
+                              : llmForm.provider !== 'none'
+                                ? 'Click refresh to fetch available models from the API'
+                                : 'Select a provider first'}
+                          </p>
+                        </div>
                       </div>
-                      <Switch
-                        checked={notificationsForm.enabled}
-                        onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, enabled: checked }))}
-                      />
-                    </CardContent>
-                  </Card>
 
-                  <SecretInput
-                    label="Telegram Bot Token"
-                    value={notificationsForm.telegram_bot_token}
-                    placeholder={settings?.notifications.telegram_bot_token || 'Enter bot token'}
-                    onChange={(v) => setNotificationsForm(p => ({ ...p, telegram_bot_token: v }))}
-                    showSecret={showSecrets['tg_token']}
-                    onToggle={() => toggleSecret('tg_token')}
-                    description="Get this from @BotFather on Telegram"
-                  />
+                      <Separator className="opacity-30" />
 
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Telegram Chat ID</Label>
-                    <Input
-                      type="text"
-                      value={notificationsForm.telegram_chat_id}
-                      onChange={(e) => setNotificationsForm(p => ({ ...p, telegram_chat_id: e.target.value }))}
-                      placeholder="Your chat ID"
-                      className="mt-1"
-                    />
-                  </div>
-
-                  <div className="space-y-3 pt-4">
-                    <p className="text-sm font-medium">Alert Types</p>
-
-                    <Card className="bg-muted">
-                      <CardContent className="flex items-center justify-between p-3">
-                        <div>
-                          <p className="text-sm">New Opportunities</p>
-                          <p className="text-xs text-muted-foreground">Alert when new arbitrage opportunities are found</p>
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Monthly Spend Limit (USD)</Label>
+                        <div className="flex items-center gap-3 mt-1">
+                          <DollarSign className="w-4 h-4 text-muted-foreground" />
+                          <Input
+                            type="number"
+                            min={0}
+                            step={5}
+                            value={llmForm.max_monthly_spend}
+                            onChange={(e) => setLlmForm(p => ({ ...p, max_monthly_spend: parseFloat(e.target.value) || 0 }))}
+                            className="w-40 text-sm"
+                          />
                         </div>
-                        <Switch
-                          checked={notificationsForm.notify_on_opportunity}
-                          onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_opportunity: checked }))}
-                        />
-                      </CardContent>
-                    </Card>
+                        <p className="text-[11px] text-muted-foreground/70 mt-1">
+                          LLM requests will be blocked once monthly spend reaches this limit. Set to 0 to disable the limit.
+                        </p>
+                      </div>
 
-                    <Card className="bg-muted">
-                      <CardContent className="flex items-center justify-between p-3">
-                        <div>
-                          <p className="text-sm">Trade Executions</p>
-                          <p className="text-xs text-muted-foreground">Alert when trades are executed</p>
-                        </div>
-                        <Switch
-                          checked={notificationsForm.notify_on_trade}
-                          onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_trade: checked }))}
-                        />
-                      </CardContent>
-                    </Card>
+                      <Separator className="opacity-30" />
 
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Minimum ROI for Alerts (%)</Label>
-                      <Input
-                        type="number"
-                        value={notificationsForm.notify_min_roi}
-                        onChange={(e) => setNotificationsForm(p => ({ ...p, notify_min_roi: parseFloat(e.target.value) || 0 }))}
-                        step="0.5"
-                        min="0"
-                        className="mt-1"
-                      />
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('llm')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('notifications')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Notification Settings
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => testTelegramMutation.mutate()}
-                    disabled={testTelegramMutation.isPending}
-                  >
-                    <MessageSquare className="w-4 h-4 mr-2" />
-                    Test Telegram
-                  </Button>
-                  {testTelegramMutation.data && (
-                    <Badge variant={testTelegramMutation.data.status === 'success' ? "default" : "outline"} className={cn(
-                      "text-sm",
-                      testTelegramMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
-                    )}>
-                      {testTelegramMutation.data.message}
-                    </Badge>
                   )}
-                </div>
-              </div>
-            )}
 
-            {/* Scanner Settings */}
-            {activeSection === 'scanner' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-cyan-500/10 rounded-lg">
-                    <Scan className="w-5 h-5 text-cyan-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Scanner Settings</h3>
-                    <p className="text-sm text-muted-foreground">Configure market scanning behavior</p>
-                  </div>
-                </div>
+                  {/* Notification Settings */}
+                  {section.id === 'notifications' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Enable Notifications</p>
+                              <p className="text-xs text-muted-foreground">Receive alerts via Telegram</p>
+                            </div>
+                            <Switch
+                              checked={notificationsForm.enabled}
+                              onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, enabled: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Scan Interval (seconds)</Label>
-                    <Input
-                      type="number"
-                      value={scannerForm.scan_interval_seconds}
-                      onChange={(e) => setScannerForm(p => ({ ...p, scan_interval_seconds: parseInt(e.target.value) || 60 }))}
-                      min={10}
-                      max={3600}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">How often to scan for opportunities</p>
-                  </div>
+                        <SecretInput
+                          label="Telegram Bot Token"
+                          value={notificationsForm.telegram_bot_token}
+                          placeholder={settings?.notifications.telegram_bot_token || 'Enter bot token'}
+                          onChange={(v) => setNotificationsForm(p => ({ ...p, telegram_bot_token: v }))}
+                          showSecret={showSecrets['tg_token']}
+                          onToggle={() => toggleSecret('tg_token')}
+                          description="Get this from @BotFather on Telegram"
+                        />
 
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Min Profit Threshold (%)</Label>
-                    <Input
-                      type="number"
-                      value={scannerForm.min_profit_threshold}
-                      onChange={(e) => setScannerForm(p => ({ ...p, min_profit_threshold: parseFloat(e.target.value) || 0 }))}
-                      step="0.5"
-                      min={0}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Minimum ROI to report as opportunity</p>
-                  </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Telegram Chat ID</Label>
+                          <Input
+                            type="text"
+                            value={notificationsForm.telegram_chat_id}
+                            onChange={(e) => setNotificationsForm(p => ({ ...p, telegram_chat_id: e.target.value }))}
+                            placeholder="Your chat ID"
+                            className="mt-1 text-sm"
+                          />
+                        </div>
 
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Max Markets to Scan</Label>
-                    <Input
-                      type="number"
-                      value={scannerForm.max_markets_to_scan}
-                      onChange={(e) => setScannerForm(p => ({ ...p, max_markets_to_scan: parseInt(e.target.value) || 100 }))}
-                      min={10}
-                      max={5000}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Limit on markets per scan</p>
-                  </div>
+                        <div className="space-y-2 pt-2">
+                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Alert Types</p>
 
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Min Liquidity ($)</Label>
-                    <Input
-                      type="number"
-                      value={scannerForm.min_liquidity}
-                      onChange={(e) => setScannerForm(p => ({ ...p, min_liquidity: parseFloat(e.target.value) || 0 }))}
-                      min={0}
-                      className="mt-1"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Minimum market liquidity</p>
-                  </div>
-                </div>
+                          <Card className="bg-muted">
+                            <CardContent className="flex items-center justify-between p-3">
+                              <div>
+                                <p className="text-sm">New Opportunities</p>
+                                <p className="text-xs text-muted-foreground">Alert when new opportunities are found</p>
+                              </div>
+                              <Switch
+                                checked={notificationsForm.notify_on_opportunity}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_opportunity: checked }))}
+                              />
+                            </CardContent>
+                          </Card>
 
-                <Separator />
+                          <Card className="bg-muted">
+                            <CardContent className="flex items-center justify-between p-3">
+                              <div>
+                                <p className="text-sm">Trade Executions</p>
+                                <p className="text-xs text-muted-foreground">Alert when trades are executed</p>
+                              </div>
+                              <Switch
+                                checked={notificationsForm.notify_on_trade}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_trade: checked }))}
+                              />
+                            </CardContent>
+                          </Card>
 
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Scanner Settings
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Trading Settings */}
-            {activeSection === 'trading' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-yellow-500/10 rounded-lg">
-                    <TrendingUp className="w-5 h-5 text-yellow-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Trading Safety</h3>
-                    <p className="text-sm text-muted-foreground">Configure trading limits and safety controls</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <Card className="bg-muted border-yellow-500/30">
-                    <CardContent className="flex items-center justify-between p-4">
-                      <div>
-                        <p className="font-medium text-sm">Enable Live Trading</p>
-                        <p className="text-xs text-muted-foreground">Allow real money trades on Polymarket</p>
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Minimum ROI for Alerts (%)</Label>
+                            <Input
+                              type="number"
+                              value={notificationsForm.notify_min_roi}
+                              onChange={(e) => setNotificationsForm(p => ({ ...p, notify_min_roi: parseFloat(e.target.value) || 0 }))}
+                              step="0.5"
+                              min="0"
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <Switch
-                        checked={tradingForm.trading_enabled}
-                        onCheckedChange={(checked) => {
-                          if (!tradingForm.trading_enabled || confirm('Are you sure you want to enable live trading?')) {
-                            setTradingForm(p => ({ ...p, trading_enabled: checked }))
-                          }
-                        }}
-                      />
-                    </CardContent>
-                  </Card>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Max Trade Size ($)</Label>
-                      <Input
-                        type="number"
-                        value={tradingForm.max_trade_size_usd}
-                        onChange={(e) => setTradingForm(p => ({ ...p, max_trade_size_usd: parseFloat(e.target.value) || 0 }))}
-                        min={1}
-                        className="mt-1"
-                      />
-                    </div>
+                      <Separator className="opacity-30" />
 
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Max Daily Volume ($)</Label>
-                      <Input
-                        type="number"
-                        value={tradingForm.max_daily_trade_volume}
-                        onChange={(e) => setTradingForm(p => ({ ...p, max_daily_trade_volume: parseFloat(e.target.value) || 0 }))}
-                        min={10}
-                        className="mt-1"
-                      />
-                    </div>
-
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Max Open Positions</Label>
-                      <Input
-                        type="number"
-                        value={tradingForm.max_open_positions}
-                        onChange={(e) => setTradingForm(p => ({ ...p, max_open_positions: parseInt(e.target.value) || 1 }))}
-                        min={1}
-                        max={100}
-                        className="mt-1"
-                      />
-                    </div>
-
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Max Slippage (%)</Label>
-                      <Input
-                        type="number"
-                        value={tradingForm.max_slippage_percent}
-                        onChange={(e) => setTradingForm(p => ({ ...p, max_slippage_percent: parseFloat(e.target.value) || 0 }))}
-                        step="0.1"
-                        min={0.1}
-                        max={10}
-                        className="mt-1"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('trading')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Trading Settings
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Auto Trader Config - Redirect to Trading tab */}
-            {activeSection === 'autotrader' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-emerald-500/10 rounded-lg">
-                    <Activity className="w-5 h-5 text-emerald-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Auto Trader Configuration</h3>
-                    <p className="text-sm text-muted-foreground">Auto trader settings have moved to the Trading tab for a unified experience</p>
-                  </div>
-                </div>
-
-                <Card className="bg-muted">
-                  <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                    <Activity className="w-10 h-10 text-emerald-500 mb-3 opacity-50" />
-                    <p className="text-sm font-medium mb-1">Settings moved to Trading tab</p>
-                    <p className="text-xs text-muted-foreground max-w-sm">
-                      All auto trader configuration including spread trading exits, AI gates, position sizing,
-                      and risk management are now available under Trading &gt; Auto Trader &gt; Settings.
-                    </p>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-
-            {/* Maintenance Settings */}
-            {activeSection === 'maintenance' && (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-red-500/10 rounded-lg">
-                    <Database className="w-5 h-5 text-red-500" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold">Database Maintenance</h3>
-                    <p className="text-sm text-muted-foreground">Configure automatic cleanup of old data</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <Card className="bg-muted">
-                    <CardContent className="flex items-center justify-between p-3">
-                      <div>
-                        <p className="font-medium text-sm">Auto Cleanup</p>
-                        <p className="text-xs text-muted-foreground">Automatically delete old records</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Button size="sm" onClick={() => handleSaveSection('notifications')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => testTelegramMutation.mutate()}
+                          disabled={testTelegramMutation.isPending}
+                        >
+                          <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
+                          Test Telegram
+                        </Button>
+                        {testTelegramMutation.data && (
+                          <Badge variant={testTelegramMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                            "text-xs",
+                            testTelegramMutation.data.status === 'success' ? "bg-green-500/10 text-green-400" : "bg-yellow-500/10 text-yellow-400"
+                          )}>
+                            {testTelegramMutation.data.message}
+                          </Badge>
+                        )}
                       </div>
-                      <Switch
-                        checked={maintenanceForm.auto_cleanup_enabled}
-                        onCheckedChange={(checked) => setMaintenanceForm(p => ({ ...p, auto_cleanup_enabled: checked }))}
-                      />
-                    </CardContent>
-                  </Card>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Cleanup Interval (hours)</Label>
-                      <Input
-                        type="number"
-                        value={maintenanceForm.cleanup_interval_hours}
-                        onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_interval_hours: parseInt(e.target.value) || 24 }))}
-                        min={1}
-                        max={168}
-                        className="mt-1"
-                      />
                     </div>
+                  )}
 
-                    <div>
-                      <Label className="text-xs text-muted-foreground">Keep Resolved Trades (days)</Label>
-                      <Input
-                        type="number"
-                        value={maintenanceForm.cleanup_resolved_trade_days}
-                        onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_resolved_trade_days: parseInt(e.target.value) || 30 }))}
-                        min={1}
-                        max={365}
-                        className="mt-1"
-                      />
+                  {/* Scanner Settings */}
+                  {section.id === 'scanner' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Scan Interval (seconds)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.scan_interval_seconds}
+                            onChange={(e) => setScannerForm(p => ({ ...p, scan_interval_seconds: parseInt(e.target.value) || 60 }))}
+                            min={10}
+                            max={3600}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">How often to scan for opportunities</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Min Profit Threshold (%)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.min_profit_threshold}
+                            onChange={(e) => setScannerForm(p => ({ ...p, min_profit_threshold: parseFloat(e.target.value) || 0 }))}
+                            step="0.5"
+                            min={0}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Minimum ROI to report as opportunity</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Markets to Scan</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.max_markets_to_scan}
+                            onChange={(e) => setScannerForm(p => ({ ...p, max_markets_to_scan: parseInt(e.target.value) || 100 }))}
+                            min={10}
+                            max={5000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Limit on markets per scan</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Min Liquidity ($)</Label>
+                          <Input
+                            type="number"
+                            value={scannerForm.min_liquidity}
+                            onChange={(e) => setScannerForm(p => ({ ...p, min_liquidity: parseFloat(e.target.value) || 0 }))}
+                            min={0}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Minimum market liquidity</p>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  )}
 
-                <Separator />
+                  {/* Trading Settings */}
+                  {section.id === 'trading' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <Card className="bg-muted border-yellow-500/30">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Enable Live Trading</p>
+                              <p className="text-xs text-muted-foreground">Allow real money trades on Polymarket</p>
+                            </div>
+                            <Switch
+                              checked={tradingForm.trading_enabled}
+                              onCheckedChange={(checked) => {
+                                if (!tradingForm.trading_enabled || confirm('Are you sure you want to enable live trading?')) {
+                                  setTradingForm(p => ({ ...p, trading_enabled: checked }))
+                                }
+                              }}
+                            />
+                          </CardContent>
+                        </Card>
 
-                <div className="flex items-center gap-3">
-                  <Button onClick={() => handleSaveSection('maintenance')} disabled={saveMutation.isPending}>
-                    <Save className="w-4 h-4 mr-2" />
-                    Save Maintenance Settings
-                  </Button>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Max Trade Size ($)</Label>
+                            <Input
+                              type="number"
+                              value={tradingForm.max_trade_size_usd}
+                              onChange={(e) => setTradingForm(p => ({ ...p, max_trade_size_usd: parseFloat(e.target.value) || 0 }))}
+                              min={1}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Max Daily Volume ($)</Label>
+                            <Input
+                              type="number"
+                              value={tradingForm.max_daily_trade_volume}
+                              onChange={(e) => setTradingForm(p => ({ ...p, max_daily_trade_volume: parseFloat(e.target.value) || 0 }))}
+                              min={10}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Max Open Positions</Label>
+                            <Input
+                              type="number"
+                              value={tradingForm.max_open_positions}
+                              onChange={(e) => setTradingForm(p => ({ ...p, max_open_positions: parseInt(e.target.value) || 1 }))}
+                              min={1}
+                              max={100}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Max Slippage (%)</Label>
+                            <Input
+                              type="number"
+                              value={tradingForm.max_slippage_percent}
+                              onChange={(e) => setTradingForm(p => ({ ...p, max_slippage_percent: parseFloat(e.target.value) || 0 }))}
+                              step="0.1"
+                              min={0.1}
+                              max={10}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('trading')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* VPN/Proxy Settings */}
+                  {section.id === 'vpn' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <Card className="bg-muted border-indigo-500/30">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Enable Trading Proxy</p>
+                              <p className="text-xs text-muted-foreground">Route Polymarket/Kalshi trading requests through the proxy below</p>
+                            </div>
+                            <Switch
+                              checked={vpnForm.enabled}
+                              onCheckedChange={(checked) => setVpnForm(p => ({ ...p, enabled: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        <SecretInput
+                          label="Proxy URL"
+                          value={vpnForm.proxy_url}
+                          placeholder={settings?.trading_proxy?.proxy_url || 'socks5://user:pass@host:port'}
+                          onChange={(v) => setVpnForm(p => ({ ...p, proxy_url: v }))}
+                          showSecret={showSecrets['proxy_url']}
+                          onToggle={() => toggleSecret('proxy_url')}
+                          description="Supports socks5://, http://, https:// proxy URLs"
+                        />
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Request Timeout (seconds)</Label>
+                            <Input
+                              type="number"
+                              value={vpnForm.timeout}
+                              onChange={(e) => setVpnForm(p => ({ ...p, timeout: parseFloat(e.target.value) || 30 }))}
+                              min={5}
+                              max={120}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="text-sm font-medium">Verify SSL Certificates</p>
+                              <p className="text-xs text-muted-foreground">Verify SSL certs for requests through the proxy</p>
+                            </div>
+                            <Switch
+                              checked={vpnForm.verify_ssl}
+                              onCheckedChange={(checked) => setVpnForm(p => ({ ...p, verify_ssl: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        <Card className="bg-muted border-yellow-500/20">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="text-sm font-medium">Require VPN for Trading</p>
+                              <p className="text-xs text-muted-foreground">Block all trades if the VPN proxy is unreachable (recommended)</p>
+                            </div>
+                            <Switch
+                              checked={vpnForm.require_vpn}
+                              onCheckedChange={(checked) => setVpnForm(p => ({ ...p, require_vpn: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        {/* Info box */}
+                        <div className="flex items-start gap-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                          <Shield className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
+                          <p className="text-xs text-muted-foreground">
+                            Only actual trading requests (order placement, cancellation) are routed through the proxy.
+                            Market scanning, price feeds, and all other data remain on your direct connection for maximum speed.
+                          </p>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Button size="sm" onClick={() => handleSaveSection('vpn')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => testVpnMutation.mutate()}
+                          disabled={testVpnMutation.isPending}
+                        >
+                          <Shield className="w-3.5 h-3.5 mr-1.5" />
+                          Test VPN
+                        </Button>
+                        {testVpnMutation.data && (
+                          <Badge variant={testVpnMutation.data.status === 'success' ? "default" : "outline"} className={cn(
+                            "text-xs",
+                            testVpnMutation.data.status === 'success' ? "bg-green-500/10 text-green-400"
+                              : testVpnMutation.data.status === 'warning' ? "bg-yellow-500/10 text-yellow-400"
+                              : "bg-red-500/10 text-red-400"
+                          )}>
+                            {testVpnMutation.data.message}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Auto Trader AI Settings */}
+                  {section.id === 'autotrader' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        {/* LLM Verify Before Trading */}
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">LLM Verify Before Trading</p>
+                              <p className="text-xs text-muted-foreground">Consult AI before executing each auto-trade. Trades scored as &quot;skip&quot; or &quot;strong_skip&quot; are blocked.</p>
+                            </div>
+                            <Switch
+                              checked={autotraderAiForm.llm_verify_trades}
+                              onCheckedChange={(checked) => {
+                                setAutotraderAiForm(p => ({ ...p, llm_verify_trades: checked }))
+                                setAutotraderAiDirty(true)
+                              }}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        {/* Strategies to LLM-Verify */}
+                        {autotraderAiForm.llm_verify_trades && (
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Strategies to LLM-Verify</Label>
+                            <Input
+                              type="text"
+                              value={autotraderAiForm.llm_verify_strategies}
+                              onChange={(e) => {
+                                setAutotraderAiForm(p => ({ ...p, llm_verify_strategies: e.target.value }))
+                                setAutotraderAiDirty(true)
+                              }}
+                              placeholder="e.g. basic, negrisk, miracle (empty = verify all)"
+                              className="mt-1 text-sm"
+                            />
+                            <p className="text-[11px] text-muted-foreground/70 mt-1">
+                              Comma-separated list of strategy types to verify. Leave empty to verify all strategies.
+                            </p>
+                          </div>
+                        )}
+
+                        <Separator className="opacity-30" />
+
+                        {/* Auto AI Scoring */}
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Auto AI Scoring</p>
+                              <p className="text-xs text-muted-foreground">Automatically AI-score all opportunities after each scan. Manual analysis per opportunity is always available regardless of this setting.</p>
+                            </div>
+                            <Switch
+                              checked={autotraderAiForm.auto_ai_scoring}
+                              onCheckedChange={(checked) => {
+                                setAutotraderAiForm(p => ({ ...p, auto_ai_scoring: checked }))
+                                setAutotraderAiDirty(true)
+                              }}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        {/* Info Note */}
+                        <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg">
+                          <Activity className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+                          <p className="text-xs text-muted-foreground">
+                            When LLM Verify is enabled, the auto-trader will consult AI before executing trades. Disable for faster execution.
+                            Additional auto-trader settings (position sizing, risk management, spread exits, AI resolution gate) are available under Trading &gt; Auto Trader &gt; Settings.
+                          </p>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      {/* Enabled Strategies */}
+                      <div className="space-y-3">
+                        <div>
+                          <h4 className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Enabled Strategies</h4>
+                          <p className="text-xs text-muted-foreground">Select which strategies the auto trader should use</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ALL_STRATEGIES.map(s => {
+                            const enabled = autotraderAiForm.enabled_strategies.includes(s.key)
+                            return (
+                              <button
+                                key={s.key}
+                                type="button"
+                                onClick={() => {
+                                  setAutotraderAiForm(prev => ({
+                                    ...prev,
+                                    enabled_strategies: enabled
+                                      ? prev.enabled_strategies.filter(k => k !== s.key)
+                                      : [...prev.enabled_strategies, s.key]
+                                  }))
+                                  setAutotraderAiDirty(true)
+                                }}
+                                className={cn(
+                                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                                  enabled
+                                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                                    : "bg-muted text-muted-foreground border-border hover:border-emerald-500/20"
+                                )}
+                              >
+                                {s.label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs h-7"
+                            onClick={() => {
+                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: ALL_STRATEGIES.map(s => s.key) }))
+                              setAutotraderAiDirty(true)
+                            }}
+                          >
+                            Select All
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs h-7"
+                            onClick={() => {
+                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: [] }))
+                              setAutotraderAiDirty(true)
+                            }}
+                          >
+                            Clear All
+                          </Button>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveSection('autotrader')}
+                          disabled={autoTraderConfigMutation.isPending || !autotraderAiDirty}
+                        >
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          {autoTraderConfigMutation.isPending ? 'Saving...' : 'Save'}
+                        </Button>
+                        {autotraderAiDirty && (
+                          <Badge variant="outline" className="text-[10px] text-yellow-400 border-yellow-500/30 bg-yellow-500/10">
+                            Unsaved changes
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Maintenance Settings */}
+                  {section.id === 'maintenance' && (
+                    <div className="space-y-4">
+                      <div className="space-y-3">
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Auto Cleanup</p>
+                              <p className="text-xs text-muted-foreground">Automatically delete old records</p>
+                            </div>
+                            <Switch
+                              checked={maintenanceForm.auto_cleanup_enabled}
+                              onCheckedChange={(checked) => setMaintenanceForm(p => ({ ...p, auto_cleanup_enabled: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Cleanup Interval (hours)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_interval_hours}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_interval_hours: parseInt(e.target.value) || 24 }))}
+                              min={1}
+                              max={168}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Keep Resolved Trades (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_resolved_trade_days}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_resolved_trade_days: parseInt(e.target.value) || 30 }))}
+                              min={1}
+                              max={365}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('maintenance')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

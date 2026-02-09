@@ -19,10 +19,14 @@ from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from api.routes_ai import router as ai_router
 from api.routes_news import router as news_router
+from api.routes_discovery import discovery_router
+from api.routes_kalshi import router as kalshi_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.copy_trader import copy_trader
 from services.trading import trading_service
 from services.auto_trader import auto_trader
+from services.wallet_discovery import wallet_discovery
+from services.wallet_intelligence import wallet_intelligence
 from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
 from services.notifier import notifier
@@ -40,6 +44,7 @@ from services.price_chaser import OrderRetryLog  # noqa: F401
 from services.token_circuit_breaker import TokenTrip  # noqa: F401
 from services.category_buffers import CategoryBufferLog  # noqa: F401
 from services.market_cache import CachedMarket, CachedUsername  # noqa: F401
+from services.market_prioritizer import market_prioritizer  # noqa: F401
 from services.live_market_detector import MarketLiveStatus  # noqa: F401
 from services.credential_manager import StoredCredential  # noqa: F401
 from services.latency_tracker import PipelineLatencyLog  # noqa: F401
@@ -54,12 +59,23 @@ logger = get_logger("main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    logger.info("Starting Polymarket Arbitrage Scanner...")
+    logger.info("Starting Autonomous Prediction Market Trading Platform...")
 
     try:
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Load persisted search filter settings from DB into config singleton
+        try:
+            from config import apply_search_filters
+
+            await apply_search_filters()
+            logger.info("Search filter settings loaded from database")
+        except Exception as e:
+            logger.warning(
+                f"Failed to load search filter settings (using defaults): {e}"
+            )
 
         # Pre-flight configuration validation
         from services.config_validator import config_validator
@@ -155,6 +171,21 @@ async def lifespan(app: FastAPI):
                     "Trading service initialization failed - check credentials"
                 )
 
+        # Start wallet discovery engine (background)
+        try:
+            await wallet_intelligence.initialize()
+            discovery_task = asyncio.create_task(
+                wallet_discovery.start_background_discovery(interval_minutes=60)
+            )
+            tasks.append(discovery_task)
+            intelligence_task = asyncio.create_task(
+                wallet_intelligence.start_background(interval_minutes=30)
+            )
+            tasks.append(intelligence_task)
+            logger.info("Wallet discovery and intelligence services started")
+        except Exception as e:
+            logger.warning(f"Wallet discovery startup failed (non-critical): {e}")
+
         # Start background cleanup if enabled
         if settings.AUTO_CLEANUP_ENABLED:
             cleanup_config = {
@@ -214,6 +245,8 @@ async def lifespan(app: FastAPI):
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()
+        wallet_discovery.stop()
+        wallet_intelligence.stop()
         position_monitor.stop()
         maintenance_service.stop()
         try:
@@ -288,6 +321,8 @@ app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
+app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
+app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 
 
 # WebSocket endpoint
@@ -393,8 +428,19 @@ async def detailed_health_check():
                 if settings.AUTO_CLEANUP_ENABLED
                 else None,
             },
+            "market_prioritizer": market_prioritizer.get_stats(),
             "ai_intelligence": _get_ai_status(),
             "news_intelligence": _get_news_status(),
+            "wallet_discovery": {
+                "running": wallet_discovery._running,
+                "last_run": wallet_discovery._last_run_at.isoformat()
+                if wallet_discovery._last_run_at
+                else None,
+                "wallets_discovered": wallet_discovery._wallets_discovered_last_run,
+            },
+            "wallet_intelligence": {
+                "running": wallet_intelligence._running,
+            },
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {
