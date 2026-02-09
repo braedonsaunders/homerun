@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAtom } from 'jotai'
 import {
   Plus,
   TrendingUp,
@@ -23,6 +24,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { selectedAccountIdAtom } from '../store/atoms'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -44,7 +46,23 @@ type DetailTab = 'overview' | 'holdings' | 'trades' | 'execute'
 
 export default function SimulationPanel() {
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
+  const [globalSelectedId, setGlobalSelectedId] = useAtom(selectedAccountIdAtom)
+  const [selectedAccount, setSelectedAccountLocal] = useState<string | null>(null)
+
+  // Sync local view with global selection (only for sandbox accounts)
+  useEffect(() => {
+    if (globalSelectedId && !globalSelectedId.startsWith('live:')) {
+      setSelectedAccountLocal(globalSelectedId)
+    }
+  }, [globalSelectedId])
+
+  // When user selects an account locally, also update the global selection
+  const setSelectedAccount = (id: string | null) => {
+    setSelectedAccountLocal(id)
+    if (id && !id.startsWith('live:')) {
+      setGlobalSelectedId(id)
+    }
+  }
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
   const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)

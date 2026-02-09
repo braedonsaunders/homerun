@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAtom } from 'jotai'
 import {
   Play,
   Square,
@@ -34,6 +35,7 @@ import {
   Percent,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -51,7 +53,6 @@ import {
   getTradingPositions,
   getTradingBalance,
   getOrders,
-  getSimulationAccounts,
 } from '../services/api'
 import type { AutoTraderConfig, TradingPosition } from '../services/api'
 
@@ -88,13 +89,14 @@ const ALL_STRATEGIES = [
 ]
 
 export default function TradingPanel() {
+  const [accountMode] = useAtom(accountModeAtom)
+  const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview')
   const [tradeFilter, setTradeFilter] = useState<string>('all')
   const [tradeSort, setTradeSort] = useState<'date' | 'pnl' | 'cost'>('date')
   const [tradeSortDir, setTradeSortDir] = useState<'asc' | 'desc'>('desc')
   const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([])
   const [expandedPositions, setExpandedPositions] = useState<Set<number>>(new Set())
-  const [showAccountPicker, setShowAccountPicker] = useState(false)
   const feedRef = useRef<HTMLDivElement>(null)
   const prevTradesRef = useRef<string[]>([])
   const prevStatsRef = useRef<{ seen: number; executed: number; skipped: number } | null>(null)
@@ -137,16 +139,9 @@ export default function TradingPanel() {
     refetchInterval: 15000,
   })
 
-  const { data: simulationAccounts = [] } = useQuery({
-    queryKey: ['simulation-accounts'],
-    queryFn: getSimulationAccounts,
-    enabled: showAccountPicker,
-  })
-
   const startMutation = useMutation({
     mutationFn: ({ mode, accountId }: { mode: string; accountId?: string }) => startAutoTrader(mode, accountId),
     onSuccess: () => {
-      setShowAccountPicker(false)
       queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
       addFeedEvent({ type: 'system', title: 'Auto Trader Started', detail: 'Trading engine is now active', icon: 'system' })
     }
@@ -223,19 +218,6 @@ export default function TradingPanel() {
       setConfigDirty(false)
     }
   }
-
-  // Close account picker when clicking outside
-  const accountPickerRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!showAccountPicker) return
-    const handler = (e: MouseEvent) => {
-      if (accountPickerRef.current && !accountPickerRef.current.contains(e.target as Node)) {
-        setShowAccountPicker(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showAccountPicker])
 
   const stats = status?.stats
   const config = status?.config
@@ -544,58 +526,27 @@ export default function TradingPanel() {
               Stop
             </Button>
           ) : (
-            <>
-              <div className="relative" ref={accountPickerRef}>
-                <Button
-                  variant="ghost"
-                  onClick={() => setShowAccountPicker(prev => !prev)}
-                  disabled={startMutation.isPending}
-                  className="gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-amber-500/20"
-                >
-                  <Play className="w-3 h-3" />
-                  Sandbox
-                  <ChevronDown className="w-2.5 h-2.5" />
-                </Button>
-                {showAccountPicker && (
-                  <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-popover border border-border rounded-lg shadow-xl overflow-hidden">
-                    <div className="px-3 py-2 border-b border-border">
-                      <span className="text-xs font-medium text-muted-foreground">Select Sandbox Account</span>
-                    </div>
-                    <div className="max-h-48 overflow-y-auto">
-                      {simulationAccounts.map(acc => (
-                        <button
-                          key={acc.id}
-                          onClick={() => startMutation.mutate({ mode: 'paper', accountId: acc.id })}
-                          className="w-full text-left px-3 py-2 hover:bg-accent transition-colors border-b border-border/50 last:border-b-0"
-                        >
-                          <div className="text-sm text-foreground">{acc.name}</div>
-                          <div className="text-xs text-muted-foreground">${acc.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} capital</div>
-                        </button>
-                      ))}
-                    </div>
-                    <button
-                      onClick={() => startMutation.mutate({ mode: 'paper' })}
-                      className="w-full text-left px-3 py-2 hover:bg-blue-500/10 transition-colors border-t border-border text-blue-400 text-sm"
-                    >
-                      + New Account
-                    </button>
-                  </div>
-                )}
-              </div>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  if (confirm('Enable LIVE trading? This will use REAL MONEY.')) {
-                    startMutation.mutate({ mode: 'live' })
-                  }
-                }}
-                disabled={startMutation.isPending}
-                className="gap-1.5 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-green-500/20"
-              >
-                <Zap className="w-3 h-3" />
-                Live
-              </Button>
-            </>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (accountMode === 'live') {
+                  if (!confirm('Start LIVE auto-trading? This will use REAL MONEY.')) return
+                  startMutation.mutate({ mode: 'live' })
+                } else {
+                  startMutation.mutate({ mode: 'paper', accountId: selectedAccountId || undefined })
+                }
+              }}
+              disabled={startMutation.isPending || (!selectedAccountId)}
+              className={cn(
+                "gap-1.5 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border",
+                accountMode === 'live'
+                  ? "bg-green-500/20 hover:bg-green-500/30 text-green-400 border-green-500/20"
+                  : "bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border-amber-500/20"
+              )}
+            >
+              <Play className="w-3 h-3" />
+              Start
+            </Button>
           )}
 
           {/* Emergency Stop */}
