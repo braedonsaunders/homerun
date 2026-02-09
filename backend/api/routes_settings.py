@@ -152,6 +152,109 @@ class TradingProxySettings(BaseModel):
     )
 
 
+class SearchFilterSettings(BaseModel):
+    """Opportunity search filter thresholds — controls which opportunities are shown"""
+
+    # Hard rejection filters
+    min_liquidity_hard: float = Field(
+        default=200.0, ge=0, description="Hard reject below this liquidity ($)"
+    )
+    min_position_size: float = Field(
+        default=25.0, ge=0, description="Reject if max position < this ($)"
+    )
+    min_absolute_profit: float = Field(
+        default=5.0, ge=0, description="Reject if net profit on max position < this ($)"
+    )
+    min_annualized_roi: float = Field(
+        default=10.0, ge=0, description="Reject if annualized ROI < this %"
+    )
+    max_resolution_months: int = Field(
+        default=18, ge=1, le=120, description="Reject if resolution > this many months away"
+    )
+    max_plausible_roi: float = Field(
+        default=30.0, ge=1, description="ROI above this % rejected as false positive"
+    )
+    max_trade_legs: int = Field(
+        default=8, ge=2, le=20, description="Maximum legs in a multi-leg trade"
+    )
+
+    # NegRisk exhaustivity thresholds
+    negrisk_min_total_yes: float = Field(
+        default=0.95, ge=0.5, le=1.0, description="Hard reject NegRisk if total YES < this"
+    )
+    negrisk_warn_total_yes: float = Field(
+        default=0.97, ge=0.5, le=1.0, description="Warn if total YES below this"
+    )
+    negrisk_election_min_total_yes: float = Field(
+        default=0.97, ge=0.5, le=1.0, description="Stricter reject for election markets"
+    )
+    negrisk_max_resolution_spread_days: int = Field(
+        default=7, ge=0, le=365, description="Max resolution date spread in NegRisk bundle (days)"
+    )
+
+    # Settlement lag
+    settlement_lag_max_days_to_resolution: int = Field(
+        default=14, ge=0, le=365, description="Only detect settlement lag within this window (days)"
+    )
+    settlement_lag_near_zero: float = Field(
+        default=0.05, ge=0.001, le=0.5, description="Price below this suggests resolved to NO"
+    )
+    settlement_lag_near_one: float = Field(
+        default=0.95, ge=0.5, le=0.999, description="Price above this suggests resolved to YES"
+    )
+    settlement_lag_min_sum_deviation: float = Field(
+        default=0.03, ge=0.001, le=0.5, description="Min deviation from 1.0 to be interesting"
+    )
+
+    # Risk scoring thresholds
+    risk_very_short_days: int = Field(
+        default=2, ge=0, le=30, description="Days threshold for 'very short time to resolution' risk"
+    )
+    risk_short_days: int = Field(
+        default=7, ge=1, le=60, description="Days threshold for 'short time to resolution' risk"
+    )
+    risk_long_lockup_days: int = Field(
+        default=180, ge=30, le=3650, description="Days threshold for 'long capital lockup' risk"
+    )
+    risk_extended_lockup_days: int = Field(
+        default=90, ge=14, le=1825, description="Days threshold for 'extended capital lockup' risk"
+    )
+    risk_low_liquidity: float = Field(
+        default=1000.0, ge=0, description="Liquidity below this adds high risk ($)"
+    )
+    risk_moderate_liquidity: float = Field(
+        default=5000.0, ge=0, description="Liquidity below this adds moderate risk ($)"
+    )
+    risk_complex_legs: int = Field(
+        default=5, ge=2, le=20, description="Legs above this = complex trade risk"
+    )
+    risk_multiple_legs: int = Field(
+        default=3, ge=2, le=20, description="Legs above this = multiple positions risk"
+    )
+
+    # BTC/ETH high-frequency
+    btc_eth_pure_arb_max_combined: float = Field(
+        default=0.98, ge=0.5, le=1.0, description="Use pure arb when YES+NO < this"
+    )
+    btc_eth_dump_hedge_drop_pct: float = Field(
+        default=0.05, ge=0.01, le=0.5, description="Min price drop to trigger dump-hedge"
+    )
+    btc_eth_thin_liquidity_usd: float = Field(
+        default=500.0, ge=0, description="Below this = thin order book ($)"
+    )
+
+    # Miracle strategy
+    miracle_min_no_price: float = Field(
+        default=0.90, ge=0.5, le=0.999, description="Only consider NO prices >= this"
+    )
+    miracle_max_no_price: float = Field(
+        default=0.995, ge=0.9, le=1.0, description="Skip if NO already at this+"
+    )
+    miracle_min_impossibility_score: float = Field(
+        default=0.70, ge=0.0, le=1.0, description="Min confidence event is impossible (0-1)"
+    )
+
+
 class AllSettings(BaseModel):
     """Complete settings response"""
 
@@ -163,6 +266,7 @@ class AllSettings(BaseModel):
     trading: TradingSettings
     maintenance: MaintenanceSettings
     trading_proxy: TradingProxySettings
+    search_filters: SearchFilterSettings
     updated_at: Optional[str] = None
 
 
@@ -177,6 +281,7 @@ class UpdateSettingsRequest(BaseModel):
     trading: Optional[TradingSettings] = None
     maintenance: Optional[MaintenanceSettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
+    search_filters: Optional[SearchFilterSettings] = None
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -279,6 +384,37 @@ async def get_settings():
                 require_vpn=settings.trading_proxy_require_vpn
                 if settings.trading_proxy_require_vpn is not None
                 else True,
+            ),
+            search_filters=SearchFilterSettings(
+                min_liquidity_hard=settings.min_liquidity_hard if settings.min_liquidity_hard is not None else 200.0,
+                min_position_size=settings.min_position_size if settings.min_position_size is not None else 25.0,
+                min_absolute_profit=settings.min_absolute_profit if settings.min_absolute_profit is not None else 5.0,
+                min_annualized_roi=settings.min_annualized_roi if settings.min_annualized_roi is not None else 10.0,
+                max_resolution_months=settings.max_resolution_months if settings.max_resolution_months is not None else 18,
+                max_plausible_roi=settings.max_plausible_roi if settings.max_plausible_roi is not None else 30.0,
+                max_trade_legs=settings.max_trade_legs if settings.max_trade_legs is not None else 8,
+                negrisk_min_total_yes=settings.negrisk_min_total_yes if settings.negrisk_min_total_yes is not None else 0.95,
+                negrisk_warn_total_yes=settings.negrisk_warn_total_yes if settings.negrisk_warn_total_yes is not None else 0.97,
+                negrisk_election_min_total_yes=settings.negrisk_election_min_total_yes if settings.negrisk_election_min_total_yes is not None else 0.97,
+                negrisk_max_resolution_spread_days=settings.negrisk_max_resolution_spread_days if settings.negrisk_max_resolution_spread_days is not None else 7,
+                settlement_lag_max_days_to_resolution=settings.settlement_lag_max_days_to_resolution if settings.settlement_lag_max_days_to_resolution is not None else 14,
+                settlement_lag_near_zero=settings.settlement_lag_near_zero if settings.settlement_lag_near_zero is not None else 0.05,
+                settlement_lag_near_one=settings.settlement_lag_near_one if settings.settlement_lag_near_one is not None else 0.95,
+                settlement_lag_min_sum_deviation=settings.settlement_lag_min_sum_deviation if settings.settlement_lag_min_sum_deviation is not None else 0.03,
+                risk_very_short_days=settings.risk_very_short_days if settings.risk_very_short_days is not None else 2,
+                risk_short_days=settings.risk_short_days if settings.risk_short_days is not None else 7,
+                risk_long_lockup_days=settings.risk_long_lockup_days if settings.risk_long_lockup_days is not None else 180,
+                risk_extended_lockup_days=settings.risk_extended_lockup_days if settings.risk_extended_lockup_days is not None else 90,
+                risk_low_liquidity=settings.risk_low_liquidity if settings.risk_low_liquidity is not None else 1000.0,
+                risk_moderate_liquidity=settings.risk_moderate_liquidity if settings.risk_moderate_liquidity is not None else 5000.0,
+                risk_complex_legs=settings.risk_complex_legs if settings.risk_complex_legs is not None else 5,
+                risk_multiple_legs=settings.risk_multiple_legs if settings.risk_multiple_legs is not None else 3,
+                btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined if settings.btc_eth_pure_arb_max_combined is not None else 0.98,
+                btc_eth_dump_hedge_drop_pct=settings.btc_eth_dump_hedge_drop_pct if settings.btc_eth_dump_hedge_drop_pct is not None else 0.05,
+                btc_eth_thin_liquidity_usd=settings.btc_eth_thin_liquidity_usd if settings.btc_eth_thin_liquidity_usd is not None else 500.0,
+                miracle_min_no_price=settings.miracle_min_no_price if settings.miracle_min_no_price is not None else 0.90,
+                miracle_max_no_price=settings.miracle_max_no_price if settings.miracle_max_no_price is not None else 0.995,
+                miracle_min_impossibility_score=settings.miracle_min_impossibility_score if settings.miracle_min_impossibility_score is not None else 0.70,
             ),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
@@ -385,6 +521,39 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings.cleanup_interval_hours = maint.cleanup_interval_hours
                 settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
 
+            # Update Search Filter settings
+            if request.search_filters:
+                sf = request.search_filters
+                settings.min_liquidity_hard = sf.min_liquidity_hard
+                settings.min_position_size = sf.min_position_size
+                settings.min_absolute_profit = sf.min_absolute_profit
+                settings.min_annualized_roi = sf.min_annualized_roi
+                settings.max_resolution_months = sf.max_resolution_months
+                settings.max_plausible_roi = sf.max_plausible_roi
+                settings.max_trade_legs = sf.max_trade_legs
+                settings.negrisk_min_total_yes = sf.negrisk_min_total_yes
+                settings.negrisk_warn_total_yes = sf.negrisk_warn_total_yes
+                settings.negrisk_election_min_total_yes = sf.negrisk_election_min_total_yes
+                settings.negrisk_max_resolution_spread_days = sf.negrisk_max_resolution_spread_days
+                settings.settlement_lag_max_days_to_resolution = sf.settlement_lag_max_days_to_resolution
+                settings.settlement_lag_near_zero = sf.settlement_lag_near_zero
+                settings.settlement_lag_near_one = sf.settlement_lag_near_one
+                settings.settlement_lag_min_sum_deviation = sf.settlement_lag_min_sum_deviation
+                settings.risk_very_short_days = sf.risk_very_short_days
+                settings.risk_short_days = sf.risk_short_days
+                settings.risk_long_lockup_days = sf.risk_long_lockup_days
+                settings.risk_extended_lockup_days = sf.risk_extended_lockup_days
+                settings.risk_low_liquidity = sf.risk_low_liquidity
+                settings.risk_moderate_liquidity = sf.risk_moderate_liquidity
+                settings.risk_complex_legs = sf.risk_complex_legs
+                settings.risk_multiple_legs = sf.risk_multiple_legs
+                settings.btc_eth_pure_arb_max_combined = sf.btc_eth_pure_arb_max_combined
+                settings.btc_eth_dump_hedge_drop_pct = sf.btc_eth_dump_hedge_drop_pct
+                settings.btc_eth_thin_liquidity_usd = sf.btc_eth_thin_liquidity_usd
+                settings.miracle_min_no_price = sf.miracle_min_no_price
+                settings.miracle_max_no_price = sf.miracle_max_no_price
+                settings.miracle_min_impossibility_score = sf.miracle_min_impossibility_score
+
             # Update Trading Proxy settings
             if request.trading_proxy:
                 proxy = request.trading_proxy
@@ -400,6 +569,7 @@ async def update_settings(request: UpdateSettingsRequest):
             updated_at = settings.updated_at.isoformat()
             needs_llm_reinit = bool(request.llm)
             needs_proxy_reinit = bool(request.trading_proxy)
+            needs_filter_reload = bool(request.search_filters)
 
         # Re-initialize LLM manager OUTSIDE the DB session so the new
         # session inside initialize() can see the just-committed data
@@ -430,6 +600,18 @@ async def update_settings(request: UpdateSettingsRequest):
             except Exception as reinit_err:
                 logger.error(
                     f"Failed to re-initialize trading proxy: {reinit_err}",
+                )
+
+        # Reload search filter config into the running settings singleton
+        if needs_filter_reload:
+            try:
+                from config import apply_search_filters
+
+                await apply_search_filters()
+                logger.info("Search filter config reloaded after settings update")
+            except Exception as reinit_err:
+                logger.error(
+                    f"Failed to reload search filters: {reinit_err}",
                 )
 
         logger.info("Settings updated successfully")
@@ -598,6 +780,49 @@ async def get_trading_proxy_settings():
 async def update_trading_proxy_settings(request: TradingProxySettings):
     """Update trading VPN/proxy settings only"""
     return await update_settings(UpdateSettingsRequest(trading_proxy=request))
+
+
+@router.get("/search-filters")
+async def get_search_filter_settings():
+    """Get search filter settings only"""
+    settings = await get_or_create_settings()
+    return SearchFilterSettings(
+        min_liquidity_hard=settings.min_liquidity_hard if settings.min_liquidity_hard is not None else 200.0,
+        min_position_size=settings.min_position_size if settings.min_position_size is not None else 25.0,
+        min_absolute_profit=settings.min_absolute_profit if settings.min_absolute_profit is not None else 5.0,
+        min_annualized_roi=settings.min_annualized_roi if settings.min_annualized_roi is not None else 10.0,
+        max_resolution_months=settings.max_resolution_months if settings.max_resolution_months is not None else 18,
+        max_plausible_roi=settings.max_plausible_roi if settings.max_plausible_roi is not None else 30.0,
+        max_trade_legs=settings.max_trade_legs if settings.max_trade_legs is not None else 8,
+        negrisk_min_total_yes=settings.negrisk_min_total_yes if settings.negrisk_min_total_yes is not None else 0.95,
+        negrisk_warn_total_yes=settings.negrisk_warn_total_yes if settings.negrisk_warn_total_yes is not None else 0.97,
+        negrisk_election_min_total_yes=settings.negrisk_election_min_total_yes if settings.negrisk_election_min_total_yes is not None else 0.97,
+        negrisk_max_resolution_spread_days=settings.negrisk_max_resolution_spread_days if settings.negrisk_max_resolution_spread_days is not None else 7,
+        settlement_lag_max_days_to_resolution=settings.settlement_lag_max_days_to_resolution if settings.settlement_lag_max_days_to_resolution is not None else 14,
+        settlement_lag_near_zero=settings.settlement_lag_near_zero if settings.settlement_lag_near_zero is not None else 0.05,
+        settlement_lag_near_one=settings.settlement_lag_near_one if settings.settlement_lag_near_one is not None else 0.95,
+        settlement_lag_min_sum_deviation=settings.settlement_lag_min_sum_deviation if settings.settlement_lag_min_sum_deviation is not None else 0.03,
+        risk_very_short_days=settings.risk_very_short_days if settings.risk_very_short_days is not None else 2,
+        risk_short_days=settings.risk_short_days if settings.risk_short_days is not None else 7,
+        risk_long_lockup_days=settings.risk_long_lockup_days if settings.risk_long_lockup_days is not None else 180,
+        risk_extended_lockup_days=settings.risk_extended_lockup_days if settings.risk_extended_lockup_days is not None else 90,
+        risk_low_liquidity=settings.risk_low_liquidity if settings.risk_low_liquidity is not None else 1000.0,
+        risk_moderate_liquidity=settings.risk_moderate_liquidity if settings.risk_moderate_liquidity is not None else 5000.0,
+        risk_complex_legs=settings.risk_complex_legs if settings.risk_complex_legs is not None else 5,
+        risk_multiple_legs=settings.risk_multiple_legs if settings.risk_multiple_legs is not None else 3,
+        btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined if settings.btc_eth_pure_arb_max_combined is not None else 0.98,
+        btc_eth_dump_hedge_drop_pct=settings.btc_eth_dump_hedge_drop_pct if settings.btc_eth_dump_hedge_drop_pct is not None else 0.05,
+        btc_eth_thin_liquidity_usd=settings.btc_eth_thin_liquidity_usd if settings.btc_eth_thin_liquidity_usd is not None else 500.0,
+        miracle_min_no_price=settings.miracle_min_no_price if settings.miracle_min_no_price is not None else 0.90,
+        miracle_max_no_price=settings.miracle_max_no_price if settings.miracle_max_no_price is not None else 0.995,
+        miracle_min_impossibility_score=settings.miracle_min_impossibility_score if settings.miracle_min_impossibility_score is not None else 0.70,
+    )
+
+
+@router.put("/search-filters")
+async def update_search_filter_settings(request: SearchFilterSettings):
+    """Update search filter settings only"""
+    return await update_settings(UpdateSettingsRequest(search_filters=request))
 
 
 # ==================== VALIDATION ENDPOINTS ====================

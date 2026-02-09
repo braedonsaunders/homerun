@@ -51,10 +51,19 @@ class SettlementLagStrategy(BaseStrategy):
     name = "Settlement Lag"
     description = "Exploit delayed price updates after outcome determination"
 
-    # Thresholds calibrated from research
-    NEAR_ZERO_THRESHOLD = 0.05  # Price below this suggests resolved to NO
-    NEAR_ONE_THRESHOLD = 0.95  # Price above this suggests resolved to YES
-    MIN_SUM_DEVIATION = 0.03  # Minimum deviation from 1.0 to be interesting
+    # Thresholds — read from config (persisted in DB via Settings UI)
+    @property
+    def NEAR_ZERO_THRESHOLD(self):
+        return settings.SETTLEMENT_LAG_NEAR_ZERO if hasattr(settings, "SETTLEMENT_LAG_NEAR_ZERO") else 0.05
+
+    @property
+    def NEAR_ONE_THRESHOLD(self):
+        return settings.SETTLEMENT_LAG_NEAR_ONE if hasattr(settings, "SETTLEMENT_LAG_NEAR_ONE") else 0.95
+
+    @property
+    def MIN_SUM_DEVIATION(self):
+        return settings.SETTLEMENT_LAG_MIN_SUM_DEVIATION if hasattr(settings, "SETTLEMENT_LAG_MIN_SUM_DEVIATION") else 0.03
+
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
 
     def detect(

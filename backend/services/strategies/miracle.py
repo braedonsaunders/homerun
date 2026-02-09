@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
+from config import settings
 from .base import BaseStrategy, utcnow, make_aware
 
 
@@ -141,11 +142,17 @@ class MiracleStrategy(BaseStrategy):
     name = "Miracle Scanner"
     description = "Bet NO on impossible/absurd events (garbage collection)"
 
-    def __init__(self):
-        super().__init__()
-        self.min_no_price = 0.90  # Only consider NO prices >= 90 cents
-        self.max_no_price = 0.995  # Skip if NO is already at 99.5%+
-        self.min_impossibility_score = 0.70  # Minimum confidence it's impossible
+    @property
+    def min_no_price(self):
+        return getattr(settings, "MIRACLE_MIN_NO_PRICE", 0.90)
+
+    @property
+    def max_no_price(self):
+        return getattr(settings, "MIRACLE_MAX_NO_PRICE", 0.995)
+
+    @property
+    def min_impossibility_score(self):
+        return getattr(settings, "MIRACLE_MIN_IMPOSSIBILITY_SCORE", 0.70)
 
     def calculate_impossibility_score(
         self, question: str, end_date: Optional[datetime] = None

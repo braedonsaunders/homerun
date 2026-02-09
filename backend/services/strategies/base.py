@@ -50,36 +50,44 @@ class BaseStrategy(ABC):
         if resolution_date:
             resolution_aware = make_aware(resolution_date)
             days_until = (resolution_aware - utcnow()).days
-            if days_until < 2:
+            very_short = getattr(settings, "RISK_VERY_SHORT_DAYS", 2)
+            short = getattr(settings, "RISK_SHORT_DAYS", 7)
+            long_lockup = getattr(settings, "RISK_LONG_LOCKUP_DAYS", 180)
+            ext_lockup = getattr(settings, "RISK_EXTENDED_LOCKUP_DAYS", 90)
+            if days_until < very_short:
                 score += 0.4
-                factors.append("Very short time to resolution (<2 days)")
-            elif days_until < 7:
+                factors.append(f"Very short time to resolution (<{very_short} days)")
+            elif days_until < short:
                 score += 0.2
-                factors.append("Short time to resolution (<7 days)")
+                factors.append(f"Short time to resolution (<{short} days)")
             # Long-duration capital lockup risk
-            elif days_until > 180:
+            elif days_until > long_lockup:
                 score += 0.3
                 factors.append(f"Long capital lockup ({days_until} days to resolution)")
-            elif days_until > 90:
+            elif days_until > ext_lockup:
                 score += 0.2
                 factors.append(
                     f"Extended capital lockup ({days_until} days to resolution)"
                 )
 
         # Liquidity risk
+        low_liq = getattr(settings, "RISK_LOW_LIQUIDITY", 1000.0)
+        mod_liq = getattr(settings, "RISK_MODERATE_LIQUIDITY", 5000.0)
         min_liquidity = min((m.liquidity for m in markets), default=0)
-        if min_liquidity < 1000:
+        if min_liquidity < low_liq:
             score += 0.3
             factors.append(f"Low liquidity (${min_liquidity:.0f})")
-        elif min_liquidity < 5000:
+        elif min_liquidity < mod_liq:
             score += 0.15
             factors.append(f"Moderate liquidity (${min_liquidity:.0f})")
 
         # Number of markets (complexity risk) — slippage compounds per leg
-        if len(markets) > 5:
+        complex_legs = getattr(settings, "RISK_COMPLEX_LEGS", 5)
+        multi_legs = getattr(settings, "RISK_MULTIPLE_LEGS", 3)
+        if len(markets) > complex_legs:
             score += 0.2
             factors.append(f"Complex trade ({len(markets)} legs — high slippage risk)")
-        elif len(markets) > 3:
+        elif len(markets) > multi_legs:
             score += 0.1
             factors.append(f"Multiple positions ({len(markets)} markets)")
 

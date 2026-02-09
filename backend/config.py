@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
         14  # Only detect settlement lag within this window
     )
+    SETTLEMENT_LAG_NEAR_ZERO: float = 0.05  # Price below this suggests resolved to NO
+    SETTLEMENT_LAG_NEAR_ONE: float = 0.95  # Price above this suggests resolved to YES
+    SETTLEMENT_LAG_MIN_SUM_DEVIATION: float = 0.03  # Min deviation from 1.0
 
     # Wallet Tracking
     TRACKED_WALLETS: list[str] = []
@@ -160,6 +163,21 @@ class Settings(BaseSettings):
     BTC_ETH_HF_DUMP_THRESHOLD: float = 0.05  # Min drop for dump-hedge trigger
     BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
 
+    # Miracle Strategy Thresholds
+    MIRACLE_MIN_NO_PRICE: float = 0.90  # Only consider NO prices >= this
+    MIRACLE_MAX_NO_PRICE: float = 0.995  # Skip if NO already at this+
+    MIRACLE_MIN_IMPOSSIBILITY_SCORE: float = 0.70  # Min confidence event is impossible
+
+    # Risk Scoring Thresholds
+    RISK_VERY_SHORT_DAYS: int = 2
+    RISK_SHORT_DAYS: int = 7
+    RISK_LONG_LOCKUP_DAYS: int = 180
+    RISK_EXTENDED_LOCKUP_DAYS: int = 90
+    RISK_LOW_LIQUIDITY: float = 1000.0
+    RISK_MODERATE_LIQUIDITY: float = 5000.0
+    RISK_COMPLEX_LEGS: int = 5
+    RISK_MULTIPLE_LEGS: int = 3
+
     # New Market Detection
     NEW_MARKET_DETECTION_ENABLED: bool = True  # Enable new market monitoring
     NEW_MARKET_WINDOW_SECONDS: int = 300  # Markets seen within this = "new"
@@ -225,3 +243,70 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+async def apply_search_filters():
+    """Load search filter values from the DB and apply them to the running config singleton.
+
+    Called at startup after DB init, and whenever search filter settings are updated via the API.
+    """
+    from models.database import AsyncSessionLocal, AppSettings
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(AppSettings).where(AppSettings.id == "default")
+        )
+        db = result.scalar_one_or_none()
+        if not db:
+            return  # No saved settings yet — use defaults
+
+    # Map DB columns → config singleton attributes
+    _apply = [
+        ("MIN_LIQUIDITY_HARD", "min_liquidity_hard", 200.0),
+        ("MIN_POSITION_SIZE", "min_position_size", 25.0),
+        ("MIN_ABSOLUTE_PROFIT", "min_absolute_profit", 5.0),
+        ("MIN_ANNUALIZED_ROI", "min_annualized_roi", 10.0),
+        ("MAX_RESOLUTION_MONTHS", "max_resolution_months", 18),
+        ("MAX_PLAUSIBLE_ROI", "max_plausible_roi", 30.0),
+        ("MAX_TRADE_LEGS", "max_trade_legs", 8),
+        ("NEGRISK_MIN_TOTAL_YES", "negrisk_min_total_yes", 0.95),
+        ("NEGRISK_WARN_TOTAL_YES", "negrisk_warn_total_yes", 0.97),
+        ("NEGRISK_ELECTION_MIN_TOTAL_YES", "negrisk_election_min_total_yes", 0.97),
+        ("NEGRISK_MAX_RESOLUTION_SPREAD_DAYS", "negrisk_max_resolution_spread_days", 7),
+        ("SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION", "settlement_lag_max_days_to_resolution", 14),
+        ("SETTLEMENT_LAG_NEAR_ZERO", "settlement_lag_near_zero", 0.05),
+        ("SETTLEMENT_LAG_NEAR_ONE", "settlement_lag_near_one", 0.95),
+        ("SETTLEMENT_LAG_MIN_SUM_DEVIATION", "settlement_lag_min_sum_deviation", 0.03),
+        ("BTC_ETH_HF_PURE_ARB_MAX_COMBINED", "btc_eth_pure_arb_max_combined", 0.98),
+        ("BTC_ETH_HF_DUMP_THRESHOLD", "btc_eth_dump_hedge_drop_pct", 0.05),
+        ("BTC_ETH_HF_THIN_LIQUIDITY_USD", "btc_eth_thin_liquidity_usd", 500.0),
+        # Miracle strategy
+        ("MIRACLE_MIN_NO_PRICE", "miracle_min_no_price", 0.90),
+        ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.995),
+        ("MIRACLE_MIN_IMPOSSIBILITY_SCORE", "miracle_min_impossibility_score", 0.70),
+        # Risk scoring
+        ("RISK_VERY_SHORT_DAYS", "risk_very_short_days", 2),
+        ("RISK_SHORT_DAYS", "risk_short_days", 7),
+        ("RISK_LONG_LOCKUP_DAYS", "risk_long_lockup_days", 180),
+        ("RISK_EXTENDED_LOCKUP_DAYS", "risk_extended_lockup_days", 90),
+        ("RISK_LOW_LIQUIDITY", "risk_low_liquidity", 1000.0),
+        ("RISK_MODERATE_LIQUIDITY", "risk_moderate_liquidity", 5000.0),
+        ("RISK_COMPLEX_LEGS", "risk_complex_legs", 5),
+        ("RISK_MULTIPLE_LEGS", "risk_multiple_legs", 3),
+        # Scanner basics (already wired but also reloaded here for consistency)
+        ("SCAN_INTERVAL_SECONDS", "scan_interval_seconds", 60),
+        ("MIN_PROFIT_THRESHOLD", "min_profit_threshold", None),
+        ("MAX_MARKETS_TO_SCAN", "max_markets_to_scan", 500),
+        ("MIN_LIQUIDITY", "min_liquidity", 1000.0),
+    ]
+
+    for config_attr, db_attr, default in _apply:
+        db_val = getattr(db, db_attr, None)
+        if db_val is not None:
+            # min_profit_threshold is stored as percentage in DB, fraction in config
+            if db_attr == "min_profit_threshold":
+                db_val = db_val / 100.0
+            object.__setattr__(settings, config_attr, db_val)
+        elif default is not None:
+            object.__setattr__(settings, config_attr, default)

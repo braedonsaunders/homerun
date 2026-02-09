@@ -1136,6 +1136,44 @@ export interface TradingProxySettings {
   require_vpn: boolean
 }
 
+export interface SearchFilterSettings {
+  // Hard rejection filters
+  min_liquidity_hard: number
+  min_position_size: number
+  min_absolute_profit: number
+  min_annualized_roi: number
+  max_resolution_months: number
+  max_plausible_roi: number
+  max_trade_legs: number
+  // NegRisk
+  negrisk_min_total_yes: number
+  negrisk_warn_total_yes: number
+  negrisk_election_min_total_yes: number
+  negrisk_max_resolution_spread_days: number
+  // Settlement lag
+  settlement_lag_max_days_to_resolution: number
+  settlement_lag_near_zero: number
+  settlement_lag_near_one: number
+  settlement_lag_min_sum_deviation: number
+  // Risk scoring
+  risk_very_short_days: number
+  risk_short_days: number
+  risk_long_lockup_days: number
+  risk_extended_lockup_days: number
+  risk_low_liquidity: number
+  risk_moderate_liquidity: number
+  risk_complex_legs: number
+  risk_multiple_legs: number
+  // BTC/ETH high-frequency
+  btc_eth_pure_arb_max_combined: number
+  btc_eth_dump_hedge_drop_pct: number
+  btc_eth_thin_liquidity_usd: number
+  // Miracle strategy
+  miracle_min_no_price: number
+  miracle_max_no_price: number
+  miracle_min_impossibility_score: number
+}
+
 export interface AllSettings {
   polymarket: PolymarketSettings
   kalshi: KalshiSettings
@@ -1145,6 +1183,7 @@ export interface AllSettings {
   trading: TradingSettingsConfig
   maintenance: MaintenanceSettings
   trading_proxy: TradingProxySettings
+  search_filters: SearchFilterSettings
   updated_at: string | null
 }
 
@@ -1157,6 +1196,7 @@ export interface UpdateSettingsRequest {
   trading?: Partial<TradingSettingsConfig>
   maintenance?: Partial<MaintenanceSettings>
   trading_proxy?: Partial<TradingProxySettings>
+  search_filters?: Partial<SearchFilterSettings>
 }
 
 export const getSettings = async (): Promise<AllSettings> => {
