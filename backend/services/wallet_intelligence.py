@@ -160,7 +160,9 @@ class ConfluenceDetector:
             # Resolve market slug for Polymarket link
             market_slug = None
             try:
-                market_info = await polymarket_client.get_market_by_condition_id(market_id)
+                market_info = await polymarket_client.get_market_by_condition_id(
+                    market_id
+                )
                 if market_info:
                     market_slug = market_info.get("slug", None)
                     if not market_title and market_info.get("question"):
