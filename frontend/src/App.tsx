@@ -736,7 +736,7 @@ function App() {
                           ) : polymarketResults.length === 0 ? (
                             <div className="text-center py-12">
                               <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                              <p className="text-muted-foreground">No arbitrage opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
+                              <p className="text-muted-foreground">No opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
                               <p className="text-sm text-muted-foreground/70 mt-1">
                                 Try different keywords or broader search terms
                               </p>
@@ -897,13 +897,20 @@ function App() {
                               <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
                             </div>
                           ) : displayOpportunities.length === 0 ? (
-                            <div className="text-center py-12">
-                              <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                              <p className="text-muted-foreground">No arbitrage opportunities found</p>
-                              <p className="text-sm text-muted-foreground/70 mt-1">
-                                Try lowering the minimum profit threshold
-                              </p>
-                            </div>
+                            status?.enabled ? (
+                              <div className="flex flex-col items-center justify-center py-12">
+                                <RefreshCw className="w-10 h-10 animate-spin text-muted-foreground mb-4" />
+                                <p className="text-muted-foreground">Scanning for opportunities...</p>
+                              </div>
+                            ) : (
+                              <div className="text-center py-12">
+                                <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+                                <p className="text-muted-foreground">No opportunities found</p>
+                                <p className="text-sm text-muted-foreground/70 mt-1">
+                                  Try lowering the minimum profit threshold or start the scanner
+                                </p>
+                              </div>
+                            )
                           ) : (
                             <>
                               {oppsViewMode === 'terminal' ? (

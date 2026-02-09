@@ -720,7 +720,7 @@ export default function SettingsPanel() {
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
                                 <p className="text-sm">New Opportunities</p>
-                                <p className="text-xs text-muted-foreground">Alert when new arbitrage opportunities are found</p>
+                                <p className="text-xs text-muted-foreground">Alert when new opportunities are found</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_on_opportunity}
