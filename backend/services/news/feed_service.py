@@ -351,12 +351,11 @@ class NewsFeedService:
                             "{http://www.w3.org/2005/Atom}title", ""
                         ).strip()
                     )
-                    link = (
-                        item.findtext("link", "").strip()
-                        or (
-                            item.find("{http://www.w3.org/2005/Atom}link") or {}
-                        ).get("href", "")
-                    )
+                    link = item.findtext("link", "").strip()
+                    if not link:
+                        atom_link = item.find("{http://www.w3.org/2005/Atom}link")
+                        if atom_link is not None:
+                            link = atom_link.get("href", "")
                     pub_date = (
                         item.findtext("pubDate", "").strip()
                         or item.findtext(

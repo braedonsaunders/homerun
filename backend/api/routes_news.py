@@ -18,6 +18,91 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _build_market_infos_from_scanner():
+    """Build MarketInfo list from the scanner's full cached market universe.
+
+    Uses scanner._cached_markets (populated on every full scan) so that
+    news matching works even when no structural arbitrage opportunities
+    exist.  Falls back to scanner.get_opportunities() as a last resort.
+    """
+    from services.news.semantic_matcher import MarketInfo
+    from services import scanner as scanner_mod
+
+    scanner_inst = scanner_mod.scanner
+
+    # Primary source: the cached market universe from the last full scan.
+    # Each item is a models.market.Market instance (Pydantic).
+    cached_markets = getattr(scanner_inst, "_cached_markets", [])
+    cached_prices = getattr(scanner_inst, "_cached_prices", {})
+    cached_events = getattr(scanner_inst, "_cached_events", [])
+
+    if cached_markets:
+        # Build event_id -> Event lookup for category / title
+        event_by_market: dict[str, object] = {}
+        for ev in cached_events:
+            for m in ev.markets:
+                event_by_market[m.id] = ev
+
+        seen_ids: set[str] = set()
+        market_infos = []
+        for m in cached_markets:
+            if m.id in seen_ids:
+                continue
+            seen_ids.add(m.id)
+
+            # Derive yes/no prices from outcome_prices or cached live prices
+            yes_price = 0.5
+            no_price = 0.5
+            if m.outcome_prices and len(m.outcome_prices) >= 2:
+                yes_price = m.outcome_prices[0]
+                no_price = m.outcome_prices[1]
+            elif m.clob_token_ids:
+                for i, tid in enumerate(m.clob_token_ids):
+                    p = cached_prices.get(tid)
+                    if p is not None:
+                        if i == 0:
+                            yes_price = p
+                        else:
+                            no_price = p
+
+            ev = event_by_market.get(m.id)
+            market_infos.append(
+                MarketInfo(
+                    market_id=m.id,
+                    question=m.question,
+                    event_title=ev.title if ev else "",
+                    category=ev.category or "" if ev else "",
+                    yes_price=yes_price,
+                    no_price=no_price,
+                    liquidity=m.liquidity,
+                )
+            )
+        return market_infos
+
+    # Fallback: extract from current opportunity list
+    opps = scanner_inst.get_opportunities()
+    seen_ids: set[str] = set()
+    market_infos = []
+    for opp in opps:
+        for m in opp.markets:
+            mid = m.get("id", "")
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            market_infos.append(
+                MarketInfo(
+                    market_id=mid,
+                    question=m.get("question", ""),
+                    event_title=opp.event_title or "",
+                    category=opp.category or "",
+                    yes_price=m.get("yes_price", 0.5),
+                    no_price=m.get("no_price", 0.5),
+                    liquidity=m.get("liquidity", 0.0),
+                )
+            )
+    return market_infos
+
+
 # ======================================================================
 # News Feed
 # ======================================================================
@@ -135,8 +220,7 @@ async def run_matching(request: MatchRequest):
     against the scanner's current markets.
     """
     from services.news.feed_service import news_feed_service
-    from services.news.semantic_matcher import semantic_matcher, MarketInfo
-    from services import scanner
+    from services.news.semantic_matcher import semantic_matcher
 
     try:
         # Fetch if empty
@@ -147,27 +231,8 @@ async def run_matching(request: MatchRequest):
         if not articles:
             return {"matches": [], "message": "No articles available"}
 
-        # Build market index from scanner's opportunities
-        opps = scanner.get_opportunities()
-        seen_ids = set()
-        market_infos = []
-        for opp in opps:
-            for m in opp.markets:
-                mid = m.get("id", "")
-                if mid in seen_ids:
-                    continue
-                seen_ids.add(mid)
-                market_infos.append(
-                    MarketInfo(
-                        market_id=mid,
-                        question=m.get("question", ""),
-                        event_title=opp.event_title or "",
-                        category=opp.category or "",
-                        yes_price=m.get("yes_price", 0.5),
-                        no_price=m.get("no_price", 0.5),
-                        liquidity=m.get("liquidity", 0.0),
-                    )
-                )
+        # Build market index from the full active market universe
+        market_infos = _build_market_infos_from_scanner()
 
         if not market_infos:
             return {"matches": [], "message": "No markets available from scanner"}
@@ -227,9 +292,8 @@ async def detect_edges(request: EdgeDetectionRequest):
     and returns edges where model diverges from market.
     """
     from services.news.feed_service import news_feed_service
-    from services.news.semantic_matcher import semantic_matcher, MarketInfo
+    from services.news.semantic_matcher import semantic_matcher
     from services.news.edge_detector import edge_detector
-    from services import scanner
 
     try:
         # Fetch if empty
@@ -240,27 +304,8 @@ async def detect_edges(request: EdgeDetectionRequest):
         if not articles:
             return {"edges": [], "message": "No articles available"}
 
-        # Build market index
-        opps = scanner.get_opportunities()
-        seen_ids = set()
-        market_infos = []
-        for opp in opps:
-            for m in opp.markets:
-                mid = m.get("id", "")
-                if mid in seen_ids:
-                    continue
-                seen_ids.add(mid)
-                market_infos.append(
-                    MarketInfo(
-                        market_id=mid,
-                        question=m.get("question", ""),
-                        event_title=opp.event_title or "",
-                        category=opp.category or "",
-                        yes_price=m.get("yes_price", 0.5),
-                        no_price=m.get("no_price", 0.5),
-                        liquidity=m.get("liquidity", 0.0),
-                    )
-                )
+        # Build market index from the full active market universe
+        market_infos = _build_market_infos_from_scanner()
 
         if not market_infos:
             return {"edges": [], "message": "No markets available from scanner"}
