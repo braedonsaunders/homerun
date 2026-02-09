@@ -555,21 +555,35 @@ class OpportunityJudge:
                     round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
                 )
 
+                avg_overall = (
+                    round(float(avg_score), 4) if avg_score else 0.0
+                )
+
                 return {
                     "total_judgments": total_all,
+                    "total_judged": total_all,
                     "total_with_ml_comparison": total_with_ml,
                     "agreements": agreements,
                     "disagreements": disagreements,
-                    "agreement_rate": agreement_rate,
-                    "average_overall_score": round(float(avg_score), 4)
-                    if avg_score
-                    else None,
+                    "ml_overrides": disagreements,
+                    "agreement_rate": agreement_rate if agreement_rate is not None else 0.0,
+                    "average_overall_score": avg_overall,
+                    "avg_score": avg_overall,
                     "recommendation_distribution": recommendation_counts,
                 }
         except Exception as exc:
             logger.error("Failed to compute agreement stats", error=str(exc))
             return {
                 "total_judgments": 0,
+                "total_judged": 0,
+                "total_with_ml_comparison": 0,
+                "agreements": 0,
+                "disagreements": 0,
+                "ml_overrides": 0,
+                "agreement_rate": 0.0,
+                "average_overall_score": 0.0,
+                "avg_score": 0.0,
+                "recommendation_distribution": {},
                 "error": str(exc),
             }
 
