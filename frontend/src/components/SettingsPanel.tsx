@@ -19,6 +19,7 @@ import {
   DollarSign,
   Brain,
   Shield,
+  BarChart3,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -42,7 +43,7 @@ import {
   type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'maintenance'
+type SettingsSection = 'polymarket' | 'kalshi' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'maintenance'
 
 function SecretInput({
   label,
