@@ -2,7 +2,7 @@
 set -e
 
 echo "========================================="
-echo "  Polymarket Arbitrage Scanner Setup"
+echo "  Autonomous Prediction Market Trading Platform Setup"
 echo "========================================="
 echo ""
 

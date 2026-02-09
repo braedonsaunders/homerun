@@ -57,6 +57,43 @@ This deletes the old database. A fresh one will be created on startup.
 
 ---
 
+## Update on Windows
+
+```powershell
+# 1. Stop the running app (Ctrl+C if running)
+
+# 2. Pull latest code
+git pull origin main
+
+# 3. Re-run setup
+.\setup.ps1
+
+# 4. Launch the app
+.\run.ps1
+```
+
+Or manually:
+
+```powershell
+git pull origin main
+cd backend
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cd ..\frontend
+npm install
+```
+
+Then start both services again. See [WINDOWS.md](WINDOWS.md) for full Windows instructions.
+
+If you need to reset the database on Windows:
+
+```powershell
+Remove-Item data\arbitrage.db -ErrorAction SilentlyContinue
+Remove-Item backend\arbitrage.db -ErrorAction SilentlyContinue
+```
+
+---
+
 ## Update with Docker
 
 ```bash

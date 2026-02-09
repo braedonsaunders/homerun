@@ -1,6 +1,8 @@
+import hashlib
+
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -21,6 +23,14 @@ class StrategyType(str, Enum):
     BTC_ETH_HIGHFREQ = (
         "btc_eth_highfreq"  # High-frequency BTC/ETH 15min/1hr binary market arbitrage
     )
+    BAYESIAN_CASCADE = "bayesian_cascade"
+    LIQUIDITY_VACUUM = "liquidity_vacuum"
+    ENTROPY_ARB = "entropy_arb"
+    EVENT_DRIVEN = "event_driven"
+    TEMPORAL_DECAY = "temporal_decay"
+    CORRELATION_ARB = "correlation_arb"
+    MARKET_MAKING = "market_making"
+    STAT_ARB = "stat_arb"
 
 
 class MispricingType(str, Enum):
@@ -75,6 +85,7 @@ class ArbitrageOpportunity(BaseModel):
     fee: float
     net_profit: float
     roi_percent: float
+    is_guaranteed: bool = True  # True for structural arb, False for directional bets
 
     # Risk assessment
     risk_score: float = Field(ge=0.0, le=1.0, default=0.5)
@@ -92,7 +103,8 @@ class ArbitrageOpportunity(BaseModel):
     max_position_size: float = 0.0  # How much can be executed
 
     # Timing
-    detected_at: datetime = Field(default_factory=datetime.utcnow)
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_seen_at: Optional[datetime] = None  # Last scan that detected this opportunity
     resolution_date: Optional[datetime] = None
 
     # Mispricing classification (from article Part IV)
@@ -110,11 +122,18 @@ class ArbitrageOpportunity(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        market_ids = "_".join([m.get("id", "")[:8] for m in self.markets[:3]])
+        # Build a canonical fingerprint from ALL market IDs (sorted) to avoid
+        # collisions where different opportunities share the same stable_id.
+        all_market_ids = sorted(m.get("id", "") for m in self.markets)
+        market_fingerprint = "|".join(all_market_ids)
+        market_hash = hashlib.sha256(market_fingerprint.encode()).hexdigest()[:16]
+        strategy_name = self.strategy.value
         if not self.stable_id:
-            self.stable_id = f"{self.strategy.value}_{market_ids}"
+            self.stable_id = f"{strategy_name}_{market_hash}"
         if not self.id:
-            self.id = f"{self.strategy.value}_{market_ids}_{int(self.detected_at.timestamp())}"
+            self.id = (
+                f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
+            )
 
 
 class OpportunityFilter(BaseModel):

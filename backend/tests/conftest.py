@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, "/home/user/homerun/backend")
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 import json
 
@@ -219,7 +219,7 @@ def expired_opportunity():
         roi_percent=3.16,
         risk_score=0.5,
         markets=[{"id": "old1"}],
-        resolution_date=datetime.utcnow() - timedelta(days=1),
+        resolution_date=datetime.now(timezone.utc) - timedelta(days=1),
     )
 
 
@@ -238,7 +238,7 @@ def old_opportunity():
         roi_percent=3.16,
         risk_score=0.5,
         markets=[{"id": "old2"}],
-        detected_at=datetime.utcnow() - timedelta(hours=2),
+        detected_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
 
 

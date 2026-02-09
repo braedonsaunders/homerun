@@ -16,7 +16,7 @@ cat << 'EOF'
 |_| |_|\___/|_|  |_|_____|_| \_\\___/|_| \_|
 EOF
 echo -e "${NC}"
-echo -e "${CYAN}Polymarket Arbitrage Scanner${NC}"
+echo -e "${CYAN}Autonomous Prediction Market Trading Platform${NC}"
 echo ""
 
 # Check if setup was run

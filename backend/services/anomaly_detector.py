@@ -111,6 +111,23 @@ class AnomalyDetector:
         # Calculate basic stats (pass positions for unrealized PnL calculation)
         stats = self._calculate_trade_stats(trades, positions)
 
+        # Override win/loss stats with accurate closed-positions data when available.
+        # _calculate_trade_stats infers wins/losses by matching raw buys/sells per market,
+        # which is unreliable (market resolutions don't always appear as sells).
+        # calculate_win_rate_fast uses the pre-aggregated closed-positions endpoint
+        # with realizedPnl, which is the ground truth.
+        closed_pos_stats = await polymarket_client.calculate_win_rate_fast(
+            address, min_positions=1
+        )
+        if closed_pos_stats:
+            stats["wins"] = closed_pos_stats["wins"]
+            stats["losses"] = closed_pos_stats["losses"]
+            stats["closed_positions"] = closed_pos_stats["closed_positions"]
+            total_closed = closed_pos_stats["wins"] + closed_pos_stats["losses"]
+            stats["win_rate"] = (
+                closed_pos_stats["wins"] / total_closed if total_closed > 0 else 0
+            )
+
         # Detect anomalies
         anomalies = []
         anomalies.extend(self._detect_statistical_anomalies(trades, stats))
@@ -331,8 +348,15 @@ class AnomalyDetector:
         anomalies = []
 
         # 1. Impossible win rate
-        if stats["win_rate"] >= self.IMPOSSIBLE_WIN_RATE_THRESHOLD:
-            n = stats["total_trades"]
+        # Use closed_positions (actual evaluated markets) not total_trades (raw trade count)
+        closed_positions = stats.get(
+            "closed_positions", stats["wins"] + stats["losses"]
+        )
+        if (
+            stats["win_rate"] >= self.IMPOSSIBLE_WIN_RATE_THRESHOLD
+            and closed_positions >= 10
+        ):
+            n = closed_positions
             # Probability of 95%+ win rate by chance with fair trades
             # Using binomial distribution approximation
             expected_wins = n * 0.5
@@ -348,10 +372,10 @@ class AnomalyDetector:
                         if stats["win_rate"] > 0.98
                         else Severity.HIGH,
                         score=min(z_score / 10, 1.0),
-                        description=f"Win rate of {stats['win_rate'] * 100:.1f}% over {n} trades is statistically impossible",
+                        description=f"Win rate of {stats['win_rate'] * 100:.1f}% over {n} resolved markets is statistically impossible",
                         evidence={
                             "win_rate": stats["win_rate"],
-                            "total_trades": n,
+                            "closed_positions": n,
                             "z_score": z_score,
                             "probability": f"1 in {10 ** int(z_score):,}",
                         },
@@ -380,17 +404,18 @@ class AnomalyDetector:
                 )
 
         # 3. No losing trades
-        if stats["losses"] == 0 and stats["total_trades"] >= 20:
+        # Use closed_positions (resolved markets) not total_trades (raw individual transactions)
+        if stats["losses"] == 0 and closed_positions >= 20:
             anomalies.append(
                 Anomaly(
                     type=AnomalyType.STATISTICALLY_IMPOSSIBLE,
                     severity=Severity.CRITICAL,
                     score=1.0,
-                    description=f"Zero losses over {stats['total_trades']} trades is statistically impossible",
+                    description=f"Zero losses over {closed_positions} resolved markets is statistically impossible",
                     evidence={
                         "wins": stats["wins"],
                         "losses": 0,
-                        "total_trades": stats["total_trades"],
+                        "closed_positions": closed_positions,
                     },
                 )
             )

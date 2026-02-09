@@ -26,6 +26,7 @@ import uuid
 from config import settings
 from services.trading import trading_service, OrderStatus
 from services.scanner import scanner
+from services.pause_state import global_pause_state
 from services.depth_analyzer import depth_analyzer
 from services.token_circuit_breaker import token_circuit_breaker
 from services.execution_tiers import execution_tier_service
@@ -61,6 +62,15 @@ class AutoTraderConfig:
             StrategyType.MUST_HAPPEN,
             StrategyType.MIRACLE,
             StrategyType.SETTLEMENT_LAG,
+            StrategyType.CROSS_PLATFORM,
+            StrategyType.BAYESIAN_CASCADE,
+            StrategyType.LIQUIDITY_VACUUM,
+            StrategyType.ENTROPY_ARB,
+            StrategyType.EVENT_DRIVEN,
+            StrategyType.TEMPORAL_DECAY,
+            StrategyType.CORRELATION_ARB,
+            StrategyType.MARKET_MAKING,
+            StrategyType.STAT_ARB,
         ]
     )
 
@@ -164,6 +174,12 @@ class AutoTraderConfig:
     ai_judge_model: Optional[str] = (
         None  # LLM model override (None = default gpt-4o-mini)
     )
+
+    # LLM verification before trading: consult AI before executing trades
+    llm_verify_trades: bool = False  # When True, run LLM check before each trade
+    llm_verify_strategies: list[str] = field(
+        default_factory=list
+    )  # Strategy types to LLM-verify (empty = verify all if llm_verify_trades is True)
 
 
 @dataclass
@@ -722,6 +738,53 @@ class AutoTrader:
                         f"AI resolution clarity {clarity:.2f} below min {self.config.ai_min_resolution_clarity}",
                     )
 
+        # === LLM VERIFY BEFORE TRADING ===
+        # When enabled, consult the AI opportunity judge before executing.
+        # Can be scoped to specific strategy types via llm_verify_strategies.
+
+        if self.config.llm_verify_trades and self._is_ai_available():
+            # Check if this strategy should be LLM-verified
+            should_verify = (
+                not self.config.llm_verify_strategies
+                or opp.strategy.value in self.config.llm_verify_strategies
+            )
+
+            if should_verify:
+                judgment = await self._get_ai_judgment(opp)
+
+                if judgment:
+                    ai_rec = judgment.get("recommendation", "review")
+                    ai_score = judgment.get("overall_score", 0.5)
+
+                    # Block on strong_skip or skip recommendations
+                    if ai_rec in ("strong_skip", "skip"):
+                        logger.info(
+                            f"LLM verify blocked trade: recommendation={ai_rec}, "
+                            f"score={ai_score:.2f} for {opp.title[:50]}"
+                        )
+                        return (
+                            False,
+                            f"LLM verify: {ai_rec} (score={ai_score:.2f})",
+                        )
+
+                    # Block if score below minimum threshold
+                    if (
+                        self.config.ai_min_score_to_trade > 0
+                        and ai_score < self.config.ai_min_score_to_trade
+                    ):
+                        logger.info(
+                            f"LLM verify blocked trade: score {ai_score:.2f} < "
+                            f"min {self.config.ai_min_score_to_trade} for {opp.title[:50]}"
+                        )
+                        return (
+                            False,
+                            f"LLM verify: score {ai_score:.2f} below min {self.config.ai_min_score_to_trade}",
+                        )
+
+                    logger.info(
+                        f"LLM verify passed: {ai_rec} (score={ai_score:.2f}) for {opp.title[:50]}"
+                    )
+
         return True, "Opportunity meets criteria"
 
     def _calculate_position_size(self, opp: ArbitrageOpportunity) -> float:
@@ -1233,6 +1296,9 @@ class AutoTrader:
         if not self._running:
             return
 
+        if global_pause_state.is_paused:
+            return
+
         if self.config.mode == AutoTraderMode.DISABLED:
             return
 
@@ -1357,6 +1423,11 @@ class AutoTrader:
             "ai_score_boost_threshold": self.config.ai_score_boost_threshold,
             "ai_score_boost_multiplier": self.config.ai_score_boost_multiplier,
             "ai_judge_model": self.config.ai_judge_model,
+            # LLM verification before trading
+            "llm_verify_trades": self.config.llm_verify_trades,
+            "llm_verify_strategies": self.config.llm_verify_strategies,
+            # Scanner auto AI scoring (read from scanner singleton)
+            "auto_ai_scoring": scanner.auto_ai_scoring,
         }
 
     def get_trades(self, limit: int = 100) -> list[dict]:

@@ -160,6 +160,22 @@ class AutoTraderConfigRequest(BaseModel):
         description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')",
     )
 
+    # LLM verification before trading
+    llm_verify_trades: Optional[bool] = Field(
+        None,
+        description="When enabled, consult AI before executing each trade. Trades recommended as skip/strong_skip are blocked.",
+    )
+    llm_verify_strategies: Optional[list[str]] = Field(
+        None,
+        description="Strategy types to LLM-verify (empty list = verify all if llm_verify_trades is True)",
+    )
+
+    # Scanner auto AI scoring
+    auto_ai_scoring: Optional[bool] = Field(
+        None,
+        description="When enabled, the scanner automatically AI-scores all opportunities after each scan. Default is OFF.",
+    )
+
 
 class AutoTraderStatusResponse(BaseModel):
     mode: str
@@ -387,6 +403,19 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
 
     if config.ai_judge_model is not None:
         updates["ai_judge_model"] = config.ai_judge_model
+
+    # LLM verification before trading
+    if config.llm_verify_trades is not None:
+        updates["llm_verify_trades"] = config.llm_verify_trades
+
+    if config.llm_verify_strategies is not None:
+        updates["llm_verify_strategies"] = config.llm_verify_strategies
+
+    # Scanner auto AI scoring (applied to scanner singleton, not auto_trader config)
+    if config.auto_ai_scoring is not None:
+        from services.scanner import scanner
+
+        scanner.set_auto_ai_scoring(config.auto_ai_scoring)
 
     auto_trader.configure(**updates)
 

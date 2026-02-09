@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy
+from .base import BaseStrategy, make_aware
 
 
 class NegRiskStrategy(BaseStrategy):
@@ -125,6 +125,17 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
+        # --- Outcome-count-aware threshold ---
+        # Markets with very few listed outcomes are far more likely to be
+        # non-exhaustive (e.g., 4 named companies + "other" for an acquisition
+        # with dozens of potential acquirers).  Require higher total_yes for
+        # small outcome sets: <=5 outcomes need 0.98+, 6-8 need 0.97+.
+        num_outcomes = len(active_markets)
+        if num_outcomes <= 5 and total_yes < 0.98:
+            return None
+        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+            return None
+
         # --- Structural non-exhaustiveness checks ---
         is_election = self._is_election_market(event.title)
         is_open_ended = self._is_open_ended_event(event.title)
@@ -136,11 +147,31 @@ class NegRiskStrategy(BaseStrategy):
         if is_election and len(active_markets) <= 2:
             return None
 
+        # Election/primary markets almost ALWAYS have unlisted candidates.
+        # Require a much higher total YES (closer to 1.0) to accept these.
+        # A 3-7% gap in a primary market is the market pricing "Other/Field",
+        # not a mispricing we can exploit.
+        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
+            return None
+
         # Open-ended events (Nobel Prize, awards, "best X") where the outcome
         # universe is inherently unbounded — anyone/anything could win.
         # The listed outcomes can never be exhaustive.
         if is_open_ended:
             return None
+
+        # --- Resolution date mismatch detection ---
+        # All outcomes in a NegRisk bundle must resolve at the same time.
+        # If outcome A resolves June 30 but outcome B resolves Dec 31,
+        # there's a window where ALL outcomes can resolve NO (e.g., event
+        # happens between July-December). This makes the "arbitrage" a trap.
+        end_dates = [make_aware(m.end_date) for m in active_markets if m.end_date]
+        if len(end_dates) >= 2:
+            earliest = min(end_dates)
+            latest = max(end_dates)
+            spread_days = (latest - earliest).days
+            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+                return None
 
         opp = self.create_opportunity(
             title=f"NegRisk: {event.title[:50]}...",
@@ -194,6 +225,7 @@ class NegRiskStrategy(BaseStrategy):
         - "Nobel Peace Prize Winner 2026" (anyone in the world could win)
         - "Which company has the best AI model" (subjective + any company)
         - "Oscar Best Picture Winner" (nominees change)
+        - "Who will acquire Warner Bros" (any company could acquire)
         """
         title_lower = title.lower()
         open_ended_keywords = [
@@ -210,6 +242,23 @@ class NegRiskStrategy(BaseStrategy):
             "player of the year",
             "time person of the year",
             "pulitzer",
+            # M&A / acquisition markets — the universe of potential acquirers
+            # is inherently unbounded (any company could acquire the target).
+            "acquisition",
+            "acquire",
+            "merger",
+            "takeover",
+            "buyout",
+            "who will buy",
+            "who will purchase",
+            "who will close",
+            # "Next CEO/coach/leader" type markets
+            "next ceo",
+            "next coach",
+            "next head coach",
+            "next manager",
+            "next leader",
+            "who will replace",
         ]
         return any(kw in title_lower for kw in open_ended_keywords)
 
@@ -413,12 +462,30 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
+        # Outcome-count-aware threshold (same as NegRisk)
+        num_outcomes = len(exclusive_markets)
+        if num_outcomes <= 5 and total_yes < 0.98:
+            return None
+        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+            return None
+
         # Structural non-exhaustiveness checks (same as NegRisk)
         is_election = self._is_election_market(event.title)
         if is_election and len(exclusive_markets) <= 2:
             return None
+        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
+            return None
         if self._is_open_ended_event(event.title):
             return None
+
+        # Resolution date mismatch check (same as NegRisk)
+        end_dates = [make_aware(m.end_date) for m in exclusive_markets if m.end_date]
+        if len(end_dates) >= 2:
+            earliest = min(end_dates)
+            latest = max(end_dates)
+            spread_days = (latest - earliest).days
+            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+                return None
 
         opp = self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
