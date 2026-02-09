@@ -34,6 +34,8 @@ import {
   Copy,
   Globe,
   SlidersHorizontal,
+  LayoutGrid,
+  List,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -62,6 +64,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './comp
 
 // App components
 import OpportunityCard from './components/OpportunityCard'
+import OpportunityTable from './components/OpportunityTable'
+import OpportunityTerminal from './components/OpportunityTerminal'
 import TradeExecutionModal from './components/TradeExecutionModal'
 import WalletTracker from './components/WalletTracker'
 import SimulationPanel from './components/SimulationPanel'
@@ -119,6 +123,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
+  const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
   const [searchMode, setSearchMode] = useState<'current' | 'polymarket'>('current')
@@ -643,9 +648,9 @@ function App() {
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
               <div className="flex-1 overflow-y-auto section-enter">
-                <div className="max-w-6xl mx-auto px-6 py-5">
-                  {/* View Toggle */}
-                  <div className="flex items-center gap-2 mb-5">
+                <div className={cn("mx-auto px-6 py-5", oppsViewMode === 'terminal' ? 'max-w-[1600px]' : 'max-w-[1600px]')}>
+                  {/* View Toggle + View Mode */}
+                  <div className="flex items-center gap-2 mb-4">
                     <Button
                       variant="outline"
                       size="sm"
@@ -674,6 +679,35 @@ function App() {
                       <Activity className="w-3.5 h-3.5" />
                       Tracked Traders
                     </Button>
+
+                    {/* View Mode Switcher */}
+                    {opportunitiesView === 'arbitrage' && (
+                      <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
+                        {([
+                          { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
+                          { mode: 'list' as const, icon: List, label: 'List' },
+                          { mode: 'terminal' as const, icon: Terminal, label: 'Terminal' },
+                        ]).map(({ mode, icon: Icon, label }) => (
+                          <Tooltip key={mode} delayDuration={0}>
+                            <TooltipTrigger asChild>
+                              <button
+                                onClick={() => setOppsViewMode(mode)}
+                                className={cn(
+                                  "p-1.5 rounded-md transition-all",
+                                  oppsViewMode === mode
+                                    ? "bg-primary/20 text-primary shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                                )}
+                              >
+                                <Icon className="w-3.5 h-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs">{label}</TooltipContent>
+                          </Tooltip>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="ml-auto">
                       <Button
                         variant="outline"
@@ -753,16 +787,32 @@ function App() {
                                   {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
                                 </Badge>
                               </div>
-                              <div className="space-y-4 card-stagger">
-                                {polymarketResults.map((opp) => (
-                                  <OpportunityCard
-                                    key={opp.id}
-                                    opportunity={opp}
-                                    onExecute={setExecutingOpportunity}
-                                    onOpenCopilot={handleOpenCopilotForOpportunity}
-                                  />
-                                ))}
-                              </div>
+                              {oppsViewMode === 'terminal' ? (
+                                <OpportunityTerminal
+                                  opportunities={polymarketResults}
+                                  onExecute={setExecutingOpportunity}
+                                  onOpenCopilot={handleOpenCopilotForOpportunity}
+                                  isConnected={isConnected}
+                                  totalCount={polymarketTotal}
+                                />
+                              ) : oppsViewMode === 'list' ? (
+                                <OpportunityTable
+                                  opportunities={polymarketResults}
+                                  onExecute={setExecutingOpportunity}
+                                  onOpenCopilot={handleOpenCopilotForOpportunity}
+                                />
+                              ) : (
+                                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
+                                  {polymarketResults.map((opp) => (
+                                    <OpportunityCard
+                                      key={opp.id}
+                                      opportunity={opp}
+                                      onExecute={setExecutingOpportunity}
+                                      onOpenCopilot={handleOpenCopilotForOpportunity}
+                                    />
+                                  ))}
+                                </div>
+                              )}
                             </>
                           )}
                         </>
@@ -895,16 +945,32 @@ function App() {
                             </div>
                           ) : (
                             <>
-                              <div className="space-y-3 card-stagger">
-                                {displayOpportunities.map((opp) => (
-                                  <OpportunityCard
-                                    key={opp.stable_id || opp.id}
-                                    opportunity={opp}
-                                    onExecute={setExecutingOpportunity}
-                                    onOpenCopilot={handleOpenCopilotForOpportunity}
-                                  />
-                                ))}
-                              </div>
+                              {oppsViewMode === 'terminal' ? (
+                                <OpportunityTerminal
+                                  opportunities={displayOpportunities}
+                                  onExecute={setExecutingOpportunity}
+                                  onOpenCopilot={handleOpenCopilotForOpportunity}
+                                  isConnected={isConnected}
+                                  totalCount={totalOpportunities}
+                                />
+                              ) : oppsViewMode === 'list' ? (
+                                <OpportunityTable
+                                  opportunities={displayOpportunities}
+                                  onExecute={setExecutingOpportunity}
+                                  onOpenCopilot={handleOpenCopilotForOpportunity}
+                                />
+                              ) : (
+                                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
+                                  {displayOpportunities.map((opp) => (
+                                    <OpportunityCard
+                                      key={opp.stable_id || opp.id}
+                                      opportunity={opp}
+                                      onExecute={setExecutingOpportunity}
+                                      onOpenCopilot={handleOpenCopilotForOpportunity}
+                                    />
+                                  ))}
+                                </div>
+                              )}
 
                               {/* Pagination */}
                               <div className="mt-5">
