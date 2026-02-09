@@ -321,7 +321,7 @@ class ArbitrageScanner:
             # Attach existing AI judgments from the database
             await self._attach_ai_judgments(all_opportunities)
 
-            self._opportunities = all_opportunities
+            self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
@@ -340,13 +340,14 @@ class ArbitrageScanner:
                                 await self._ai_scoring_task
                             except (asyncio.CancelledError, Exception):
                                 pass
+                        # Score the full merged pool so retained opps get scored too
                         self._ai_scoring_task = asyncio.create_task(
-                            self._ai_score_opportunities(all_opportunities)
+                            self._ai_score_opportunities(self._opportunities)
                         )
                 except Exception:
                     pass  # AI scoring is non-critical
 
-            # Notify callbacks
+            # Notify callbacks (pass only newly detected opportunities)
             for callback in self._scan_callbacks:
                 try:
                     await callback(all_opportunities)
@@ -354,9 +355,11 @@ class ArbitrageScanner:
                     print(f"  Callback error: {e}")
 
             print(
-                f"[{datetime.utcnow().isoformat()}] Scan complete. {len(all_opportunities)} total opportunities"
+                f"[{datetime.utcnow().isoformat()}] Scan complete. "
+                f"{len(all_opportunities)} detected this scan, "
+                f"{len(self._opportunities)} total in pool"
             )
-            return all_opportunities
+            return self._opportunities
 
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
@@ -393,6 +396,71 @@ class ArbitrageScanner:
         if removed > 0:
             print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
         return deduped
+
+    def _merge_opportunities(
+        self, new_opportunities: list[ArbitrageOpportunity]
+    ) -> list[ArbitrageOpportunity]:
+        """Merge newly detected opportunities into the existing pool.
+
+        Instead of replacing all opportunities on each scan, this method:
+        - Adds newly discovered opportunities to the pool
+        - Updates existing opportunities (matched by stable_id) with fresh
+          market data while preserving original detection time and AI analysis
+        - Removes expired opportunities whose resolution date has passed
+        """
+        now = datetime.now(timezone.utc)
+
+        # Index existing opportunities by stable_id
+        existing_map: dict[str, ArbitrageOpportunity] = {
+            opp.stable_id: opp for opp in self._opportunities
+        }
+
+        new_count = 0
+        updated_count = 0
+
+        for new_opp in new_opportunities:
+            new_opp.last_seen_at = now
+            existing = existing_map.get(new_opp.stable_id)
+            if existing:
+                # Preserve original detection time and ID
+                new_opp.detected_at = existing.detected_at
+                new_opp.id = existing.id
+                # Preserve AI analysis if not freshly attached from DB
+                if existing.ai_analysis and not new_opp.ai_analysis:
+                    new_opp.ai_analysis = existing.ai_analysis
+                updated_count += 1
+            else:
+                new_count += 1
+            existing_map[new_opp.stable_id] = new_opp
+
+        # Remove expired opportunities (resolution date has passed)
+        merged = [
+            opp
+            for opp in existing_map.values()
+            if opp.resolution_date is None or _make_aware(opp.resolution_date) > now
+        ]
+
+        expired_count = len(existing_map) - len(merged)
+
+        # Sort by ROI
+        merged.sort(key=lambda x: x.roi_percent, reverse=True)
+
+        retained = len(merged) - new_count - updated_count
+        if retained < 0:
+            retained = 0
+        parts = []
+        if new_count:
+            parts.append(f"{new_count} new")
+        if updated_count:
+            parts.append(f"{updated_count} updated")
+        if retained:
+            parts.append(f"{retained} retained from prior scans")
+        if expired_count:
+            parts.append(f"{expired_count} expired removed")
+        if parts:
+            print(f"  Merge: {', '.join(parts)} → {len(merged)} total")
+
+        return merged
 
     # Maximum number of opportunities to score per scan cycle
     AI_SCORE_MAX_PER_SCAN = 50
