@@ -293,6 +293,124 @@ class SearchFilterSettings(BaseModel):
         description="Min confidence event is impossible (0-1)",
     )
 
+    # BTC/ETH high-frequency enable
+    btc_eth_hf_enabled: bool = Field(
+        default=True, description="Enable BTC/ETH high-frequency strategy"
+    )
+
+    # Cross-platform arbitrage
+    cross_platform_enabled: bool = Field(
+        default=True, description="Enable cross-platform (Polymarket vs Kalshi) arbitrage"
+    )
+
+    # Combinatorial arbitrage
+    combinatorial_min_confidence: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description="Min LLM confidence for combinatorial trades",
+    )
+    combinatorial_high_confidence: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+        description="High confidence threshold for combinatorial",
+    )
+
+    # Bayesian cascade
+    bayesian_cascade_enabled: bool = Field(
+        default=True, description="Enable Bayesian cascade strategy"
+    )
+    bayesian_min_edge_percent: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=100.0,
+        description="Min expected-vs-actual price diff to flag (%)",
+    )
+    bayesian_propagation_depth: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Max hops through the dependency graph",
+    )
+
+    # Liquidity vacuum
+    liquidity_vacuum_enabled: bool = Field(
+        default=True, description="Enable liquidity vacuum strategy"
+    )
+    liquidity_vacuum_min_imbalance_ratio: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=100.0,
+        description="Min bid/ask imbalance ratio to trigger",
+    )
+    liquidity_vacuum_min_depth_usd: float = Field(
+        default=100.0, ge=0, description="Min order book depth ($)"
+    )
+
+    # Entropy arbitrage
+    entropy_arb_enabled: bool = Field(
+        default=True, description="Enable entropy arbitrage strategy"
+    )
+    entropy_arb_min_deviation: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=2.0,
+        description="Min entropy deviation from expected decay",
+    )
+
+    # Event-driven arbitrage
+    event_driven_enabled: bool = Field(
+        default=True, description="Enable event-driven arbitrage strategy"
+    )
+
+    # Temporal decay
+    temporal_decay_enabled: bool = Field(
+        default=True, description="Enable temporal decay strategy"
+    )
+
+    # Correlation arbitrage
+    correlation_arb_enabled: bool = Field(
+        default=True, description="Enable correlation arbitrage strategy"
+    )
+    correlation_arb_min_correlation: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Min correlation coefficient for pair detection",
+    )
+    correlation_arb_min_divergence: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description="Min price divergence to trigger trade",
+    )
+
+    # Market making
+    market_making_enabled: bool = Field(
+        default=True, description="Enable market making strategy"
+    )
+    market_making_spread_bps: float = Field(
+        default=100.0,
+        ge=10.0,
+        le=1000.0,
+        description="Min bid-ask spread in basis points",
+    )
+    market_making_max_inventory_usd: float = Field(
+        default=500.0, ge=0, description="Max inventory per market ($)"
+    )
+
+    # Statistical arbitrage
+    stat_arb_enabled: bool = Field(
+        default=True, description="Enable statistical arbitrage strategy"
+    )
+    stat_arb_min_edge: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description="Min composite fair-value edge to trade",
+    )
+
 
 class AllSettings(BaseModel):
     """Complete settings response"""
@@ -512,6 +630,72 @@ async def get_settings():
                 miracle_min_impossibility_score=settings.miracle_min_impossibility_score
                 if settings.miracle_min_impossibility_score is not None
                 else 0.70,
+                btc_eth_hf_enabled=settings.btc_eth_hf_enabled
+                if settings.btc_eth_hf_enabled is not None
+                else True,
+                cross_platform_enabled=settings.cross_platform_enabled
+                if settings.cross_platform_enabled is not None
+                else True,
+                combinatorial_min_confidence=settings.combinatorial_min_confidence
+                if settings.combinatorial_min_confidence is not None
+                else 0.75,
+                combinatorial_high_confidence=settings.combinatorial_high_confidence
+                if settings.combinatorial_high_confidence is not None
+                else 0.90,
+                bayesian_cascade_enabled=settings.bayesian_cascade_enabled
+                if settings.bayesian_cascade_enabled is not None
+                else True,
+                bayesian_min_edge_percent=settings.bayesian_min_edge_percent
+                if settings.bayesian_min_edge_percent is not None
+                else 5.0,
+                bayesian_propagation_depth=settings.bayesian_propagation_depth
+                if settings.bayesian_propagation_depth is not None
+                else 3,
+                liquidity_vacuum_enabled=settings.liquidity_vacuum_enabled
+                if settings.liquidity_vacuum_enabled is not None
+                else True,
+                liquidity_vacuum_min_imbalance_ratio=settings.liquidity_vacuum_min_imbalance_ratio
+                if settings.liquidity_vacuum_min_imbalance_ratio is not None
+                else 5.0,
+                liquidity_vacuum_min_depth_usd=settings.liquidity_vacuum_min_depth_usd
+                if settings.liquidity_vacuum_min_depth_usd is not None
+                else 100.0,
+                entropy_arb_enabled=settings.entropy_arb_enabled
+                if settings.entropy_arb_enabled is not None
+                else True,
+                entropy_arb_min_deviation=settings.entropy_arb_min_deviation
+                if settings.entropy_arb_min_deviation is not None
+                else 0.25,
+                event_driven_enabled=settings.event_driven_enabled
+                if settings.event_driven_enabled is not None
+                else True,
+                temporal_decay_enabled=settings.temporal_decay_enabled
+                if settings.temporal_decay_enabled is not None
+                else True,
+                correlation_arb_enabled=settings.correlation_arb_enabled
+                if settings.correlation_arb_enabled is not None
+                else True,
+                correlation_arb_min_correlation=settings.correlation_arb_min_correlation
+                if settings.correlation_arb_min_correlation is not None
+                else 0.7,
+                correlation_arb_min_divergence=settings.correlation_arb_min_divergence
+                if settings.correlation_arb_min_divergence is not None
+                else 0.05,
+                market_making_enabled=settings.market_making_enabled
+                if settings.market_making_enabled is not None
+                else True,
+                market_making_spread_bps=settings.market_making_spread_bps
+                if settings.market_making_spread_bps is not None
+                else 100.0,
+                market_making_max_inventory_usd=settings.market_making_max_inventory_usd
+                if settings.market_making_max_inventory_usd is not None
+                else 500.0,
+                stat_arb_enabled=settings.stat_arb_enabled
+                if settings.stat_arb_enabled is not None
+                else True,
+                stat_arb_min_edge=settings.stat_arb_min_edge
+                if settings.stat_arb_min_edge is not None
+                else 0.05,
             ),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
@@ -662,6 +846,38 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings.miracle_min_impossibility_score = (
                     sf.miracle_min_impossibility_score
                 )
+                settings.btc_eth_hf_enabled = sf.btc_eth_hf_enabled
+                settings.cross_platform_enabled = sf.cross_platform_enabled
+                settings.combinatorial_min_confidence = sf.combinatorial_min_confidence
+                settings.combinatorial_high_confidence = sf.combinatorial_high_confidence
+                settings.bayesian_cascade_enabled = sf.bayesian_cascade_enabled
+                settings.bayesian_min_edge_percent = sf.bayesian_min_edge_percent
+                settings.bayesian_propagation_depth = sf.bayesian_propagation_depth
+                settings.liquidity_vacuum_enabled = sf.liquidity_vacuum_enabled
+                settings.liquidity_vacuum_min_imbalance_ratio = (
+                    sf.liquidity_vacuum_min_imbalance_ratio
+                )
+                settings.liquidity_vacuum_min_depth_usd = (
+                    sf.liquidity_vacuum_min_depth_usd
+                )
+                settings.entropy_arb_enabled = sf.entropy_arb_enabled
+                settings.entropy_arb_min_deviation = sf.entropy_arb_min_deviation
+                settings.event_driven_enabled = sf.event_driven_enabled
+                settings.temporal_decay_enabled = sf.temporal_decay_enabled
+                settings.correlation_arb_enabled = sf.correlation_arb_enabled
+                settings.correlation_arb_min_correlation = (
+                    sf.correlation_arb_min_correlation
+                )
+                settings.correlation_arb_min_divergence = (
+                    sf.correlation_arb_min_divergence
+                )
+                settings.market_making_enabled = sf.market_making_enabled
+                settings.market_making_spread_bps = sf.market_making_spread_bps
+                settings.market_making_max_inventory_usd = (
+                    sf.market_making_max_inventory_usd
+                )
+                settings.stat_arb_enabled = sf.stat_arb_enabled
+                settings.stat_arb_min_edge = sf.stat_arb_min_edge
 
             # Update Trading Proxy settings
             if request.trading_proxy:
@@ -983,6 +1199,72 @@ async def get_search_filter_settings():
         miracle_min_impossibility_score=settings.miracle_min_impossibility_score
         if settings.miracle_min_impossibility_score is not None
         else 0.70,
+        btc_eth_hf_enabled=settings.btc_eth_hf_enabled
+        if settings.btc_eth_hf_enabled is not None
+        else True,
+        cross_platform_enabled=settings.cross_platform_enabled
+        if settings.cross_platform_enabled is not None
+        else True,
+        combinatorial_min_confidence=settings.combinatorial_min_confidence
+        if settings.combinatorial_min_confidence is not None
+        else 0.75,
+        combinatorial_high_confidence=settings.combinatorial_high_confidence
+        if settings.combinatorial_high_confidence is not None
+        else 0.90,
+        bayesian_cascade_enabled=settings.bayesian_cascade_enabled
+        if settings.bayesian_cascade_enabled is not None
+        else True,
+        bayesian_min_edge_percent=settings.bayesian_min_edge_percent
+        if settings.bayesian_min_edge_percent is not None
+        else 5.0,
+        bayesian_propagation_depth=settings.bayesian_propagation_depth
+        if settings.bayesian_propagation_depth is not None
+        else 3,
+        liquidity_vacuum_enabled=settings.liquidity_vacuum_enabled
+        if settings.liquidity_vacuum_enabled is not None
+        else True,
+        liquidity_vacuum_min_imbalance_ratio=settings.liquidity_vacuum_min_imbalance_ratio
+        if settings.liquidity_vacuum_min_imbalance_ratio is not None
+        else 5.0,
+        liquidity_vacuum_min_depth_usd=settings.liquidity_vacuum_min_depth_usd
+        if settings.liquidity_vacuum_min_depth_usd is not None
+        else 100.0,
+        entropy_arb_enabled=settings.entropy_arb_enabled
+        if settings.entropy_arb_enabled is not None
+        else True,
+        entropy_arb_min_deviation=settings.entropy_arb_min_deviation
+        if settings.entropy_arb_min_deviation is not None
+        else 0.25,
+        event_driven_enabled=settings.event_driven_enabled
+        if settings.event_driven_enabled is not None
+        else True,
+        temporal_decay_enabled=settings.temporal_decay_enabled
+        if settings.temporal_decay_enabled is not None
+        else True,
+        correlation_arb_enabled=settings.correlation_arb_enabled
+        if settings.correlation_arb_enabled is not None
+        else True,
+        correlation_arb_min_correlation=settings.correlation_arb_min_correlation
+        if settings.correlation_arb_min_correlation is not None
+        else 0.7,
+        correlation_arb_min_divergence=settings.correlation_arb_min_divergence
+        if settings.correlation_arb_min_divergence is not None
+        else 0.05,
+        market_making_enabled=settings.market_making_enabled
+        if settings.market_making_enabled is not None
+        else True,
+        market_making_spread_bps=settings.market_making_spread_bps
+        if settings.market_making_spread_bps is not None
+        else 100.0,
+        market_making_max_inventory_usd=settings.market_making_max_inventory_usd
+        if settings.market_making_max_inventory_usd is not None
+        else 500.0,
+        stat_arb_enabled=settings.stat_arb_enabled
+        if settings.stat_arb_enabled is not None
+        else True,
+        stat_arb_min_edge=settings.stat_arb_min_edge
+        if settings.stat_arb_min_edge is not None
+        else 0.05,
     )
 
 

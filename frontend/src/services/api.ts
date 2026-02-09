@@ -1168,6 +1168,7 @@ export interface SearchFilterSettings {
   risk_complex_legs: number
   risk_multiple_legs: number
   // BTC/ETH high-frequency
+  btc_eth_hf_enabled: boolean
   btc_eth_pure_arb_max_combined: number
   btc_eth_dump_hedge_drop_pct: number
   btc_eth_thin_liquidity_usd: number
@@ -1175,6 +1176,37 @@ export interface SearchFilterSettings {
   miracle_min_no_price: number
   miracle_max_no_price: number
   miracle_min_impossibility_score: number
+  // Cross-platform
+  cross_platform_enabled: boolean
+  // Combinatorial
+  combinatorial_min_confidence: number
+  combinatorial_high_confidence: number
+  // Bayesian cascade
+  bayesian_cascade_enabled: boolean
+  bayesian_min_edge_percent: number
+  bayesian_propagation_depth: number
+  // Liquidity vacuum
+  liquidity_vacuum_enabled: boolean
+  liquidity_vacuum_min_imbalance_ratio: number
+  liquidity_vacuum_min_depth_usd: number
+  // Entropy arb
+  entropy_arb_enabled: boolean
+  entropy_arb_min_deviation: number
+  // Event-driven
+  event_driven_enabled: boolean
+  // Temporal decay
+  temporal_decay_enabled: boolean
+  // Correlation arb
+  correlation_arb_enabled: boolean
+  correlation_arb_min_correlation: number
+  correlation_arb_min_divergence: number
+  // Market making
+  market_making_enabled: boolean
+  market_making_spread_bps: number
+  market_making_max_inventory_usd: number
+  // Statistical arb
+  stat_arb_enabled: boolean
+  stat_arb_min_edge: number
 }
 
 export interface AllSettings {
