@@ -1,8 +1,9 @@
 import { atom } from 'jotai'
+import { atomWithStorage } from 'jotai/utils'
 
 // Theme
 export type Theme = 'dark' | 'light'
-export const themeAtom = atom<Theme>('dark')
+export const themeAtom = atomWithStorage<Theme>('theme', 'dark')
 
 // Derive theme class for applying to body
 export const themeClassAtom = atom((get) => {
