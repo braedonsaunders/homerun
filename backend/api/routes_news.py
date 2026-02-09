@@ -481,7 +481,9 @@ async def forecast_market_by_id(request: CommitteeMarketRequest):
                                 f"Relevance: {match.similarity:.2f})"
                             )
                             if match.article.summary:
-                                parts.append(f"  Summary: {match.article.summary[:200]}")
+                                parts.append(
+                                    f"  Summary: {match.article.summary[:200]}"
+                                )
                         news_context = "\n".join(parts)
             except Exception as e:
                 logger.debug("News gathering for committee failed: %s", e)

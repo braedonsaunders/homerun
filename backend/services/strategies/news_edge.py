@@ -209,17 +209,13 @@ class NewsEdgeStrategy(BaseStrategy):
             side = "YES"
             entry_price = mi.yes_price
             target_price = edge.model_probability
-            token_id = (
-                market.clob_token_ids[0] if market.clob_token_ids else None
-            )
+            token_id = market.clob_token_ids[0] if market.clob_token_ids else None
         else:
             side = "NO"
             entry_price = mi.no_price
             target_price = 1.0 - edge.model_probability
             token_id = (
-                market.clob_token_ids[1]
-                if len(market.clob_token_ids) > 1
-                else None
+                market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
             )
 
         # Profit calculation: if we buy at entry_price and the true probability

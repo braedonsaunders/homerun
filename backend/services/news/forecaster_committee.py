@@ -59,9 +59,7 @@ class CommitteeResult:
     agent_estimates: list[AgentEstimate] = field(default_factory=list)
     aggregation_method: str = "weighted_median_extremized"
     news_context: str = ""
-    analyzed_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    analyzed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
         return {
@@ -268,12 +266,8 @@ class ForecasterCommittee:
         )
 
         # Run Outside View and Inside View in parallel
-        outside_task = asyncio.create_task(
-            self._run_outside_view(context, model)
-        )
-        inside_task = asyncio.create_task(
-            self._run_inside_view(context, model)
-        )
+        outside_task = asyncio.create_task(self._run_outside_view(context, model))
+        inside_task = asyncio.create_task(self._run_inside_view(context, model))
 
         outside_estimate, inside_estimate = await asyncio.gather(
             outside_task, inside_task
@@ -417,9 +411,7 @@ class ForecasterCommittee:
     # Aggregation
     # ------------------------------------------------------------------
 
-    def _aggregate(
-        self, estimates: list[AgentEstimate]
-    ) -> tuple[float, float]:
+    def _aggregate(self, estimates: list[AgentEstimate]) -> tuple[float, float]:
         """Aggregate multiple agent estimates into a final probability.
 
         Uses weighted median (weighted by confidence) with extremization.

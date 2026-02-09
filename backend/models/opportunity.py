@@ -23,7 +23,9 @@ class StrategyType(str, Enum):
     BTC_ETH_HIGHFREQ = (
         "btc_eth_highfreq"  # High-frequency BTC/ETH 15min/1hr binary market arbitrage
     )
-    NEWS_EDGE = "news_edge"  # News-driven informational edge via LLM probability estimation
+    NEWS_EDGE = (
+        "news_edge"  # News-driven informational edge via LLM probability estimation
+    )
     BAYESIAN_CASCADE = "bayesian_cascade"
     LIQUIDITY_VACUUM = "liquidity_vacuum"
     ENTROPY_ARB = "entropy_arb"
