@@ -43,13 +43,20 @@ class KalshiClient:
         self._auth_member_id: Optional[str] = None
         self._api_key: Optional[str] = None
 
-        # Simple token-bucket rate limiter: 5 requests / second
-        # (conservative to avoid Kalshi 429 responses)
-        self._rate_limit: float = 5.0  # requests per second
-        self._token_bucket: float = 5.0
-        self._bucket_capacity: float = 5.0
-        self._last_refill: float = time.monotonic()
-        self._rate_lock: asyncio.Lock = asyncio.Lock()
+        # Token-bucket rate limiters aligned with Kalshi Basic tier
+        # (20 reads/s, 10 writes/s).  We use 10 reads/s with capacity 20
+        # to stay safely below the ceiling while still allowing bursts.
+        self._read_rate: float = 10.0  # sustained reads per second
+        self._read_bucket: float = 20.0
+        self._read_capacity: float = 20.0
+        self._read_last_refill: float = time.monotonic()
+        self._read_lock: asyncio.Lock = asyncio.Lock()
+
+        self._write_rate: float = 5.0  # sustained writes per second
+        self._write_bucket: float = 10.0
+        self._write_capacity: float = 10.0
+        self._write_last_refill: float = time.monotonic()
+        self._write_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     #  HTTP helpers
@@ -89,25 +96,43 @@ class KalshiClient:
         if self._trading_client and not self._trading_client.is_closed:
             await self._trading_client.aclose()
 
-    async def _rate_limit_wait(self):
-        """Block until a request token is available (10 req/s bucket)."""
-        async with self._rate_lock:
-            now = time.monotonic()
-            elapsed = now - self._last_refill
-            self._token_bucket = min(
-                self._bucket_capacity,
-                self._token_bucket + elapsed * self._rate_limit,
-            )
-            self._last_refill = now
+    async def _rate_limit_wait(self, write: bool = False):
+        """Block until a request token is available.
 
-            if self._token_bucket < 1.0:
-                wait = (1.0 - self._token_bucket) / self._rate_limit
-                logger.debug("Kalshi rate-limit wait", wait_seconds=wait)
+        Uses separate read (10 req/s) and write (5 req/s) buckets to match
+        Kalshi's per-category limits.
+        """
+        if write:
+            lock, attr = self._write_lock, "write"
+        else:
+            lock, attr = self._read_lock, "read"
+
+        async with lock:
+            bucket = getattr(self, f"_{attr}_bucket")
+            capacity = getattr(self, f"_{attr}_capacity")
+            rate = getattr(self, f"_{attr}_rate")
+            last = getattr(self, f"_{attr}_last_refill")
+
+            now = time.monotonic()
+            elapsed = now - last
+            bucket = min(capacity, bucket + elapsed * rate)
+            setattr(self, f"_{attr}_last_refill", now)
+
+            if bucket < 1.0:
+                wait = (1.0 - bucket) / rate
+                logger.debug("Kalshi rate-limit wait", kind=attr, wait_seconds=wait)
                 await asyncio.sleep(wait)
-                self._token_bucket = 0.0
-                self._last_refill = time.monotonic()
+                bucket = 0.0
+                setattr(self, f"_{attr}_last_refill", time.monotonic())
             else:
-                self._token_bucket -= 1.0
+                bucket -= 1.0
+
+            setattr(self, f"_{attr}_bucket", bucket)
+
+    def _drain_read_bucket(self):
+        """Drain the read bucket after a 429 to prevent burst retries."""
+        self._read_bucket = 0.0
+        self._read_last_refill = time.monotonic()
 
     def _auth_headers(self) -> dict:
         """Return authorization headers if authenticated."""
@@ -120,6 +145,8 @@ class KalshiClient:
 
     async def _get(self, path: str, params: Optional[dict] = None) -> dict:
         """Perform a rate-limited GET request with 429 retry and return the JSON body."""
+        import random
+
         max_retries = 4
         for attempt in range(max_retries + 1):
             await self._rate_limit_wait()
@@ -129,12 +156,20 @@ class KalshiClient:
                 url, params=params, headers=self._auth_headers()
             )
             if response.status_code == 429 and attempt < max_retries:
-                backoff = 2**attempt  # 1s, 2s, 4s, 8s
+                # Drain bucket so other concurrent requests also pause
+                self._drain_read_bucket()
+                backoff = 2**attempt * (0.5 + random.random())  # jittered
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        backoff = max(backoff, float(retry_after))
+                    except ValueError:
+                        pass
                 logger.warning(
                     "Kalshi 429 rate limited, retrying",
                     path=path,
                     attempt=attempt + 1,
-                    backoff_seconds=backoff,
+                    backoff_seconds=round(backoff, 2),
                 )
                 await asyncio.sleep(backoff)
                 continue
@@ -145,13 +180,37 @@ class KalshiClient:
         return response.json()
 
     async def _post(self, path: str, json_body: Optional[dict] = None) -> dict:
-        """Perform a rate-limited POST request and return the JSON body."""
-        await self._rate_limit_wait()
-        client = await self._get_client()
-        url = f"{self.base_url}{path}"
-        response = await client.post(
-            url, json=json_body or {}, headers=self._auth_headers()
-        )
+        """Perform a rate-limited POST request with 429 retry and return the JSON body."""
+        import random
+
+        max_retries = 4
+        for attempt in range(max_retries + 1):
+            await self._rate_limit_wait(write=True)
+            client = await self._get_client()
+            url = f"{self.base_url}{path}"
+            response = await client.post(
+                url, json=json_body or {}, headers=self._auth_headers()
+            )
+            if response.status_code == 429 and attempt < max_retries:
+                self._write_bucket = 0.0
+                self._write_last_refill = time.monotonic()
+                backoff = 2**attempt * (0.5 + random.random())
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        backoff = max(backoff, float(retry_after))
+                    except ValueError:
+                        pass
+                logger.warning(
+                    "Kalshi 429 on POST, retrying",
+                    path=path,
+                    attempt=attempt + 1,
+                    backoff_seconds=round(backoff, 2),
+                )
+                await asyncio.sleep(backoff)
+                continue
+            response.raise_for_status()
+            return response.json()
         response.raise_for_status()
         return response.json()
 
@@ -547,7 +606,7 @@ class KalshiClient:
         Returns True if login succeeded, False otherwise.
         """
         try:
-            await self._rate_limit_wait()
+            await self._rate_limit_wait(write=True)
             client = await self._get_client()
             url = f"{self.base_url}/login"
             response = await client.post(
