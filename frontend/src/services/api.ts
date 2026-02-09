@@ -62,6 +62,7 @@ export interface Market {
   yes_price: number
   no_price: number
   liquidity: number
+  platform?: string  // "polymarket" | "kalshi"
 }
 
 export interface Position {
@@ -70,6 +71,9 @@ export interface Position {
   market: string
   price: number
   token_id?: string
+  platform?: string  // "polymarket" | "kalshi"
+  ticker?: string    // Kalshi market ticker
+  market_id?: string
 }
 
 export interface ScannerStatus {
@@ -1077,6 +1081,12 @@ export interface PolymarketSettings {
   private_key: string | null
 }
 
+export interface KalshiSettings {
+  email: string | null
+  password: string | null
+  api_key: string | null
+}
+
 export interface LLMSettings {
   provider: string
   openai_api_key: string | null
@@ -1120,6 +1130,7 @@ export interface MaintenanceSettings {
 
 export interface AllSettings {
   polymarket: PolymarketSettings
+  kalshi: KalshiSettings
   llm: LLMSettings
   notifications: NotificationSettings
   scanner: ScannerSettings
@@ -1130,6 +1141,7 @@ export interface AllSettings {
 
 export interface UpdateSettingsRequest {
   polymarket?: Partial<PolymarketSettings>
+  kalshi?: Partial<KalshiSettings>
   llm?: Partial<LLMSettings>
   notifications?: Partial<NotificationSettings>
   scanner?: Partial<ScannerSettings>
@@ -1291,6 +1303,69 @@ export const sendAIChat = async (params: {
   history?: AIChatMessage[]
 }): Promise<AIChatResponse> => {
   const { data } = await api.post('/ai/chat', params)
+  return data
+}
+
+// ==================== KALSHI ACCOUNT ====================
+
+export interface KalshiAccountStatus {
+  platform: string
+  authenticated: boolean
+  member_id: string | null
+  email: string | null
+  balance: {
+    balance: number
+    payout: number
+    available: number
+    reserved: number
+    currency: string
+  } | null
+  positions_count: number
+}
+
+export interface KalshiPosition {
+  token_id: string
+  market_id: string
+  market_question: string
+  outcome: string
+  size: number
+  average_cost: number
+  current_price: number
+  unrealized_pnl: number
+  platform: string
+}
+
+export const getKalshiStatus = async (): Promise<KalshiAccountStatus> => {
+  const { data } = await api.get('/kalshi/status')
+  return data
+}
+
+export const loginKalshi = async (params: {
+  email?: string
+  password?: string
+  api_key?: string
+}): Promise<{ status: string; message: string; authenticated: boolean; member_id?: string }> => {
+  const { data } = await api.post('/kalshi/login', params)
+  return data
+}
+
+export const logoutKalshi = async (): Promise<{ status: string; message: string }> => {
+  const { data } = await api.post('/kalshi/logout')
+  return data
+}
+
+export const getKalshiBalance = async (): Promise<{ balance: number; available: number; reserved: number; currency: string }> => {
+  const { data } = await api.get('/kalshi/balance')
+  return data
+}
+
+export const getKalshiPositions = async (): Promise<KalshiPosition[]> => {
+  const { data } = await api.get('/kalshi/positions')
+  return data
+}
+
+export const updateKalshiSettings = async (settings: Partial<KalshiSettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/kalshi', settings)
   return data
 }
 

@@ -33,6 +33,14 @@ class PolymarketSettings(BaseModel):
     )
 
 
+class KalshiSettings(BaseModel):
+    """Kalshi API credentials"""
+
+    email: Optional[str] = Field(default=None, description="Kalshi account email")
+    password: Optional[str] = Field(default=None, description="Kalshi account password")
+    api_key: Optional[str] = Field(default=None, description="Kalshi API key")
+
+
 class LLMSettings(BaseModel):
     """LLM service configuration"""
 
@@ -131,6 +139,7 @@ class AllSettings(BaseModel):
     """Complete settings response"""
 
     polymarket: PolymarketSettings
+    kalshi: KalshiSettings
     llm: LLMSettings
     notifications: NotificationSettings
     scanner: ScannerSettingsModel
@@ -143,6 +152,7 @@ class UpdateSettingsRequest(BaseModel):
     """Request to update settings (partial updates supported)"""
 
     polymarket: Optional[PolymarketSettings] = None
+    kalshi: Optional[KalshiSettings] = None
     llm: Optional[LLMSettings] = None
     notifications: Optional[NotificationSettings] = None
     scanner: Optional[ScannerSettingsModel] = None
@@ -198,6 +208,11 @@ async def get_settings():
                 api_secret=mask_secret(settings.polymarket_api_secret),
                 api_passphrase=mask_secret(settings.polymarket_api_passphrase),
                 private_key=mask_secret(settings.polymarket_private_key),
+            ),
+            kalshi=KalshiSettings(
+                email=settings.kalshi_email,
+                password=mask_secret(settings.kalshi_password),
+                api_key=mask_secret(settings.kalshi_api_key),
             ),
             llm=LLMSettings(
                 provider=settings.llm_provider or "none",
@@ -272,6 +287,16 @@ async def update_settings(request: UpdateSettingsRequest):
                     settings.polymarket_api_passphrase = pm.api_passphrase or None
                 if pm.private_key is not None:
                     settings.polymarket_private_key = pm.private_key or None
+
+            # Update Kalshi settings
+            if request.kalshi:
+                kal = request.kalshi
+                if kal.email is not None:
+                    settings.kalshi_email = kal.email or None
+                if kal.password is not None:
+                    settings.kalshi_password = kal.password or None
+                if kal.api_key is not None:
+                    settings.kalshi_api_key = kal.api_key or None
 
             # Update LLM settings
             if request.llm:
@@ -385,6 +410,23 @@ async def get_polymarket_settings():
 async def update_polymarket_settings(request: PolymarketSettings):
     """Update Polymarket settings only"""
     return await update_settings(UpdateSettingsRequest(polymarket=request))
+
+
+@router.get("/kalshi")
+async def get_kalshi_settings():
+    """Get Kalshi settings only"""
+    settings = await get_or_create_settings()
+    return KalshiSettings(
+        email=settings.kalshi_email,
+        password=mask_secret(settings.kalshi_password),
+        api_key=mask_secret(settings.kalshi_api_key),
+    )
+
+
+@router.put("/kalshi")
+async def update_kalshi_settings(request: KalshiSettings):
+    """Update Kalshi settings only"""
+    return await update_settings(UpdateSettingsRequest(kalshi=request))
 
 
 @router.get("/llm")

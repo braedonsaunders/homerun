@@ -500,6 +500,11 @@ class AppSettings(Base):
     polymarket_api_passphrase = Column(String, nullable=True)
     polymarket_private_key = Column(String, nullable=True)
 
+    # Kalshi Account Settings
+    kalshi_email = Column(String, nullable=True)
+    kalshi_password = Column(String, nullable=True)
+    kalshi_api_key = Column(String, nullable=True)
+
     # LLM/AI Service Settings
     openai_api_key = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)

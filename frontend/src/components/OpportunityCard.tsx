@@ -309,11 +309,14 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
         <div className="flex items-center gap-2">
           {/* Polymarket link */}
           {(() => {
+            const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
             const polyUrl = opportunity.event_slug
               ? `https://polymarket.com/event/${opportunity.event_slug}`
-              : opportunity.markets.length > 0 && opportunity.markets[0].slug
-                ? `https://polymarket.com/event/${opportunity.markets[0].slug}`
-                : null
+              : polyMarket?.slug
+                ? `https://polymarket.com/event/${polyMarket.slug}`
+                : opportunity.markets.length > 0 && opportunity.markets[0].slug
+                  ? `https://polymarket.com/event/${opportunity.markets[0].slug}`
+                  : null
             return polyUrl ? (
               <a
                 href={polyUrl}
@@ -326,6 +329,24 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                 Polymarket
               </a>
             ) : null
+          })()}
+          {/* Kalshi link - shown for cross-platform opportunities */}
+          {(() => {
+            const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
+            if (!kalshiMarket) return null
+            const kalshiUrl = `https://kalshi.com/markets/${kalshiMarket.id}`
+            return (
+              <a
+                href={kalshiUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 h-7 px-2.5 text-xs rounded-md border bg-indigo-500/10 text-indigo-400 border-indigo-500/20 hover:bg-indigo-500/20 transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Kalshi
+              </a>
+            )
           })()}
           {onOpenCopilot && (
             <Button
@@ -364,23 +385,36 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             <div>
               <h4 className="text-sm font-medium text-muted-foreground mb-2">Positions to Take</h4>
               <div className="space-y-2">
-                {opportunity.positions_to_take.map((pos, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-muted rounded-lg p-3"
-                  >
-                    <div>
-                      <Badge variant="outline" className={cn(
-                        "text-xs mr-2",
-                        pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
-                      )}>
-                        {pos.action} {pos.outcome}
-                      </Badge>
-                      <span className="text-sm text-gray-300">{pos.market}</span>
+                {opportunity.positions_to_take.map((pos, idx) => {
+                  const positionPlatform = (pos as any).platform
+                  return (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between bg-muted rounded-lg p-3"
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant="outline" className={cn(
+                          "text-xs",
+                          pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
+                        )}>
+                          {pos.action} {pos.outcome}
+                        </Badge>
+                        {positionPlatform && (
+                          <Badge variant="outline" className={cn(
+                            "text-[10px]",
+                            positionPlatform === 'kalshi'
+                              ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
+                              : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                          )}>
+                            {positionPlatform === 'kalshi' ? 'Kalshi' : 'Polymarket'}
+                          </Badge>
+                        )}
+                        <span className="text-sm text-gray-300">{pos.market}</span>
+                      </div>
+                      <span className="font-mono text-foreground">${pos.price.toFixed(4)}</span>
                     </div>
-                    <span className="font-mono text-foreground">${pos.price.toFixed(4)}</span>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
@@ -403,29 +437,52 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             <div>
               <h4 className="text-sm font-medium text-muted-foreground mb-2">Markets Involved</h4>
               <div className="space-y-2">
-                {opportunity.markets.map((market, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-muted rounded-lg p-3"
-                  >
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-300">{market.question}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        YES: ${market.yes_price.toFixed(3)} | NO: ${market.no_price.toFixed(3)} |
-                        Liquidity: ${market.liquidity.toFixed(0)}
-                      </p>
-                    </div>
-                    <a
-                      href={market.slug ? `https://polymarket.com/event/${market.slug}` : `https://polymarket.com/event/${market.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
-                      onClick={(e) => e.stopPropagation()}
+                {opportunity.markets.map((market, idx) => {
+                  const isKalshi = (market as any).platform === 'kalshi'
+                  const marketUrl = isKalshi
+                    ? `https://kalshi.com/markets/${market.id}`
+                    : market.slug
+                      ? `https://polymarket.com/event/${market.slug}`
+                      : `https://polymarket.com/event/${market.id}`
+                  return (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between bg-muted rounded-lg p-3"
                     >
-                      <ExternalLink className="w-4 h-4 text-muted-foreground" />
-                    </a>
-                  </div>
-                ))}
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm text-gray-300">{market.question}</p>
+                          {isKalshi && (
+                            <Badge variant="outline" className="text-[10px] bg-indigo-500/10 text-indigo-400 border-indigo-500/20">
+                              Kalshi
+                            </Badge>
+                          )}
+                          {!isKalshi && opportunity.strategy === 'cross_platform' && (
+                            <Badge variant="outline" className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20">
+                              Polymarket
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          YES: ${market.yes_price.toFixed(3)} | NO: ${market.no_price.toFixed(3)} |
+                          Liquidity: ${market.liquidity.toFixed(0)}
+                        </p>
+                      </div>
+                      <a
+                        href={marketUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn(
+                          "p-2 rounded-lg transition-colors",
+                          isKalshi ? "hover:bg-indigo-500/20" : "hover:bg-gray-700"
+                        )}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink className={cn("w-4 h-4", isKalshi ? "text-indigo-400" : "text-muted-foreground")} />
+                      </a>
+                    </div>
+                  )
+                })}
               </div>
             </div>
 

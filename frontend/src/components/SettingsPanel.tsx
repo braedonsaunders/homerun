@@ -18,6 +18,7 @@ import {
   Activity,
   DollarSign,
   Brain,
+  BarChart3,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -40,7 +41,7 @@ import {
   type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'polymarket' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
+type SettingsSection = 'polymarket' | 'kalshi' | 'llm' | 'notifications' | 'scanner' | 'trading' | 'autotrader' | 'maintenance'
 
 function SecretInput({
   label,
@@ -113,6 +114,12 @@ export default function SettingsPanel() {
     api_secret: '',
     api_passphrase: '',
     private_key: ''
+  })
+
+  const [kalshiForm, setKalshiForm] = useState({
+    email: '',
+    password: '',
+    api_key: ''
   })
 
   const [llmForm, setLlmForm] = useState({
@@ -319,6 +326,12 @@ export default function SettingsPanel() {
         if (polymarketForm.api_passphrase) updates.polymarket.api_passphrase = polymarketForm.api_passphrase
         if (polymarketForm.private_key) updates.polymarket.private_key = polymarketForm.private_key
         break
+      case 'kalshi':
+        updates.kalshi = {}
+        if (kalshiForm.email) updates.kalshi.email = kalshiForm.email
+        if (kalshiForm.password) updates.kalshi.password = kalshiForm.password
+        if (kalshiForm.api_key) updates.kalshi.api_key = kalshiForm.api_key
+        break
       case 'llm':
         updates.llm = {
           provider: llmForm.provider,
@@ -384,6 +397,7 @@ export default function SettingsPanel() {
 
   const sections: { id: SettingsSection; icon: any; label: string; description: string }[] = [
     { id: 'polymarket', icon: Key, label: 'Polymarket Account', description: 'API credentials for trading' },
+    { id: 'kalshi', icon: BarChart3, label: 'Kalshi Account', description: 'Kalshi exchange credentials' },
     { id: 'llm', icon: Bot, label: 'AI / LLM Services', description: 'Configure AI providers' },
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
@@ -524,6 +538,73 @@ export default function SettingsPanel() {
                       {testPolymarketMutation.data.message}
                     </Badge>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Kalshi Settings */}
+            {activeSection === 'kalshi' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-indigo-500/10 rounded-lg">
+                    <BarChart3 className="w-5 h-5 text-indigo-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Kalshi Account</h3>
+                    <p className="text-sm text-muted-foreground">Configure your Kalshi credentials for cross-platform trading</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Kalshi Email</Label>
+                    <Input
+                      type="email"
+                      value={kalshiForm.email}
+                      onChange={(e) => setKalshiForm(p => ({ ...p, email: e.target.value }))}
+                      placeholder={settings?.kalshi?.email || 'Enter Kalshi account email'}
+                      className="mt-1"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Your Kalshi account email address</p>
+                  </div>
+
+                  <SecretInput
+                    label="Kalshi Password"
+                    value={kalshiForm.password}
+                    placeholder={settings?.kalshi?.password || 'Enter Kalshi password'}
+                    onChange={(v) => setKalshiForm(p => ({ ...p, password: v }))}
+                    showSecret={showSecrets['kalshi_pass']}
+                    onToggle={() => toggleSecret('kalshi_pass')}
+                    description="Used for email/password authentication to Kalshi API"
+                  />
+
+                  <Separator />
+
+                  <SecretInput
+                    label="API Key (Alternative)"
+                    value={kalshiForm.api_key}
+                    placeholder={settings?.kalshi?.api_key || 'Enter Kalshi API key'}
+                    onChange={(v) => setKalshiForm(p => ({ ...p, api_key: v }))}
+                    showSecret={showSecrets['kalshi_key']}
+                    onToggle={() => toggleSecret('kalshi_key')}
+                    description="Alternative to email/password. If set, API key is preferred for authentication."
+                  />
+                </div>
+
+                <div className="flex items-start gap-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
+                  <Activity className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
+                  <p className="text-xs text-muted-foreground">
+                    Kalshi credentials enable cross-platform arbitrage trading. The scanner will automatically detect price differences between Polymarket and Kalshi for the same events. You can use either email/password or an API key for authentication.
+                  </p>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => handleSaveSection('kalshi')} disabled={saveMutation.isPending}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Kalshi Settings
+                  </Button>
                 </div>
               </div>
             )}

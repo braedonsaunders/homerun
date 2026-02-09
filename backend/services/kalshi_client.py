@@ -14,20 +14,31 @@ KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
 
 class KalshiClient:
-    """Client for interacting with Kalshi's public prediction market API.
+    """Client for interacting with Kalshi's prediction market API.
 
     Mirrors the PolymarketClient interface so that cross-platform scanners
     can work with either data source through a common set of methods.
 
-    Uses only unauthenticated / public endpoints:
+    Public endpoints (unauthenticated):
         GET /trade-api/v2/events
         GET /trade-api/v2/markets
         GET /trade-api/v2/markets/{ticker}
+
+    Authenticated endpoints (require login or API key):
+        POST /trade-api/v2/login
+        GET  /trade-api/v2/portfolio/balance
+        GET  /trade-api/v2/portfolio/positions
+        POST /trade-api/v2/portfolio/orders
     """
 
     def __init__(self):
         self.base_url: str = KALSHI_API_BASE
         self._client: Optional[httpx.AsyncClient] = None
+
+        # Authentication state
+        self._auth_token: Optional[str] = None
+        self._auth_member_id: Optional[str] = None
+        self._api_key: Optional[str] = None
 
         # Simple token-bucket rate limiter: 10 requests / second
         self._rate_limit: float = 10.0  # requests per second
@@ -77,12 +88,32 @@ class KalshiClient:
             else:
                 self._token_bucket -= 1.0
 
+    def _auth_headers(self) -> dict:
+        """Return authorization headers if authenticated."""
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        elif self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+        return headers
+
     async def _get(self, path: str, params: Optional[dict] = None) -> dict:
         """Perform a rate-limited GET request and return the JSON body."""
         await self._rate_limit_wait()
         client = await self._get_client()
         url = f"{self.base_url}{path}"
-        response = await client.get(url, params=params)
+        response = await client.get(url, params=params, headers=self._auth_headers())
+        response.raise_for_status()
+        return response.json()
+
+    async def _post(self, path: str, json_body: Optional[dict] = None) -> dict:
+        """Perform a rate-limited POST request and return the JSON body."""
+        await self._rate_limit_wait()
+        client = await self._get_client()
+        url = f"{self.base_url}{path}"
+        response = await client.post(
+            url, json=json_body or {}, headers=self._auth_headers()
+        )
         response.raise_for_status()
         return response.json()
 
@@ -149,6 +180,7 @@ class KalshiClient:
             volume=float(volume_raw),
             liquidity=float(liquidity_raw),
             end_date=end_date,
+            platform="kalshi",
         )
 
     @staticmethod
@@ -413,6 +445,297 @@ class KalshiClient:
                 prices[tid] = {"mid": 0, "error": "market_not_found"}
 
         return prices
+
+
+    # ------------------------------------------------------------------ #
+    #  Authentication
+    # ------------------------------------------------------------------ #
+
+    @property
+    def is_authenticated(self) -> bool:
+        """Check if the client has valid authentication credentials."""
+        return bool(self._auth_token or self._api_key)
+
+    async def login(self, email: str, password: str) -> bool:
+        """Authenticate with Kalshi using email/password.
+
+        On success, stores the bearer token for subsequent authenticated requests.
+        Returns True if login succeeded, False otherwise.
+        """
+        try:
+            await self._rate_limit_wait()
+            client = await self._get_client()
+            url = f"{self.base_url}/login"
+            response = await client.post(
+                url, json={"email": email, "password": password}
+            )
+            response.raise_for_status()
+            data = response.json()
+            self._auth_token = data.get("token")
+            self._auth_member_id = data.get("member_id")
+            logger.info(
+                "Kalshi login successful",
+                member_id=self._auth_member_id,
+            )
+            return True
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Kalshi login failed",
+                status=exc.response.status_code,
+                detail=exc.response.text[:200],
+            )
+            return False
+        except Exception as exc:
+            logger.error("Kalshi login error", error=str(exc))
+            return False
+
+    def set_api_key(self, api_key: str):
+        """Set API key for authentication (alternative to email/password login)."""
+        self._api_key = api_key
+        logger.info("Kalshi API key configured")
+
+    async def initialize_auth(
+        self,
+        email: Optional[str] = None,
+        password: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> bool:
+        """Initialize authentication using stored credentials.
+
+        Tries API key first (no network call), then email/password login.
+        Returns True if authenticated successfully.
+        """
+        if api_key:
+            self.set_api_key(api_key)
+            return True
+        if email and password:
+            return await self.login(email, password)
+        return False
+
+    def logout(self):
+        """Clear authentication state."""
+        self._auth_token = None
+        self._auth_member_id = None
+        self._api_key = None
+
+    # ------------------------------------------------------------------ #
+    #  Authenticated API: portfolio
+    # ------------------------------------------------------------------ #
+
+    async def get_balance(self) -> Optional[dict]:
+        """Get account balance.
+
+        Returns dict with 'balance' (cents), 'payout' etc., or None on failure.
+        """
+        if not self.is_authenticated:
+            return None
+        try:
+            data = await self._get("/portfolio/balance")
+            # Kalshi returns balance in cents, convert to dollars
+            raw_balance = data.get("balance", 0) or 0
+            raw_payout = data.get("payout", 0) or 0
+            return {
+                "balance": raw_balance / 100.0,
+                "payout": raw_payout / 100.0,
+                "available": raw_balance / 100.0,
+                "reserved": 0.0,
+                "currency": "USD",
+            }
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Kalshi balance request failed",
+                status=exc.response.status_code,
+            )
+            return None
+        except Exception as exc:
+            logger.error("Kalshi balance error", error=str(exc))
+            return None
+
+    async def get_positions(self) -> list[dict]:
+        """Get current portfolio positions.
+
+        Returns a list of position dicts normalised to match the TradingPosition
+        format used by the Polymarket live account panel.
+        """
+        if not self.is_authenticated:
+            return []
+        try:
+            positions = []
+            cursor: Optional[str] = None
+            max_pages = 10
+
+            for _ in range(max_pages):
+                params: dict = {"limit": 200}
+                if cursor:
+                    params["cursor"] = cursor
+                data = await self._get("/portfolio/positions", params=params)
+
+                for pos in data.get("market_positions", []):
+                    ticker = pos.get("ticker", "")
+                    market_exposure = pos.get("market_exposure", 0) or 0
+                    total_traded = pos.get("total_traded", 0) or 0
+                    realized_pnl = pos.get("realized_pnl", 0) or 0
+
+                    # Kalshi positions can have yes/no quantities
+                    yes_qty = pos.get("position", 0) or 0  # positive = long YES
+                    rest_qty = pos.get("rest_position", 0) or 0
+
+                    if yes_qty == 0 and rest_qty == 0:
+                        continue
+
+                    # Determine side and quantity
+                    if yes_qty > 0:
+                        outcome = "YES"
+                        size = yes_qty
+                    elif yes_qty < 0:
+                        outcome = "NO"
+                        size = abs(yes_qty)
+                    else:
+                        outcome = "YES" if rest_qty > 0 else "NO"
+                        size = abs(rest_qty)
+
+                    # Estimate average cost from total_traded / size
+                    avg_cost = (total_traded / 100.0 / size) if size > 0 else 0.0
+
+                    positions.append({
+                        "token_id": f"{ticker}_{'yes' if outcome == 'YES' else 'no'}",
+                        "market_id": ticker,
+                        "market_question": ticker,  # Will be enriched with title if available
+                        "outcome": outcome,
+                        "size": float(size),
+                        "average_cost": avg_cost,
+                        "current_price": 0.0,  # Will be enriched with live price
+                        "unrealized_pnl": realized_pnl / 100.0,
+                        "platform": "kalshi",
+                    })
+
+                cursor = data.get("cursor")
+                if not cursor:
+                    break
+
+            # Enrich positions with current prices
+            if positions:
+                tickers = list({p["market_id"] for p in positions})
+                for ticker in tickers:
+                    market = await self.get_market(ticker)
+                    if market:
+                        for p in positions:
+                            if p["market_id"] == ticker:
+                                p["market_question"] = market.question
+                                p["current_price"] = (
+                                    market.yes_price
+                                    if p["outcome"] == "YES"
+                                    else market.no_price
+                                )
+                                p["unrealized_pnl"] = (
+                                    p["size"] * (p["current_price"] - p["average_cost"])
+                                )
+
+            return positions
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Kalshi positions request failed",
+                status=exc.response.status_code,
+            )
+            return []
+        except Exception as exc:
+            logger.error("Kalshi positions error", error=str(exc))
+            return []
+
+    async def place_order(
+        self,
+        ticker: str,
+        side: str,
+        count: int,
+        price_cents: int,
+        order_type: str = "limit",
+    ) -> Optional[dict]:
+        """Place an order on Kalshi.
+
+        Args:
+            ticker: Market ticker (e.g., 'KXBTC-24DEC31-T100000')
+            side: 'yes' or 'no'
+            count: Number of contracts
+            price_cents: Price per contract in cents (1-99)
+            order_type: 'limit' or 'market'
+
+        Returns order details dict, or None on failure.
+        """
+        if not self.is_authenticated:
+            logger.error("Cannot place order: not authenticated")
+            return None
+        try:
+            body = {
+                "ticker": ticker,
+                "action": "buy",
+                "side": side,
+                "count": count,
+                "type": order_type,
+            }
+            if order_type == "limit":
+                body["yes_price"] = price_cents if side == "yes" else (100 - price_cents)
+
+            data = await self._post("/portfolio/orders", json_body=body)
+            order = data.get("order", data)
+            logger.info(
+                "Kalshi order placed",
+                ticker=ticker,
+                side=side,
+                count=count,
+                order_id=order.get("order_id"),
+            )
+            return order
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Kalshi order failed",
+                ticker=ticker,
+                status=exc.response.status_code,
+                detail=exc.response.text[:200],
+            )
+            return None
+        except Exception as exc:
+            logger.error("Kalshi order error", ticker=ticker, error=str(exc))
+            return None
+
+    async def get_orders(self, status: Optional[str] = None) -> list[dict]:
+        """Get order history.
+
+        Args:
+            status: Filter by status ('resting', 'canceled', 'executed', 'pending')
+
+        Returns list of order dicts.
+        """
+        if not self.is_authenticated:
+            return []
+        try:
+            params: dict = {"limit": 200}
+            if status:
+                params["status"] = status
+            data = await self._get("/portfolio/orders", params=params)
+            return data.get("orders", [])
+        except Exception as exc:
+            logger.error("Kalshi get orders error", error=str(exc))
+            return []
+
+    async def get_account_status(self) -> dict:
+        """Get overall account status including auth state and balance.
+
+        Returns a summary dict suitable for the frontend.
+        """
+        result = {
+            "platform": "kalshi",
+            "authenticated": self.is_authenticated,
+            "member_id": self._auth_member_id,
+            "balance": None,
+            "positions_count": 0,
+        }
+        if self.is_authenticated:
+            balance = await self.get_balance()
+            if balance:
+                result["balance"] = balance
+            positions = await self.get_positions()
+            result["positions_count"] = len(positions)
+        return result
 
 
 # Singleton instance

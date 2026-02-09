@@ -19,6 +19,7 @@ from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from api.routes_ai import router as ai_router
 from api.routes_discovery import discovery_router
+from api.routes_kalshi import router as kalshi_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.copy_trader import copy_trader
 from services.trading import trading_service
@@ -284,6 +285,7 @@ app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
+app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 
 
 # WebSocket endpoint
