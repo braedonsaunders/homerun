@@ -105,7 +105,80 @@ async def judge_opportunity(request: JudgeOpportunityRequest):
     from services.ai.opportunity_judge import opportunity_judge
 
     result = await opportunity_judge.judge_opportunity(opp, model=request.model)
+
+    # Update the in-memory opportunity so subsequent API fetches include the
+    # judgment without waiting for the next scan cycle.
+    from models.opportunity import AIAnalysis
+    from datetime import datetime
+
+    opp.ai_analysis = AIAnalysis(
+        overall_score=result.get("overall_score", 0.0),
+        profit_viability=result.get("profit_viability", 0.0),
+        resolution_safety=result.get("resolution_safety", 0.0),
+        execution_feasibility=result.get("execution_feasibility", 0.0),
+        market_efficiency=result.get("market_efficiency", 0.0),
+        recommendation=result.get("recommendation", "review"),
+        reasoning=result.get("reasoning"),
+        risk_factors=result.get("risk_factors", []),
+        judged_at=datetime.fromisoformat(result["judged_at"])
+        if result.get("judged_at")
+        else datetime.utcnow(),
+    )
+
     return result
+
+
+class JudgeBulkRequest(BaseModel):
+    opportunity_ids: list[str] = []  # empty = all unjudged
+
+
+@router.post("/ai/judge/opportunities/bulk")
+async def judge_opportunities_bulk(request: JudgeBulkRequest):
+    """Judge multiple opportunities sequentially. Returns results as they complete."""
+    import asyncio
+    from services import scanner
+    from services.ai.opportunity_judge import opportunity_judge
+    from models.opportunity import AIAnalysis
+    from datetime import datetime
+
+    opps = scanner.get_opportunities()
+
+    if request.opportunity_ids:
+        id_set = set(request.opportunity_ids)
+        targets = [o for o in opps if o.id in id_set]
+    else:
+        # Judge all that don't already have a non-pending analysis
+        targets = [
+            o
+            for o in opps
+            if not o.ai_analysis or o.ai_analysis.recommendation == "pending"
+        ]
+
+    results = []
+    errors = []
+
+    for opp in targets:
+        try:
+            result = await opportunity_judge.judge_opportunity(opp)
+            # Update in-memory opportunity
+            opp.ai_analysis = AIAnalysis(
+                overall_score=result.get("overall_score", 0.0),
+                profit_viability=result.get("profit_viability", 0.0),
+                resolution_safety=result.get("resolution_safety", 0.0),
+                execution_feasibility=result.get("execution_feasibility", 0.0),
+                market_efficiency=result.get("market_efficiency", 0.0),
+                recommendation=result.get("recommendation", "review"),
+                reasoning=result.get("reasoning"),
+                risk_factors=result.get("risk_factors", []),
+                judged_at=datetime.fromisoformat(result["judged_at"])
+                if result.get("judged_at")
+                else datetime.utcnow(),
+            )
+            results.append(result)
+        except Exception as e:
+            errors.append({"opportunity_id": opp.id, "error": str(e)})
+
+    return {"judged": len(results), "errors": errors, "total_requested": len(targets)}
 
 
 @router.get("/ai/judge/history")

@@ -44,6 +44,7 @@ import {
   getStrategies,
   startScanner,
   pauseScanner,
+  judgeOpportunitiesBulk,
   Opportunity
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -284,6 +285,13 @@ function App() {
     mutationFn: pauseScanner,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+    },
+  })
+
+  const analyzeAllMutation = useMutation({
+    mutationFn: () => judgeOpportunitiesBulk(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['opportunities'] })
     },
   })
 
@@ -853,6 +861,23 @@ function App() {
                                 )}
                               </button>
                             ))}
+
+                            <div className="ml-auto">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => analyzeAllMutation.mutate()}
+                                disabled={analyzeAllMutation.isPending || displayOpportunities.length === 0}
+                                className="text-xs gap-1.5"
+                              >
+                                {analyzeAllMutation.isPending ? (
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Brain className="w-3 h-3" />
+                                )}
+                                {analyzeAllMutation.isPending ? 'Analyzing...' : 'Analyze All'}
+                              </Button>
+                            </div>
                           </div>
 
                           {/* Opportunities List */}
@@ -873,7 +898,7 @@ function App() {
                               <div className="space-y-3 card-stagger">
                                 {displayOpportunities.map((opp) => (
                                   <OpportunityCard
-                                    key={opp.id}
+                                    key={opp.stable_id || opp.id}
                                     opportunity={opp}
                                     onExecute={setExecutingOpportunity}
                                     onOpenCopilot={handleOpenCopilotForOpportunity}
