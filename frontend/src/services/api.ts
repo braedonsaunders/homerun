@@ -1341,6 +1341,162 @@ export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history',
 export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')
 export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data)
 export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data)
+
+// ==================== NEWS INTELLIGENCE ====================
+
+export interface NewsArticle {
+  article_id: string
+  title: string
+  source: string
+  feed_source: string
+  url: string
+  published: string | null
+  category: string
+  summary: string
+  has_embedding: boolean
+  fetched_at: string
+}
+
+export interface NewsFeedStatus {
+  article_count: number
+  sources: Record<string, number>
+  running: boolean
+  matcher: {
+    initialized: boolean
+    mode: string
+    articles_embedded: number
+    markets_indexed: number
+  }
+}
+
+export interface NewsMatch {
+  article_title: string
+  article_source: string
+  article_url: string
+  market_question: string
+  market_id: string
+  market_price: number
+  similarity: number
+  match_method: string
+}
+
+export interface NewsEdge {
+  article_title: string
+  article_source: string
+  article_url: string
+  market_question: string
+  market_id: string
+  market_price: number
+  model_probability: number
+  edge_percent: number
+  direction: string
+  confidence: number
+  reasoning: string
+  similarity: number
+  estimated_at: string
+}
+
+export interface NewsEdgesResponse {
+  total_articles: number
+  total_markets: number
+  total_matches: number
+  total_edges: number
+  edges: NewsEdge[]
+}
+
+export interface NewsMatchResponse {
+  total_articles: number
+  total_markets: number
+  total_matches: number
+  matcher_mode: string
+  matches: NewsMatch[]
+}
+
+export interface ForecastAgent {
+  name: string
+  probability: number
+  confidence: number
+  reasoning: string
+  model: string
+}
+
+export interface ForecastResult {
+  market_question: string
+  market_price: number
+  final_probability: number
+  edge_percent: number
+  direction: string
+  confidence: number
+  aggregation_method: string
+  news_context: string
+  analyzed_at: string
+  agents: ForecastAgent[]
+}
+
+export const getNewsFeedStatus = async (): Promise<NewsFeedStatus> => {
+  const { data } = await api.get('/news/feed/status')
+  return data
+}
+
+export const triggerNewsFetch = async (): Promise<{ new_articles: number; total_articles: number; articles: Array<{ title: string; source: string; feed_source: string; url: string; published: string | null; category: string }> }> => {
+  const { data } = await api.post('/news/feed/fetch')
+  return data
+}
+
+export const getNewsArticles = async (params?: {
+  max_age_hours?: number
+  source?: string
+  limit?: number
+}): Promise<{ total: number; articles: NewsArticle[] }> => {
+  const { data } = await api.get('/news/feed/articles', { params })
+  return data
+}
+
+export const clearNewsArticles = async (): Promise<{ cleared: number }> => {
+  const { data } = await api.delete('/news/feed/clear')
+  return data
+}
+
+export const runNewsMatching = async (params?: {
+  max_age_hours?: number
+  top_k?: number
+  threshold?: number
+}): Promise<NewsMatchResponse> => {
+  const { data } = await api.post('/news/match', params || {})
+  return data
+}
+
+export const detectNewsEdges = async (params?: {
+  max_age_hours?: number
+  top_k?: number
+  threshold?: number
+  model?: string
+}): Promise<NewsEdgesResponse> => {
+  const { data } = await api.post('/news/edges', params || {})
+  return data
+}
+
+export const runForecastCommittee = async (params: {
+  market_question: string
+  market_price: number
+  news_context?: string
+  event_title?: string
+  category?: string
+  model?: string
+}): Promise<ForecastResult> => {
+  const { data } = await api.post('/news/forecast', params)
+  return data
+}
+
+export const forecastMarketById = async (params: {
+  market_id: string
+  model?: string
+  include_news?: boolean
+  max_articles?: number
+}): Promise<ForecastResult> => {
+  const { data } = await api.post('/news/forecast/market', params)
+  return data
+}
 export const listSkills = () => api.get('/ai/skills')
 export const executeSkill = (data: any) => api.post('/ai/skills/execute', data)
 export const getResearchSessions = (params?: any) => api.get('/ai/sessions', { params })

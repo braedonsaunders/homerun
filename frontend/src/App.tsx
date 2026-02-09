@@ -32,6 +32,7 @@ import {
   SlidersHorizontal,
   LayoutGrid,
   List,
+  Newspaper,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -86,6 +87,7 @@ import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
+import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
@@ -119,7 +121,7 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news'>('arbitrage')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -665,6 +667,20 @@ function App() {
                       <Activity className="w-3.5 h-3.5" />
                       Tracked Traders
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setOpportunitiesView('news')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'news'
+                          ? "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <Newspaper className="w-3.5 h-3.5" />
+                      News
+                    </Button>
 
                     {/* View Mode Switcher */}
                     {opportunitiesView === 'arbitrage' && (
@@ -731,7 +747,9 @@ function App() {
                     </div>
                   )}
 
-                  {opportunitiesView === 'recent_trades' ? (
+                  {opportunitiesView === 'news' ? (
+                    <NewsIntelligencePanel />
+                  ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
