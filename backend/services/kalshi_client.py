@@ -592,7 +592,6 @@ class KalshiClient:
 
                 for pos in data.get("market_positions", []):
                     ticker = pos.get("ticker", "")
-                    market_exposure = pos.get("market_exposure", 0) or 0
                     total_traded = pos.get("total_traded", 0) or 0
                     realized_pnl = pos.get("realized_pnl", 0) or 0
 
