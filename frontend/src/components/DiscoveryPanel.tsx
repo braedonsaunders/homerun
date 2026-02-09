@@ -117,18 +117,16 @@ function timeAgo(dateStr: string | null): string {
 // ==================== MAIN COMPONENT ====================
 
 interface DiscoveryPanelProps {
-  parentTab?: 'leaderboard' | 'discover'
   onAnalyzeWallet?: (address: string, username?: string) => void
   onExecuteTrade?: (opportunity: Opportunity) => void
 }
 
-export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWallet, onExecuteTrade }: DiscoveryPanelProps) {
-  const [discoverSubTab, setDiscoverSubTab] = useState<'confluence' | 'tags'>('confluence')
-  const activeTab: DiscoveryTab = parentTab === 'leaderboard' ? 'leaderboard' : discoverSubTab
+export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: DiscoveryPanelProps) {
+  const [activeTab, setActiveTab] = useState<DiscoveryTab>('leaderboard')
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [currentPage, setCurrentPage] = useState(0)
-  const [minTrades, setMinTrades] = useState(10)
+  const [minTrades, setMinTrades] = useState(0)
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
   const [tagFilter, setTagFilter] = useState('')
@@ -314,13 +312,9 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">
-            {parentTab === 'leaderboard' ? 'Leaderboard' : 'Trader Discovery'}
-          </h2>
+          <h2 className="text-xl font-bold">Trader Discovery</h2>
           <p className="text-sm text-muted-foreground">
-            {parentTab === 'leaderboard'
-              ? 'Top performing traders ranked by metrics'
-              : 'Discover confluence signals and filter traders by behavioral tags'}
+            Leaderboard rankings, confluence signals, and behavioral tags
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -433,41 +427,36 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
         </div>
       )}
 
-      {/* Tab Navigation - only show sub-tabs in discover mode */}
-      {parentTab === 'discover' && (
-        <div className="flex items-center gap-2">
-          {tabDefs.filter(tab => tab.id !== 'leaderboard').map(tab => {
-            const Icon = tab.icon
-            const isActive = activeTab === tab.id
-            const colorMap: Record<string, string> = {
-              yellow: isActive
-                ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400'
-                : 'bg-card text-muted-foreground hover:text-foreground border-border',
-              cyan: isActive
-                ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
-                : 'bg-card text-muted-foreground hover:text-foreground border-border',
-              purple: isActive
-                ? 'bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400'
-                : 'bg-card text-muted-foreground hover:text-foreground border-border',
-              blue: isActive
-                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400'
-                : 'bg-card text-muted-foreground hover:text-foreground border-border',
-            }
-            return (
-              <Button
-                key={tab.id}
-                variant="outline"
-                size="sm"
-                onClick={() => setDiscoverSubTab(tab.id as 'confluence' | 'tags')}
-                className={cn("flex items-center gap-2", colorMap[tab.color])}
-              >
-                <Icon className="w-4 h-4" />
-                {tab.label}
-              </Button>
-            )
-          })}
-        </div>
-      )}
+      {/* Tab Navigation */}
+      <div className="flex items-center gap-2">
+        {tabDefs.map(tab => {
+          const Icon = tab.icon
+          const isActive = activeTab === tab.id
+          const colorMap: Record<string, string> = {
+            yellow: isActive
+              ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border',
+            cyan: isActive
+              ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border',
+            purple: isActive
+              ? 'bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border',
+          }
+          return (
+            <Button
+              key={tab.id}
+              variant="outline"
+              size="sm"
+              onClick={() => setActiveTab(tab.id)}
+              className={cn("flex items-center gap-2", colorMap[tab.color])}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+            </Button>
+          )
+        })}
+      </div>
 
       {/* ==================== LEADERBOARD TAB ==================== */}
       {activeTab === 'leaderboard' && (

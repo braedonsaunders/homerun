@@ -1048,7 +1048,7 @@ class WalletDiscoveryEngine:
         self,
         limit: int = 100,
         offset: int = 0,
-        min_trades: int = 10,
+        min_trades: int = 0,
         min_pnl: float = 0.0,
         sort_by: str = "rank_score",
         sort_dir: str = "desc",
