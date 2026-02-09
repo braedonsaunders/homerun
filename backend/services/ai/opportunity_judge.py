@@ -555,9 +555,7 @@ class OpportunityJudge:
                     round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
                 )
 
-                avg_overall = (
-                    round(float(avg_score), 4) if avg_score else 0.0
-                )
+                avg_overall = round(float(avg_score), 4) if avg_score else 0.0
 
                 return {
                     "total_judgments": total_all,
@@ -566,7 +564,9 @@ class OpportunityJudge:
                     "agreements": agreements,
                     "disagreements": disagreements,
                     "ml_overrides": disagreements,
-                    "agreement_rate": agreement_rate if agreement_rate is not None else 0.0,
+                    "agreement_rate": agreement_rate
+                    if agreement_rate is not None
+                    else 0.0,
                     "average_overall_score": avg_overall,
                     "avg_score": avg_overall,
                     "recommendation_distribution": recommendation_counts,
