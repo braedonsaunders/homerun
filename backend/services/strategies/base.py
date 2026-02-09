@@ -181,7 +181,9 @@ class BaseStrategy(ABC):
         # In efficient prediction markets, genuine arbitrage is 1-5%.
         # ROI > 30% almost always indicates non-exhaustive outcomes, stale
         # order books, or missing data — not a real mispricing.
-        if effective_roi > settings.MAX_PLAUSIBLE_ROI:
+        # Skip this check for directional/statistical strategies where
+        # "ROI" represents potential return, not guaranteed profit.
+        if is_guaranteed and effective_roi > settings.MAX_PLAUSIBLE_ROI:
             return None
 
         # --- Hard filter: too many legs ---

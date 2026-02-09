@@ -553,6 +553,7 @@ class ArbitrageScanner:
                     f"Fast scan: {len(hot_markets)} markets unchanged, skipping"
                 )
                 self._prioritizer.update_after_evaluation(hot_markets, now)
+                self._last_scan = now
                 self._last_fast_scan = now
                 return self._opportunities
 

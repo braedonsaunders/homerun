@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     MIN_POSITION_SIZE: float = (
         25.0  # Reject if max position < this (absolute profit too small)
     )
-    MIN_ABSOLUTE_PROFIT: float = 5.0  # Reject if net profit on max position < this
+    MIN_ABSOLUTE_PROFIT: float = 1.0  # Reject if net profit on max position < this
     MIN_ANNUALIZED_ROI: float = 10.0  # Reject if annualized ROI < this percent
     MAX_RESOLUTION_MONTHS: int = (
         18  # Reject if resolution > this many months away (capital lockup)
