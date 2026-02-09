@@ -135,7 +135,6 @@ class JudgeBulkRequest(BaseModel):
 @router.post("/ai/judge/opportunities/bulk")
 async def judge_opportunities_bulk(request: JudgeBulkRequest):
     """Judge multiple opportunities sequentially. Returns results as they complete."""
-    import asyncio
     from services import scanner
     from services.ai.opportunity_judge import opportunity_judge
     from models.opportunity import AIAnalysis
