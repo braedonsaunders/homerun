@@ -18,6 +18,7 @@ from services.strategies import (
     CombinatorialStrategy,
     SettlementLagStrategy,
     BtcEthHighFreqStrategy,
+    NewsEdgeStrategy,
     CrossPlatformStrategy,
     BayesianCascadeStrategy,
     LiquidityVacuumStrategy,
@@ -68,6 +69,9 @@ class ArbitrageScanner:
             StatArbStrategy(),  # Statistical edge from ensemble probability signals
         ]
 
+        # Async strategies (require network I/O or LLM calls, run separately)
+        self._news_edge_strategy = NewsEdgeStrategy()
+
         # Mispricing type mapping for strategies that don't set it themselves
         self._strategy_mispricing_map = {
             "basic": MispricingType.WITHIN_MARKET,
@@ -79,6 +83,7 @@ class ArbitrageScanner:
             "combinatorial": MispricingType.CROSS_MARKET,
             "settlement_lag": MispricingType.SETTLEMENT_LAG,
             "btc_eth_highfreq": MispricingType.WITHIN_MARKET,
+            "news_edge": MispricingType.NEWS_INFORMATION,
             "cross_platform": MispricingType.CROSS_MARKET,
             "bayesian_cascade": MispricingType.CROSS_MARKET,
             "liquidity_vacuum": MispricingType.WITHIN_MARKET,
@@ -404,6 +409,20 @@ class ArbitrageScanner:
                     self._prioritizer.update_after_evaluation(markets, now)
                 except Exception:
                     pass
+
+            # Run async strategies (News Edge — requires LLM calls)
+            if settings.NEWS_EDGE_ENABLED:
+                try:
+                    news_opps = await self._news_edge_strategy.detect_async(
+                        events, markets, prices
+                    )
+                    for opp in news_opps:
+                        if opp.mispricing_type is None:
+                            opp.mispricing_type = MispricingType.NEWS_INFORMATION
+                    all_opportunities.extend(news_opps)
+                    print(f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities")
+                except Exception as e:
+                    print(f"  {self._news_edge_strategy.name}: error - {e}")
 
             # Deduplicate across strategies: when the same underlying markets
             # are detected by multiple strategies, keep only the highest-ROI one.
@@ -1043,6 +1062,8 @@ class ArbitrageScanner:
             "current_activity": self._current_activity,
             "strategies": [
                 {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
+            ] + [
+                {"name": self._news_edge_strategy.name, "type": self._news_edge_strategy.strategy_type.value}
             ],
         }
 

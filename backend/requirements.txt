@@ -12,3 +12,8 @@ greenlet>=3.0.0
 # AI Intelligence Layer
 pyyaml>=6.0
 markdown>=3.5
+
+# News Intelligence Layer (semantic matching)
+numpy>=1.24.0
+sentence-transformers>=2.2.0  # Embedding model (optional — TF-IDF fallback if missing)
+faiss-cpu>=1.7.0              # Fast vector search (optional — numpy fallback if missing)
