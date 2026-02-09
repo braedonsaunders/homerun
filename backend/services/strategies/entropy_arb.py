@@ -260,12 +260,28 @@ class EntropyArbStrategy(BaseStrategy):
         if yes_price <= 0.0 or yes_price >= 1.0:
             return None
 
+        # --- Filter: market already has strong directional consensus ---
+        # If the favorite is already priced > 0.75, the market has priced in
+        # the expected direction. Entropy deviation at this point is not a
+        # mispricing signal — buying an 80-cent favorite is a directional
+        # bet with poor risk/reward, not an information edge.
+        favorite_price = max(yes_price, 1.0 - yes_price)
+        if favorite_price > 0.75:
+            return None
+
         # --- Entropy calculation ---
         h_actual = binary_entropy(yes_price)
 
         end_aware = make_aware(market.end_date)
         now = utcnow()
         days_remaining = max((end_aware - now).total_seconds() / 86400.0, 0.0)
+
+        # --- Filter: too close to resolution ---
+        # Within the last day, prices react to live information (game scores,
+        # vote counts, data releases). High entropy here is a feature of
+        # genuine uncertainty, not a market inefficiency.
+        if days_remaining < 1.0:
+            return None
 
         # Estimate total market lifespan. Without a creation date we
         # default to DEFAULT_TOTAL_DAYS.
@@ -373,7 +389,7 @@ class EntropyArbStrategy(BaseStrategy):
             # Override risk score: entropy signals are probabilistic
             # directional bets, not guaranteed arbitrage. If the chosen
             # side doesn't win, the entire position is lost.
-            base_risk = 0.55
+            base_risk = 0.70
             # Increase risk for smaller deviations (less confident signal)
             deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
             # Increase risk for low-entropy (contrarian) trades
@@ -437,6 +453,12 @@ class EntropyArbStrategy(BaseStrategy):
         resolution_date = min(end_dates)
         now = utcnow()
         days_remaining = max((resolution_date - now).total_seconds() / 86400.0, 0.0)
+
+        # --- Filter: too close to resolution ---
+        # Within the last day, prices react to live information.
+        if days_remaining < 1.0:
+            return None
+
         total_days = max(days_remaining, DEFAULT_TOTAL_DAYS)
 
         # --- Build probability distribution from YES prices ---
@@ -446,6 +468,13 @@ class EntropyArbStrategy(BaseStrategy):
 
         total_yes = sum(yes_prices)
         if total_yes <= 0.0:
+            return None
+
+        # --- Filter: leading outcome already dominant ---
+        # If the favorite is > 0.75, the market has strong consensus.
+        # Entropy deviation is not a useful signal at this point.
+        max_yes = max(yes_prices)
+        if max_yes / total_yes > 0.75:
             return None
 
         # Normalize to a proper probability distribution
@@ -551,7 +580,7 @@ class EntropyArbStrategy(BaseStrategy):
             # directional bet on the favorite (or a contrarian underdog),
             # NOT a structural arbitrage. If the chosen outcome doesn't
             # win, the entire position is lost.
-            base_risk = 0.60
+            base_risk = 0.75
             deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
             contrarian_penalty = 0.15 if deviation < 0 else 0.0
             spike_bonus = -0.05 if spike else 0.0

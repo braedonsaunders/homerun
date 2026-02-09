@@ -767,7 +767,7 @@ class PolymarketClient:
         # Verify each trader has real activity using the fast
         # closed-positions endpoint (single call per trader instead of
         # fetching full trade history + open positions).
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(4)
 
         async def verify_trader(entry: dict):
             async with semaphore:
@@ -1118,7 +1118,7 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(4)
 
         async def analyze_trader(entry: dict):
             async with semaphore:

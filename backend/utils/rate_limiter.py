@@ -62,7 +62,7 @@ class RateLimiter:
         "clob_market": RateLimitConfig(requests_per_window=500, window_seconds=10),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
-        "data_positions": RateLimitConfig(requests_per_window=150, window_seconds=10),
+        "data_positions": RateLimitConfig(requests_per_window=80, window_seconds=10),
     }
 
     def __init__(self):
@@ -148,7 +148,7 @@ def endpoint_for_url(url: str) -> str:
     elif "data-api" in url:
         if "/trades" in url:
             return "data_trades"
-        if "/positions" in url:
+        if "positions" in url:  # matches /positions AND /closed-positions
             return "data_positions"
         return "data_general"
     return "default"

@@ -58,6 +58,9 @@ _ABBREVIATIONS: dict[str, str] = {
     "dot": "polkadot",
     "avax": "avalanche",
     "matic": "polygon",
+    "link": "chainlink",
+    "ltc": "litecoin",
+    "uni": "uniswap",
     "gop": "republican",
     "dem": "democrat",
     "dems": "democrats",
@@ -67,7 +70,10 @@ _ABBREVIATIONS: dict[str, str] = {
     "scotus": "supreme court",
     "gdp": "gross domestic product",
     "cpi": "consumer price index",
+    "ppi": "producer price index",
     "fed": "federal reserve",
+    "fomc": "federal open market committee",
+    "nfp": "nonfarm payrolls",
     "eod": "end of day",
     "eoy": "end of year",
     "eom": "end of month",
@@ -75,13 +81,39 @@ _ABBREVIATIONS: dict[str, str] = {
     "q2": "second quarter",
     "q3": "third quarter",
     "q4": "fourth quarter",
+    "super bowl": "superbowl",
+    "nba": "national basketball association",
+    "nfl": "national football league",
+    "mlb": "major league baseball",
+    "ufc": "ultimate fighting championship",
+    "jan": "january",
+    "feb": "february",
+    "mar": "march",
+    "apr": "april",
+    "jun": "june",
+    "jul": "july",
+    "aug": "august",
+    "sep": "september",
+    "oct": "october",
+    "nov": "november",
+    "dec": "december",
 }
 
 _RE_PUNCTUATION = re.compile(f"[{re.escape(string.punctuation)}]")
 _RE_MULTI_SPACE = re.compile(r"\s+")
 
 # Minimum Jaccard similarity to consider two markets as matching
-_MATCH_THRESHOLD = 0.45
+_MATCH_THRESHOLD = 0.35
+
+# Common stop words that inflate the union and dilute Jaccard scores.
+# These add no discriminative value when matching market questions.
+_STOP_WORDS = frozenset({
+    "will", "the", "be", "in", "by", "on", "of", "to", "at", "is",
+    "it", "an", "or", "if", "as", "do", "no", "so", "up", "has",
+    "for", "not", "its", "was", "are", "did", "can", "than", "from",
+    "this", "that", "what", "which", "who", "how", "does", "have",
+    "been", "above", "below", "before", "after", "between", "during",
+})
 
 
 def _normalize_text(text: str) -> str:
@@ -105,10 +137,16 @@ def _normalize_text(text: str) -> str:
 
 
 def _tokenize(text: str) -> set[str]:
-    """Tokenize normalised text into a set of words for Jaccard similarity."""
+    """Tokenize normalised text into a set of words for Jaccard similarity.
+
+    Removes stop words that inflate the union and dilute discriminative
+    signal. For example, "Will BTC be above $100K by March?" and
+    "Bitcoin above $100,000 March" should match on the meaningful words
+    (bitcoin, 100, march) without "will", "be", "by" hurting the score.
+    """
     normalized = _normalize_text(text)
-    # Filter out very short tokens (articles, etc.) that add noise
-    return {w for w in normalized.split() if len(w) > 1}
+    # Filter out very short tokens and stop words that add noise
+    return {w for w in normalized.split() if len(w) > 1 and w not in _STOP_WORDS}
 
 
 def _jaccard_similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
@@ -240,7 +278,7 @@ class _KalshiMarketCache:
         """
         all_markets: list[Market] = []
         cursor: Optional[str] = None
-        max_pages = 20
+        max_pages = 30
 
         try:
             with httpx.Client(
@@ -484,12 +522,21 @@ class CrossPlatformStrategy(BaseStrategy):
             logger.info("No Kalshi markets available, skipping cross-platform scan")
             return []
 
+        logger.info(
+            "Cross-platform scan starting",
+            kalshi_markets=len(kalshi_markets),
+            polymarket_markets=len(markets),
+        )
+
         # Build token index for Kalshi markets
         kalshi_token_index = self._refresh_kalshi_tokens(kalshi_markets)
 
         opportunities: list[ArbitrageOpportunity] = []
         pairs_checked = 0
         pairs_matched = 0
+        best_unmatched_score = 0.0
+        best_unmatched_pm = ""
+        best_unmatched_k = ""
 
         for pm_market in markets:
             # Skip inactive, closed, or non-binary markets
@@ -528,6 +575,21 @@ class CrossPlatformStrategy(BaseStrategy):
             # Find the best-matching Kalshi market
             match = self._find_best_match(pm_tokens, kalshi_markets, kalshi_token_index)
             if match is None:
+                # Track best near-miss for debugging
+                best_score_for_pm = 0.0
+                best_km_question = ""
+                for km in kalshi_markets:
+                    km_tokens = kalshi_token_index.get(km.id)
+                    if not km_tokens:
+                        continue
+                    score = _jaccard_similarity(pm_tokens, km_tokens)
+                    if score > best_score_for_pm:
+                        best_score_for_pm = score
+                        best_km_question = km.question
+                if best_score_for_pm > best_unmatched_score:
+                    best_unmatched_score = best_score_for_pm
+                    best_unmatched_pm = pm_market.question[:80]
+                    best_unmatched_k = best_km_question[:80]
                 continue
 
             kalshi_market, similarity = match
@@ -618,5 +680,15 @@ class CrossPlatformStrategy(BaseStrategy):
             pairs_matched=pairs_matched,
             opportunities=len(opportunities),
         )
+
+        # Log best near-miss to help debug matching issues
+        if pairs_matched == 0 and best_unmatched_score > 0:
+            logger.info(
+                "Cross-platform best near-miss (no match reached threshold)",
+                best_score=round(best_unmatched_score, 3),
+                threshold=_MATCH_THRESHOLD,
+                polymarket=best_unmatched_pm,
+                kalshi=best_unmatched_k,
+            )
 
         return opportunities

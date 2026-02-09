@@ -189,7 +189,7 @@ class Settings(BaseSettings):
 
     # Entropy Arbitrage
     ENTROPY_ARB_ENABLED: bool = True
-    ENTROPY_ARB_MIN_DEVIATION: float = 0.15
+    ENTROPY_ARB_MIN_DEVIATION: float = 0.25
 
     # Event-Driven Arbitrage
     EVENT_DRIVEN_ENABLED: bool = True
