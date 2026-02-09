@@ -125,9 +125,11 @@ class KalshiClient:
             await self._rate_limit_wait()
             client = await self._get_client()
             url = f"{self.base_url}{path}"
-            response = await client.get(url, params=params, headers=self._auth_headers())
+            response = await client.get(
+                url, params=params, headers=self._auth_headers()
+            )
             if response.status_code == 429 and attempt < max_retries:
-                backoff = 2 ** attempt  # 1s, 2s, 4s, 8s
+                backoff = 2**attempt  # 1s, 2s, 4s, 8s
                 logger.warning(
                     "Kalshi 429 rate limited, retrying",
                     path=path,

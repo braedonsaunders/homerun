@@ -344,11 +344,9 @@ class _KalshiMarketCache:
                     max_retries = 3
                     for attempt in range(max_retries + 1):
                         try:
-                            resp = client.get(
-                                f"{self._api_url}/markets", params=params
-                            )
+                            resp = client.get(f"{self._api_url}/markets", params=params)
                             if resp.status_code == 429 and attempt < max_retries:
-                                backoff = 2 ** attempt  # 1s, 2s, 4s
+                                backoff = 2**attempt  # 1s, 2s, 4s
                                 logger.warning(
                                     "Kalshi markets 429, retrying",
                                     attempt=attempt + 1,
