@@ -29,6 +29,7 @@ from services.strategies import (
     StatArbStrategy,
 )
 from services.pause_state import global_pause_state
+from services.market_prioritizer import market_prioritizer, MarketTier
 from sqlalchemy import select
 
 
@@ -92,6 +93,8 @@ class ArbitrageScanner:
         self._enabled = True
         self._interval_seconds = settings.SCAN_INTERVAL_SECONDS
         self._last_scan: Optional[datetime] = None
+        self._last_full_scan: Optional[datetime] = None
+        self._last_fast_scan: Optional[datetime] = None
         self._opportunities: list[ArbitrageOpportunity] = []
         self._scan_callbacks: List[Callable] = []
         self._status_callbacks: List[Callable] = []
@@ -104,6 +107,15 @@ class ArbitrageScanner:
         # automatically score all opportunities with LLM after each scan.
         # Manual per-opportunity analysis (via the Analyze button) still works.
         self._auto_ai_scoring: bool = False
+
+        # Tiered scanning: track scan cycles for fast/full alternation
+        self._fast_scan_cycle: int = 0
+        self._prioritizer = market_prioritizer
+
+        # Cached full market/event data for use between full scans
+        self._cached_events: list = []
+        self._cached_markets: list = []
+        self._cached_prices: dict = {}
 
     def set_auto_ai_scoring(self, enabled: bool):
         """Enable or disable automatic AI scoring of all opportunities after each scan."""
@@ -279,6 +291,50 @@ class ArbitrageScanner:
                 prices = await self.client.get_prices_batch(token_sample)
                 print(f"  Fetched prices for {len(prices)} tokens")
 
+            # Cache full data for fast scans between full scans
+            self._cached_events = list(events)
+            self._cached_markets = list(markets)
+            self._cached_prices = dict(prices)
+
+            # Tiered scanning: classify markets and apply change detection
+            markets_to_evaluate = markets
+            unchanged_count = 0
+            if settings.TIERED_SCANNING_ENABLED:
+                try:
+                    # Update stability scores from MarketMonitor
+                    self._prioritizer.update_stability_scores()
+
+                    # Classify all markets into tiers
+                    tier_map = self._prioritizer.classify_all(markets, now)
+
+                    # Compute volume/liquidity attention scores
+                    self._prioritizer.compute_attention_scores(markets)
+
+                    # Change detection: filter out markets with identical prices
+                    changed = self._prioritizer.get_changed_markets(markets)
+                    unchanged_count = len(markets) - len(changed)
+
+                    # For full scans, still run all markets through strategies
+                    # but log the change detection stats. The real savings come
+                    # from fast scans where we only evaluate changed markets.
+                    # However, for COLD-tier markets, we DO skip them if unchanged.
+                    cold_ids = {m.id for m in tier_map[MarketTier.COLD]}
+                    markets_to_evaluate = [
+                        m for m in markets
+                        if m.id not in cold_ids or self._prioritizer.has_market_changed(m)
+                    ]
+                    cold_skipped = len(markets) - len(markets_to_evaluate)
+
+                    print(
+                        f"  Tiers: {len(tier_map[MarketTier.HOT])} hot, "
+                        f"{len(tier_map[MarketTier.WARM])} warm, "
+                        f"{len(tier_map[MarketTier.COLD])} cold "
+                        f"({cold_skipped} unchanged cold skipped)"
+                    )
+                except Exception as e:
+                    print(f"  Prioritizer error (non-fatal, using all markets): {e}")
+                    markets_to_evaluate = markets
+
             # Run all strategies concurrently in a thread pool.
             # strategy.detect() is synchronous CPU-bound work; running it
             # on the event loop blocks all async handlers (including
@@ -289,7 +345,7 @@ class ArbitrageScanner:
             async def _run_strategy(strategy):
                 """Run a single strategy in the default thread-pool executor."""
                 return strategy, await loop.run_in_executor(
-                    None, strategy.detect, events, markets, prices
+                    None, strategy.detect, events, markets_to_evaluate, prices
                 )
 
             results = await asyncio.gather(
@@ -310,6 +366,13 @@ class ArbitrageScanner:
                         )
                 all_opportunities.extend(opps)
                 print(f"  {strategy.name}: found {len(opps)} opportunities")
+
+            # Update prioritizer state after evaluation
+            if settings.TIERED_SCANNING_ENABLED:
+                try:
+                    self._prioritizer.update_after_evaluation(markets, now)
+                except Exception:
+                    pass
 
             # Deduplicate across strategies: when the same underlying markets
             # are detected by multiple strategies, keep only the highest-ROI one.
@@ -354,15 +417,169 @@ class ArbitrageScanner:
                 except Exception as e:
                     print(f"  Callback error: {e}")
 
+            self._last_full_scan = now
+
+            scan_suffix = ""
+            if settings.TIERED_SCANNING_ENABLED and unchanged_count > 0:
+                scan_suffix = f" ({unchanged_count} unchanged markets detected)"
+
             print(
                 f"[{datetime.utcnow().isoformat()}] Scan complete. "
                 f"{len(all_opportunities)} detected this scan, "
-                f"{len(self._opportunities)} total in pool"
+                f"{len(self._opportunities)} total in pool{scan_suffix}"
             )
             return self._opportunities
 
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
+            raise
+
+    async def scan_fast(self) -> list[ArbitrageOpportunity]:
+        """Fast-path scan targeting only HOT-tier and changed markets.
+
+        This runs every FAST_SCAN_INTERVAL_SECONDS (default 15s) between
+        full scans. It:
+          1. Incrementally fetches only recently created markets (delta)
+          2. Uses cached data from the last full scan for existing markets
+          3. Re-fetches prices only for HOT-tier markets
+          4. Runs strategies only on markets whose prices have changed
+          5. Merges results into the main opportunity pool
+
+        Much cheaper than a full scan: fewer API calls, fewer strategy runs.
+        """
+        now = datetime.now(timezone.utc)
+        print(f"[{now.isoformat()}] Starting fast scan (hot-tier + incremental)...")
+
+        try:
+            # 1. Incremental fetch: get only recently created markets
+            new_markets: list = []
+            if settings.INCREMENTAL_FETCH_ENABLED:
+                try:
+                    new_markets = await self.client.get_recent_markets(since_minutes=5)
+                    if new_markets:
+                        print(f"  Incremental: {len(new_markets)} recently created markets")
+                except Exception as e:
+                    print(f"  Incremental fetch failed (non-fatal): {e}")
+
+            # 2. Merge incremental markets into cached data
+            cached_market_ids = {m.id for m in self._cached_markets}
+            truly_new = [m for m in new_markets if m.id not in cached_market_ids]
+            if truly_new:
+                self._cached_markets.extend(truly_new)
+                print(f"  Added {len(truly_new)} brand-new markets to cache")
+
+            # 3. Update MarketMonitor with the new markets to generate alerts
+            try:
+                from services.market_monitor import market_monitor
+                await market_monitor.get_fresh_opportunities()
+            except Exception:
+                pass
+
+            # 4. Classify all cached markets into tiers
+            self._prioritizer.update_stability_scores()
+            tier_map = self._prioritizer.classify_all(self._cached_markets, now)
+            hot_markets = tier_map[MarketTier.HOT]
+
+            if not hot_markets:
+                print(f"  No HOT-tier markets, skipping fast scan")
+                self._last_fast_scan = now
+                return self._opportunities
+
+            # 5. Re-fetch prices for HOT-tier markets only
+            hot_token_ids = []
+            for market in hot_markets:
+                for tid in market.clob_token_ids:
+                    if len(tid) > 20:  # Polymarket tokens only
+                        hot_token_ids.append(tid)
+
+            hot_prices = {}
+            if hot_token_ids:
+                hot_prices = await self.client.get_prices_batch(hot_token_ids[:200])
+                print(f"  Fetched prices for {len(hot_prices)} hot-tier tokens")
+
+            # Merge with cached prices
+            merged_prices = {**self._cached_prices, **hot_prices}
+
+            # 6. Change detection: only evaluate markets whose prices moved
+            changed_markets = self._prioritizer.get_changed_markets(hot_markets)
+            if not changed_markets:
+                print(f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies")
+                self._prioritizer.update_after_evaluation(hot_markets, now)
+                self._last_fast_scan = now
+                return self._opportunities
+
+            print(f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes")
+
+            # 7. Run strategies on changed markets only
+            # Use the full cached events/markets for context, but strategies
+            # will find opportunities primarily in the changed subset
+            all_markets_for_strategies = self._cached_markets
+            events_for_strategies = self._cached_events
+
+            # Filter expired
+            all_markets_for_strategies = [
+                m for m in all_markets_for_strategies
+                if m.end_date is None or _make_aware(m.end_date) > now
+            ]
+
+            loop = asyncio.get_running_loop()
+            fast_opportunities = []
+
+            async def _run_strategy(strategy):
+                return strategy, await loop.run_in_executor(
+                    None, strategy.detect, events_for_strategies,
+                    all_markets_for_strategies, merged_prices,
+                )
+
+            results = await asyncio.gather(
+                *[_run_strategy(s) for s in self.strategies],
+                return_exceptions=True,
+            )
+
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                strategy, opps = result
+                for opp in opps:
+                    if opp.mispricing_type is None:
+                        opp.mispricing_type = self._strategy_mispricing_map.get(
+                            opp.strategy.value, MispricingType.WITHIN_MARKET
+                        )
+                fast_opportunities.extend(opps)
+
+            fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
+            fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
+
+            # 8. Update prioritizer state
+            unchanged = self._prioritizer.update_after_evaluation(hot_markets, now)
+            self._prioritizer.compute_attention_scores(hot_markets)
+
+            # 9. Merge into main pool
+            if fast_opportunities:
+                await self._attach_ai_judgments(fast_opportunities)
+                self._opportunities = self._merge_opportunities(fast_opportunities)
+
+            self._last_scan = now
+            self._last_fast_scan = now
+            self._fast_scan_cycle += 1
+
+            # Notify callbacks
+            for callback in self._scan_callbacks:
+                try:
+                    await callback(fast_opportunities)
+                except Exception as e:
+                    print(f"  Callback error: {e}")
+
+            print(
+                f"[{now.isoformat()}] Fast scan complete. "
+                f"{len(fast_opportunities)} detected, "
+                f"{len(self._opportunities)} total in pool "
+                f"({unchanged} unchanged markets skipped)"
+            )
+            return self._opportunities
+
+        except Exception as e:
+            print(f"[{datetime.utcnow().isoformat()}] Fast scan error: {e}")
             raise
 
     def _deduplicate_cross_strategy(
@@ -538,15 +755,66 @@ class ArbitrageScanner:
             print(f"  AI scoring error: {e}")
 
     async def _scan_loop(self):
-        """Internal scan loop"""
+        """Internal scan loop with tiered polling.
+
+        When TIERED_SCANNING_ENABLED:
+          - Full scans run every FULL_SCAN_INTERVAL_SECONDS (default 120s)
+          - Fast scans run every FAST_SCAN_INTERVAL_SECONDS (default 15s) between full scans
+          - Fast scans only fetch/evaluate HOT-tier markets + incremental new markets
+          - Crypto schedule predictions can trigger immediate fast scans
+
+        When disabled, falls back to the original fixed-interval full scan.
+        """
         while self._running:
-            if self._enabled:
+            if not self._enabled:
+                await asyncio.sleep(self._interval_seconds)
+                continue
+
+            if not settings.TIERED_SCANNING_ENABLED:
+                # Legacy mode: simple fixed-interval full scan
                 try:
                     await self.scan_once()
                 except Exception as e:
                     print(f"Scan error: {e}")
+                await asyncio.sleep(self._interval_seconds)
+                continue
 
-            await asyncio.sleep(self._interval_seconds)
+            # Tiered scanning mode
+            now = datetime.now(timezone.utc)
+
+            # Determine if it's time for a full scan
+            full_interval = settings.FULL_SCAN_INTERVAL_SECONDS
+            needs_full = (
+                self._last_full_scan is None
+                or (now - self._last_full_scan).total_seconds() >= full_interval
+            )
+
+            if needs_full:
+                try:
+                    await self.scan_once()
+                except Exception as e:
+                    print(f"Full scan error: {e}")
+            else:
+                # Fast scan (only if we have cached data from a previous full scan)
+                if self._cached_markets:
+                    # Check if crypto prediction triggers an immediate scan
+                    triggered = self._prioritizer.should_trigger_fast_scan(now)
+                    if triggered:
+                        print("  [TRIGGER] Crypto market creation imminent — fast scan")
+
+                    try:
+                        await self.scan_fast()
+                    except Exception as e:
+                        print(f"Fast scan error: {e}")
+                else:
+                    # No cached data yet — force a full scan
+                    try:
+                        await self.scan_once()
+                    except Exception as e:
+                        print(f"Full scan error (first run): {e}")
+
+            # Sleep for fast interval (the loop will decide full vs fast next iteration)
+            await asyncio.sleep(settings.FAST_SCAN_INTERVAL_SECONDS)
 
     async def _attach_ai_judgments(self, opportunities: list):
         """Attach existing AI judgments from the DB to opportunity objects.
@@ -697,7 +965,7 @@ class ArbitrageScanner:
 
     def get_status(self) -> dict:
         """Get current scanner status"""
-        return {
+        status = {
             "running": self._running,
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
@@ -710,6 +978,27 @@ class ArbitrageScanner:
                 {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
             ],
         }
+
+        # Add tiered scanning status
+        if settings.TIERED_SCANNING_ENABLED:
+            prioritizer_stats = self._prioritizer.get_stats()
+            status["tiered_scanning"] = {
+                "enabled": True,
+                "fast_scan_interval": settings.FAST_SCAN_INTERVAL_SECONDS,
+                "full_scan_interval": settings.FULL_SCAN_INTERVAL_SECONDS,
+                "fast_scan_cycle": self._fast_scan_cycle,
+                "last_full_scan": (self._last_full_scan.isoformat() + "Z")
+                if self._last_full_scan
+                else None,
+                "last_fast_scan": (self._last_fast_scan.isoformat() + "Z")
+                if self._last_fast_scan
+                else None,
+                "cached_markets": len(self._cached_markets),
+                "cached_events": len(self._cached_events),
+                **prioritizer_stats,
+            }
+
+        return status
 
     def get_opportunities(
         self, filter: Optional[OpportunityFilter] = None

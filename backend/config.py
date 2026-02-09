@@ -182,6 +182,17 @@ class Settings(BaseSettings):
     NEW_MARKET_DETECTION_ENABLED: bool = True  # Enable new market monitoring
     NEW_MARKET_WINDOW_SECONDS: int = 300  # Markets seen within this = "new"
 
+    # Tiered Scanning (smart market prioritization)
+    TIERED_SCANNING_ENABLED: bool = True  # Enable tiered scan loop
+    FAST_SCAN_INTERVAL_SECONDS: int = 15  # Hot-tier poll frequency
+    FULL_SCAN_INTERVAL_SECONDS: int = 120  # Full (baseline) scan frequency
+    HOT_TIER_MAX_AGE_SECONDS: int = 300  # Markets younger than this = HOT
+    WARM_TIER_MAX_AGE_SECONDS: int = 1800  # Markets younger than this = WARM
+    COLD_TIER_UNCHANGED_CYCLES: int = 5  # Consecutive unchanged cycles before COLD
+    THIN_BOOK_LIQUIDITY_THRESHOLD: float = 500.0  # Below this = thin book (HOT signal)
+    CRYPTO_PREDICTION_WINDOW_SECONDS: int = 30  # Pre-position this far before predicted creation
+    INCREMENTAL_FETCH_ENABLED: bool = True  # Use delta fetching for new market detection
+
     # Combinatorial Validation
     COMBINATORIAL_MIN_CONFIDENCE: float = 0.75  # Min LLM confidence for trades
     COMBINATORIAL_HIGH_CONFIDENCE: float = 0.90  # High confidence threshold

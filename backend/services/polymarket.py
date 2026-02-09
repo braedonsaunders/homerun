@@ -187,6 +187,73 @@ class PolymarketClient:
 
         return all_markets
 
+    async def get_recent_markets(
+        self,
+        since_minutes: int = 10,
+        active: bool = True,
+    ) -> list[Market]:
+        """Fetch only recently created/updated markets (incremental delta fetch).
+
+        Instead of fetching all 500 markets, this queries for markets ordered
+        by creation date descending and stops once it hits markets older than
+        `since_minutes`. Much lighter on API quota and lets us detect new
+        markets faster by polling this endpoint more frequently.
+        """
+        all_markets = []
+        offset = 0
+        limit = 50
+        cutoff = datetime.utcnow() - timedelta(minutes=since_minutes)
+
+        while True:
+            try:
+                params = {
+                    "active": str(active).lower(),
+                    "closed": "false",
+                    "limit": limit,
+                    "offset": offset,
+                    "order": "createdAt",
+                    "ascending": "false",
+                }
+                response = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets", params=params
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                if not data:
+                    break
+
+                page_markets = [Market.from_gamma_response(m) for m in data]
+                all_markets.extend(page_markets)
+                offset += limit
+
+                # Check if the oldest market in this page is older than cutoff.
+                # If so, we've gone far enough back in time.
+                oldest_in_page = data[-1]
+                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get("created_at")
+                if created_at_raw:
+                    try:
+                        if isinstance(created_at_raw, str):
+                            created_at = datetime.fromisoformat(
+                                created_at_raw.replace("Z", "+00:00")
+                            ).replace(tzinfo=None)
+                        else:
+                            created_at = datetime.utcfromtimestamp(float(created_at_raw))
+                        if created_at < cutoff:
+                            break
+                    except (ValueError, TypeError, OSError):
+                        pass
+
+                # Safety: don't fetch more than 200 in incremental mode
+                if len(all_markets) >= 200:
+                    break
+
+            except Exception as e:
+                _logger.warning("Incremental market fetch failed", error=str(e))
+                break
+
+        return all_markets
+
     async def get_events(
         self, closed: bool = False, limit: int = 100, offset: int = 0
     ) -> list[Event]:
