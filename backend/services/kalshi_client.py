@@ -43,10 +43,11 @@ class KalshiClient:
         self._auth_member_id: Optional[str] = None
         self._api_key: Optional[str] = None
 
-        # Simple token-bucket rate limiter: 10 requests / second
-        self._rate_limit: float = 10.0  # requests per second
-        self._token_bucket: float = 10.0
-        self._bucket_capacity: float = 10.0
+        # Simple token-bucket rate limiter: 5 requests / second
+        # (conservative to avoid Kalshi 429 responses)
+        self._rate_limit: float = 5.0  # requests per second
+        self._token_bucket: float = 5.0
+        self._bucket_capacity: float = 5.0
         self._last_refill: float = time.monotonic()
         self._rate_lock: asyncio.Lock = asyncio.Lock()
 
@@ -118,11 +119,28 @@ class KalshiClient:
         return headers
 
     async def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        """Perform a rate-limited GET request and return the JSON body."""
-        await self._rate_limit_wait()
-        client = await self._get_client()
-        url = f"{self.base_url}{path}"
-        response = await client.get(url, params=params, headers=self._auth_headers())
+        """Perform a rate-limited GET request with 429 retry and return the JSON body."""
+        max_retries = 4
+        for attempt in range(max_retries + 1):
+            await self._rate_limit_wait()
+            client = await self._get_client()
+            url = f"{self.base_url}{path}"
+            response = await client.get(
+                url, params=params, headers=self._auth_headers()
+            )
+            if response.status_code == 429 and attempt < max_retries:
+                backoff = 2**attempt  # 1s, 2s, 4s, 8s
+                logger.warning(
+                    "Kalshi 429 rate limited, retrying",
+                    path=path,
+                    attempt=attempt + 1,
+                    backoff_seconds=backoff,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            response.raise_for_status()
+            return response.json()
+        # Should not reach here, but satisfy type checker
         response.raise_for_status()
         return response.json()
 

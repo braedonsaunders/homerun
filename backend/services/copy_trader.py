@@ -20,6 +20,7 @@ from models.database import (
 from models.opportunity import ArbitrageOpportunity
 from services.polymarket import polymarket_client
 from services.scanner import scanner
+from services.pause_state import global_pause_state
 from services.depth_analyzer import depth_analyzer
 from services.token_circuit_breaker import token_circuit_breaker
 from utils.logger import get_logger
@@ -1132,21 +1133,22 @@ class CopyTradingService:
     async def _poll_loop(self):
         """Main polling loop for copy trading"""
         while self._running:
-            try:
-                # Get all enabled configs from DB (fresh read each cycle)
-                async with AsyncSessionLocal() as session:
-                    result = await session.execute(
-                        select(CopyTradingConfig).where(CopyTradingConfig.enabled)
-                    )
-                    configs = list(result.scalars().all())
+            if not global_pause_state.is_paused:
+                try:
+                    # Get all enabled configs from DB (fresh read each cycle)
+                    async with AsyncSessionLocal() as session:
+                        result = await session.execute(
+                            select(CopyTradingConfig).where(CopyTradingConfig.enabled)
+                        )
+                        configs = list(result.scalars().all())
 
-                # Process each config concurrently
-                if configs:
-                    tasks = [self._process_config(config) for config in configs]
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    # Process each config concurrently
+                    if configs:
+                        tasks = [self._process_config(config) for config in configs]
+                        await asyncio.gather(*tasks, return_exceptions=True)
 
-            except Exception as e:
-                logger.error("Copy trading poll error", error=str(e))
+                except Exception as e:
+                    logger.error("Copy trading poll error", error=str(e))
 
             await asyncio.sleep(self._poll_interval)
 
@@ -1155,6 +1157,8 @@ class CopyTradingService:
     async def _on_realtime_trade(self, event):
         """Callback for real-time WebSocket wallet trade events.
         Triggers immediate copy processing for the source wallet."""
+        if global_pause_state.is_paused:
+            return
         try:
             wallet_address = event.wallet_address.lower()
             # Find configs that track this wallet

@@ -29,6 +29,7 @@ from services.strategies import (
     StatArbStrategy,
 )
 from models.opportunity import MispricingType
+from services.pause_state import global_pause_state
 from sqlalchemy import select
 
 
@@ -134,6 +135,11 @@ class ArbitrageScanner:
                 if settings_row:
                     self._enabled = settings_row.is_enabled
                     self._interval_seconds = settings_row.scan_interval_seconds
+                    # Sync global pause state with persisted setting
+                    if self._enabled:
+                        global_pause_state.resume()
+                    else:
+                        global_pause_state.pause()
                     print(
                         f"Loaded scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s"
                     )
@@ -542,8 +548,9 @@ class ArbitrageScanner:
         await self._scan_loop()
 
     async def start(self):
-        """Enable scanning"""
+        """Enable scanning and resume all background services"""
         self._enabled = True
+        global_pause_state.resume()
         await self.save_settings()
         await self._notify_status_change()
 
@@ -552,8 +559,9 @@ class ArbitrageScanner:
             await self.scan_once()
 
     async def pause(self):
-        """Pause scanning (keeps loop running but doesn't scan)"""
+        """Pause all background services (scanner, auto trader, copy trader, wallet tracker, discovery, etc.)"""
         self._enabled = False
+        global_pause_state.pause()
         # Cancel any in-flight AI scoring task to stop incurring API costs
         await self._cancel_ai_scoring()
         await self.save_settings()

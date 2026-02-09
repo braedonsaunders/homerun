@@ -316,6 +316,8 @@ class _KalshiMarketCache:
 
         Uses httpx synchronous client.  Resilient: returns an empty list
         on any HTTP or parsing failure so the strategy never crashes.
+        Includes rate limiting (200ms between pages) and 429 retry with
+        exponential backoff.
         """
         all_markets: list[Market] = []
         cursor: Optional[str] = None
@@ -329,26 +331,46 @@ class _KalshiMarketCache:
                     "User-Agent": "homerun-arb-scanner/1.0",
                 },
             ) as client:
-                for _ in range(max_pages):
+                for page in range(max_pages):
                     params: dict = {"limit": 200, "status": "open"}
                     if cursor:
                         params["cursor"] = cursor
 
-                    try:
-                        resp = client.get(f"{self._api_url}/markets", params=params)
-                        resp.raise_for_status()
-                        data = resp.json()
-                    except httpx.HTTPStatusError as exc:
-                        logger.warning(
-                            "Kalshi markets HTTP error",
-                            status=exc.response.status_code,
-                        )
-                        break
-                    except Exception as exc:
-                        logger.warning(
-                            "Kalshi markets request failed",
-                            error=str(exc),
-                        )
+                    # Rate limit: pause between pages to avoid 429
+                    if page > 0:
+                        time.sleep(0.2)
+
+                    data = None
+                    max_retries = 3
+                    for attempt in range(max_retries + 1):
+                        try:
+                            resp = client.get(f"{self._api_url}/markets", params=params)
+                            if resp.status_code == 429 and attempt < max_retries:
+                                backoff = 2**attempt  # 1s, 2s, 4s
+                                logger.warning(
+                                    "Kalshi markets 429, retrying",
+                                    attempt=attempt + 1,
+                                    backoff_seconds=backoff,
+                                )
+                                time.sleep(backoff)
+                                continue
+                            resp.raise_for_status()
+                            data = resp.json()
+                            break
+                        except httpx.HTTPStatusError as exc:
+                            logger.warning(
+                                "Kalshi markets HTTP error",
+                                status=exc.response.status_code,
+                            )
+                            break
+                        except Exception as exc:
+                            logger.warning(
+                                "Kalshi markets request failed",
+                                error=str(exc),
+                            )
+                            break
+
+                    if data is None:
                         break
 
                     raw_markets = data.get("markets", [])
