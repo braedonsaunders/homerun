@@ -94,6 +94,14 @@ pip install -r requirements.txt && uvicorn main:app --port 8000
 cd frontend && npm install && npm run dev
 ```
 
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1
+.\run.ps1
+```
+
+See [WINDOWS.md](WINDOWS.md) for full Windows instructions.
+
 </details>
 
 <details>
