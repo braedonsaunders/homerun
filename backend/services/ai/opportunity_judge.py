@@ -658,7 +658,9 @@ class OpportunityJudge:
                         except (ValueError, TypeError):
                             sections.append(f"  - Liquidity: {liquidity}")
                 except Exception as exc:
-                    sections.append(f"\n**Market {i + 1}:** (error reading market data: {exc})")
+                    sections.append(
+                        f"\n**Market {i + 1}:** (error reading market data: {exc})"
+                    )
 
         # Event context
         if opportunity.event_title:

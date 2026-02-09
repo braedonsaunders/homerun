@@ -291,6 +291,7 @@ class StatArbStrategy(BaseStrategy):
         # upstream but double-check)
         if market.end_date:
             from .base import make_aware
+
             end_aware = make_aware(market.end_date)
             if end_aware < now:
                 return True
