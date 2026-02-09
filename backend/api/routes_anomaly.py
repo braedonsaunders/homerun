@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel, field_validator
@@ -7,6 +9,36 @@ from services.polymarket import polymarket_client
 from utils.validation import validate_eth_address
 
 anomaly_router = APIRouter()
+
+
+def _normalize_timestamp(trade: dict) -> str:
+    """Normalize trade timestamps to ISO format, handling Unix seconds, ms, and strings."""
+    ts = (
+        trade.get("match_time")
+        or trade.get("timestamp")
+        or trade.get("time")
+        or trade.get("created_at")
+        or trade.get("createdAt")
+    )
+    if not ts:
+        return ""
+    try:
+        if isinstance(ts, (int, float)):
+            # Unix timestamps < 1e12 are in seconds; >= 1e12 are milliseconds
+            if ts > 1e12:
+                ts = ts / 1000
+            return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+        if isinstance(ts, str):
+            if "T" in ts or "-" in ts:
+                return ts
+            # Numeric string
+            numeric = float(ts)
+            if numeric > 1e12:
+                numeric = numeric / 1000
+            return datetime.utcfromtimestamp(numeric).isoformat() + "Z"
+    except (ValueError, TypeError, OSError):
+        pass
+    return ""
 
 
 class AnalyzeWalletRequest(BaseModel):
@@ -258,7 +290,7 @@ async def get_wallet_trades(
                 "size": size,
                 "price": price,
                 "cost": cost,
-                "timestamp": trade.get("timestamp", trade.get("created_at", "")),
+                "timestamp": _normalize_timestamp(trade),
                 "transaction_hash": trade.get(
                     "transactionHash", trade.get("transaction_hash", "")
                 ),

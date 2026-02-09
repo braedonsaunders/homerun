@@ -992,7 +992,7 @@ function PnlDisplay({ value }: { value: number }) {
 }
 
 function RecommendationBadge({ recommendation }: { recommendation: string }) {
-  const colorClass = RECOMMENDATION_COLORS[recommendation] || 'bg-gray-500/15 text-gray-400 border-gray-500/20'
+  const colorClass = RECOMMENDATION_COLORS[recommendation] || 'bg-muted-foreground/15 text-muted-foreground border-muted-foreground/20'
   const label = RECOMMENDATION_LABELS[recommendation] || recommendation
   return (
     <Badge variant="outline" className={cn('text-[10px] font-semibold', colorClass)}>
@@ -1027,7 +1027,7 @@ function LeaderboardRow({
         <span className={cn(
           'flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold',
           rankDisplay === 1 ? 'bg-yellow-500/20 text-yellow-400' :
-          rankDisplay === 2 ? 'bg-gray-300/20 text-gray-300' :
+          rankDisplay === 2 ? 'bg-muted-foreground/20 text-muted-foreground' :
           rankDisplay === 3 ? 'bg-amber-600/20 text-amber-500' :
           'bg-muted text-muted-foreground'
         )}>
@@ -1205,7 +1205,7 @@ function ConfluenceCard({
   const [searchingOpportunity, setSearchingOpportunity] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const strengthPercent = Math.round(signal.strength * 100)
-  const signalColor = SIGNAL_TYPE_COLORS[signal.signal_type] || 'bg-gray-500/15 text-gray-400 border-gray-500/20'
+  const signalColor = SIGNAL_TYPE_COLORS[signal.signal_type] || 'bg-muted-foreground/15 text-muted-foreground border-muted-foreground/20'
 
   const strengthBarColor =
     strengthPercent >= 80 ? 'bg-green-500' :
@@ -1249,7 +1249,7 @@ function ConfluenceCard({
                 {signal.signal_type.replace(/_/g, ' ')}
               </Badge>
               {!signal.is_active && (
-                <Badge variant="outline" className="text-[10px] bg-gray-500/10 text-gray-400 border-gray-500/20">
+                <Badge variant="outline" className="text-[10px] bg-muted-foreground/10 text-muted-foreground border-muted-foreground/20">
                   Inactive
                 </Badge>
               )}

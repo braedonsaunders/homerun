@@ -149,8 +149,8 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
             <Zap className="w-5 h-5 text-orange-500" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">Recent Wallet Trades</h2>
-            <p className="text-sm text-gray-500">
+            <h2 className="text-lg font-semibold text-foreground">Recent Wallet Trades</h2>
+            <p className="text-sm text-muted-foreground/70">
               Live feed from {data?.tracked_wallets || 0} tracked wallets
             </p>
           </div>
@@ -160,7 +160,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           disabled={isRefetching}
           className={cn(
             "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm",
-            "bg-muted text-gray-300 hover:bg-gray-700 transition-colors",
+            "bg-muted text-foreground/80 hover:bg-accent transition-colors",
             isRefetching && "opacity-50"
           )}
         >
@@ -171,9 +171,9 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
 
       {/* Filters */}
       <div className="flex items-center gap-4 p-3 bg-card rounded-lg border border-border">
-        <Filter className="w-4 h-4 text-gray-500" />
+        <Filter className="w-4 h-4 text-muted-foreground/70" />
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500">Time:</span>
+          <span className="text-sm text-muted-foreground/70">Time:</span>
           <select
             value={hoursFilter}
             onChange={(e) => setHoursFilter(Number(e.target.value))}
@@ -187,7 +187,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           </select>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500">Side:</span>
+          <span className="text-sm text-muted-foreground/70">Side:</span>
           <select
             value={sideFilter}
             onChange={(e) => setSideFilter(e.target.value as 'all' | 'BUY' | 'SELL')}
@@ -199,7 +199,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           </select>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500">Show:</span>
+          <span className="text-sm text-muted-foreground/70">Show:</span>
           <select
             value={tradeLimit}
             onChange={(e) => setTradeLimit(Number(e.target.value))}
@@ -217,12 +217,12 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
       {filteredTrades.length > 0 && (
         <div className="grid grid-cols-4 gap-3">
           <div className="bg-card border border-border rounded-lg p-3">
-            <p className="text-xs text-gray-500">Total Trades</p>
-            <p className="text-lg font-semibold text-white">{filteredTrades.length}</p>
+            <p className="text-xs text-muted-foreground/70">Total Trades</p>
+            <p className="text-lg font-semibold text-foreground">{filteredTrades.length}</p>
           </div>
           <div className="bg-card border border-border rounded-lg p-3">
-            <p className="text-xs text-gray-500">Volume</p>
-            <p className="text-lg font-semibold text-white">{formatCurrency(totalVolume)}</p>
+            <p className="text-xs text-muted-foreground/70">Volume</p>
+            <p className="text-lg font-semibold text-foreground">{formatCurrency(totalVolume)}</p>
           </div>
           <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-green-500">Buys</p>
@@ -238,13 +238,13 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
       {/* Trades List */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-gray-500" />
+          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground/70" />
         </div>
       ) : filteredTrades.length === 0 ? (
         <div className="text-center py-12 bg-card rounded-lg border border-border">
-          <AlertCircle className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-          <p className="text-gray-400">No recent trades found</p>
-          <p className="text-sm text-gray-600 mt-1">
+          <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+          <p className="text-muted-foreground">No recent trades found</p>
+          <p className="text-sm text-muted-foreground/50 mt-1">
             {data?.tracked_wallets === 0
               ? 'Start tracking wallets to see their trades here'
               : 'Try expanding the time window or changing filters'}
@@ -302,7 +302,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           </span>
                         )}
 
-                        <span className="flex items-center gap-1 text-xs text-gray-500 ml-auto flex-shrink-0">
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground/70 ml-auto flex-shrink-0">
                           <Clock className="w-3 h-3" />
                           {formatTimestamp(trade)}
                         </span>
@@ -311,7 +311,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                       {/* Market name */}
                       <h3 className={cn(
                         "font-medium text-sm truncate",
-                        hasRealMarketName ? "text-white" : "text-gray-500"
+                        hasRealMarketName ? "text-foreground" : "text-muted-foreground/70"
                       )}>
                         {hasRealMarketName ? marketName : (
                           isConditionId(marketName) ? `Market ${marketName.slice(0, 10)}...` : marketName
@@ -320,7 +320,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
 
                       {/* Wallet */}
                       <div className="flex items-center gap-2 mt-1">
-                        <Wallet className="w-3 h-3 text-gray-600" />
+                        <Wallet className="w-3 h-3 text-muted-foreground/50" />
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
@@ -331,7 +331,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           {trade.wallet_username || trade.wallet_label}
                         </button>
                         {trade.wallet_username && trade.wallet_username !== trade.wallet_label && (
-                          <span className="text-xs text-gray-600 font-mono">
+                          <span className="text-xs text-muted-foreground/50 font-mono">
                             {trade.wallet_address.slice(0, 6)}...{trade.wallet_address.slice(-4)}
                           </span>
                         )}
@@ -341,7 +341,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                     {/* Price info */}
                     <div className="flex-shrink-0 text-right">
                       <div className="flex items-center gap-1 justify-end">
-                        <span className="text-xs text-gray-500">@</span>
+                        <span className="text-xs text-muted-foreground/70">@</span>
                         <span className={cn(
                           "text-sm font-semibold",
                           isBuy ? "text-green-400" : "text-red-400"
@@ -349,10 +349,10 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           {((trade.price ?? 0) * 100).toFixed(1)}c
                         </span>
                       </div>
-                      <p className="text-xs text-gray-400">
+                      <p className="text-xs text-muted-foreground">
                         {(trade.size ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} shares
                       </p>
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-muted-foreground/70">
                         <DollarSign className="w-3 h-3 inline" />
                         {cost.toFixed(2)}
                       </p>
@@ -361,9 +361,9 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                     {/* Expand Icon */}
                     <div className="flex-shrink-0 self-center">
                       {isExpanded ? (
-                        <ChevronUp className="w-4 h-4 text-gray-600" />
+                        <ChevronUp className="w-4 h-4 text-muted-foreground/50" />
                       ) : (
-                        <ChevronDown className="w-4 h-4 text-gray-600" />
+                        <ChevronDown className="w-4 h-4 text-muted-foreground/50" />
                       )}
                     </div>
                   </div>
@@ -374,26 +374,26 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                   <div className="border-t border-border p-4 bg-background">
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                       <div>
-                        <p className="text-gray-500 text-xs">Price</p>
-                        <p className="font-mono text-white">
+                        <p className="text-muted-foreground/70 text-xs">Price</p>
+                        <p className="font-mono text-foreground">
                           ${(trade.price ?? 0).toFixed(4)}
-                          <span className="text-gray-500 ml-1">
+                          <span className="text-muted-foreground/70 ml-1">
                             ({((trade.price ?? 0) * 100).toFixed(1)}c)
                           </span>
                         </p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs">Shares</p>
-                        <p className="font-mono text-white">
+                        <p className="text-muted-foreground/70 text-xs">Shares</p>
+                        <p className="font-mono text-foreground">
                           {(trade.size ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                         </p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs">Total Cost</p>
-                        <p className="font-mono text-white">${cost.toFixed(2)}</p>
+                        <p className="text-muted-foreground/70 text-xs">Total Cost</p>
+                        <p className="font-mono text-foreground">${cost.toFixed(2)}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs">Outcome</p>
+                        <p className="text-muted-foreground/70 text-xs">Outcome</p>
                         <p className={cn(
                           "font-medium",
                           trade.outcome === 'Yes' ? 'text-green-400' : 'text-red-400'
@@ -402,19 +402,19 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                         </p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs">Time</p>
-                        <p className="font-mono text-gray-300 text-xs">{formatFullTimestamp(trade)}</p>
+                        <p className="text-muted-foreground/70 text-xs">Time</p>
+                        <p className="font-mono text-foreground/80 text-xs">{formatFullTimestamp(trade)}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs">Wallet</p>
-                        <p className="font-mono text-gray-300 text-xs">
+                        <p className="text-muted-foreground/70 text-xs">Wallet</p>
+                        <p className="font-mono text-foreground/80 text-xs">
                           {trade.wallet_address.slice(0, 6)}...{trade.wallet_address.slice(-4)}
                         </p>
                       </div>
                       {trade.market && isConditionId(trade.market) && (
                         <div className="col-span-2">
-                          <p className="text-gray-500 text-xs">Condition ID</p>
-                          <p className="font-mono text-gray-400 text-xs truncate">{trade.market}</p>
+                          <p className="text-muted-foreground/70 text-xs">Condition ID</p>
+                          <p className="font-mono text-muted-foreground text-xs truncate">{trade.market}</p>
                         </div>
                       )}
                     </div>
@@ -437,7 +437,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground/80"
                         >
                           <ExternalLink className="w-3 h-3" />
                           Transaction
@@ -448,7 +448,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           href={`https://polygonscan.com/address/${trade.wallet_address}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground/80"
                         >
                           <Hash className="w-3 h-3" />
                           Wallet

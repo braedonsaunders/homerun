@@ -573,7 +573,7 @@ export default function SimulationPanel() {
                       }}
                       className={cn(
                         "px-2 py-1 h-auto rounded text-xs",
-                        tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-gray-800"
+                        tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-muted"
                       )}
                     >
                       {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -656,7 +656,7 @@ export default function SimulationPanel() {
                   opportunities.slice(0, 10).map((opp) => (
                     <div
                       key={opp.id}
-                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-[#222] transition-colors"
+                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-accent transition-colors"
                     >
                       <div className="flex-1">
                         <p className="text-sm font-medium line-clamp-1">{opp.title}</p>
@@ -697,7 +697,7 @@ export default function SimulationPanel() {
 
       {/* Delete Confirmation Modal */}
       {accountToDelete && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
           <Card className="bg-muted border-border shadow-none p-6 max-w-md mx-4">
             <h3 className="text-lg font-medium mb-2">Delete Account</h3>
             <p className="text-muted-foreground mb-4">
@@ -795,7 +795,7 @@ function AccountCard({
           <span>{account.total_trades ?? 0} trades</span>
           <span>{account.open_positions ?? 0} open</span>
         </div>
-        <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
             className={cn("h-full rounded-full transition-all", account.roi_percent >= 0 ? "bg-green-500" : "bg-red-500")}
             style={{ width: `${Math.min(Math.max(50 + account.roi_percent / 2, 5), 100)}%` }}
