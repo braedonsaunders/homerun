@@ -76,13 +76,21 @@ _SLUG_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Strategy selector thresholds
-_PURE_ARB_MAX_COMBINED = 0.98  # Use pure arb when YES+NO < this
-_DUMP_HEDGE_DROP_PCT = 0.05  # Minimum drop to trigger dump-hedge
+# Strategy selector thresholds — read from config (persisted in DB via Settings UI)
+from config import settings as _cfg
+
+def _pure_arb_max_combined():
+    return _cfg.BTC_ETH_HF_PURE_ARB_MAX_COMBINED
+
+def _dump_hedge_drop_pct():
+    return _cfg.BTC_ETH_HF_DUMP_THRESHOLD
+
+def _thin_liquidity_usd():
+    return _cfg.BTC_ETH_HF_THIN_LIQUIDITY_USD
+
 _DUMP_HEDGE_MAX_COMBINED = 0.97  # Combined cost target after dump-hedge
 _LIMIT_ORDER_TARGET_LOW = 0.45  # Lower limit order price
 _LIMIT_ORDER_TARGET_HIGH = 0.47  # Upper limit order price
-_THIN_LIQUIDITY_USD = 500.0  # Liquidity below which book is "thin"
 
 # Price history defaults
 _DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
@@ -467,11 +475,11 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 reason=f"No spread after fees (combined={combined:.4f}, fee={fee_cost:.4f})",
             )
 
-        if combined >= _PURE_ARB_MAX_COMBINED:
+        if combined >= _pure_arb_max_combined():
             return SubStrategyScore(
                 strategy=SubStrategy.PURE_ARB,
                 score=0.0,
-                reason=f"Combined cost {combined:.4f} >= {_PURE_ARB_MAX_COMBINED} threshold",
+                reason=f"Combined cost {combined:.4f} >= {_pure_arb_max_combined()} threshold",
             )
 
         # Base score proportional to net profit (scale: 1 cent = 10 points)
@@ -527,13 +535,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         max_drop = max(yes_drop, no_drop)
         dumped_side = "YES" if yes_drop >= no_drop else "NO"
 
-        if max_drop < _DUMP_HEDGE_DROP_PCT:
+        if max_drop < _dump_hedge_drop_pct():
             return SubStrategyScore(
                 strategy=SubStrategy.DUMP_HEDGE,
                 score=0.0,
                 reason=(
                     f"Insufficient dump: max drop {max_drop:.4f} "
-                    f"< {_DUMP_HEDGE_DROP_PCT} threshold"
+                    f"< {_dump_hedge_drop_pct()} threshold"
                 ),
             )
 
@@ -597,13 +605,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         liquidity = c.market.liquidity
 
         # This sub-strategy targets thin/new markets
-        if liquidity > _THIN_LIQUIDITY_USD:
+        if liquidity > _thin_liquidity_usd():
             return SubStrategyScore(
                 strategy=SubStrategy.PRE_PLACED_LIMITS,
                 score=0.0,
                 reason=(
                     f"Market too liquid (${liquidity:.0f}) for pre-placed limits "
-                    f"(threshold=${_THIN_LIQUIDITY_USD:.0f})"
+                    f"(threshold=${_thin_liquidity_usd():.0f})"
                 ),
             )
 

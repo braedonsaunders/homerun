@@ -548,6 +548,47 @@ class AppSettings(Base):
     max_open_positions = Column(Integer, default=10)
     max_slippage_percent = Column(Float, default=2.0)
 
+    # Opportunity Search Filters (hard rejection thresholds)
+    min_liquidity_hard = Column(Float, default=200.0)
+    min_position_size = Column(Float, default=25.0)
+    min_absolute_profit = Column(Float, default=5.0)
+    min_annualized_roi = Column(Float, default=10.0)
+    max_resolution_months = Column(Integer, default=18)
+    max_plausible_roi = Column(Float, default=30.0)
+    max_trade_legs = Column(Integer, default=8)
+
+    # NegRisk Exhaustivity Thresholds
+    negrisk_min_total_yes = Column(Float, default=0.95)
+    negrisk_warn_total_yes = Column(Float, default=0.97)
+    negrisk_election_min_total_yes = Column(Float, default=0.97)
+    negrisk_max_resolution_spread_days = Column(Integer, default=7)
+
+    # Settlement Lag
+    settlement_lag_max_days_to_resolution = Column(Integer, default=14)
+    settlement_lag_near_zero = Column(Float, default=0.05)
+    settlement_lag_near_one = Column(Float, default=0.95)
+    settlement_lag_min_sum_deviation = Column(Float, default=0.03)
+
+    # Risk Scoring Thresholds
+    risk_very_short_days = Column(Integer, default=2)
+    risk_short_days = Column(Integer, default=7)
+    risk_long_lockup_days = Column(Integer, default=180)
+    risk_extended_lockup_days = Column(Integer, default=90)
+    risk_low_liquidity = Column(Float, default=1000.0)
+    risk_moderate_liquidity = Column(Float, default=5000.0)
+    risk_complex_legs = Column(Integer, default=5)
+    risk_multiple_legs = Column(Integer, default=3)
+
+    # BTC/ETH High-Frequency Strategy
+    btc_eth_pure_arb_max_combined = Column(Float, default=0.98)
+    btc_eth_dump_hedge_drop_pct = Column(Float, default=0.05)
+    btc_eth_thin_liquidity_usd = Column(Float, default=500.0)
+
+    # Miracle Strategy
+    miracle_min_no_price = Column(Float, default=0.90)
+    miracle_max_no_price = Column(Float, default=0.995)
+    miracle_min_impossibility_score = Column(Float, default=0.70)
+
     # Database Maintenance
     auto_cleanup_enabled = Column(Boolean, default=False)
     cleanup_interval_hours = Column(Integer, default=24)
