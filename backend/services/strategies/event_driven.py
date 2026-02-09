@@ -294,6 +294,18 @@ class EventDrivenStrategy(BaseStrategy):
                     related[mid] = True
 
         # 2. Keyword overlap with Jaccard ratio check
+        #
+        # IMPORTANT: Parlay/multi-leg markets are excluded from cross-event
+        # keyword matching entirely. Parlays contain many entity names
+        # (player names, team names) that spuriously overlap with other
+        # parlays. A catalyst move in "yes Kon Knueppel: 2+, yes LaMelo
+        # Ball: 1+" does NOT imply anything about "yes LaMelo Ball: 2+,
+        # yes Miles Bridges: 1+" -- they share one player name but are
+        # fundamentally independent bets. Same-event matching (above)
+        # still works for parlays within the same event.
+        if catalyst_is_parlay:
+            return list(related.keys())
+
         for mid in self._price_history:
             if mid == catalyst_id or mid in related:
                 continue
@@ -302,26 +314,21 @@ class EventDrivenStrategy(BaseStrategy):
             if not mid_keywords or not catalyst_keywords:
                 continue
 
-            shared = catalyst_keywords & mid_keywords
-            union = catalyst_keywords | mid_keywords
-            jaccard = len(shared) / len(union) if union else 0.0
-
-            # Determine minimum thresholds based on market type
+            # Skip parlay targets when matching via keywords
             mid_market = self._market_cache.get(mid)
             mid_is_parlay = (
                 self._is_parlay_or_multileg(mid_market.question)
                 if mid_market
                 else False
             )
-            either_is_parlay = catalyst_is_parlay or mid_is_parlay
+            if mid_is_parlay:
+                continue
 
-            min_shared = (
-                _MIN_SHARED_KEYWORDS_PARLAY
-                if either_is_parlay
-                else _MIN_SHARED_KEYWORDS
-            )
+            shared = catalyst_keywords & mid_keywords
+            union = catalyst_keywords | mid_keywords
+            jaccard = len(shared) / len(union) if union else 0.0
 
-            if len(shared) >= min_shared and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO:
+            if len(shared) >= _MIN_SHARED_KEYWORDS and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO:
                 related[mid] = True
 
         return list(related.keys())

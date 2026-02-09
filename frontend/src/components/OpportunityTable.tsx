@@ -71,6 +71,7 @@ function TableRow({
   onOpenCopilot?: (opportunity: Opportunity) => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [aiExpanded, setAiExpanded] = useState(false)
   const queryClient = useQueryClient()
 
   const inlineAnalysis = opportunity.ai_analysis
@@ -282,7 +283,13 @@ function TableRow({
                     <span>M{(judgment.market_efficiency * 100).toFixed(0)}</span>
                   </div>
                   {judgment.reasoning && (
-                    <p className="text-[9px] text-muted-foreground line-clamp-2">{judgment.reasoning}</p>
+                    <p
+                      className={`text-[9px] text-muted-foreground cursor-pointer hover:text-muted-foreground/80 transition-colors ${!aiExpanded ? 'line-clamp-2' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); setAiExpanded(!aiExpanded) }}
+                      title={aiExpanded ? "Click to collapse" : "Click to expand full analysis"}
+                    >
+                      {judgment.reasoning}
+                    </p>
                   )}
                 </div>
               )}

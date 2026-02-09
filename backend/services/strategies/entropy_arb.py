@@ -1,24 +1,31 @@
 """
-Strategy: Entropy Arbitrage - Information-Theoretic Mispricing
+Strategy: Entropy Arbitrage - NegRisk Rebalancing with Entropy Quality
 
-Uses Shannon entropy and KL divergence to detect markets whose
-probability distributions deviate from expected patterns.
+Finds multiway/NegRisk events where the sum of YES prices is less than
+$1.00 (guaranteed profit by buying all outcomes), ranked by information-
+theoretic quality signals.
 
-Key insight: As markets approach resolution, entropy should decrease
-(uncertainty reduces). Markets with anomalously HIGH entropy near
-resolution are mispriced - the market hasn't priced in available
-information yet.
+This is what real prediction market arbitrage bots do. The documented
+$40M+ in Polymarket arbitrage profits came from:
+  1. NegRisk rebalancing (sum of YES < $1.00, buy all): $29M (73%)
+  2. Binary parity (YES + NO < $1.00): $10.6M (27%)
 
-Conversely, markets with anomalously LOW entropy far from resolution
-may be overconfident and vulnerable to mean reversion.
+Entropy analysis is used as a QUALITY SIGNAL to rank opportunities,
+not as a primary detection trigger. Shannon entropy and KL divergence
+measure how anomalous a distribution is, helping distinguish genuine
+mispricings from stale order books.
 
-This has never been implemented in a prediction market bot.
+Previous approach (REMOVED):
+  - Used entropy deviation to recommend buying SINGLE longshot outcomes
+  - This produced directional bets with 100% loss risk, not arbitrage
+  - Every opportunity was correctly rated "STRONG SKIP" by AI analysis
 
-Mathematical foundation:
-- H(X) = -sum(p * log2(p)) for probability distribution
-- For binary market: H = -p*log2(p) - (1-p)*log2(1-p)
-- Maximum entropy at p=0.5 (H=1.0 bit), minimum at p=0/1 (H=0)
-- Expected entropy decay: H(t) ~ H_max * (days_remaining / total_days)^alpha
+Current approach:
+  - Detect multiway events where sum(YES) < $1.00 (structural arbitrage)
+  - Buy ALL outcomes = guaranteed $1.00 payout
+  - Use entropy deviation as ranking/quality signal
+  - Less strict exhaustiveness checks than NegRisk strategy (wider net)
+  - Clear risk labeling for non-exhaustive outcome sets
 """
 
 from __future__ import annotations
@@ -28,34 +35,23 @@ from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy, utcnow, make_aware
+from .base import BaseStrategy, make_aware, utcnow
 
 
 # ---------------------------------------------------------------------------
-# Pure entropy math
+# Pure entropy math (retained for quality scoring)
 # ---------------------------------------------------------------------------
 
 
 def binary_entropy(p: float) -> float:
-    """Shannon entropy of a binary distribution.
-
-    H(X) = -p * log2(p) - (1-p) * log2(1-p)
-
-    Returns a value in [0, 1] bits.
-    Maximum at p=0.5 (H=1.0), minimum at p in {0, 1} (H=0).
-    """
+    """Shannon entropy of a binary distribution in [0, 1] bits."""
     if p <= 0.0 or p >= 1.0:
         return 0.0
     return -(p * math.log2(p) + (1.0 - p) * math.log2(1.0 - p))
 
 
 def multi_outcome_entropy(probs: list[float]) -> float:
-    """Shannon entropy of a discrete distribution with N outcomes.
-
-    H(X) = -sum(p_i * log2(p_i))
-
-    Returns value in [0, log2(N)] bits.
-    """
+    """Shannon entropy of a discrete distribution with N outcomes."""
     h = 0.0
     for p in probs:
         if p > 0.0:
@@ -64,23 +60,14 @@ def multi_outcome_entropy(probs: list[float]) -> float:
 
 
 def max_entropy(n: int) -> float:
-    """Maximum entropy for a uniform distribution over n outcomes.
-
-    H_max = log2(n)
-    """
+    """Maximum entropy for a uniform distribution over n outcomes."""
     if n <= 1:
         return 0.0
     return math.log2(n)
 
 
 def kl_divergence(p: list[float], q: list[float]) -> float:
-    """KL divergence D_KL(P || Q) between two discrete distributions.
-
-    D_KL(P || Q) = sum(p_i * log2(p_i / q_i))
-
-    Returns value >= 0. Larger means more divergence.
-    Uses a small epsilon to avoid log(0).
-    """
+    """KL divergence D_KL(P || Q) between two discrete distributions."""
     eps = 1e-12
     d = 0.0
     for pi, qi in zip(p, q):
@@ -94,82 +81,68 @@ def kl_divergence(p: list[float], q: list[float]) -> float:
 # Strategy
 # ---------------------------------------------------------------------------
 
-DEFAULT_TOTAL_DAYS = 90  # Assumed market lifespan when creation date unknown
-ENTROPY_DECAY_ALPHA = 0.5  # Square-root decay: entropy drops faster near end
-ENTROPY_SPIKE_THRESHOLD = 0.20  # Cross-scan spike considered significant
+# Minimum total YES to consider (below this, non-exhaustive risk is too high)
+MIN_TOTAL_YES = 0.88
+
+# Election markets need higher threshold (unlisted candidates are common)
+ELECTION_MIN_TOTAL_YES = 0.95
+
+# Maximum resolution date spread across outcomes in a bundle (days)
+MAX_RESOLUTION_SPREAD_DAYS = 14
+
+# Keywords that suggest election/primary markets
+_ELECTION_KEYWORDS = frozenset({
+    "election", "primary", "winner", "nominee", "nomination",
+    "governor", "senate", "house", "president", "congressional",
+    "mayoral", "caucus", "runoff", "special election",
+})
+
+# Keywords that suggest open-ended events (outcome universe unbounded)
+_OPEN_ENDED_KEYWORDS = frozenset({
+    "nobel", "oscar", "grammy", "emmy", "pulitzer", "ballon d'or",
+    "mvp", "best picture", "album of the year", "song of the year",
+    "time person", "word of the year", "best", "award",
+})
+
+DEFAULT_TOTAL_DAYS = 90
+ENTROPY_DECAY_ALPHA = 0.5
 
 
 class EntropyArbStrategy(BaseStrategy):
-    """Information-theoretic mispricing via entropy analysis.
+    """NegRisk rebalancing with entropy-based quality ranking.
 
-    IMPORTANT: This is a PROBABILISTIC SIGNAL strategy, NOT risk-free arbitrage.
-    All trades are directional bets informed by entropy deviation. If the
-    predicted outcome does not occur, the entire position is lost.
+    Scans multiway events for structural arbitrage: buy all outcomes
+    when sum(YES) < $1.00, guaranteeing profit since exactly one
+    outcome must win.
 
-    Scans binary markets and multi-outcome NegRisk events for deviations
-    between actual entropy (derived from current prices) and the expected
-    entropy implied by a square-root decay model tied to resolution timing.
-
-    Anomaly types detected:
-    1. **High-entropy anomaly** (deviation > 0): market is too uncertain
-       given how close resolution is. The market has not priced in available
-       information. Signal: buy the side closer to expected resolution.
-    2. **Low-entropy anomaly** (deviation < 0): market is too certain
-       given how far resolution is. Overconfidence -> contrarian fade.
-    3. **Entropy spike**: cross-scan jump in entropy suggests a resolution
-       event is imminent. Pair with the high-entropy signal.
-    4. **Multi-outcome entropy anomaly**: NegRisk event distribution
-       deviates from the expected entropy for that number of outcomes.
+    Uses Shannon entropy as a quality signal to rank opportunities.
+    Markets with anomalous entropy (too uncertain or too concentrated
+    given time to resolution) are more likely to be genuinely mispriced
+    rather than reflecting stale order books.
     """
 
     strategy_type = StrategyType.ENTROPY_ARB
     name = "Entropy Signal"
-    description = (
-        "Directional edge via information-theoretic entropy analysis (NOT arbitrage)"
-    )
+    description = "NegRisk rebalancing ranked by entropy quality"
 
     def __init__(self) -> None:
         super().__init__()
-        # Track previous-scan entropies for spike detection.
-        # Keyed by market id (binary) or event id (multi-outcome).
         self._prev_entropies: dict[str, float] = {}
 
     # ------------------------------------------------------------------
-    # Expected entropy model
+    # Expected entropy model (for quality scoring)
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _expected_entropy_binary(days_remaining: float, total_days: float) -> float:
-        """Expected entropy for a binary market given time to resolution.
-
-        Model: H_expected = 1.0 * (days_remaining / total_days)^alpha
-
-        Alpha=0.5 gives square-root decay: entropy is still moderate
-        halfway through, then drops sharply near resolution — matching
-        empirical behaviour of prediction markets.
-        """
-        if total_days <= 0:
-            return 0.0
-        ratio = max(days_remaining, 0.0) / total_days
-        # Clamp to [0, 1] in case days_remaining > total_days somehow
-        ratio = min(ratio, 1.0)
-        return 1.0 * (ratio**ENTROPY_DECAY_ALPHA)
 
     @staticmethod
     def _expected_entropy_multi(
         n_outcomes: int, days_remaining: float, total_days: float
     ) -> float:
-        """Expected entropy for a multi-outcome market.
-
-        At creation the maximum entropy is log2(n). As resolution
-        approaches, entropy should decay toward 0 (one outcome certain).
-        """
+        """Expected entropy for a multi-outcome market."""
         h_max = max_entropy(n_outcomes)
         if total_days <= 0:
             return 0.0
-        ratio = max(days_remaining, 0.0) / total_days
-        ratio = min(ratio, 1.0)
-        return h_max * (ratio**ENTROPY_DECAY_ALPHA)
+        ratio = min(max(days_remaining, 0.0) / total_days, 1.0)
+        return h_max * (ratio ** ENTROPY_DECAY_ALPHA)
 
     # ------------------------------------------------------------------
     # Price helpers
@@ -177,7 +150,6 @@ class EntropyArbStrategy(BaseStrategy):
 
     @staticmethod
     def _get_live_yes_price(market: Market, prices: dict[str, dict]) -> float:
-        """Get the best available YES price for a market."""
         yes_price = market.yes_price
         if market.clob_token_ids and len(market.clob_token_ids) > 0:
             token = market.clob_token_ids[0]
@@ -185,15 +157,92 @@ class EntropyArbStrategy(BaseStrategy):
                 yes_price = prices[token].get("mid", yes_price)
         return yes_price
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _get_live_no_price(market: Market, prices: dict[str, dict]) -> float:
-        """Get the best available NO price for a market."""
-        no_price = market.no_price
-        if market.clob_token_ids and len(market.clob_token_ids) > 1:
-            token = market.clob_token_ids[1]
-            if token in prices:
-                no_price = prices[token].get("mid", no_price)
-        return no_price
+    def _is_election_market(title: str) -> bool:
+        title_lower = title.lower()
+        return any(kw in title_lower for kw in _ELECTION_KEYWORDS)
+
+    @staticmethod
+    def _is_open_ended_event(title: str) -> bool:
+        title_lower = title.lower()
+        return any(kw in title_lower for kw in _OPEN_ENDED_KEYWORDS)
+
+    @staticmethod
+    def _is_date_sweep(event: Event) -> bool:
+        """Detect cumulative date-based events like 'by March/June/Dec'."""
+        questions = [m.question.lower() for m in event.markets if m.question]
+        date_keywords = {"by ", "before ", "prior to "}
+        date_count = sum(
+            1 for q in questions if any(kw in q for kw in date_keywords)
+        )
+        return date_count >= len(questions) * 0.5
+
+    # ------------------------------------------------------------------
+    # Entropy quality score
+    # ------------------------------------------------------------------
+
+    def _compute_entropy_quality(
+        self, event_id: str, probs: list[float], n_outcomes: int,
+        days_remaining: float, total_days: float,
+    ) -> dict:
+        """Compute entropy-based quality metrics for an event.
+
+        Returns a dict with entropy values, deviation, spike detection,
+        and an overall quality score (0-1, higher = more anomalous).
+        """
+        h_actual = multi_outcome_entropy(probs)
+        h_expected = self._expected_entropy_multi(
+            n_outcomes, days_remaining, total_days
+        )
+        h_max = max_entropy(n_outcomes)
+        deviation = h_actual - h_expected
+
+        # Normalized entropy (how spread vs concentrated)
+        normalized = h_actual / h_max if h_max > 0 else 0.0
+
+        # KL divergence from uniform distribution
+        uniform = [1.0 / n_outcomes] * n_outcomes
+        kl_from_uniform = kl_divergence(probs, uniform)
+
+        # Cross-scan spike detection
+        event_key = f"event_{event_id}"
+        spike = False
+        prev_h = self._prev_entropies.get(event_key)
+        if prev_h is not None:
+            delta_h = h_actual - prev_h
+            if delta_h >= 0.20:
+                spike = True
+        self._prev_entropies[event_key] = h_actual
+
+        # Quality score: how anomalous is this distribution?
+        # Higher = more likely to be a genuine mispricing
+        quality = 0.0
+        # Large entropy deviation = stronger signal
+        quality += min(abs(deviation) / 0.5, 1.0) * 0.4
+        # Spike = recent change, more likely exploitable
+        if spike:
+            quality += 0.2
+        # High KL divergence from uniform = more concentrated (clearer signal)
+        quality += min(kl_from_uniform / 2.0, 1.0) * 0.2
+        # Markets near resolution with high entropy = strongest signal
+        if days_remaining < 30 and deviation > 0:
+            quality += 0.2
+        quality = min(quality, 1.0)
+
+        return {
+            "h_actual": round(h_actual, 4),
+            "h_expected": round(h_expected, 4),
+            "h_max": round(h_max, 4),
+            "deviation": round(deviation, 4),
+            "normalized": round(normalized, 4),
+            "kl_from_uniform": round(kl_from_uniform, 4),
+            "spike": spike,
+            "quality": round(quality, 4),
+        }
 
     # ------------------------------------------------------------------
     # Core detection
@@ -205,409 +254,180 @@ class EntropyArbStrategy(BaseStrategy):
         markets: list[Market],
         prices: dict[str, dict],
     ) -> list[ArbitrageOpportunity]:
-        """Detect entropy-based mispricing opportunities.
-
-        Scans:
-        1. Every binary market with a known end_date for individual
-           entropy anomalies.
-        2. Every multi-market NegRisk event for distributional entropy
-           anomalies.
-        """
         if not settings.ENTROPY_ARB_ENABLED:
             return []
 
-        min_dev = settings.ENTROPY_ARB_MIN_DEVIATION
         opportunities: list[ArbitrageOpportunity] = []
 
-        # --- 1. Binary market entropy anomalies ---
-        for market in markets:
-            opp = self._detect_binary(market, prices, min_dev)
-            if opp is not None:
-                opportunities.append(opp)
-
-        # --- 2. Multi-outcome (NegRisk event) entropy anomalies ---
         for event in events:
-            opp = self._detect_multi_outcome(event, prices, min_dev)
+            opp = self._detect_rebalancing(event, prices)
             if opp is not None:
                 opportunities.append(opp)
 
         return opportunities
 
-    # ------------------------------------------------------------------
-    # Binary market detection
-    # ------------------------------------------------------------------
-
-    def _detect_binary(
-        self,
-        market: Market,
-        prices: dict[str, dict],
-        min_dev: float,
-    ) -> Optional[ArbitrageOpportunity]:
-        """Detect entropy anomaly on a single binary market."""
-
-        # Only binary, active, open markets with a known resolution date
-        if market.closed or not market.active:
-            return None
-        if len(market.outcome_prices) != 2:
-            return None
-        if not market.end_date:
-            return None
-
-        yes_price = self._get_live_yes_price(market, prices)
-        no_price = self._get_live_no_price(market, prices)
-
-        # Skip markets with degenerate prices
-        if yes_price <= 0.0 or yes_price >= 1.0:
-            return None
-
-        # --- Filter: market already has strong directional consensus ---
-        # If the favorite is already priced > 0.75, the market has priced in
-        # the expected direction. Entropy deviation at this point is not a
-        # mispricing signal — buying an 80-cent favorite is a directional
-        # bet with poor risk/reward, not an information edge.
-        favorite_price = max(yes_price, 1.0 - yes_price)
-        if favorite_price > 0.75:
-            return None
-
-        # --- Entropy calculation ---
-        h_actual = binary_entropy(yes_price)
-
-        end_aware = make_aware(market.end_date)
-        now = utcnow()
-        days_remaining = max((end_aware - now).total_seconds() / 86400.0, 0.0)
-
-        # --- Filter: too close to resolution ---
-        # Within the last day, prices react to live information (game scores,
-        # vote counts, data releases). High entropy here is a feature of
-        # genuine uncertainty, not a market inefficiency.
-        if days_remaining < 1.0:
-            return None
-
-        # Estimate total market lifespan. Prefer 2x remaining days as a
-        # heuristic for total lifespan, falling back to DEFAULT_TOTAL_DAYS
-        # to reduce the bias from always using a fixed 90-day window.
-        total_days = max(days_remaining * 2.0, DEFAULT_TOTAL_DAYS)
-
-        h_expected = self._expected_entropy_binary(days_remaining, total_days)
-
-        deviation = h_actual - h_expected
-
-        # --- Cross-scan entropy spike detection ---
-        spike = False
-        prev_h = self._prev_entropies.get(market.id)
-        if prev_h is not None:
-            delta_h = h_actual - prev_h
-            if delta_h >= ENTROPY_SPIKE_THRESHOLD:
-                spike = True
-        # Always store current entropy for next scan
-        self._prev_entropies[market.id] = h_actual
-
-        # --- Check threshold ---
-        if abs(deviation) < min_dev and not spike:
-            return None
-
-        # --- Determine trade direction ---
-        if deviation > 0:
-            # Market is TOO UNCERTAIN (high entropy) near resolution.
-            # Expected: price should be further from 0.5.
-            # Buy the side closer to the expected resolution direction.
-            # Heuristic: if yes_price > 0.5, the market leans YES but not
-            # enough — buy YES. If yes_price < 0.5, buy NO.
-            if yes_price >= 0.5:
-                action, outcome, price = "BUY", "YES", yes_price
-                side_label = "YES"
-            else:
-                action, outcome, price = "BUY", "NO", no_price
-                side_label = "NO"
-            anomaly_type = "HIGH entropy"
-            signal_desc = (
-                f"Market too uncertain near resolution. "
-                f"H_actual={h_actual:.3f} vs H_expected={h_expected:.3f} "
-                f"(+{deviation:.3f} bits). Buy {side_label} to capture info gap."
-            )
-        else:
-            # Market is TOO CERTAIN (low entropy) far from resolution.
-            # Overconfidence -> fade the dominant side (contrarian).
-            if yes_price >= 0.5:
-                # Market is overly confident in YES -> buy NO
-                action, outcome, price = "BUY", "NO", no_price
-                side_label = "NO (contrarian)"
-            else:
-                # Market is overly confident in NO -> buy YES
-                action, outcome, price = "BUY", "YES", yes_price
-                side_label = "YES (contrarian)"
-            anomaly_type = "LOW entropy"
-            signal_desc = (
-                f"Market overconfident far from resolution. "
-                f"H_actual={h_actual:.3f} vs H_expected={h_expected:.3f} "
-                f"({deviation:.3f} bits). Fade dominant side: buy {side_label}."
-            )
-
-        if spike:
-            signal_desc += (
-                f" Entropy SPIKE detected (prev={prev_h:.3f}, now={h_actual:.3f})."
-            )
-
-        # --- Build position ---
-        token_id = None
-        if market.clob_token_ids:
-            if outcome == "YES" and len(market.clob_token_ids) > 0:
-                token_id = market.clob_token_ids[0]
-            elif outcome == "NO" and len(market.clob_token_ids) > 1:
-                token_id = market.clob_token_ids[1]
-
-        positions = [
-            {
-                "action": action,
-                "outcome": outcome,
-                "market": market.question[:50],
-                "price": price,
-                "token_id": token_id,
-                "entropy_actual": round(h_actual, 4),
-                "entropy_expected": round(h_expected, 4),
-                "entropy_deviation": round(deviation, 4),
-                "entropy_spike": spike,
-            }
-        ]
-
-        # total_cost = buy price (the side we're taking)
-        total_cost = price
-
-        # --- Create opportunity ---
-        # Use create_opportunity which applies all hard filters and fee model.
-        # IMPORTANT: This is a DIRECTIONAL BET, not guaranteed arbitrage.
-        # The price IS our estimated win probability. ROI is only realized
-        # if the bet wins; otherwise the entire position is lost.
-        opp = self.create_opportunity(
-            title=f"Entropy Signal ({anomaly_type}): {market.question[:45]}...",
-            description=signal_desc,
-            total_cost=total_cost,
-            markets=[market],
-            positions=positions,
-            is_guaranteed=False,
-        )
-
-        if opp is not None:
-            # Override risk score: entropy signals are probabilistic
-            # directional bets, not guaranteed arbitrage. If the chosen
-            # side doesn't win, the entire position is lost.
-            base_risk = 0.70
-            # Increase risk for smaller deviations (less confident signal)
-            deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
-            # Increase risk for low-entropy (contrarian) trades
-            contrarian_penalty = 0.10 if deviation < 0 else 0.0
-            # Decrease risk slightly for spike confirmation
-            spike_bonus = -0.05 if spike else 0.0
-
-            entropy_risk = (
-                base_risk + deviation_factor + contrarian_penalty + spike_bonus
-            )
-            # Merge with base risk (liquidity, time, multi-leg)
-            opp.risk_score = min(max(opp.risk_score, entropy_risk), 1.0)
-            opp.risk_factors.append(
-                f"Entropy deviation: {deviation:+.3f} bits "
-                f"(actual={h_actual:.3f}, expected={h_expected:.3f})"
-            )
-            if spike:
-                opp.risk_factors.append(
-                    f"Entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
-                )
-            opp.risk_factors.insert(
-                0,
-                "DIRECTIONAL BET — not arbitrage. 100% loss if chosen side loses.",
-            )
-            opp.risk_factors.append("Probabilistic signal (not guaranteed arbitrage)")
-
-        return opp
-
-    # ------------------------------------------------------------------
-    # Multi-outcome (NegRisk) detection
-    # ------------------------------------------------------------------
-
-    def _detect_multi_outcome(
+    def _detect_rebalancing(
         self,
         event: Event,
         prices: dict[str, dict],
-        min_dev: float,
     ) -> Optional[ArbitrageOpportunity]:
-        """Detect entropy anomaly across a NegRisk event's outcome set.
+        """Detect NegRisk rebalancing opportunity in a multiway event.
 
-        For events with N outcomes, the maximum entropy is log2(N).
-        We compare actual distribution entropy against an expected
-        decay model. Large positive deviation = the market hasn't
-        resolved uncertainty that should be resolved by now.
+        Only creates an opportunity when sum(YES) < $1.00, meaning
+        buying all outcomes guarantees profit. This is real arbitrage.
         """
-        if not event.neg_risk or event.closed:
+        if event.closed:
             return None
 
         active_markets = [m for m in event.markets if m.active and not m.closed]
         if len(active_markets) < 2:
             return None
 
-        # We need at least one market with an end_date to compute timing
-        end_dates = [
-            make_aware(m.end_date) for m in active_markets if m.end_date is not None
-        ]
-        if not end_dates:
+        # Skip date-sweep events (cumulative, not mutually exclusive)
+        if self._is_date_sweep(event):
             return None
 
-        # Use the earliest end_date as the event resolution date
-        resolution_date = min(end_dates)
-        now = utcnow()
-        days_remaining = max((resolution_date - now).total_seconds() / 86400.0, 0.0)
-
-        # --- Filter: too close to resolution ---
-        # Within the last day, prices react to live information.
-        if days_remaining < 1.0:
-            return None
-
-        total_days = max(days_remaining, DEFAULT_TOTAL_DAYS)
-
-        # --- Build probability distribution from YES prices ---
+        # Get YES prices for all outcomes
+        total_yes = 0.0
+        positions = []
         yes_prices: list[float] = []
-        for m in active_markets:
-            yes_prices.append(self._get_live_yes_price(m, prices))
 
-        total_yes = sum(yes_prices)
-        if total_yes <= 0.0:
+        for market in active_markets:
+            yes_price = self._get_live_yes_price(market, prices)
+            total_yes += yes_price
+            yes_prices.append(yes_price)
+            positions.append({
+                "action": "BUY",
+                "outcome": "YES",
+                "market": market.question[:50],
+                "price": yes_price,
+                "token_id": (
+                    market.clob_token_ids[0]
+                    if market.clob_token_ids
+                    else None
+                ),
+            })
+
+        # Core arbitrage condition: sum < $1.00
+        if total_yes >= 1.0:
             return None
 
-        # --- Filter: leading outcome already dominant ---
-        # If the favorite is > 0.75, the market has strong consensus.
-        # Entropy deviation is not a useful signal at this point.
-        # Check BOTH the raw price and the normalized probability,
-        # because NegRisk event prices often don't sum to 1.0 —
-        # a market at $0.94 can slip past a normalized-only check
-        # when the price sum exceeds 1.0 (e.g., 0.94/1.26 = 0.746).
-        max_yes = max(yes_prices)
-        if max_yes > 0.75 or max_yes / total_yes > 0.75:
+        # Non-exhaustive outcome checks (same logic as NegRisk but less strict)
+        if total_yes < MIN_TOTAL_YES:
             return None
-
-        # Normalize to a proper probability distribution
-        probs = [p / total_yes for p in yes_prices]
 
         n_outcomes = len(active_markets)
-        h_actual = multi_outcome_entropy(probs)
-        h_expected = self._expected_entropy_multi(
-            n_outcomes, days_remaining, total_days
-        )
 
-        deviation = h_actual - h_expected
-
-        # --- Cross-scan spike for multi-outcome ---
-        event_key = f"event_{event.id}"
-        spike = False
-        prev_h = self._prev_entropies.get(event_key)
-        if prev_h is not None:
-            delta_h = h_actual - prev_h
-            if delta_h >= ENTROPY_SPIKE_THRESHOLD:
-                spike = True
-        self._prev_entropies[event_key] = h_actual
-
-        if abs(deviation) < min_dev and not spike:
+        # Very few outcomes = likely non-exhaustive
+        if n_outcomes <= 3 and total_yes < 0.95:
+            return None
+        if n_outcomes <= 5 and total_yes < 0.93:
             return None
 
-        # --- Determine trade ---
-        if deviation > 0:
-            # Too uncertain: buy the most-likely outcome (highest price),
-            # because the market should be more concentrated.
-            best_idx = max(range(n_outcomes), key=lambda i: yes_prices[i])
-            target_market = active_markets[best_idx]
-            target_price = yes_prices[best_idx]
-            action, outcome = "BUY", "YES"
-            anomaly_type = "HIGH entropy"
-            signal_desc = (
-                f"NegRisk event too uncertain near resolution. "
-                f"{n_outcomes} outcomes, H_actual={h_actual:.3f} vs "
-                f"H_expected={h_expected:.3f} (+{deviation:.3f} bits). "
-                f"Buy YES on leading outcome: {target_market.question[:40]}."
-            )
-        else:
-            # Too certain: the leading outcome may be overpriced.
-            # Fade by buying YES on the second-most-likely outcome.
-            sorted_indices = sorted(
-                range(n_outcomes), key=lambda i: yes_prices[i], reverse=True
-            )
-            # Pick the second-best outcome for contrarian fade.
-            # If only 2 outcomes, pick the underdog.
-            fade_idx = (
-                sorted_indices[1] if len(sorted_indices) > 1 else sorted_indices[0]
-            )
-            target_market = active_markets[fade_idx]
-            target_price = yes_prices[fade_idx]
-            action, outcome = "BUY", "YES"
-            anomaly_type = "LOW entropy"
-            signal_desc = (
-                f"NegRisk event overconfident far from resolution. "
-                f"{n_outcomes} outcomes, H_actual={h_actual:.3f} vs "
-                f"H_expected={h_expected:.3f} ({deviation:.3f} bits). "
-                f"Contrarian: buy YES on {target_market.question[:40]}."
-            )
+        is_election = self._is_election_market(event.title)
+        is_open_ended = self._is_open_ended_event(event.title)
 
-        if spike:
-            signal_desc += (
-                f" Entropy SPIKE detected (prev={prev_h:.3f}, now={h_actual:.3f})."
-            )
+        # Election with only 2 candidates = never exhaustive
+        if is_election and n_outcomes <= 2:
+            return None
 
-        # --- Build position ---
-        token_id = None
-        if target_market.clob_token_ids and len(target_market.clob_token_ids) > 0:
-            token_id = target_market.clob_token_ids[0]
+        # Election markets need higher threshold
+        if is_election and total_yes < ELECTION_MIN_TOTAL_YES:
+            return None
 
-        positions = [
-            {
-                "action": action,
-                "outcome": outcome,
-                "market": target_market.question[:50],
-                "price": target_price,
-                "token_id": token_id,
-                "entropy_actual": round(h_actual, 4),
-                "entropy_expected": round(h_expected, 4),
-                "entropy_deviation": round(deviation, 4),
-                "entropy_spike": spike,
-                "n_outcomes": n_outcomes,
-                "total_yes": round(total_yes, 4),
-            }
+        # Open-ended events: accept only if very close to 1.0
+        if is_open_ended and total_yes < 0.97:
+            return None
+
+        # Resolution date spread check
+        end_dates = [
+            make_aware(m.end_date) for m in active_markets if m.end_date
         ]
+        if len(end_dates) >= 2:
+            earliest = min(end_dates)
+            latest = max(end_dates)
+            spread_days = (latest - earliest).days
+            if spread_days > MAX_RESOLUTION_SPREAD_DAYS:
+                return None
 
-        total_cost = target_price
+        # Compute entropy quality score for ranking
+        now = utcnow()
+        days_remaining = 0.0
+        total_days = DEFAULT_TOTAL_DAYS
+        if end_dates:
+            resolution = min(end_dates)
+            days_remaining = max(
+                (resolution - now).total_seconds() / 86400.0, 0.0
+            )
+            total_days = max(days_remaining, DEFAULT_TOTAL_DAYS)
 
+        # Normalize prices to probability distribution for entropy calc
+        probs = [p / total_yes for p in yes_prices] if total_yes > 0 else []
+
+        entropy_info = self._compute_entropy_quality(
+            event.id, probs, n_outcomes, days_remaining, total_days,
+        )
+
+        # Build description
+        spread_pct = (1.0 - total_yes) * 100
+        description = (
+            f"Buy YES on all {n_outcomes} outcomes for ${total_yes:.3f}, "
+            f"one must win = $1.00. Guaranteed ${1.0 - total_yes:.3f} profit "
+            f"({spread_pct:.1f}% spread). "
+            f"Entropy quality: {entropy_info['quality']:.0%} "
+            f"(H={entropy_info['h_actual']:.2f}/{entropy_info['h_max']:.2f}, "
+            f"dev={entropy_info['deviation']:+.3f})."
+        )
+
+        # Add entropy info to positions metadata
+        for pos in positions:
+            pos["entropy_quality"] = entropy_info["quality"]
+
+        neg_risk_label = "NegRisk " if event.neg_risk else ""
         opp = self.create_opportunity(
-            title=f"Entropy Signal ({anomaly_type}): {event.title[:45]}...",
-            description=signal_desc,
-            total_cost=total_cost,
-            markets=[target_market],
+            title=(
+                f"Entropy Arb: {neg_risk_label}"
+                f"{event.title[:50]}..."
+            ),
+            description=description,
+            total_cost=total_yes,
+            markets=active_markets,
             positions=positions,
             event=event,
-            is_guaranteed=False,
+            is_guaranteed=True,
         )
 
         if opp is not None:
-            # Risk is HIGH for multi-outcome entropy signals. This is a
-            # directional bet on the favorite (or a contrarian underdog),
-            # NOT a structural arbitrage. If the chosen outcome doesn't
-            # win, the entire position is lost.
-            base_risk = 0.75
-            deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
-            contrarian_penalty = 0.15 if deviation < 0 else 0.0
-            spike_bonus = -0.05 if spike else 0.0
-            entropy_risk = (
-                base_risk + deviation_factor + contrarian_penalty + spike_bonus
-            )
-            opp.risk_score = min(max(opp.risk_score, entropy_risk), 1.0)
-            opp.risk_factors.insert(
-                0,
-                "DIRECTIONAL BET — not arbitrage. 100% loss if chosen outcome loses.",
-            )
-            opp.risk_factors.append(
-                f"Multi-outcome entropy deviation: {deviation:+.3f} bits "
-                f"(actual={h_actual:.3f}, expected={h_expected:.3f}, "
-                f"max={max_entropy(n_outcomes):.3f})"
-            )
-            if spike:
-                opp.risk_factors.append(
-                    f"Multi-outcome entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
+            # Add entropy-specific risk factors
+            if not event.neg_risk:
+                opp.risk_factors.insert(
+                    0,
+                    "Not a NegRisk-flagged event: mutual exclusivity "
+                    "not platform-guaranteed. Verify outcomes are exhaustive.",
                 )
-            opp.risk_factors.append("Probabilistic signal (not guaranteed arbitrage)")
+            if total_yes < 0.93:
+                opp.risk_factors.insert(
+                    0,
+                    f"Total YES ({total_yes:.1%}) well below 100% -- "
+                    f"significant non-exhaustive risk (unlisted outcomes).",
+                )
+            elif total_yes < 0.97:
+                opp.risk_factors.append(
+                    f"Total YES ({total_yes:.1%}) below 97% -- "
+                    f"possible unlisted outcomes.",
+                )
+            if is_election:
+                opp.risk_factors.append(
+                    "Election/primary: unlisted candidates may win."
+                )
+            if is_open_ended:
+                opp.risk_factors.append(
+                    "Open-ended event: outcome universe unbounded."
+                )
+            if entropy_info["spike"]:
+                opp.risk_factors.append(
+                    f"Entropy spike detected (distribution changed "
+                    f"significantly since last scan)."
+                )
 
         return opp
