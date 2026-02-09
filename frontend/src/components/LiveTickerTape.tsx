@@ -62,12 +62,13 @@ export default function LiveTickerTape({
 
     topOpps.forEach((opp) => {
       const stratName = opp.strategy.replace(/_/g, ' ').toUpperCase()
+      const roi = opp.roi_percent
       items.push({
         id: opp.id,
         label: `${stratName}`,
-        value: `+${opp.roi_percent.toFixed(2)}%`,
-        change: opp.roi_percent,
-        icon: 'up',
+        value: `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`,
+        change: roi,
+        icon: roi >= 0 ? 'up' : 'down',
       })
     })
 
