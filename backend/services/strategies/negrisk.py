@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
-from .base import BaseStrategy
+from .base import BaseStrategy, make_aware
 
 
 class NegRiskStrategy(BaseStrategy):
@@ -136,11 +136,31 @@ class NegRiskStrategy(BaseStrategy):
         if is_election and len(active_markets) <= 2:
             return None
 
+        # Election/primary markets almost ALWAYS have unlisted candidates.
+        # Require a much higher total YES (closer to 1.0) to accept these.
+        # A 3-7% gap in a primary market is the market pricing "Other/Field",
+        # not a mispricing we can exploit.
+        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
+            return None
+
         # Open-ended events (Nobel Prize, awards, "best X") where the outcome
         # universe is inherently unbounded — anyone/anything could win.
         # The listed outcomes can never be exhaustive.
         if is_open_ended:
             return None
+
+        # --- Resolution date mismatch detection ---
+        # All outcomes in a NegRisk bundle must resolve at the same time.
+        # If outcome A resolves June 30 but outcome B resolves Dec 31,
+        # there's a window where ALL outcomes can resolve NO (e.g., event
+        # happens between July-December). This makes the "arbitrage" a trap.
+        end_dates = [make_aware(m.end_date) for m in active_markets if m.end_date]
+        if len(end_dates) >= 2:
+            earliest = min(end_dates)
+            latest = max(end_dates)
+            spread_days = (latest - earliest).days
+            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+                return None
 
         opp = self.create_opportunity(
             title=f"NegRisk: {event.title[:50]}...",
@@ -417,8 +437,19 @@ class NegRiskStrategy(BaseStrategy):
         is_election = self._is_election_market(event.title)
         if is_election and len(exclusive_markets) <= 2:
             return None
+        if is_election and total_yes < settings.NEGRISK_ELECTION_MIN_TOTAL_YES:
+            return None
         if self._is_open_ended_event(event.title):
             return None
+
+        # Resolution date mismatch check (same as NegRisk)
+        end_dates = [make_aware(m.end_date) for m in exclusive_markets if m.end_date]
+        if len(end_dates) >= 2:
+            earliest = min(end_dates)
+            latest = max(end_dates)
+            spread_days = (latest - earliest).days
+            if spread_days > settings.NEGRISK_MAX_RESOLUTION_SPREAD_DAYS:
+                return None
 
         opp = self.create_opportunity(
             title=f"Multi-Outcome: {event.title[:40]}...",
