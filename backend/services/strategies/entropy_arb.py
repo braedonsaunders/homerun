@@ -426,8 +426,8 @@ class EntropyArbStrategy(BaseStrategy):
                 )
             if entropy_info["spike"]:
                 opp.risk_factors.append(
-                    f"Entropy spike detected (distribution changed "
-                    f"significantly since last scan)."
+                    "Entropy spike detected (distribution changed "
+                    "significantly since last scan)."
                 )
 
         return opp

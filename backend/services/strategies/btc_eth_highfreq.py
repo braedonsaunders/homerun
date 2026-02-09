@@ -800,7 +800,6 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         """
         # Base targets
         min_target = 0.42  # Absolute minimum (most aggressive)
-        max_target = 0.48  # Closest to mid (least aggressive)
 
         # Start from the aggressive end
         base_price = 0.45
