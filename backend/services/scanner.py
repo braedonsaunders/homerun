@@ -7,6 +7,7 @@ from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
 from services.polymarket import polymarket_client
+from services.kalshi_client import kalshi_client
 from services.strategies import (
     BasicArbStrategy,
     NegRiskStrategy,
@@ -182,7 +183,7 @@ class ArbitrageScanner:
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
 
         try:
-            # Fetch all active events and markets
+            # Fetch all active events and markets from Polymarket
             events = await self.client.get_all_events(closed=False)
             markets = await self.client.get_all_markets(active=True)
 
@@ -199,12 +200,50 @@ class ArbitrageScanner:
                     m for m in event.markets if m.end_date is None or m.end_date > now
                 ]
 
-            print(f"  Fetched {len(events)} events and {len(markets)} markets")
+            print(f"  Fetched {len(events)} Polymarket events and {len(markets)} markets")
 
-            # Get live prices for all tokens
+            # Fetch Kalshi markets and merge them so ALL strategies
+            # (not just cross-platform) can detect opportunities on Kalshi.
+            kalshi_market_count = 0
+            kalshi_event_count = 0
+            if settings.CROSS_PLATFORM_ENABLED:
+                try:
+                    kalshi_markets = await kalshi_client.get_all_markets(active=True)
+                    kalshi_markets = [
+                        m for m in kalshi_markets
+                        if m.end_date is None or m.end_date > now
+                    ]
+                    kalshi_market_count = len(kalshi_markets)
+                    markets.extend(kalshi_markets)
+
+                    kalshi_events = await kalshi_client.get_all_events(closed=False)
+                    for ke in kalshi_events:
+                        ke.markets = [
+                            m for m in ke.markets
+                            if m.end_date is None or m.end_date > now
+                        ]
+                    kalshi_event_count = len(kalshi_events)
+                    events.extend(kalshi_events)
+
+                    if kalshi_market_count > 0:
+                        print(
+                            f"  Fetched {kalshi_event_count} Kalshi events "
+                            f"and {kalshi_market_count} Kalshi markets"
+                        )
+                except Exception as e:
+                    print(f"  Kalshi fetch failed (non-fatal): {e}")
+
+            # Get live prices for Polymarket tokens only.
+            # Kalshi markets already have prices baked in from the API;
+            # their synthetic token IDs (e.g. "TICKER_yes") should not
+            # be sent to Polymarket's CLOB.
             all_token_ids = []
             for market in markets:
-                all_token_ids.extend(market.clob_token_ids)
+                for tid in market.clob_token_ids:
+                    # Polymarket CLOB token IDs are long hex strings (>20 chars).
+                    # Kalshi synthetic IDs are short like "TICKER_yes".
+                    if len(tid) > 20:
+                        all_token_ids.append(tid)
 
             # Batch price fetching (limit to avoid rate limits)
             prices = {}
