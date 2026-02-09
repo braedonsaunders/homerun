@@ -28,6 +28,7 @@ class Market(BaseModel):
     volume: float = 0.0
     liquidity: float = 0.0
     end_date: Optional[datetime] = None
+    platform: str = "polymarket"  # "polymarket" or "kalshi"
 
     @classmethod
     def from_gamma_response(cls, data: dict) -> "Market":

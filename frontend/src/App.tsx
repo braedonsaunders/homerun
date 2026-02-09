@@ -920,7 +920,7 @@ function App() {
                   )}
                 >
                   <DollarSign className="w-4 h-4" />
-                  Live Account
+                  Live Accounts
                 </Button>
               </div>
               {/* Accounts Subtab Content */}

@@ -238,6 +238,7 @@ class BaseStrategy(ABC):
                 "yes_price": m.yes_price,
                 "no_price": m.no_price,
                 "liquidity": m.liquidity,
+                "platform": getattr(m, "platform", "polymarket"),
             }
             market_dicts.append(entry)
 
