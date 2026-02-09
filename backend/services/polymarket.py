@@ -905,7 +905,8 @@ class PolymarketClient:
         # Verify each trader has real activity using the fast
         # closed-positions endpoint (single call per trader instead of
         # fetching full trade history + open positions).
-        semaphore = asyncio.Semaphore(10)
+        # Keep concurrency low to stay within Polymarket rate limits.
+        semaphore = asyncio.Semaphore(5)
 
         async def verify_trader(entry: dict):
             async with semaphore:
@@ -1131,7 +1132,12 @@ class PolymarketClient:
             )
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except Exception as e:
+            _logger.warning(
+                "closed-positions fetch failed",
+                address=address[:10],
+                error=str(e),
+            )
             return []
 
     async def get_closed_positions_paginated(
@@ -1256,7 +1262,7 @@ class PolymarketClient:
                 filtered.append(entry)
             all_candidates = filtered
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(5)
 
         async def analyze_trader(entry: dict):
             async with semaphore:
