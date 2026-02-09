@@ -9,17 +9,25 @@ Example:
 - Kalshi: same event YES = $0.62
 - Buy YES on Polymarket ($0.55), sell YES on Kalshi ($0.62) = $0.07 profit
 
-This is the most reliably profitable strategy because cross-platform
-price discovery is slow and fee structures differ.
-
-Detection approach:
+Detection approach (v2 — deterministic + fuzzy hybrid):
 1. Fetch/cache Kalshi markets (refreshed every 60 seconds)
-2. For each Polymarket market, fuzzy-match against Kalshi markets
-   using Jaccard similarity on word tokens
-3. For matched pairs, check both arb legs:
-   - Leg A: Buy YES on Polymarket + Buy NO on Kalshi
-   - Leg B: Buy NO on Polymarket + Buy YES on Kalshi
-4. If guaranteed profit after fees > 0, emit an opportunity
+2. Parse Kalshi tickers to extract event prefix + outcome type
+   (e.g. KXEPLGAME-25DEC27CFCAVL-TIE → event=…CFCAVL, outcome=draw)
+3. Group Kalshi markets by event prefix to detect 3-way (Win/Draw/Away)
+   soccer events where cross-outcome matching is INVALID
+4. For each *Polymarket* market (never Kalshi — prevents same-platform
+   false positives), fuzzy-match against Kalshi markets using Jaccard
+   similarity on word tokens
+5. GATE: sport-outcome compatibility — never match WIN vs TIE
+6. GATE: minimum combined-fee threshold (Poly 2% + Kalshi 7% = 9%)
+7. If guaranteed profit after fees > $0.01, emit an opportunity
+
+Key safeguards (each addresses a documented class of false positive):
+- Platform filter: only iterate Polymarket markets, never Kalshi-vs-Kalshi
+- Outcome guard: parse Kalshi ticker suffix (-TIE/-WIN/-AWY) + question text
+- Multiway guard: stricter matching for events with 2+ Kalshi sub-markets
+- Resolution divergence: flag soccer "90-min" vs "advance" mismatches
+- Minimum profit: reject < $0.01 guaranteed to avoid execution risk drag
 """
 
 import re
@@ -27,6 +35,7 @@ import string
 import time
 from typing import Optional
 from datetime import datetime
+from collections import defaultdict
 
 import httpx
 
@@ -42,6 +51,10 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 POLYMARKET_FEE = 0.02  # 2% winner fee
 KALSHI_FEE = 0.07  # 7% Kalshi fee on winnings
+# Combined fee floor: cross-platform trades eat ~9% in fees.  A spread must
+# exceed this to have any profit after fees.  Opportunities below $0.01
+# guaranteed are not worth the non-atomic execution risk.
+CROSS_PLATFORM_MIN_NET_PROFIT = 0.01
 
 # ---------------------------------------------------------------------------
 #  Text normalisation for fuzzy matching
@@ -104,6 +117,203 @@ _RE_MULTI_SPACE = re.compile(r"\s+")
 
 # Minimum Jaccard similarity to consider two markets as matching
 _MATCH_THRESHOLD = 0.35
+
+# ---------------------------------------------------------------------------
+#  3-way sports market outcome detection
+# ---------------------------------------------------------------------------
+# Soccer (and some other sports) have 3-way markets: Home Win, Draw, Away Win.
+# These are separate binary YES/NO markets under the same event.  Matching
+# "Home Win" on Polymarket against "Draw" on Kalshi is NOT valid arbitrage —
+# if the home team wins, both legs lose.  We detect outcome type from both
+# Kalshi tickers (which encode the outcome as a suffix like -TIE, -WIN, -AWY)
+# and from market question text.
+
+# Kalshi ticker suffixes that indicate outcome type
+_KALSHI_DRAW_SUFFIXES = ("-TIE", "-DRW", "-DRAW")
+_KALSHI_HOME_SUFFIXES = ("-WIN", "-HOM", "-HOME")
+_KALSHI_AWAY_SUFFIXES = ("-AWY", "-AWAY", "-VIS")
+
+# Question-text keywords for outcome detection
+_DRAW_KEYWORDS = frozenset({
+    "tie", "draw", "drawn", "tied", "ties", "draws",
+})
+_WIN_KEYWORDS = frozenset({
+    "win", "winner", "wins", "victory", "victorious",
+    "beat", "beats", "defeat", "defeats",
+})
+
+
+def _extract_sport_outcome_type(market: "Market") -> Optional[str]:
+    """Classify a sports market by outcome type.
+
+    Returns:
+        ``"draw"``      – market is about the match ending in a tie/draw
+        ``"team_win"``  – market is about a specific team winning
+        ``None``        – cannot determine (non-sport or ambiguous)
+    """
+    # 1) Check Kalshi ticker suffix (most reliable for Kalshi markets)
+    ticker_upper = market.id.upper()
+    if any(ticker_upper.endswith(s) for s in _KALSHI_DRAW_SUFFIXES):
+        return "draw"
+    if any(ticker_upper.endswith(s) for s in _KALSHI_HOME_SUFFIXES):
+        return "team_win"
+    if any(ticker_upper.endswith(s) for s in _KALSHI_AWAY_SUFFIXES):
+        return "team_win"
+
+    # 2) Check question text
+    q = market.question.lower()
+    has_draw = any(kw in q for kw in _DRAW_KEYWORDS)
+    has_win = any(kw in q for kw in _WIN_KEYWORDS)
+
+    if has_draw and not has_win:
+        return "draw"
+    if has_win and not has_draw:
+        return "team_win"
+
+    return None
+
+
+def _sport_outcomes_compatible(
+    pm_market: "Market",
+    k_market: "Market",
+    is_multiway_event: bool = False,
+) -> bool:
+    """Return True if both markets have compatible sport outcome types.
+
+    This prevents matching a "Team Win" market against a "Draw" market,
+    which is the most common false positive in 3-way soccer arbitrage.
+
+    When *is_multiway_event* is True (the Kalshi market belongs to a 3-way
+    event with 2+ sibling markets), we require BOTH outcome types to be
+    determinable.  If either is unknown in a multiway context, we reject
+    the match rather than risk a catastrophic false positive.
+
+    When *is_multiway_event* is False, unknown types still allow the match
+    (conservative fallback for non-sport or ambiguous markets).
+    """
+    pm_type = _extract_sport_outcome_type(pm_market)
+    k_type = _extract_sport_outcome_type(k_market)
+
+    if is_multiway_event:
+        # Strict mode: must determine both types for multiway events
+        if pm_type is None or k_type is None:
+            return False
+    else:
+        # Permissive mode: unknown is OK for simple binary markets
+        if pm_type is None or k_type is None:
+            return True
+
+    return pm_type == k_type
+
+
+# ---------------------------------------------------------------------------
+#  Kalshi ticker parsing — deterministic event/outcome extraction
+# ---------------------------------------------------------------------------
+# Kalshi sports tickers encode structured data:
+#   KXSWISSLEAGUEGAME-26FEB11FCZWIN-TIE
+#   ├── prefix ──────────────────────┤├─ outcome
+#
+# The suffix after the LAST dash is the outcome:
+#   TIE / DRW / DRAW  →  draw
+#   WIN / HOM / HOME   →  home team win
+#   AWY / AWAY / VIS   →  away team win
+#   2-4 letter code    →  specific team win (e.g. FRE, VEJ, FCZ)
+#
+# Grouping markets by prefix reveals multiway events where cross-outcome
+# matching is invalid.
+
+# Known sport-league prefixes in Kalshi tickers
+_KALSHI_SPORT_PREFIXES = frozenset({
+    "KXEPLGAME", "KXLALIGAGAME", "KXBUNDESLIGAGAME", "KXSERIEA",
+    "KXLIGUE1GAME", "KXSWISSLEAGUEGAME", "KXEREDIVISIEGAME",
+    "KXCHAMPIONSHIPGAME", "KXSCOTTISHPREMGAME", "KXDANISHSUPERGAME",
+    "KXARGENTINAGAME", "KXTURKISHSUPERGAME", "KXEFLGAME",
+    "KXNBAGAME", "KXNFLGAME", "KXMLBGAME", "KXNHLGAME",
+    "KXMLSGAME", "KXUFCFIGHT",
+})
+
+
+def _parse_kalshi_event_prefix(ticker: str) -> Optional[str]:
+    """Extract the event prefix from a Kalshi ticker.
+
+    For ``KXSWISSLEAGUEGAME-26FEB11FCZWIN-TIE`` returns
+    ``KXSWISSLEAGUEGAME-26FEB11FCZWIN``.
+
+    Returns None if the ticker doesn't look like a sport-event market.
+    """
+    # Outcome suffix is the part after the last dash (2-5 uppercase chars)
+    idx = ticker.rfind("-")
+    if idx <= 0:
+        return None
+    suffix = ticker[idx + 1:]
+    # Outcome suffixes are short uppercase codes
+    if not (1 <= len(suffix) <= 5 and suffix.isalpha()):
+        return None
+    return ticker[:idx]
+
+
+def _is_kalshi_sport_ticker(ticker: str) -> bool:
+    """Return True if the ticker looks like a Kalshi sport event market."""
+    upper = ticker.upper()
+    return any(upper.startswith(p) for p in _KALSHI_SPORT_PREFIXES)
+
+
+def _detect_multiway_kalshi_events(
+    kalshi_markets: list["Market"],
+) -> set[str]:
+    """Return event prefixes that have 2+ child markets (3-way events).
+
+    In these events, each market represents a different outcome (Win, Tie,
+    Away).  Matching a Polymarket draw market against a Kalshi win market
+    within the same event is NOT valid arbitrage.
+    """
+    prefix_counts: dict[str, int] = defaultdict(int)
+    for m in kalshi_markets:
+        if not _is_kalshi_sport_ticker(m.id):
+            continue
+        prefix = _parse_kalshi_event_prefix(m.id)
+        if prefix:
+            prefix_counts[prefix] += 1
+    return {p for p, c in prefix_counts.items() if c >= 2}
+
+
+# ---------------------------------------------------------------------------
+#  Soccer-specific resolution divergence detection
+# ---------------------------------------------------------------------------
+# Soccer markets have a particularly dangerous resolution divergence:
+# one platform may resolve on the 90-minute result (where a tie is possible)
+# while another resolves on "who advances" (includes extra time + penalties,
+# so a tie is IMPOSSIBLE).  This breaks the hedge completely.
+
+_SOCCER_90MIN_KEYWORDS = frozenset({
+    "90 min", "90min", "regulation", "full time", "fulltime",
+    "regular time", "90 minutes",
+})
+_SOCCER_ADVANCE_KEYWORDS = frozenset({
+    "advance", "qualify", "progress", "next round",
+    "go through", "eliminate", "knock out", "knockout",
+    "extra time", "penalties", "penalty",
+})
+
+
+def _has_soccer_resolution_divergence_risk(q1: str, q2: str) -> bool:
+    """Check if two soccer market questions might resolve differently.
+
+    Returns True if one mentions 90-minute result and the other mentions
+    advancement (including extra time/penalties).
+    """
+    q1_lower, q2_lower = q1.lower(), q2.lower()
+
+    q1_90min = any(kw in q1_lower for kw in _SOCCER_90MIN_KEYWORDS)
+    q1_advance = any(kw in q1_lower for kw in _SOCCER_ADVANCE_KEYWORDS)
+    q2_90min = any(kw in q2_lower for kw in _SOCCER_90MIN_KEYWORDS)
+    q2_advance = any(kw in q2_lower for kw in _SOCCER_ADVANCE_KEYWORDS)
+
+    # Conflict: one is 90-min, the other is advance
+    if (q1_90min and q2_advance) or (q1_advance and q2_90min):
+        return True
+
+    return False
 
 # Common stop words that inflate the union and dilute Jaccard scores.
 # These add no discriminative value when matching market questions.
@@ -495,14 +705,21 @@ class CrossPlatformStrategy(BaseStrategy):
 
     def _find_best_match(
         self,
+        pm_market: Market,
         pm_tokens: set[str],
         kalshi_markets: list[Market],
         kalshi_token_index: dict[str, set[str]],
+        multiway_events: set[str],
     ) -> Optional[tuple[Market, float]]:
         """Find the best-matching Kalshi market for a Polymarket question.
 
         Returns (kalshi_market, similarity_score) or None if no match
         exceeds the threshold.
+
+        Includes sport-outcome compatibility checking to prevent matching
+        a "Team Win" market against a "Draw" market in 3-way soccer events.
+        When the Kalshi market belongs to a detected multiway event, the
+        check is **strict** (both outcome types must be determinable).
         """
         best_market: Optional[Market] = None
         best_score = 0.0
@@ -514,6 +731,26 @@ class CrossPlatformStrategy(BaseStrategy):
 
             score = _jaccard_similarity(pm_tokens, km_tokens)
             if score > best_score:
+                # Determine if this Kalshi market is in a multiway event
+                km_prefix = _parse_kalshi_event_prefix(km.id)
+                is_multiway = (
+                    km_prefix is not None and km_prefix in multiway_events
+                )
+
+                # Check sport-outcome compatibility (strict for multiway)
+                if not _sport_outcomes_compatible(
+                    pm_market, km, is_multiway_event=is_multiway
+                ):
+                    logger.debug(
+                        "Cross-platform: outcome mismatch rejected",
+                        pm_question=pm_market.question[:60],
+                        kalshi_ticker=km.id,
+                        pm_outcome=_extract_sport_outcome_type(pm_market),
+                        k_outcome=_extract_sport_outcome_type(km),
+                        is_multiway=is_multiway,
+                    )
+                    continue
+
                 best_score = score
                 best_market = km
 
@@ -636,23 +873,45 @@ class CrossPlatformStrategy(BaseStrategy):
             logger.info("No Kalshi markets available, skipping cross-platform scan")
             return []
 
+        # CRITICAL: Only iterate Polymarket markets.  The scanner merges
+        # Kalshi markets into the ``markets`` list so all strategies can see
+        # them, but this strategy must NOT match Kalshi markets against the
+        # Kalshi cache — that produces false "cross-platform" signals where
+        # the same platform is compared to itself.
+        pm_only_markets = [
+            m for m in markets
+            if getattr(m, "platform", "polymarket") == "polymarket"
+        ]
+
         logger.info(
             "Cross-platform scan starting",
             kalshi_markets=len(kalshi_markets),
-            polymarket_markets=len(markets),
+            polymarket_markets=len(pm_only_markets),
+            total_markets_received=len(markets),
         )
 
         # Build token index for Kalshi markets
         kalshi_token_index = self._refresh_kalshi_tokens(kalshi_markets)
 
+        # Detect multiway Kalshi events (3-way soccer: Win/Draw/Away).
+        # Markets in these events require strict outcome-type matching.
+        multiway_events = _detect_multiway_kalshi_events(kalshi_markets)
+        if multiway_events:
+            logger.info(
+                "Cross-platform: detected %d multiway Kalshi events "
+                "(strict outcome matching will be enforced)",
+                len(multiway_events),
+            )
+
         opportunities: list[ArbitrageOpportunity] = []
         pairs_checked = 0
         pairs_matched = 0
+        outcome_rejections = 0
         best_unmatched_score = 0.0
         best_unmatched_pm = ""
         best_unmatched_k = ""
 
-        for pm_market in markets:
+        for pm_market in pm_only_markets:
             # Skip inactive, closed, or non-binary markets
             if pm_market.closed or not pm_market.active:
                 continue
@@ -687,7 +946,10 @@ class CrossPlatformStrategy(BaseStrategy):
             pairs_checked += 1
 
             # Find the best-matching Kalshi market
-            match = self._find_best_match(pm_tokens, kalshi_markets, kalshi_token_index)
+            match = self._find_best_match(
+                pm_market, pm_tokens, kalshi_markets,
+                kalshi_token_index, multiway_events,
+            )
             if match is None:
                 # Track best near-miss for debugging
                 best_score_for_pm = 0.0
@@ -713,9 +975,14 @@ class CrossPlatformStrategy(BaseStrategy):
             k_yes = kalshi_market.yes_price
             k_no = kalshi_market.no_price
 
-            # Calculate cross-platform arb
+            # Calculate cross-platform arb (accounts for combined ~9% fees)
             arb = self._calculate_arb(pm_yes, pm_no, k_yes, k_no)
             if arb is None:
+                continue
+
+            # Minimum guaranteed profit filter — sub-$0.01 is not worth
+            # the non-atomic cross-platform execution risk
+            if arb["net_profit"] < CROSS_PLATFORM_MIN_NET_PROFIT:
                 continue
 
             # Build positions list with both platform references
@@ -801,12 +1068,39 @@ class CrossPlatformStrategy(BaseStrategy):
                         "— platforms may have different DNP/void/cancellation rules",
                     )
 
+                # Soccer-specific resolution divergence: "90-min result" vs
+                # "who advances" (includes extra time + penalties).  A tie
+                # is possible in 90-min but NOT in "who advances", so the
+                # hedge breaks completely.
+                if _has_soccer_resolution_divergence_risk(
+                    pm_market.question, kalshi_market.question
+                ):
+                    opp.risk_score = min(1.0, opp.risk_score + 0.35)
+                    opp.risk_factors.insert(
+                        0,
+                        "CRITICAL: Soccer resolution divergence — one platform "
+                        "may resolve on 90-minute result while the other resolves "
+                        "on 'who advances' (extra time/penalties). A draw is "
+                        "possible under 90-min rules but impossible under "
+                        "advance rules, breaking the hedge.",
+                    )
+
+                # Flag multiway event risk (informational)
+                k_prefix = _parse_kalshi_event_prefix(kalshi_market.id)
+                if k_prefix and k_prefix in multiway_events:
+                    opp.risk_factors.append(
+                        "Part of a 3-way sports event (Win/Draw/Away) — "
+                        "outcome type verified as matching"
+                    )
+
                 opportunities.append(opp)
 
         logger.info(
             "Cross-platform scan complete",
             pairs_checked=pairs_checked,
             pairs_matched=pairs_matched,
+            outcome_rejections=outcome_rejections,
+            multiway_events=len(multiway_events),
             opportunities=len(opportunities),
         )
 

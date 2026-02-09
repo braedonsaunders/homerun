@@ -43,6 +43,8 @@ logger = get_logger(__name__)
 _ASSET_PATTERNS: dict[str, list[str]] = {
     "BTC": ["bitcoin", "btc"],
     "ETH": ["ethereum", "eth"],
+    "SOL": ["solana", "sol"],
+    "XRP": ["ripple", "xrp"],
 }
 
 _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
@@ -51,6 +53,12 @@ _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
         "15-min",
         "15min",
         "fifteen min",
+        "15 minute",
+        "15-minute",
+        "15 minutes",
+        "15-minutes",
+        "quarter hour",
+        "quarter-hour",
     ],
     "1hr": [
         "1 hour",
@@ -59,6 +67,12 @@ _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
         "one hour",
         "60 min",
         "60-min",
+        "60 minute",
+        "60-minute",
+        "60 minutes",
+        "60-minutes",
+        "hourly",
+        "next hour",
     ],
 }
 
@@ -69,13 +83,28 @@ _DIRECTION_KEYWORDS: list[str] = [
     "go down",
     "above or below",
     "increase or decrease",
+    "up",
+    "down",
+    "higher",
+    "lower",
+    "price",
+    "beat",
+    "price to beat",
 ]
 
-# Slug regex: matches slugs like "btc-15min-up-down", "eth-1hr-higher-lower"
+# Slug regex: matches slugs where asset and timeframe may be separated by
+# other words.  Allows "bitcoin-15-minute-up-or-down", "btc-price-15min",
+# "ethereum-1-hour-up-down", etc.
 _SLUG_REGEX = re.compile(
-    r"(btc|eth|bitcoin|ethereum)[_-]?(15min|1hr|15-min|1-hr|1-hour|15-minute)",
+    r"(btc|eth|sol|xrp|bitcoin|ethereum|solana|ripple)"
+    r".*?"  # allow intervening words (non-greedy)
+    r"(15[\s_-]?min(?:ute)?s?|1[\s_-]?h(?:ou)?r|60[\s_-]?min(?:ute)?s?"
+    r"|quarter[\s_-]?hour|hourly)",
     re.IGNORECASE,
 )
+
+# Gamma API crypto tags to search for high-freq markets
+_GAMMA_CRYPTO_TAGS = ["crypto", "btc", "bitcoin", "eth", "ethereum"]
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
 
@@ -100,6 +129,130 @@ _LIMIT_ORDER_TARGET_HIGH = 0.47  # Upper limit order price
 _DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
 _1HR_HISTORY_WINDOW_SEC = 600  # 10 minutes for 1-hr markets
 _MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
+
+
+# ---------------------------------------------------------------------------
+# Gamma API crypto market fetcher
+# ---------------------------------------------------------------------------
+
+
+class _CryptoMarketFetcher:
+    """Sync HTTP fetcher that queries Polymarket's Gamma API for crypto markets.
+
+    BTC/ETH 15-minute markets are high-frequency and may not appear in the
+    top 500 general markets.  This fetcher queries specific tags/slugs to
+    ensure they are always included in the candidate pool.
+
+    Uses a sync client (like the Kalshi cache) because detect() is sync.
+    Results are cached for ``ttl_seconds`` to avoid hammering the API.
+    """
+
+    def __init__(self, gamma_url: str = "", ttl_seconds: int = 30):
+        self._gamma_url = gamma_url or _cfg.GAMMA_API_URL
+        self._ttl = ttl_seconds
+        self._markets: list[Market] = []
+        self._last_fetch: float = 0.0
+
+    @property
+    def is_stale(self) -> bool:
+        return (time.monotonic() - self._last_fetch) > self._ttl
+
+    def get_markets(self) -> list[Market]:
+        """Return cached crypto markets, refreshing if stale."""
+        if self.is_stale:
+            fetched = self._fetch()
+            if fetched:
+                self._markets = fetched
+                self._last_fetch = time.monotonic()
+        return self._markets
+
+    def _fetch(self) -> list[Market]:
+        """Fetch crypto markets from Gamma API by tag and slug patterns."""
+        import httpx
+
+        all_markets: list[Market] = []
+        seen_ids: set[str] = set()
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                # Strategy 1: Search by crypto tags
+                for tag in _GAMMA_CRYPTO_TAGS:
+                    try:
+                        resp = client.get(
+                            f"{self._gamma_url}/events",
+                            params={"tag": tag, "closed": "false", "limit": 50},
+                        )
+                        if resp.status_code == 200:
+                            for event_data in resp.json():
+                                for mkt_data in event_data.get("markets", []):
+                                    mid = mkt_data.get("condition_id") or mkt_data.get("id", "")
+                                    if mid and mid not in seen_ids:
+                                        try:
+                                            m = Market.from_gamma_response(mkt_data)
+                                            all_markets.append(m)
+                                            seen_ids.add(mid)
+                                        except Exception:
+                                            pass
+                        time.sleep(0.1)  # Rate limit
+                    except Exception:
+                        pass
+
+                # Strategy 2: Search for specific slug patterns
+                slug_searches = [
+                    "bitcoin-15-minute", "btc-15-min", "btc-15min",
+                    "ethereum-15-minute", "eth-15-min",
+                    "bitcoin-1-hour", "btc-1-hour",
+                    "ethereum-1-hour", "eth-1-hour",
+                    "bitcoin-up-or-down", "ethereum-up-or-down",
+                    "btc-up-or-down", "eth-up-or-down",
+                    "bitcoin-price", "ethereum-price",
+                ]
+                for slug_query in slug_searches:
+                    try:
+                        resp = client.get(
+                            f"{self._gamma_url}/markets",
+                            params={
+                                "slug": slug_query,
+                                "closed": "false",
+                                "active": "true",
+                                "limit": 20,
+                            },
+                        )
+                        if resp.status_code == 200:
+                            for mkt_data in resp.json():
+                                mid = mkt_data.get("condition_id") or mkt_data.get("id", "")
+                                if mid and mid not in seen_ids:
+                                    try:
+                                        m = Market.from_gamma_response(mkt_data)
+                                        all_markets.append(m)
+                                        seen_ids.add(mid)
+                                    except Exception:
+                                        pass
+                        time.sleep(0.1)
+                    except Exception:
+                        pass
+
+        except Exception as exc:
+            logger.warning("Crypto market fetch failed", error=str(exc))
+
+        if all_markets:
+            logger.info(
+                "BtcEthHighFreq: fetched %d crypto markets via Gamma API",
+                len(all_markets),
+            )
+        return all_markets
+
+
+# Module-level crypto market fetcher (lazy-initialized)
+_crypto_fetcher: Optional[_CryptoMarketFetcher] = None
+
+
+def _get_crypto_fetcher() -> _CryptoMarketFetcher:
+    """Get or create the singleton crypto market fetcher."""
+    global _crypto_fetcher
+    if _crypto_fetcher is None:
+        _crypto_fetcher = _CryptoMarketFetcher()
+    return _crypto_fetcher
 
 
 # ---------------------------------------------------------------------------
@@ -322,14 +475,36 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         markets: list[Market],
         prices: dict[str, dict],
     ) -> list[HighFreqCandidate]:
-        """Filter the full market list to BTC/ETH high-freq binary markets."""
-        candidates: list[HighFreqCandidate] = []
+        """Filter the full market list to BTC/ETH high-freq binary markets.
 
-        for market in markets:
+        Also queries the Gamma API directly for crypto markets by tag/slug
+        to catch BTC/ETH 15-min markets that may not be in the top 500.
+        """
+        candidates: list[HighFreqCandidate] = []
+        seen_ids: set[str] = set()
+
+        # Combine scanner markets with directly-fetched crypto markets
+        all_markets = list(markets)
+        try:
+            fetcher = _get_crypto_fetcher()
+            extra = fetcher.get_markets()
+            for m in extra:
+                if m.id not in seen_ids:
+                    all_markets.append(m)
+            # Also mark scanner-provided markets so we don't double-count
+            for m in markets:
+                seen_ids.add(m.id)
+        except Exception:
+            pass  # Non-fatal: fall back to scanner markets only
+
+        for market in all_markets:
             if market.closed or not market.active:
                 continue
             if len(market.outcome_prices) != 2:
                 continue
+            if market.id in seen_ids and market not in markets:
+                continue  # Already processed from scanner list
+            seen_ids.add(market.id)
 
             asset = self._detect_asset(market)
             if asset is None:
@@ -368,16 +543,17 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         """Return '15min' or '1hr' if a matching timeframe is detected."""
         text = f"{market.question} {market.slug}".lower()
 
-        # Try slug regex first (most reliable)
-        slug_match = _SLUG_REGEX.search(market.slug)
+        # Try slug regex first — now allows words between asset and timeframe
+        slug_text = f"{market.slug} {market.question}".lower()
+        slug_match = _SLUG_REGEX.search(slug_text)
         if slug_match:
-            raw_tf = slug_match.group(2).lower().replace("-", "")
-            if "15" in raw_tf:
+            raw_tf = slug_match.group(2).lower().replace("-", "").replace("_", "")
+            if "15" in raw_tf or "quarter" in raw_tf:
                 return "15min"
-            if "1h" in raw_tf or "60" in raw_tf:
+            if "1h" in raw_tf or "60" in raw_tf or "hourly" in raw_tf:
                 return "1hr"
 
-        # Fallback: question-text keyword matching
+        # Fallback: question-text keyword matching (broadened patterns)
         for tf_key, patterns in _TIMEFRAME_PATTERNS.items():
             if any(p in text for p in patterns):
                 return tf_key
