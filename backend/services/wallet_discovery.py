@@ -1075,9 +1075,7 @@ class WalletDiscoveryEngine:
                 DiscoveredWallet.total_pnl >= min_pnl,
             ]
             if recommendation:
-                base_filter.append(
-                    DiscoveredWallet.recommendation == recommendation
-                )
+                base_filter.append(DiscoveredWallet.recommendation == recommendation)
 
             # Get total count for pagination
             count_query = select(func.count(DiscoveredWallet.address)).where(
