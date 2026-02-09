@@ -368,13 +368,29 @@ class LiquidityVacuumStrategy(BaseStrategy):
 
         return None
 
+    # Maximum synthetic imbalance ratio from velocity alone.
+    # Without real order book data, velocity is a weak proxy — cap it to
+    # avoid inflated ratios from discrete price jumps (e.g., a 43% parlay
+    # move generating a 87x "imbalance" that is really just past movement).
+    _MAX_VELOCITY_IMBALANCE_RATIO = 15.0
+
+    # Maximum single-scan price move to treat as order-flow signal.
+    # Moves larger than this are almost certainly event resolutions (a leg
+    # of a parlay lost, an outcome was decided, etc.), not exploitable
+    # order book vacuums.  The price already moved — there is no vacuum.
+    _MAX_VELOCITY_NET_MOVE = 0.20
+
     def _analyze_velocity(
         self,
         market: Market,
         yes_price: float,
         no_price: float,
     ) -> Optional[dict]:
-        """Detect imbalance from price movement across scans."""
+        """Detect imbalance from price movement across scans.
+
+        Only fires for moderate, sustained order-flow pressure — not for
+        large discrete jumps which represent completed event resolutions.
+        """
         market_id = market.id
         prev = self._prev_prices.get(market_id)
 
@@ -398,9 +414,17 @@ class LiquidityVacuumStrategy(BaseStrategy):
         if abs_move < 0.02:  # Less than 2 cent move -- ignore noise
             return None
 
-        # Convert movement magnitude to imbalance ratio
-        # A 5-cent net move is significant in prediction markets
-        imbalance_ratio = 1.0 + (abs_move * 100)  # 0.05 move -> 6.0 ratio
+        # Reject large discrete jumps — these are event resolutions, not
+        # order-flow vacuums.  A 20%+ swing in a single scan means the
+        # price has already adjusted; buying now is chasing, not front-running.
+        if abs_move > self._MAX_VELOCITY_NET_MOVE:
+            return None
+
+        # Convert movement magnitude to imbalance ratio, capped
+        imbalance_ratio = min(
+            1.0 + (abs_move * 100),
+            self._MAX_VELOCITY_IMBALANCE_RATIO,
+        )
 
         if imbalance_ratio < self.min_imbalance_ratio:
             return None

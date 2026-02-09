@@ -125,6 +125,17 @@ class NegRiskStrategy(BaseStrategy):
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
             return None
 
+        # --- Outcome-count-aware threshold ---
+        # Markets with very few listed outcomes are far more likely to be
+        # non-exhaustive (e.g., 4 named companies + "other" for an acquisition
+        # with dozens of potential acquirers).  Require higher total_yes for
+        # small outcome sets: <=5 outcomes need 0.98+, 6-8 need 0.97+.
+        num_outcomes = len(active_markets)
+        if num_outcomes <= 5 and total_yes < 0.98:
+            return None
+        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
+            return None
+
         # --- Structural non-exhaustiveness checks ---
         is_election = self._is_election_market(event.title)
         is_open_ended = self._is_open_ended_event(event.title)
@@ -214,6 +225,7 @@ class NegRiskStrategy(BaseStrategy):
         - "Nobel Peace Prize Winner 2026" (anyone in the world could win)
         - "Which company has the best AI model" (subjective + any company)
         - "Oscar Best Picture Winner" (nominees change)
+        - "Who will acquire Warner Bros" (any company could acquire)
         """
         title_lower = title.lower()
         open_ended_keywords = [
@@ -230,6 +242,23 @@ class NegRiskStrategy(BaseStrategy):
             "player of the year",
             "time person of the year",
             "pulitzer",
+            # M&A / acquisition markets — the universe of potential acquirers
+            # is inherently unbounded (any company could acquire the target).
+            "acquisition",
+            "acquire",
+            "merger",
+            "takeover",
+            "buyout",
+            "who will buy",
+            "who will purchase",
+            "who will close",
+            # "Next CEO/coach/leader" type markets
+            "next ceo",
+            "next coach",
+            "next head coach",
+            "next manager",
+            "next leader",
+            "who will replace",
         ]
         return any(kw in title_lower for kw in open_ended_keywords)
 
@@ -431,6 +460,13 @@ class NegRiskStrategy(BaseStrategy):
 
         # Reject if total YES is too low — almost certainly non-exhaustive outcomes
         if total_yes < settings.NEGRISK_MIN_TOTAL_YES:
+            return None
+
+        # Outcome-count-aware threshold (same as NegRisk)
+        num_outcomes = len(exclusive_markets)
+        if num_outcomes <= 5 and total_yes < 0.98:
+            return None
+        elif num_outcomes <= 8 and total_yes < settings.NEGRISK_WARN_TOTAL_YES:
             return None
 
         # Structural non-exhaustiveness checks (same as NegRisk)
