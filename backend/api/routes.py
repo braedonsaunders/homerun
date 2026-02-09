@@ -158,18 +158,12 @@ async def search_polymarket_opportunities(
         prices = {}
         price_tasks = []
         if poly_token_ids:
-            price_tasks.append(
-                polymarket_client.get_prices_batch(poly_token_ids[:200])
-            )
+            price_tasks.append(polymarket_client.get_prices_batch(poly_token_ids[:200]))
         if kalshi_token_ids:
-            price_tasks.append(
-                kalshi_client.get_prices_batch(kalshi_token_ids[:200])
-            )
+            price_tasks.append(kalshi_client.get_prices_batch(kalshi_token_ids[:200]))
 
         if price_tasks:
-            price_results = await asyncio.gather(
-                *price_tasks, return_exceptions=True
-            )
+            price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
             for result in price_results:
                 if isinstance(result, dict):
                     prices.update(result)
