@@ -418,7 +418,9 @@ class PolymarketClient:
             "question": market_data.get("question", ""),
             "slug": market_data.get("slug", ""),
             "groupItemTitle": market_data.get("groupItemTitle", ""),
-            "event_slug": market_data.get("events", [{}])[0].get("slug", "") if market_data.get("events") else market_data.get("event_slug", ""),
+            "event_slug": market_data.get("events", [{}])[0].get("slug", "")
+            if market_data.get("events")
+            else market_data.get("event_slug", ""),
         }
 
     async def enrich_trades_with_market_info(self, trades: list[dict]) -> list[dict]:
