@@ -109,6 +109,14 @@ class Settings(BaseSettings):
     DEFAULT_ORDER_TYPE: str = "GTC"  # GTC (Good Till Cancel) or FOK (Fill Or Kill)
     MAX_SLIPPAGE_PERCENT: float = 2.0  # Maximum acceptable slippage
 
+    # Trading VPN/Proxy Configuration
+    # Route ONLY trading requests through a VPN proxy (scanning/data unaffected)
+    TRADING_PROXY_ENABLED: bool = False  # Enable proxy for trading requests
+    TRADING_PROXY_URL: Optional[str] = None  # e.g., socks5://user:pass@host:port
+    TRADING_PROXY_VERIFY_SSL: bool = True  # Verify SSL certs through proxy
+    TRADING_PROXY_TIMEOUT: float = 30.0  # Timeout for proxied requests
+    TRADING_PROXY_REQUIRE_VPN: bool = True  # Block trades if VPN check fails
+
     # Polygon Network (for on-chain operations)
     POLYGON_RPC_URL: str = "https://polygon-rpc.com"
     POLYGON_WS_URL: str = "wss://polygon-bor-rpc.publicnode.com"

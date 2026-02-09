@@ -26,6 +26,7 @@ import uuid
 from config import settings
 from services.price_chaser import price_chaser
 from services.execution_tiers import execution_tier_service
+from services.trading_proxy import patch_clob_client_proxy, pre_trade_vpn_check
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -165,6 +166,17 @@ class TradingService:
                 creds=creds,
             )
 
+            # Route trading HTTP requests through VPN proxy if configured
+            if settings.TRADING_PROXY_ENABLED:
+                patched = patch_clob_client_proxy()
+                if patched:
+                    logger.info("Trading requests will be routed through VPN proxy")
+                else:
+                    logger.warning(
+                        "Trading proxy enabled but patch failed — "
+                        "trades will use direct connection"
+                    )
+
             self._initialized = True
             logger.info("Trading service initialized successfully")
             return True
@@ -281,6 +293,16 @@ class TradingService:
 
         # Calculate USD value
         size_usd = price * size
+
+        # VPN pre-trade check (blocks if VPN required but unreachable)
+        if settings.TRADING_PROXY_ENABLED and settings.TRADING_PROXY_REQUIRE_VPN:
+            vpn_ok, vpn_reason = await pre_trade_vpn_check()
+            if not vpn_ok:
+                order.status = OrderStatus.FAILED
+                order.error_message = f"VPN check failed: {vpn_reason}"
+                self._orders[order_id] = order
+                logger.error(f"Trade blocked by VPN check: {vpn_reason}")
+                return order
 
         # Validate order
         is_valid, error = self._validate_order(size_usd, token_id=token_id)

@@ -15,6 +15,7 @@ class PolymarketClient:
         self.clob_url = settings.CLOB_API_URL
         self.data_url = settings.DATA_API_URL
         self._client: Optional[httpx.AsyncClient] = None
+        self._trading_client: Optional[httpx.AsyncClient] = None  # Proxy-aware for trading
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._persistent_cache = None  # Lazy-loaded MarketCacheService
@@ -40,9 +41,25 @@ class PolymarketClient:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
 
+    async def _get_trading_client(self) -> httpx.AsyncClient:
+        """Get a proxy-aware client for trading-related CLOB calls.
+
+        Falls back to the standard client if proxy is not configured.
+        """
+        if not settings.TRADING_PROXY_ENABLED:
+            return await self._get_client()
+
+        if self._trading_client is None or self._trading_client.is_closed:
+            from services.trading_proxy import get_async_proxy_client
+
+            self._trading_client = get_async_proxy_client()
+        return self._trading_client
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+        if self._trading_client and not self._trading_client.is_closed:
+            await self._trading_client.aclose()
 
     # ==================== GAMMA API ====================
 
@@ -293,9 +310,9 @@ class PolymarketClient:
 
     # ==================== CLOB API ====================
 
-    async def get_midpoint(self, token_id: str) -> float:
+    async def get_midpoint(self, token_id: str, use_trading_proxy: bool = False) -> float:
         """Get midpoint price for a token"""
-        client = await self._get_client()
+        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
         response = await client.get(
             f"{self.clob_url}/midpoint", params={"token_id": token_id}
         )
@@ -303,9 +320,9 @@ class PolymarketClient:
         data = response.json()
         return float(data.get("mid", 0))
 
-    async def get_price(self, token_id: str, side: str = "BUY") -> float:
+    async def get_price(self, token_id: str, side: str = "BUY", use_trading_proxy: bool = False) -> float:
         """Get best price for a token (BUY = best ask, SELL = best bid)"""
-        client = await self._get_client()
+        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
         response = await client.get(
             f"{self.clob_url}/price", params={"token_id": token_id, "side": side}
         )
@@ -313,9 +330,9 @@ class PolymarketClient:
         data = response.json()
         return float(data.get("price", 0))
 
-    async def get_order_book(self, token_id: str) -> dict:
+    async def get_order_book(self, token_id: str, use_trading_proxy: bool = False) -> dict:
         """Get full order book for a token"""
-        client = await self._get_client()
+        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
         response = await client.get(
             f"{self.clob_url}/book", params={"token_id": token_id}
         )
