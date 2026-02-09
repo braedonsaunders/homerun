@@ -145,9 +145,7 @@ class WalletDiscoveryEngine:
         unrealized_pnl = 0.0
         for pos in positions:
             size = float(pos.get("size", 0) or 0)
-            avg_price = float(
-                pos.get("avgPrice", pos.get("avg_price", 0)) or 0
-            )
+            avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
             current_price = float(
                 pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
             )
@@ -301,7 +299,7 @@ class WalletDiscoveryEngine:
         # (mean_return - risk_free_rate) / downside_deviation
         negative_returns = [r for r in market_rois if r < 0]
         if negative_returns:
-            downside_variance = sum(r ** 2 for r in negative_returns) / len(
+            downside_variance = sum(r**2 for r in negative_returns) / len(
                 negative_returns
             )
             downside_deviation = math.sqrt(downside_variance)
@@ -495,9 +493,7 @@ class WalletDiscoveryEngine:
 
         market_groups: dict[str, list[dict]] = {}
         for trade in trades:
-            market_id = trade.get(
-                "market", trade.get("condition_id", "")
-            )
+            market_id = trade.get("market", trade.get("condition_id", ""))
             if market_id:
                 market_groups.setdefault(market_id, []).append(trade)
 
@@ -508,9 +504,7 @@ class WalletDiscoveryEngine:
 
         # Basic arbitrage (same market, opposite outcomes)
         for mtrades in market_groups.values():
-            sides = set(
-                t.get("outcome", t.get("side", "")) for t in mtrades
-            )
+            sides = set(t.get("outcome", t.get("side", "")) for t in mtrades)
             if "Yes" in sides and "No" in sides:
                 strategies.add("basic_arbitrage")
             if "YES" in sides and "NO" in sides:
@@ -567,7 +561,11 @@ class WalletDiscoveryEngine:
             tags.append("profitable")
         if sharpe is not None and math.isfinite(sharpe) and sharpe >= 2.0:
             tags.append("risk_adjusted_alpha")
-        if profit_factor is not None and math.isfinite(profit_factor) and profit_factor >= 3.0:
+        if (
+            profit_factor is not None
+            and math.isfinite(profit_factor)
+            and profit_factor >= 3.0
+        ):
             tags.append("strong_edge")
         if win_rate >= 0.55 and total_pnl > 0 and total_trades >= 50:
             tags.append("consistent")
@@ -836,8 +834,9 @@ class WalletDiscoveryEngine:
         """
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(DiscoveredWallet.address, DiscoveredWallet.rank_score)
-                .order_by(desc(DiscoveredWallet.rank_score))
+                select(DiscoveredWallet.address, DiscoveredWallet.rank_score).order_by(
+                    desc(DiscoveredWallet.rank_score)
+                )
             )
             rows = result.all()
 
@@ -1067,9 +1066,7 @@ class WalletDiscoveryEngine:
             )
 
             if recommendation:
-                query = query.where(
-                    DiscoveredWallet.recommendation == recommendation
-                )
+                query = query.where(DiscoveredWallet.recommendation == recommendation)
 
             # Determine sort column
             sort_column = getattr(DiscoveredWallet, sort_by, None)
@@ -1175,7 +1172,9 @@ class WalletDiscoveryEngine:
             "address": w.address,
             "username": w.username,
             "discovered_at": w.discovered_at.isoformat() if w.discovered_at else None,
-            "last_analyzed_at": w.last_analyzed_at.isoformat() if w.last_analyzed_at else None,
+            "last_analyzed_at": w.last_analyzed_at.isoformat()
+            if w.last_analyzed_at
+            else None,
             "discovery_source": w.discovery_source,
             # Basic stats
             "total_trades": w.total_trades,
@@ -1268,9 +1267,7 @@ class WalletDiscoveryEngine:
             return max((last - first).days, 1)
         return 30  # Default fallback
 
-    def _filter_trades_after(
-        self, trades: list[dict], cutoff: datetime
-    ) -> list[dict]:
+    def _filter_trades_after(self, trades: list[dict], cutoff: datetime) -> list[dict]:
         """Return only trades whose timestamp is after ``cutoff``."""
         filtered: list[dict] = []
         for trade in trades:

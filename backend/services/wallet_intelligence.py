@@ -99,8 +99,12 @@ class ConfluenceDetector:
                             "rank_score": wallet["rank_score"],
                             "market_id": market_id,
                             "size": size,
-                            "side": (pos.get("side", "") or pos.get("outcome", "")).upper(),
-                            "price": float(pos.get("avgPrice", 0) or pos.get("price", 0) or 0),
+                            "side": (
+                                pos.get("side", "") or pos.get("outcome", "")
+                            ).upper(),
+                            "price": float(
+                                pos.get("avgPrice", 0) or pos.get("price", 0) or 0
+                            ),
                             "title": pos.get("title", ""),
                         }
                         if market_id not in market_positions:
@@ -127,7 +131,9 @@ class ConfluenceDetector:
             avg_rank = sum(p["rank_score"] for p in positions) / len(positions)
             total_size = sum(p["size"] for p in positions)
 
-            strength = self._calculate_signal_strength(wallet_count, avg_rank, total_size)
+            strength = self._calculate_signal_strength(
+                wallet_count, avg_rank, total_size
+            )
 
             # Determine signal type from dominant side
             buy_count = sum(1 for p in positions if p["side"] in ("BUY", "YES"))
@@ -678,9 +684,7 @@ class EntityClusterer:
             for c in clusters:
                 # Fetch member wallets
                 members_result = await session.execute(
-                    select(DiscoveredWallet).where(
-                        DiscoveredWallet.cluster_id == c.id
-                    )
+                    select(DiscoveredWallet).where(DiscoveredWallet.cluster_id == c.id)
                 )
                 members = list(members_result.scalars().all())
 
@@ -695,7 +699,9 @@ class EntityClusterer:
                         "avg_win_rate": c.avg_win_rate,
                         "detection_method": c.detection_method,
                         "evidence": c.evidence,
-                        "created_at": c.created_at.isoformat() if c.created_at else None,
+                        "created_at": c.created_at.isoformat()
+                        if c.created_at
+                        else None,
                         "wallets": [
                             {
                                 "address": m.address,
@@ -739,8 +745,12 @@ class EntityClusterer:
                 "avg_win_rate": cluster.avg_win_rate,
                 "detection_method": cluster.detection_method,
                 "evidence": cluster.evidence,
-                "created_at": cluster.created_at.isoformat() if cluster.created_at else None,
-                "updated_at": cluster.updated_at.isoformat() if cluster.updated_at else None,
+                "created_at": cluster.created_at.isoformat()
+                if cluster.created_at
+                else None,
+                "updated_at": cluster.updated_at.isoformat()
+                if cluster.updated_at
+                else None,
                 "wallets": [
                     {
                         "address": m.address,
@@ -949,12 +959,7 @@ class WalletTagger:
             tags.append("insider_suspect")
 
         # new_talent
-        if (
-            days_active < 30
-            and total_trades >= 20
-            and win_rate > 0.6
-            and total_pnl > 0
-        ):
+        if days_active < 30 and total_trades >= 20 and win_rate > 0.6 and total_pnl > 0:
             tags.append("new_talent")
 
         return tags
@@ -1001,8 +1006,7 @@ class WalletTagger:
         """
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(DiscoveredWallet)
-                .order_by(DiscoveredWallet.rank_score.desc())
+                select(DiscoveredWallet).order_by(DiscoveredWallet.rank_score.desc())
             )
             wallets = list(result.scalars().all())
 
@@ -1044,7 +1048,7 @@ class WalletTagger:
 
         tag_counts: dict[str, int] = {}
         for w in all_wallets:
-            for t in (w.tags or []):
+            for t in w.tags or []:
                 tag_counts[t] = tag_counts.get(t, 0) + 1
 
         return [
@@ -1173,9 +1177,7 @@ class CrossPlatformTracker:
                 cross_markets = []
                 for pair in matched_pairs:
                     if pair["polymarket_id"] in traded_markets:
-                        price_diff = abs(
-                            pair["pm_yes_price"] - pair["k_yes_price"]
-                        )
+                        price_diff = abs(pair["pm_yes_price"] - pair["k_yes_price"])
                         is_arb = price_diff > 0.05  # >5 cents difference
                         cross_markets.append(
                             {
@@ -1354,7 +1356,9 @@ class CrossPlatformTracker:
                         "arb_market_count": len(arb_markets),
                         "arb_markets": arb_markets,
                         "combined_pnl": e.combined_pnl,
-                        "updated_at": e.updated_at.isoformat() if e.updated_at else None,
+                        "updated_at": e.updated_at.isoformat()
+                        if e.updated_at
+                        else None,
                     }
                 )
             return activity

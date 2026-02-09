@@ -880,7 +880,9 @@ class DiscoveredWallet(Base):
     # Risk-adjusted metrics
     sharpe_ratio = Column(Float, nullable=True)
     sortino_ratio = Column(Float, nullable=True)
-    max_drawdown = Column(Float, nullable=True)  # Stored as positive fraction (0.15 = 15% drawdown)
+    max_drawdown = Column(
+        Float, nullable=True
+    )  # Stored as positive fraction (0.15 = 15% drawdown)
     profit_factor = Column(Float, nullable=True)  # gross_profit / gross_loss
     calmar_ratio = Column(Float, nullable=True)  # annualized_return / max_drawdown
 
@@ -895,7 +897,9 @@ class DiscoveredWallet(Base):
     anomaly_score = Column(Float, default=0.0)
     is_bot = Column(Boolean, default=False)
     is_profitable = Column(Boolean, default=False)
-    recommendation = Column(String, default="unanalyzed")  # copy_candidate, monitor, avoid, unanalyzed
+    recommendation = Column(
+        String, default="unanalyzed"
+    )  # copy_candidate, monitor, avoid, unanalyzed
     strategies_detected = Column(JSON, default=list)
 
     # Leaderboard ranking (computed periodically)
@@ -928,7 +932,9 @@ class WalletTag(Base):
     name = Column(String, nullable=False, unique=True)  # e.g., "smart_predictor"
     display_name = Column(String, nullable=False)  # e.g., "Smart Predictor"
     description = Column(Text, nullable=True)
-    category = Column(String, default="behavioral")  # behavioral, performance, risk, strategy
+    category = Column(
+        String, default="behavioral"
+    )  # behavioral, performance, risk, strategy
     color = Column(String, default="#6B7280")  # Hex color for UI
     criteria = Column(JSON, nullable=True)  # Auto-assignment criteria
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -955,15 +961,15 @@ class WalletCluster(Base):
     avg_win_rate = Column(Float, default=0.0)
 
     # Detection method
-    detection_method = Column(String, nullable=True)  # funding_source, timing_correlation, pattern_match
+    detection_method = Column(
+        String, nullable=True
+    )  # funding_source, timing_correlation, pattern_match
     evidence = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_cluster_pnl", "combined_pnl"),
-    )
+    __table_args__ = (Index("idx_cluster_pnl", "combined_pnl"),)
 
 
 class MarketConfluenceSignal(Base):
@@ -976,7 +982,9 @@ class MarketConfluenceSignal(Base):
     market_question = Column(Text, nullable=True)
 
     # Signal details
-    signal_type = Column(String, nullable=False)  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
+    signal_type = Column(
+        String, nullable=False
+    )  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
     strength = Column(Float, default=0.0)  # 0-1 signal strength
     wallet_count = Column(Integer, default=0)  # How many wallets are converging
     wallets = Column(JSON, default=list)  # List of wallet addresses involved
@@ -985,7 +993,9 @@ class MarketConfluenceSignal(Base):
     outcome = Column(String, nullable=True)  # YES or NO
     avg_entry_price = Column(Float, nullable=True)
     total_size = Column(Float, nullable=True)  # Combined position size
-    avg_wallet_rank = Column(Float, nullable=True)  # Average rank of participating wallets
+    avg_wallet_rank = Column(
+        Float, nullable=True
+    )  # Average rank of participating wallets
 
     # Status
     is_active = Column(Boolean, default=True)
@@ -1018,7 +1028,9 @@ class CrossPlatformEntity(Base):
     combined_pnl = Column(Float, default=0.0)
 
     # Behavioral analysis
-    cross_platform_arb = Column(Boolean, default=False)  # Trades same event on both platforms
+    cross_platform_arb = Column(
+        Boolean, default=False
+    )  # Trades same event on both platforms
     hedging_detected = Column(Boolean, default=False)
     matching_markets = Column(JSON, default=list)  # Markets traded on both platforms
 

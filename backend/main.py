@@ -283,9 +283,7 @@ app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
-app.include_router(
-    discovery_router, prefix="/api/discovery", tags=["Trader Discovery"]
-)
+app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
 
 
 # WebSocket endpoint
