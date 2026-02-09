@@ -307,16 +307,15 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
 
         {/* Action buttons row */}
         <div className="flex items-center gap-2">
-          {/* Polymarket link */}
+          {/* Polymarket link - only show if opportunity has a Polymarket market */}
           {(() => {
             const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
+            if (!polyMarket) return null
             const polyUrl = opportunity.event_slug
               ? `https://polymarket.com/event/${opportunity.event_slug}`
-              : polyMarket?.slug
+              : polyMarket.slug
                 ? `https://polymarket.com/event/${polyMarket.slug}`
-                : opportunity.markets.length > 0 && opportunity.markets[0].slug
-                  ? `https://polymarket.com/event/${opportunity.markets[0].slug}`
-                  : null
+                : null
             return polyUrl ? (
               <a
                 href={polyUrl}
@@ -330,7 +329,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               </a>
             ) : null
           })()}
-          {/* Kalshi link - shown for cross-platform opportunities */}
+          {/* Kalshi link - only show if opportunity has a Kalshi market */}
           {(() => {
             const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
             if (!kalshiMarket) return null
