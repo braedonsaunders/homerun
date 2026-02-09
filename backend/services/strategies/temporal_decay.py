@@ -254,6 +254,7 @@ class TemporalDecayStrategy(BaseStrategy):
                 try:
                     year = int(parts[1])
                     import calendar
+
                     _, day = calendar.monthrange(year, month)
                     return datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
                 except ValueError:

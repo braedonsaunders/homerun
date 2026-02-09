@@ -287,7 +287,9 @@ class MarketMakingStrategy(BaseStrategy):
                 continue
             if max_position < settings.MIN_POSITION_SIZE:
                 continue
-            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            absolute_profit = (
+                max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            )
             if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
                 continue
             if market.end_date:
