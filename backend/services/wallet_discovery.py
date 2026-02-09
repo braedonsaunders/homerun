@@ -28,6 +28,7 @@ from sqlalchemy import select, func, update, desc, asc
 
 from models.database import DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
+from services.pause_state import global_pause_state
 from utils.logger import get_logger
 
 logger = get_logger("wallet_discovery")
@@ -1026,10 +1027,11 @@ class WalletDiscoveryEngine:
         )
 
         while self._running:
-            try:
-                await self.run_discovery()
-            except Exception as e:
-                logger.error("Discovery run failed", error=str(e))
+            if not global_pause_state.is_paused:
+                try:
+                    await self.run_discovery()
+                except Exception as e:
+                    logger.error("Discovery run failed", error=str(e))
 
             await asyncio.sleep(interval_minutes * 60)
 
