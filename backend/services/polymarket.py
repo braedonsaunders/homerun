@@ -1,10 +1,20 @@
 import httpx
 import asyncio
+import random
 from typing import Optional
 from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
+from utils.rate_limiter import rate_limiter, endpoint_for_url
+from utils.logger import get_logger
+
+_logger = get_logger("polymarket")
+
+# Retry settings for rate-limited requests
+_MAX_RETRIES = 4
+_BASE_DELAY = 1.0
+_MAX_DELAY = 30.0
 
 
 class PolymarketClient:
@@ -58,6 +68,71 @@ class PolymarketClient:
             self._trading_client = get_async_proxy_client()
         return self._trading_client
 
+    async def _rate_limited_get(
+        self, url: str, client: Optional[httpx.AsyncClient] = None, **kwargs
+    ) -> httpx.Response:
+        """GET request with rate limiting and retry on 429/5xx errors.
+
+        Acquires a token from the global rate limiter before each attempt,
+        then retries with exponential backoff when the server returns 429
+        or a transient 5xx error.
+        """
+        if client is None:
+            client = await self._get_client()
+
+        endpoint = endpoint_for_url(url)
+        last_response: Optional[httpx.Response] = None
+
+        for attempt in range(_MAX_RETRIES):
+            await rate_limiter.acquire(endpoint)
+
+            try:
+                response = await client.get(url, **kwargs)
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError) as exc:
+                if attempt < _MAX_RETRIES - 1:
+                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay *= 0.5 + random.random()
+                    _logger.warning(
+                        "Network error, retrying",
+                        url=url,
+                        attempt=attempt + 1,
+                        delay=round(delay, 2),
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
+            if response.status_code == 429 or response.status_code >= 500:
+                last_response = response
+                if attempt < _MAX_RETRIES - 1:
+                    delay = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+                    delay *= 0.5 + random.random()
+                    # Respect Retry-After header if present
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = max(delay, float(retry_after))
+                        except ValueError:
+                            pass
+                    _logger.debug(
+                        "Rate limited, retrying",
+                        url=url,
+                        status=response.status_code,
+                        attempt=attempt + 1,
+                        delay=round(delay, 2),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                # Final attempt exhausted — return the response as-is so
+                # callers that check status_code still work correctly.
+                return response
+
+            return response
+
+        # Should not be reached, but just in case
+        return last_response  # type: ignore[return-value]
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
@@ -74,7 +149,6 @@ class PolymarketClient:
         offset: int = 0,
     ) -> list[Market]:
         """Fetch markets from Gamma API"""
-        client = await self._get_client()
         params = {
             "active": str(active).lower(),
             "closed": str(closed).lower(),
@@ -82,7 +156,9 @@ class PolymarketClient:
             "offset": offset,
         }
 
-        response = await client.get(f"{self.gamma_url}/markets", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/markets", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -111,10 +187,11 @@ class PolymarketClient:
         self, closed: bool = False, limit: int = 100, offset: int = 0
     ) -> list[Event]:
         """Fetch events from Gamma API (events contain grouped markets)"""
-        client = await self._get_client()
         params = {"closed": str(closed).lower(), "limit": limit, "offset": offset}
 
-        response = await client.get(f"{self.gamma_url}/events", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -147,7 +224,6 @@ class PolymarketClient:
         Searches by slug, title, and tag concurrently, then merges and
         deduplicates results.
         """
-        client = await self._get_client()
         base_params = {
             "closed": str(closed).lower(),
             "limit": limit,
@@ -159,7 +235,7 @@ class PolymarketClient:
 
         async def _fetch(extra_params: dict) -> list[dict]:
             try:
-                resp = await client.get(
+                resp = await self._rate_limited_get(
                     f"{self.gamma_url}/events",
                     params={**base_params, **extra_params},
                 )
@@ -187,8 +263,9 @@ class PolymarketClient:
 
     async def get_event_by_slug(self, slug: str) -> Optional[Event]:
         """Get a specific event by slug"""
-        client = await self._get_client()
-        response = await client.get(f"{self.gamma_url}/events", params={"slug": slug})
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params={"slug": slug}
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -202,8 +279,7 @@ class PolymarketClient:
             return self._market_cache[condition_id]
 
         try:
-            client = await self._get_client()
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.gamma_url}/markets",
                 params={"condition_id": condition_id, "limit": 1},
             )
@@ -320,8 +396,8 @@ class PolymarketClient:
         client = await (
             self._get_trading_client() if use_trading_proxy else self._get_client()
         )
-        response = await client.get(
-            f"{self.clob_url}/midpoint", params={"token_id": token_id}
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/midpoint", client=client, params={"token_id": token_id}
         )
         response.raise_for_status()
         data = response.json()
@@ -334,8 +410,10 @@ class PolymarketClient:
         client = await (
             self._get_trading_client() if use_trading_proxy else self._get_client()
         )
-        response = await client.get(
-            f"{self.clob_url}/price", params={"token_id": token_id, "side": side}
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/price",
+            client=client,
+            params={"token_id": token_id, "side": side},
         )
         response.raise_for_status()
         data = response.json()
@@ -348,8 +426,8 @@ class PolymarketClient:
         client = await (
             self._get_trading_client() if use_trading_proxy else self._get_client()
         )
-        response = await client.get(
-            f"{self.clob_url}/book", params={"token_id": token_id}
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/book", client=client, params={"token_id": token_id}
         )
         response.raise_for_status()
         return response.json()
@@ -376,8 +454,7 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/positions", params={"user": address}
         )
         response.raise_for_status()
@@ -438,7 +515,6 @@ class PolymarketClient:
         Get user profile info from Polymarket.
         Tries multiple sources: username cache, leaderboard API, data API, and website scraping.
         """
-        client = await self._get_client()
         address_lower = address.lower()
 
         # Check username cache first (populated by discover/leaderboard scans)
@@ -484,7 +560,7 @@ class PolymarketClient:
 
         # Try the data API profile endpoint
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/profile", params={"address": address}
             )
             if response.status_code == 200:
@@ -500,7 +576,7 @@ class PolymarketClient:
 
         # Try the users endpoint which may have username
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/users", params={"proxyAddress": address}
             )
             if response.status_code == 200:
@@ -517,6 +593,7 @@ class PolymarketClient:
 
         # Try fetching from the Polymarket website profile page
         try:
+            client = await self._get_client()
             response = await client.get(
                 f"https://polymarket.com/profile/{address}",
                 headers={
@@ -551,8 +628,7 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
         )
         response.raise_for_status()
@@ -562,8 +638,7 @@ class PolymarketClient:
         self, condition_id: str, limit: int = 100
     ) -> list[dict]:
         """Get recent trades for a market"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
         )
         response.raise_for_status()
@@ -590,7 +665,6 @@ class PolymarketClient:
             category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE
             offset: Number of results to skip (for pagination)
         """
-        client = await self._get_client()
         try:
             # Polymarket data API leaderboard endpoint
             params = {
@@ -604,13 +678,13 @@ class PolymarketClient:
             if category.upper() != "OVERALL":
                 params["category"] = category.upper()
 
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/v1/leaderboard", params=params
             )
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"Leaderboard fetch error: {e}")
+            _logger.warning("Leaderboard fetch error", error=str(e))
             return []
 
     async def get_leaderboard_paginated(
@@ -902,9 +976,8 @@ class PolymarketClient:
         self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
-        client = await self._get_client()
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/closed-positions",
                 params={
                     "user": address,

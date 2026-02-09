@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 import json
 from datetime import datetime
@@ -46,9 +47,21 @@ class ContextLogger:
 
     def _log(self, level: int, msg: str, **kwargs):
         extra_data = {**self._context, **kwargs}
+        # Walk up the call stack to capture the actual caller's location
+        # 0 = _log, 1 = debug/info/etc, 2 = actual caller
+        frame = sys._getframe(2)
+        filename = frame.f_code.co_filename
         record = self.logger.makeRecord(
-            self.logger.name, level, "(unknown)", 0, msg, (), None
+            self.logger.name,
+            level,
+            filename,
+            frame.f_lineno,
+            msg,
+            (),
+            None,
+            func=frame.f_code.co_name,
         )
+        record.module = os.path.splitext(os.path.basename(filename))[0]
         record.extra_data = extra_data if extra_data else None
         self.logger.handle(record)
 
