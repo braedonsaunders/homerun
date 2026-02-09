@@ -460,26 +460,26 @@ export default function TradingPanel() {
             status?.running
               ? status?.config.mode === 'live'
                 ? "bg-green-500/5 border-green-500/30"
-                : "bg-blue-500/5 border-blue-500/30"
+                : "bg-amber-500/5 border-amber-500/30"
               : "bg-muted/50 border-border/40"
           )}>
             <div className="relative">
               <div className={cn(
                 "w-2 h-2 rounded-full",
                 status?.running
-                  ? status?.config.mode === 'live' ? "bg-green-500" : "bg-blue-500"
+                  ? status?.config.mode === 'live' ? "bg-green-500" : "bg-amber-500"
                   : "bg-gray-500"
               )} />
               {status?.running && (
                 <div className={cn(
                   "absolute inset-0 w-2 h-2 rounded-full animate-ping",
-                  status?.config.mode === 'live' ? "bg-green-500/40" : "bg-blue-500/40"
+                  status?.config.mode === 'live' ? "bg-green-500/40" : "bg-amber-500/40"
                 )} />
               )}
             </div>
             <span className="text-xs font-semibold leading-none whitespace-nowrap">
               {status?.running
-                ? `${status?.config.mode?.toUpperCase()} MODE`
+                ? `${status?.config.mode === 'paper' ? 'SANDBOX' : status?.config.mode?.toUpperCase()} MODE`
                 : 'OFFLINE'
               }
             </span>
@@ -550,16 +550,16 @@ export default function TradingPanel() {
                   variant="ghost"
                   onClick={() => setShowAccountPicker(prev => !prev)}
                   disabled={startMutation.isPending}
-                  className="gap-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-blue-500/20"
+                  className="gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-amber-500/20"
                 >
                   <Play className="w-3 h-3" />
-                  Paper
+                  Sandbox
                   <ChevronDown className="w-2.5 h-2.5" />
                 </Button>
                 {showAccountPicker && (
                   <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-popover border border-border rounded-lg shadow-xl overflow-hidden">
                     <div className="px-3 py-2 border-b border-border">
-                      <span className="text-xs font-medium text-muted-foreground">Select Paper Account</span>
+                      <span className="text-xs font-medium text-muted-foreground">Select Sandbox Account</span>
                     </div>
                     <div className="max-h-48 overflow-y-auto">
                       {simulationAccounts.map(acc => (
@@ -1001,9 +1001,9 @@ export default function TradingPanel() {
                                   <Badge className={cn(
                                     "rounded-md text-[9px] font-semibold border-0",
                                     trade.mode === 'live' ? "bg-green-500/15 text-green-400" :
-                                    trade.mode === 'paper' ? "bg-blue-500/15 text-blue-400" : "bg-gray-500/15 text-muted-foreground"
+                                    trade.mode === 'paper' ? "bg-amber-500/15 text-amber-400" : "bg-gray-500/15 text-muted-foreground"
                                   )}>
-                                    {trade.mode.toUpperCase()}
+                                    {trade.mode === 'paper' ? 'SANDBOX' : trade.mode.toUpperCase()}
                                   </Badge>
                                 </td>
                                 <td className="text-right px-2 py-2 font-mono text-xs">${trade.total_cost.toFixed(2)}</td>
@@ -1148,9 +1148,9 @@ export default function TradingPanel() {
                 <span className="text-[10px] text-muted-foreground">Mode</span>
                 <span className={cn("text-[10px] font-mono font-medium",
                   config?.mode === 'live' ? "text-green-400" :
-                  config?.mode === 'paper' ? "text-blue-400" : "text-muted-foreground"
+                  config?.mode === 'paper' ? "text-amber-400" : "text-muted-foreground"
                 )}>
-                  {config?.mode?.toUpperCase() || 'DISABLED'}
+                  {config?.mode === 'paper' ? 'SANDBOX' : (config?.mode?.toUpperCase() || 'DISABLED')}
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -1360,8 +1360,8 @@ export default function TradingPanel() {
                     prefix="$"
                   />
                   <SettingNumber
-                    label="Paper Account Capital"
-                    description="Starting capital for paper trading"
+                    label="Sandbox Account Capital"
+                    description="Starting capital for sandbox trading"
                     value={configDraft.paper_account_capital ?? 10000}
                     onChange={v => updateDraft('paper_account_capital', v)}
                     min={100} max={1000000} step={100}

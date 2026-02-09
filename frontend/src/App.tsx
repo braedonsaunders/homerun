@@ -12,7 +12,6 @@ import {
   Target,
   Zap,
   Activity,
-  PlayCircle,
   Bot,
   Search,
   ChevronDown,
@@ -50,7 +49,7 @@ import {
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
 import { useDataSimulation } from './hooks/useDataSimulation'
-import { shortcutsHelpOpenAtom, simulationEnabledAtom } from './store/atoms'
+import { shortcutsHelpOpenAtom, simulationEnabledAtom, accountModeAtom } from './store/atoms'
 
 // shadcn/ui components
 import { Button } from './components/ui/button'
@@ -84,9 +83,9 @@ import LiveTickerTape from './components/LiveTickerTape'
 import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
+import AccountModeSelector, { SandboxIndicator } from './components/AccountModeSelector'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
-type AccountsSubTab = 'paper' | 'live'
 type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
 type TradingSubTab = 'auto' | 'copy'
 
@@ -105,7 +104,7 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
-  const [accountsSubTab, setAccountsSubTab] = useState<AccountsSubTab>('paper')
+  const [accountMode] = useAtom(accountModeAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('leaderboard')
   const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -344,12 +343,15 @@ function App() {
       <div className="h-screen flex flex-col overflow-hidden bg-background">
         {/* ==================== Top Bar ==================== */}
         <header className="h-12 border-b border-border/40 bg-background/70 backdrop-blur-xl flex items-center px-4 shrink-0 z-50">
-          <div className="flex items-center gap-3 mr-6">
+          <div className="flex items-center gap-3 mr-4">
             <div className="w-7 h-7 bg-green-500/15 rounded-lg flex items-center justify-center border border-green-500/20">
               <Terminal className="w-4 h-4 text-green-400" />
             </div>
             <span className="text-sm font-bold text-green-400 tracking-wider font-data">HOMERUN</span>
           </div>
+
+          <AccountModeSelector />
+          <SandboxIndicator />
 
           {/* Inline Stats — Enhanced with animated numbers */}
           <div className="hidden md:flex items-center gap-3 text-xs">
@@ -1000,34 +1002,6 @@ function App() {
             {activeTab === 'accounts' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
                 <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setAccountsSubTab('paper')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      accountsSubTab === 'paper'
-                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <PlayCircle className="w-3.5 h-3.5" />
-                    Paper Accounts
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setAccountsSubTab('live')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      accountsSubTab === 'live'
-                        ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <DollarSign className="w-3.5 h-3.5" />
-                    Live Accounts
-                  </Button>
                   <div className="ml-auto">
                     <Button
                       variant="outline"
@@ -1041,10 +1015,10 @@ function App() {
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className={accountsSubTab === 'paper' ? '' : 'hidden'}>
+                  <div className={accountMode === 'sandbox' ? '' : 'hidden'}>
                     <SimulationPanel />
                   </div>
-                  <div className={accountsSubTab === 'live' ? '' : 'hidden'}>
+                  <div className={accountMode === 'live' ? '' : 'hidden'}>
                     <LiveAccountPanel />
                   </div>
                 </div>

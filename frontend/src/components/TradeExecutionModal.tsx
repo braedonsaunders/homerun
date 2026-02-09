@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAtom } from 'jotai'
 import {
   Play,
   AlertTriangle,
@@ -16,6 +17,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { accountModeAtom } from '../store/atoms'
 import {
   Opportunity,
   getSimulationAccounts,
@@ -43,7 +45,8 @@ interface TradeExecutionModalProps {
 }
 
 export default function TradeExecutionModal({ opportunity, onClose }: TradeExecutionModalProps) {
-  const [mode, setMode] = useState<'paper' | 'live'>('paper')
+  const [globalMode] = useAtom(accountModeAtom)
+  const [mode, setMode] = useState<'paper' | 'live'>(globalMode === 'live' ? 'live' : 'paper')
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
   const [positionSize, setPositionSize] = useState<number>(opportunity.max_position_size)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -216,12 +219,12 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
                 className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all",
                   mode === 'paper'
-                    ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                    ? "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-400"
                     : "bg-muted/50 text-muted-foreground border-border hover:border-border"
                 )}
               >
                 <Play className="w-4 h-4" />
-                Paper Trading
+                Sandbox Trading
               </Button>
               <Button
                 variant="outline"
@@ -239,15 +242,15 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
             </div>
           </div>
 
-          {/* Paper Account Selector */}
+          {/* Sandbox Account Selector */}
           {mode === 'paper' && (
             <div>
-              <Label className="block text-xs text-muted-foreground mb-2">Paper Account</Label>
+              <Label className="block text-xs text-muted-foreground mb-2">Sandbox Account</Label>
               {accounts.length === 0 ? (
                 <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 text-sm text-yellow-400">
                   <div className="flex items-center gap-2">
                     <Info className="w-4 h-4" />
-                    No paper accounts. Create one in the Paper Trading tab first.
+                    No sandbox accounts. Create one in the Sandbox Trading tab first.
                   </div>
                 </div>
               ) : (
@@ -451,7 +454,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
               className={cn(
                 "flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold rounded-xl transition-all",
                 mode === 'paper'
-                  ? "bg-blue-500 hover:bg-blue-600 text-white"
+                  ? "bg-amber-500 hover:bg-amber-600 text-white"
                   : "bg-green-500 hover:bg-green-600 text-white"
               )}
             >
@@ -463,7 +466,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
               ) : (
                 <>
                   {mode === 'paper' ? <Play className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
-                  {mode === 'paper' ? 'Execute Paper Trade' : 'Execute Live Trade'}
+                  {mode === 'paper' ? 'Execute Sandbox Trade' : 'Execute Live Trade'}
                 </>
               )}
             </Button>

@@ -21,3 +21,7 @@ export const lastWebSocketMessageTimeAtom = atom<string | null>(null)
 
 // Data simulation
 export const simulationEnabledAtom = atom(true)
+
+// Global account mode (sandbox vs live)
+export type AccountMode = 'sandbox' | 'live'
+export const accountModeAtom = atomWithStorage<AccountMode>('accountMode', 'sandbox')

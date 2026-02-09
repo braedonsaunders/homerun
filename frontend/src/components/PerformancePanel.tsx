@@ -244,7 +244,7 @@ export default function PerformancePanel() {
         <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
           <TabsList>
             <TabsTrigger value="all">All Trading</TabsTrigger>
-            <TabsTrigger value="simulation">Paper Trading</TabsTrigger>
+            <TabsTrigger value="simulation">Sandbox Trading</TabsTrigger>
             <TabsTrigger value="live">Live Trading</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -284,7 +284,7 @@ export default function PerformancePanel() {
               <>
                 <MetricCard
                   icon={<Activity className="w-5 h-5 text-blue-500" />}
-                  label="Paper Trades"
+                  label="Sandbox Trades"
                   value={simMetrics.totalTrades.toString()}
                   subtitle={`${simMetrics.openTrades} open`}
                 />
@@ -293,13 +293,13 @@ export default function PerformancePanel() {
                     ? <TrendingUp className="w-5 h-5 text-green-500" />
                     : <TrendingDown className="w-5 h-5 text-red-500" />
                   }
-                  label="Paper P&L"
+                  label="Sandbox P&L"
                   value={`${simMetrics.totalPnl >= 0 ? '+' : ''}$${simMetrics.totalPnl.toFixed(2)}`}
                   valueColor={simMetrics.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}
                 />
                 <MetricCard
                   icon={<Award className="w-5 h-5 text-yellow-500" />}
-                  label="Paper Win Rate"
+                  label="Sandbox Win Rate"
                   value={`${simMetrics.winRate.toFixed(1)}%`}
                   subtitle={`${simMetrics.wins}W / ${simMetrics.losses}L`}
                 />
@@ -359,7 +359,7 @@ export default function PerformancePanel() {
                 <CardHeader>
                   <CardTitle className="text-base font-semibold flex items-center gap-2">
                     <PieChart className="w-5 h-5 text-blue-500" />
-                    Paper Trading by Strategy
+                    Sandbox Trading by Strategy
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -566,11 +566,11 @@ function TradeRow({
               variant="outline"
               className={cn(
                 type === 'paper'
-                  ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                  ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
                   : "bg-purple-500/20 text-purple-400 border-purple-500/30"
               )}
             >
-              {type === 'paper' ? 'Paper' : 'Live'}
+              {type === 'paper' ? 'Sandbox' : 'Live'}
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -662,11 +662,11 @@ function SimplePnlChart({
           labelFormatter={(label) => `Date: ${label}`}
           formatter={(value: any, name: any) => [
             typeof value === 'number' ? `$${value.toFixed(2)}` : '$0.00',
-            name === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'
+            name === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'
           ]}
         />
         <Legend
-          formatter={(value) => value === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'}
+          formatter={(value) => value === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'}
           wrapperStyle={{ fontSize: '12px' }}
         />
         {showSim && (

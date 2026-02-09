@@ -145,7 +145,7 @@ export default function SimulationPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">Paper Trading Simulation</h2>
+          <h2 className="text-xl font-bold">Sandbox Trading</h2>
           <p className="text-sm text-muted-foreground">Practice trading without risking real money</p>
         </div>
         <Button
@@ -202,7 +202,7 @@ export default function SimulationPanel() {
         <Card className="text-center py-12 bg-card border-border shadow-none">
           <DollarSign className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
           <p className="text-muted-foreground">No simulation accounts yet</p>
-          <p className="text-sm text-muted-foreground">Create one to start paper trading</p>
+          <p className="text-sm text-muted-foreground">Create one to start sandbox trading</p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
