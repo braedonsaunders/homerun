@@ -35,6 +35,7 @@ from .base import BaseStrategy, utcnow, make_aware
 # Pure entropy math
 # ---------------------------------------------------------------------------
 
+
 def binary_entropy(p: float) -> float:
     """Shannon entropy of a binary distribution.
 
@@ -146,7 +147,7 @@ class EntropyArbStrategy(BaseStrategy):
         ratio = max(days_remaining, 0.0) / total_days
         # Clamp to [0, 1] in case days_remaining > total_days somehow
         ratio = min(ratio, 1.0)
-        return 1.0 * (ratio ** ENTROPY_DECAY_ALPHA)
+        return 1.0 * (ratio**ENTROPY_DECAY_ALPHA)
 
     @staticmethod
     def _expected_entropy_multi(
@@ -162,7 +163,7 @@ class EntropyArbStrategy(BaseStrategy):
             return 0.0
         ratio = max(days_remaining, 0.0) / total_days
         ratio = min(ratio, 1.0)
-        return h_max * (ratio ** ENTROPY_DECAY_ALPHA)
+        return h_max * (ratio**ENTROPY_DECAY_ALPHA)
 
     # ------------------------------------------------------------------
     # Price helpers
@@ -373,7 +374,9 @@ class EntropyArbStrategy(BaseStrategy):
             # Decrease risk slightly for spike confirmation
             spike_bonus = -0.05 if spike else 0.0
 
-            entropy_risk = base_risk + deviation_factor + contrarian_penalty + spike_bonus
+            entropy_risk = (
+                base_risk + deviation_factor + contrarian_penalty + spike_bonus
+            )
             # Merge with base risk (liquidity, time, multi-leg)
             opp.risk_score = min(max(opp.risk_score, entropy_risk), 1.0)
             opp.risk_factors.append(
@@ -384,9 +387,7 @@ class EntropyArbStrategy(BaseStrategy):
                 opp.risk_factors.append(
                     f"Entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
                 )
-            opp.risk_factors.append(
-                "Probabilistic strategy (not guaranteed arbitrage)"
-            )
+            opp.risk_factors.append("Probabilistic strategy (not guaranteed arbitrage)")
 
         return opp
 
@@ -441,7 +442,9 @@ class EntropyArbStrategy(BaseStrategy):
 
         n_outcomes = len(active_markets)
         h_actual = multi_outcome_entropy(probs)
-        h_expected = self._expected_entropy_multi(n_outcomes, days_remaining, total_days)
+        h_expected = self._expected_entropy_multi(
+            n_outcomes, days_remaining, total_days
+        )
 
         deviation = h_actual - h_expected
 
@@ -481,7 +484,9 @@ class EntropyArbStrategy(BaseStrategy):
             )
             # Pick the second-best outcome for contrarian fade.
             # If only 2 outcomes, pick the underdog.
-            fade_idx = sorted_indices[1] if len(sorted_indices) > 1 else sorted_indices[0]
+            fade_idx = (
+                sorted_indices[1] if len(sorted_indices) > 1 else sorted_indices[0]
+            )
             target_market = active_markets[fade_idx]
             target_price = yes_prices[fade_idx]
             action, outcome = "BUY", "YES"
@@ -537,7 +542,9 @@ class EntropyArbStrategy(BaseStrategy):
             deviation_factor = max(0.0, 1.0 - abs(deviation) / 0.5) * 0.10
             contrarian_penalty = 0.10 if deviation < 0 else 0.0
             spike_bonus = -0.05 if spike else 0.0
-            entropy_risk = base_risk + deviation_factor + contrarian_penalty + spike_bonus
+            entropy_risk = (
+                base_risk + deviation_factor + contrarian_penalty + spike_bonus
+            )
             opp.risk_score = min(max(opp.risk_score, entropy_risk), 1.0)
             opp.risk_factors.append(
                 f"Multi-outcome entropy deviation: {deviation:+.3f} bits "
@@ -548,8 +555,6 @@ class EntropyArbStrategy(BaseStrategy):
                 opp.risk_factors.append(
                     f"Multi-outcome entropy spike: {prev_h:.3f} -> {h_actual:.3f}"
                 )
-            opp.risk_factors.append(
-                "Probabilistic strategy (not guaranteed arbitrage)"
-            )
+            opp.risk_factors.append("Probabilistic strategy (not guaranteed arbitrage)")
 
         return opp

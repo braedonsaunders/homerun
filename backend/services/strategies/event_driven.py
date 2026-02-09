@@ -24,15 +24,71 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Stop words for keyword extraction
-_STOP_WORDS = frozenset({
-    "will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are",
-    "of", "for", "with", "this", "that", "it", "at", "from", "or", "and",
-    "do", "does", "did", "has", "have", "had", "was", "were", "been",
-    "not", "no", "yes", "what", "when", "how", "who", "which", "if",
-    "but", "can", "could", "would", "should", "may", "might", "than",
-    "then", "so", "as", "its", "their", "there", "they", "them",
-    "market", "price", "2024", "2025", "2026", "2027",
-})
+_STOP_WORDS = frozenset(
+    {
+        "will",
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "by",
+        "to",
+        "be",
+        "is",
+        "are",
+        "of",
+        "for",
+        "with",
+        "this",
+        "that",
+        "it",
+        "at",
+        "from",
+        "or",
+        "and",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "was",
+        "were",
+        "been",
+        "not",
+        "no",
+        "yes",
+        "what",
+        "when",
+        "how",
+        "who",
+        "which",
+        "if",
+        "but",
+        "can",
+        "could",
+        "would",
+        "should",
+        "may",
+        "might",
+        "than",
+        "then",
+        "so",
+        "as",
+        "its",
+        "their",
+        "there",
+        "they",
+        "them",
+        "market",
+        "price",
+        "2024",
+        "2025",
+        "2026",
+        "2027",
+    }
+)
 
 # Minimum word length for keyword significance
 _MIN_WORD_LENGTH = 3
@@ -134,8 +190,12 @@ class EventDrivenStrategy(BaseStrategy):
                 # If the related market barely moved relative to catalyst, it's lagging
                 if related_magnitude < move_magnitude * _MIN_LAG_RATIO:
                     opp = self._create_lag_opportunity(
-                        catalyst_id, related_id, move_direction,
-                        move_magnitude, related_move, prices,
+                        catalyst_id,
+                        related_id,
+                        move_direction,
+                        move_magnitude,
+                        related_move,
+                        prices,
                     )
                     if opp:
                         opportunities.append(opp)
@@ -269,7 +329,8 @@ class EventDrivenStrategy(BaseStrategy):
             entry_price = lagging_no
             token_id = (
                 lagging_market.clob_token_ids[1]
-                if lagging_market.clob_token_ids and len(lagging_market.clob_token_ids) > 1
+                if lagging_market.clob_token_ids
+                and len(lagging_market.clob_token_ids) > 1
                 else None
             )
 
