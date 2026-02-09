@@ -349,8 +349,13 @@ class AnomalyDetector:
 
         # 1. Impossible win rate
         # Use closed_positions (actual evaluated markets) not total_trades (raw trade count)
-        closed_positions = stats.get("closed_positions", stats["wins"] + stats["losses"])
-        if stats["win_rate"] >= self.IMPOSSIBLE_WIN_RATE_THRESHOLD and closed_positions >= 10:
+        closed_positions = stats.get(
+            "closed_positions", stats["wins"] + stats["losses"]
+        )
+        if (
+            stats["win_rate"] >= self.IMPOSSIBLE_WIN_RATE_THRESHOLD
+            and closed_positions >= 10
+        ):
             n = closed_positions
             # Probability of 95%+ win rate by chance with fair trades
             # Using binomial distribution approximation
