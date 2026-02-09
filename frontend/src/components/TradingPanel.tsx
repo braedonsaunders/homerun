@@ -449,51 +449,50 @@ export default function TradingPanel() {
   }
 
   return (
-    <div className="space-y-4">
-      {/* ==================== Command Bar ==================== */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          {/* Status Indicator */}
+    <div className="flex flex-col h-full">
+
+      {/* ==================== Top Status Bar ==================== */}
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 bg-card/40 border border-border/40 rounded-xl mb-2">
+        {/* Left: Mode indicator + circuit breaker */}
+        <div className="flex items-center gap-3 shrink-0">
           <div className={cn(
-            "flex items-center gap-2.5 px-4 py-2.5 rounded-xl border transition-all",
+            "flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all",
             status?.running
               ? status?.config.mode === 'live'
                 ? "bg-green-500/5 border-green-500/30"
                 : "bg-blue-500/5 border-blue-500/30"
-              : "bg-gray-800/50 border-border/50"
+              : "bg-gray-800/50 border-border/40"
           )}>
             <div className="relative">
               <div className={cn(
-                "w-2.5 h-2.5 rounded-full",
+                "w-2 h-2 rounded-full",
                 status?.running
                   ? status?.config.mode === 'live' ? "bg-green-500" : "bg-blue-500"
                   : "bg-gray-500"
               )} />
               {status?.running && (
                 <div className={cn(
-                  "absolute inset-0 w-2.5 h-2.5 rounded-full animate-ping",
+                  "absolute inset-0 w-2 h-2 rounded-full animate-ping",
                   status?.config.mode === 'live' ? "bg-green-500/40" : "bg-blue-500/40"
                 )} />
               )}
             </div>
-            <div>
-              <p className="text-sm font-semibold leading-none">
-                {status?.running
-                  ? `${status?.config.mode?.toUpperCase()} MODE`
-                  : 'OFFLINE'
-                }
-              </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">
-                {stats?.opportunities_seen || 0} scanned
-              </p>
-            </div>
+            <span className="text-xs font-semibold leading-none whitespace-nowrap">
+              {status?.running
+                ? `${status?.config.mode?.toUpperCase()} MODE`
+                : 'OFFLINE'
+              }
+            </span>
+            <span className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
+              {stats?.opportunities_seen || 0} scanned
+            </span>
           </div>
 
           {/* Circuit Breaker Warning */}
           {stats?.circuit_breaker_active && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl animate-pulse">
-              <AlertTriangle className="w-4 h-4 text-yellow-500" />
-              <span className="text-yellow-500 text-xs font-medium">CIRCUIT BREAKER</span>
+            <div className="flex items-center gap-2 px-2 py-1.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg animate-pulse">
+              <AlertTriangle className="w-3.5 h-3.5 text-yellow-500" />
+              <span className="text-yellow-500 text-[10px] font-medium whitespace-nowrap">CIRCUIT BREAKER</span>
               <Button
                 variant="ghost"
                 onClick={() => resetCircuitMutation.mutate()}
@@ -505,16 +504,43 @@ export default function TradingPanel() {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Start/Stop Controls */}
+        {/* Center: Key metrics inline */}
+        <div className="flex items-center gap-4 mx-4">
+          <div className="flex items-center gap-1.5">
+            <DollarSign className="w-3 h-3 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wide">P&L</span>
+            <span className={cn("text-xs font-mono font-bold", (stats?.total_profit || 0) >= 0 ? "text-green-400" : "text-red-400")}>
+              {(stats?.total_profit || 0) >= 0 ? '+' : ''}${(stats?.total_profit || 0).toFixed(2)}
+            </span>
+          </div>
+          <div className="w-px h-4 bg-border/40" />
+          <div className="flex items-center gap-1.5">
+            <Award className="w-3 h-3 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Win</span>
+            <span className={cn("text-xs font-mono font-bold", (stats?.win_rate || 0) >= 0.5 ? "text-green-400" : (stats?.win_rate || 0) > 0 ? "text-yellow-400" : "text-muted-foreground")}>
+              {((stats?.win_rate || 0) * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="w-px h-4 bg-border/40" />
+          <div className="flex items-center gap-1.5">
+            <Target className="w-3 h-3 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wide">ROI</span>
+            <span className={cn("text-xs font-mono font-bold", (stats?.roi_percent || 0) >= 0 ? "text-green-400" : "text-red-400")}>
+              {(stats?.roi_percent || 0) >= 0 ? '+' : ''}{(stats?.roi_percent || 0).toFixed(2)}%
+            </span>
+          </div>
+        </div>
+
+        {/* Right: Controls */}
+        <div className="flex items-center gap-2 shrink-0">
           {status?.running ? (
             <Button
               variant="secondary"
               onClick={() => stopMutation.mutate()}
               disabled={stopMutation.isPending}
-              className="gap-2"
+              className="gap-1.5 h-auto px-3 py-1.5 text-xs"
             >
-              <Square className="w-3.5 h-3.5" />
+              <Square className="w-3 h-3" />
               Stop
             </Button>
           ) : (
@@ -524,11 +550,11 @@ export default function TradingPanel() {
                   variant="ghost"
                   onClick={() => setShowAccountPicker(prev => !prev)}
                   disabled={startMutation.isPending}
-                  className="gap-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg h-auto px-4 py-2 text-sm font-medium border border-blue-500/20"
+                  className="gap-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-blue-500/20"
                 >
-                  <Play className="w-3.5 h-3.5" />
+                  <Play className="w-3 h-3" />
                   Paper
-                  <ChevronDown className="w-3 h-3" />
+                  <ChevronDown className="w-2.5 h-2.5" />
                 </Button>
                 {showAccountPicker && (
                   <div className="absolute top-full mt-1 right-0 z-50 w-64 bg-gray-800 border border-border rounded-lg shadow-xl overflow-hidden">
@@ -564,9 +590,9 @@ export default function TradingPanel() {
                   }
                 }}
                 disabled={startMutation.isPending}
-                className="gap-2 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg h-auto px-4 py-2 text-sm font-medium border border-green-500/20"
+                className="gap-1.5 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg h-auto px-3 py-1.5 text-xs font-medium border border-green-500/20"
               >
-                <Zap className="w-3.5 h-3.5" />
+                <Zap className="w-3 h-3" />
                 Live
               </Button>
             </>
@@ -580,26 +606,24 @@ export default function TradingPanel() {
                 emergencyStopMutation.mutate()
               }
             }}
-            className="gap-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg h-auto px-3 py-2 text-sm border border-red-500/20"
+            className="gap-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg h-auto px-2.5 py-1.5 text-xs border border-red-500/20"
           >
             <ShieldAlert className="w-3.5 h-3.5" />
           </Button>
         </div>
       </div>
 
-      {/* ==================== Main Layout: Feed + Metrics ==================== */}
-      <div className="grid grid-cols-12 gap-4">
+      {/* ==================== Three-Column Grid ==================== */}
+      <div className="grid grid-cols-12 gap-2 flex-1 min-h-0">
 
-        {/* ==================== LEFT: Live Activity Feed (7 cols) ==================== */}
-        <div className="col-span-12 lg:col-span-7 space-y-4">
-
-          {/* Live Feed */}
-          <Card className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
+        {/* ==================== LEFT COLUMN: Live Activity Feed (4 cols) ==================== */}
+        <div className="col-span-12 lg:col-span-4 flex flex-col min-h-0">
+          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none overflow-hidden flex flex-col flex-1">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-border/40 shrink-0">
               <div className="flex items-center gap-2">
-                <Radio className={cn("w-4 h-4", status?.running ? "text-green-500 animate-pulse" : "text-muted-foreground")} />
-                <h3 className="text-sm font-semibold">Live Activity</h3>
-                <span className="text-[10px] text-muted-foreground font-mono">{feedEvents.length} events</span>
+                <Radio className={cn("w-3.5 h-3.5", status?.running ? "text-green-500 animate-pulse" : "text-muted-foreground")} />
+                <h3 className="text-[10px] uppercase tracking-widest font-semibold">Live Activity</h3>
+                <span className="text-[10px] text-muted-foreground font-mono">{feedEvents.length}</span>
               </div>
               <div className="flex items-center gap-2">
                 {status?.running && (
@@ -611,10 +635,10 @@ export default function TradingPanel() {
               </div>
             </div>
 
-            <CardContent className="p-0">
-              <div ref={feedRef} className="h-[420px] overflow-y-auto scrollbar-thin">
+            <CardContent className="p-0 flex-1 min-h-0">
+              <div ref={feedRef} className="h-full max-h-[calc(100vh-180px)] overflow-y-auto scrollbar-thin">
                 {feedEvents.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-16">
                     <Activity className="w-8 h-8 mb-2 opacity-30" />
                     <p className="text-sm">Waiting for activity...</p>
                     <p className="text-xs text-gray-700 mt-1">Start the auto trader to see live events</p>
@@ -629,25 +653,28 @@ export default function TradingPanel() {
               </div>
             </CardContent>
           </Card>
+        </div>
 
-          {/* Dashboard Tabs */}
-          <Tabs value={dashboardTab} onValueChange={(v) => setDashboardTab(v as DashboardTab)} className="w-fit">
-            <TabsList className="bg-background rounded-xl p-1 border border-border/60 h-auto">
+        {/* ==================== CENTER COLUMN: Tab Content (5 cols) ==================== */}
+        <div className="col-span-12 lg:col-span-5 flex flex-col gap-2 min-h-0">
+          {/* Sub-tabs */}
+          <Tabs value={dashboardTab} onValueChange={(v) => setDashboardTab(v as DashboardTab)} className="w-full shrink-0">
+            <TabsList className="bg-card/40 rounded-xl p-0.5 border border-border/40 h-auto w-full justify-start">
               {([
-                { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
-                { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
-                { key: 'orders', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
-                { key: 'settings', label: 'Settings', icon: <Settings className="w-3.5 h-3.5" /> },
+                { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3 h-3" /> },
+                { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3 h-3" /> },
+                { key: 'orders', label: 'Trades', icon: <Activity className="w-3 h-3" /> },
+                { key: 'settings', label: 'Settings', icon: <Settings className="w-3 h-3" /> },
               ] as { key: DashboardTab; label: string; icon: React.ReactNode }[]).map(tab => (
                 <TabsTrigger
                   key={tab.key}
                   value={tab.key}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium data-[state=active]:bg-green-500/15 data-[state=active]:text-green-400 data-[state=active]:shadow-sm data-[state=active]:shadow-green-500/5 text-muted-foreground"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium data-[state=active]:bg-green-500/15 data-[state=active]:text-green-400 data-[state=active]:shadow-sm data-[state=active]:shadow-green-500/5 text-muted-foreground"
                 >
                   {tab.icon}
                   {tab.label}
                   {tab.key === 'holdings' && livePositions.length > 0 && (
-                    <Badge className="ml-1 px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded-full text-[10px] font-mono border-0">
+                    <Badge className="ml-0.5 px-1 py-0 bg-green-500/20 text-green-400 rounded-full text-[9px] font-mono border-0">
                       {livePositions.length}
                     </Badge>
                   )}
@@ -656,387 +683,639 @@ export default function TradingPanel() {
             </TabsList>
           </Tabs>
 
-          {/* Tab Content */}
-          {dashboardTab === 'overview' && (
-            <div className="space-y-4">
-              {/* Equity Curve */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-sm font-semibold flex items-center gap-2">
-                    <BarChart3 className="w-4 h-4 text-green-500" />
-                    Cumulative P&L
-                  </h4>
-                  {performanceMetrics && (
-                    <span className={cn(
-                      "text-sm font-mono font-bold",
-                      performanceMetrics.totalPnl >= 0 ? "text-green-400" : "text-red-400"
-                    )}>
-                      {performanceMetrics.totalPnl >= 0 ? '+' : ''}${performanceMetrics.totalPnl.toFixed(2)}
-                    </span>
+          {/* Tab Content Area */}
+          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-thin">
+            {dashboardTab === 'overview' && (
+              <div className="space-y-2">
+                {/* Equity Curve */}
+                <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5">
+                      <BarChart3 className="w-3.5 h-3.5 text-green-500" />
+                      Cumulative P&L
+                    </h4>
+                    {performanceMetrics && (
+                      <span className={cn(
+                        "text-xs font-mono font-bold",
+                        performanceMetrics.totalPnl >= 0 ? "text-green-400" : "text-red-400"
+                      )}>
+                        {performanceMetrics.totalPnl >= 0 ? '+' : ''}${performanceMetrics.totalPnl.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                  {performanceMetrics && performanceMetrics.equityPoints.length > 1 ? (
+                    <div className="h-44">
+                      <PnlChart points={performanceMetrics.equityPoints} />
+                    </div>
+                  ) : (
+                    <div className="text-center py-10 text-muted-foreground">
+                      <BarChart3 className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                      <p className="text-xs">Start trading to see your equity curve</p>
+                    </div>
                   )}
-                </div>
-                {performanceMetrics && performanceMetrics.equityPoints.length > 1 ? (
-                  <div className="h-52">
-                    <PnlChart points={performanceMetrics.equityPoints} />
-                  </div>
-                ) : (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <BarChart3 className="w-10 h-10 mx-auto mb-2 opacity-20" />
-                    <p className="text-sm">Start trading to see your equity curve</p>
-                  </div>
-                )}
-              </Card>
+                </Card>
 
-              {/* Strategy Performance */}
-              {performanceMetrics && Object.keys(performanceMetrics.byStrategy).length > 0 && (
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                  <h4 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                    <PieChart className="w-4 h-4 text-indigo-500" />
-                    Strategy Breakdown
-                  </h4>
-                  <div className="space-y-2">
-                    {Object.entries(performanceMetrics.byStrategy)
-                      .sort((a, b) => b[1].pnl - a[1].pnl)
-                      .map(([strategy, data]) => {
-                        const winRate = (data.wins + data.losses) > 0 ? (data.wins / (data.wins + data.losses)) * 100 : 0
-                        const maxPnl = Math.max(...Object.values(performanceMetrics.byStrategy).map(d => Math.abs(d.pnl)), 1)
-                        const barWidth = Math.abs(data.pnl) / maxPnl * 100
-                        return (
-                          <div key={strategy} className="group relative bg-card rounded-lg p-3 overflow-hidden">
-                            {/* Background bar */}
-                            <div
-                              className={cn(
-                                "absolute inset-y-0 left-0 opacity-[0.07] transition-all",
-                                data.pnl >= 0 ? "bg-green-500" : "bg-red-500"
-                              )}
-                              style={{ width: `${barWidth}%` }}
-                            />
-                            <div className="relative flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className={cn("w-1.5 h-8 rounded-full", data.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
-                                <div>
-                                  <p className="font-medium text-sm">{strategy}</p>
-                                  <p className="text-[11px] text-muted-foreground">
-                                    {data.trades} trades | {winRate.toFixed(0)}% WR | ${data.cost.toFixed(2)} invested
+                {/* Strategy Performance */}
+                {performanceMetrics && Object.keys(performanceMetrics.byStrategy).length > 0 && (
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                    <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-2">
+                      <PieChart className="w-3.5 h-3.5 text-indigo-500" />
+                      Strategy Breakdown
+                    </h4>
+                    <div className="space-y-1.5">
+                      {Object.entries(performanceMetrics.byStrategy)
+                        .sort((a, b) => b[1].pnl - a[1].pnl)
+                        .map(([strategy, data]) => {
+                          const winRate = (data.wins + data.losses) > 0 ? (data.wins / (data.wins + data.losses)) * 100 : 0
+                          const maxPnl = Math.max(...Object.values(performanceMetrics.byStrategy).map(d => Math.abs(d.pnl)), 1)
+                          const barWidth = Math.abs(data.pnl) / maxPnl * 100
+                          return (
+                            <div key={strategy} className="group relative bg-card/40 rounded-lg p-2.5 overflow-hidden">
+                              {/* Background bar */}
+                              <div
+                                className={cn(
+                                  "absolute inset-y-0 left-0 opacity-[0.07] transition-all",
+                                  data.pnl >= 0 ? "bg-green-500" : "bg-red-500"
+                                )}
+                                style={{ width: `${barWidth}%` }}
+                              />
+                              <div className="relative flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <div className={cn("w-1 h-6 rounded-full", data.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
+                                  <div>
+                                    <p className="font-medium text-xs">{strategy}</p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {data.trades} trades | {winRate.toFixed(0)}% WR | ${data.cost.toFixed(2)} inv
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <p className={cn("font-mono font-semibold text-xs", data.pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                                    {data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(2)}
                                   </p>
+                                  <p className="text-[10px] text-muted-foreground font-mono">{data.wins}W / {data.losses}L</p>
                                 </div>
                               </div>
-                              <div className="text-right">
-                                <p className={cn("font-mono font-semibold text-sm", data.pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                  {data.pnl >= 0 ? '+' : ''}${data.pnl.toFixed(2)}
-                                </p>
-                                <p className="text-[11px] text-muted-foreground font-mono">{data.wins}W / {data.losses}L</p>
-                              </div>
                             </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                </Card>
-              )}
-
-              {/* Best/Worst + Daily */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                {performanceMetrics && (
-                  <>
-                    <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Best Trade</p>
-                      <p className="text-lg font-mono font-bold text-green-400">+${performanceMetrics.bestTrade.toFixed(2)}</p>
-                    </Card>
-                    <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Worst Trade</p>
-                      <p className="text-lg font-mono font-bold text-red-400">${performanceMetrics.worstTrade.toFixed(2)}</p>
-                    </Card>
-                  </>
+                          )
+                        })}
+                    </div>
+                  </Card>
                 )}
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Executed Today</p>
-                  <p className="text-lg font-mono font-bold">{stats?.opportunities_executed || 0}</p>
-                </Card>
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Skipped Today</p>
-                  <p className="text-lg font-mono font-bold text-muted-foreground">{stats?.opportunities_skipped || 0}</p>
-                </Card>
-              </div>
-            </div>
-          )}
 
-          {dashboardTab === 'holdings' && (
-            <div className="space-y-3">
-              {/* Wallet Info */}
-              {tradingStatus && (
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Wallet className="w-5 h-5 text-purple-400" />
-                      <div>
-                        <p className="text-sm font-medium">Trading Wallet</p>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {tradingStatus.wallet_address
-                            ? `${tradingStatus.wallet_address.slice(0, 10)}...${tradingStatus.wallet_address.slice(-8)}`
-                            : 'Not connected'}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <p className="text-[10px] text-muted-foreground uppercase">USDC</p>
-                        <p className="font-mono font-bold">${balance?.balance?.toFixed(2) || '0.00'}</p>
-                      </div>
-                      <Badge className={cn(
-                        "rounded-lg text-[10px] font-medium border-0",
-                        tradingStatus.initialized ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
-                      )}>
-                        {tradingStatus.initialized ? 'Connected' : 'Offline'}
-                      </Badge>
-                    </div>
-                  </div>
-                </Card>
-              )}
-
-              {/* Holdings Summary */}
-              <div className="grid grid-cols-3 gap-3">
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Positions</p>
-                  <p className="text-xl font-mono font-bold">{livePositions.length}</p>
-                </Card>
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Cost Basis</p>
-                  <p className="text-xl font-mono font-bold">${positionsCostBasis.toFixed(2)}</p>
-                </Card>
-                <Card className="bg-background border-border/60 rounded-xl shadow-none p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Market Value</p>
-                  <p className="text-xl font-mono font-bold">${positionsTotalValue.toFixed(2)}</p>
-                </Card>
-              </div>
-
-              {/* Positions */}
-              {livePositions.length === 0 ? (
-                <Card className="text-center py-12 bg-background border-border/60 rounded-xl shadow-none">
-                  <Briefcase className="w-10 h-10 text-gray-700 mx-auto mb-2" />
-                  <p className="text-muted-foreground text-sm">No open positions</p>
-                  <p className="text-xs text-gray-700">Start trading to see holdings</p>
-                </Card>
-              ) : (
-                <div className="space-y-2">
-                  {livePositions.map((pos: TradingPosition, idx: number) => {
-                    const costBasis = pos.size * pos.average_cost
-                    const mktValue = pos.size * pos.current_price
-                    const pnlPct = costBasis > 0 ? (pos.unrealized_pnl / costBasis) * 100 : 0
-                    const isExpanded = expandedPositions.has(idx)
-                    return (
-                      <Card key={idx} className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden transition-all">
-                        <Button
-                          variant="ghost"
-                          onClick={() => togglePosition(idx)}
-                          className="w-full flex items-center justify-between p-3.5 h-auto rounded-none hover:bg-card"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <Badge className={cn(
-                              "w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0 border-0",
-                              pos.outcome.toLowerCase() === 'yes'
-                                ? "bg-green-500/15 text-green-400"
-                                : "bg-red-500/15 text-red-400"
-                            )}>
-                              {pos.outcome.toUpperCase().slice(0, 1)}
-                            </Badge>
-                            <div className="text-left min-w-0">
-                              <p className="text-sm font-medium truncate">{pos.market_question}</p>
-                              <p className="text-[11px] text-muted-foreground font-mono">
-                                {pos.size.toFixed(2)} shares @ ${pos.average_cost.toFixed(4)}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-4 shrink-0">
-                            <div className="text-right">
-                              <p className={cn("font-mono font-semibold text-sm", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
-                              </p>
-                              <p className={cn("text-[11px] font-mono", pnlPct >= 0 ? "text-green-400/60" : "text-red-400/60")}>
-                                {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-                              </p>
-                            </div>
-                            {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
-                          </div>
-                        </Button>
-                        {isExpanded && (
-                          <div className="px-4 pb-3 pt-0 border-t border-border/40">
-                            <div className="grid grid-cols-4 gap-3 pt-3">
-                              <div>
-                                <p className="text-[10px] text-muted-foreground">Current Price</p>
-                                <p className="font-mono text-sm">${pos.current_price.toFixed(4)}</p>
-                              </div>
-                              <div>
-                                <p className="text-[10px] text-muted-foreground">Cost Basis</p>
-                                <p className="font-mono text-sm">${costBasis.toFixed(2)}</p>
-                              </div>
-                              <div>
-                                <p className="text-[10px] text-muted-foreground">Market Value</p>
-                                <p className="font-mono text-sm">${mktValue.toFixed(2)}</p>
-                              </div>
-                              <div>
-                                {pos.market_id && (
-                                  <a
-                                    href={`https://polymarket.com/event/${pos.market_id}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 mt-2"
-                                  >
-                                    View Market <ExternalLink className="w-3 h-3" />
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        )}
+                {/* Best/Worst + Daily */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                  {performanceMetrics && (
+                    <>
+                      <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Best Trade</p>
+                        <p className="text-sm font-mono font-bold text-green-400">+${performanceMetrics.bestTrade.toFixed(2)}</p>
                       </Card>
-                    )
-                  })}
-
-                  {/* Totals */}
-                  <Card className="flex items-center justify-between px-4 py-3 bg-background border-border/60 rounded-xl shadow-none">
-                    <span className="text-sm text-muted-foreground font-medium">Total Unrealized P&L</span>
-                    <span className={cn("font-mono font-bold", positionsUnrealizedPnl >= 0 ? "text-green-400" : "text-red-400")}>
-                      {positionsUnrealizedPnl >= 0 ? '+' : ''}${positionsUnrealizedPnl.toFixed(2)}
-                    </span>
+                      <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Worst Trade</p>
+                        <p className="text-sm font-mono font-bold text-red-400">${performanceMetrics.worstTrade.toFixed(2)}</p>
+                      </Card>
+                    </>
+                  )}
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Executed Today</p>
+                    <p className="text-sm font-mono font-bold">{stats?.opportunities_executed || 0}</p>
+                  </Card>
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Skipped Today</p>
+                    <p className="text-sm font-mono font-bold text-muted-foreground">{stats?.opportunities_skipped || 0}</p>
                   </Card>
                 </div>
-              )}
-            </div>
-          )}
-
-          {dashboardTab === 'orders' && (
-            <div className="space-y-3">
-              {/* Filters */}
-              <div className="flex items-center gap-3">
-                <select
-                  value={tradeFilter}
-                  onChange={(e) => setTradeFilter(e.target.value)}
-                  className="bg-card border border-border rounded-lg px-3 py-2 text-sm"
-                >
-                  <option value="all">All Trades</option>
-                  <option value="open">Open</option>
-                  <option value="wins">Wins</option>
-                  <option value="losses">Losses</option>
-                </select>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  {(['date', 'pnl', 'cost'] as const).map(s => (
-                    <Button
-                      key={s}
-                      variant="ghost"
-                      onClick={() => {
-                        if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
-                        else { setTradeSort(s); setTradeSortDir('desc') }
-                      }}
-                      className={cn(
-                        "px-2 py-1 h-auto rounded-md text-xs",
-                        tradeSort === s ? "bg-green-500/15 text-green-400" : "hover:bg-gray-800"
-                      )}
-                    >
-                      {s.charAt(0).toUpperCase() + s.slice(1)}
-                      {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-3 h-3 inline ml-0.5" /> : <ChevronUp className="w-3 h-3 inline ml-0.5" />)}
-                    </Button>
-                  ))}
-                </div>
-                <span className="text-[11px] text-muted-foreground ml-auto font-mono">{processedTrades.length} trades</span>
               </div>
+            )}
 
-              {/* Trades */}
-              {processedTrades.length === 0 ? (
-                <Card className="text-center py-12 bg-background border-border/60 rounded-xl shadow-none">
-                  <p className="text-muted-foreground text-sm">No trades found</p>
-                </Card>
-              ) : (
-                <Card className="bg-background border-border/60 rounded-xl shadow-none overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="max-h-[500px] overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-background z-10">
-                          <tr className="border-b border-border/60 text-muted-foreground text-[11px] uppercase tracking-wider">
-                            <th className="text-left px-4 py-2.5">Date</th>
-                            <th className="text-left px-3 py-2.5">Strategy</th>
-                            <th className="text-center px-3 py-2.5">Mode</th>
-                            <th className="text-right px-3 py-2.5">Cost</th>
-                            <th className="text-center px-3 py-2.5">Status</th>
-                            <th className="text-right px-4 py-2.5">P&L</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {processedTrades.map((trade) => (
-                            <tr key={trade.id} className="border-b border-border/30 hover:bg-card transition-colors">
-                              <td className="px-4 py-2.5">
-                                <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
-                                <p className="font-mono text-[10px] text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
-                              </td>
-                              <td className="px-3 py-2.5 font-medium text-sm">{trade.strategy}</td>
-                              <td className="text-center px-3 py-2.5">
-                                <Badge className={cn(
-                                  "rounded-md text-[10px] font-semibold border-0",
-                                  trade.mode === 'live' ? "bg-green-500/15 text-green-400" :
-                                  trade.mode === 'paper' ? "bg-blue-500/15 text-blue-400" : "bg-gray-500/15 text-muted-foreground"
-                                )}>
-                                  {trade.mode.toUpperCase()}
-                                </Badge>
-                              </td>
-                              <td className="text-right px-3 py-2.5 font-mono text-sm">${trade.total_cost.toFixed(2)}</td>
-                              <td className="text-center px-3 py-2.5">
-                                <StatusBadge status={trade.status} />
-                              </td>
-                              <td className="text-right px-4 py-2.5">
-                                {trade.actual_profit !== null ? (
-                                  <span className={cn("font-mono font-semibold", (trade.actual_profit || 0) >= 0 ? "text-green-400" : "text-red-400")}>
-                                    {(trade.actual_profit || 0) >= 0 ? '+' : ''}${(trade.actual_profit || 0).toFixed(2)}
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground font-mono text-xs">+${trade.expected_profit.toFixed(2)} exp</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+            {dashboardTab === 'holdings' && (
+              <div className="space-y-2">
+                {/* Wallet Info */}
+                {tradingStatus && (
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Wallet className="w-4 h-4 text-purple-400" />
+                        <div>
+                          <p className="text-xs font-medium">Trading Wallet</p>
+                          <p className="text-[10px] text-muted-foreground font-mono">
+                            {tradingStatus.wallet_address
+                              ? `${tradingStatus.wallet_address.slice(0, 10)}...${tradingStatus.wallet_address.slice(-8)}`
+                              : 'Not connected'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="text-right">
+                          <p className="text-[10px] text-muted-foreground uppercase">USDC</p>
+                          <p className="font-mono font-bold text-sm">${balance?.balance?.toFixed(2) || '0.00'}</p>
+                        </div>
+                        <Badge className={cn(
+                          "rounded-lg text-[10px] font-medium border-0",
+                          tradingStatus.initialized ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
+                        )}>
+                          {tradingStatus.initialized ? 'Connected' : 'Offline'}
+                        </Badge>
+                      </div>
                     </div>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
+                  </Card>
+                )}
+
+                {/* Holdings Summary */}
+                <div className="grid grid-cols-3 gap-2">
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Positions</p>
+                    <p className="text-lg font-mono font-bold">{livePositions.length}</p>
+                  </Card>
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Cost Basis</p>
+                    <p className="text-lg font-mono font-bold">${positionsCostBasis.toFixed(2)}</p>
+                  </Card>
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-2.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-0.5">Market Value</p>
+                    <p className="text-lg font-mono font-bold">${positionsTotalValue.toFixed(2)}</p>
+                  </Card>
+                </div>
+
+                {/* Positions */}
+                {livePositions.length === 0 ? (
+                  <Card className="text-center py-10 bg-card/40 border-border/40 rounded-xl shadow-none">
+                    <Briefcase className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+                    <p className="text-muted-foreground text-xs">No open positions</p>
+                    <p className="text-[10px] text-gray-700">Start trading to see holdings</p>
+                  </Card>
+                ) : (
+                  <div className="space-y-1.5">
+                    {livePositions.map((pos: TradingPosition, idx: number) => {
+                      const costBasis = pos.size * pos.average_cost
+                      const mktValue = pos.size * pos.current_price
+                      const pnlPct = costBasis > 0 ? (pos.unrealized_pnl / costBasis) * 100 : 0
+                      const isExpanded = expandedPositions.has(idx)
+                      return (
+                        <Card key={idx} className="bg-card/40 border-border/40 rounded-xl shadow-none overflow-hidden transition-all">
+                          <Button
+                            variant="ghost"
+                            onClick={() => togglePosition(idx)}
+                            className="w-full flex items-center justify-between p-3 h-auto rounded-none hover:bg-card/60"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Badge className={cn(
+                                "w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0 border-0",
+                                pos.outcome.toLowerCase() === 'yes'
+                                  ? "bg-green-500/15 text-green-400"
+                                  : "bg-red-500/15 text-red-400"
+                              )}>
+                                {pos.outcome.toUpperCase().slice(0, 1)}
+                              </Badge>
+                              <div className="text-left min-w-0">
+                                <p className="text-xs font-medium truncate">{pos.market_question}</p>
+                                <p className="text-[10px] text-muted-foreground font-mono">
+                                  {pos.size.toFixed(2)} shares @ ${pos.average_cost.toFixed(4)}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div className="text-right">
+                                <p className={cn("font-mono font-semibold text-xs", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                                  {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
+                                </p>
+                                <p className={cn("text-[10px] font-mono", pnlPct >= 0 ? "text-green-400/60" : "text-red-400/60")}>
+                                  {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                                </p>
+                              </div>
+                              {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                            </div>
+                          </Button>
+                          {isExpanded && (
+                            <div className="px-3 pb-2.5 pt-0 border-t border-border/40">
+                              <div className="grid grid-cols-4 gap-2 pt-2.5">
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Current Price</p>
+                                  <p className="font-mono text-xs">${pos.current_price.toFixed(4)}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Cost Basis</p>
+                                  <p className="font-mono text-xs">${costBasis.toFixed(2)}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Market Value</p>
+                                  <p className="font-mono text-xs">${mktValue.toFixed(2)}</p>
+                                </div>
+                                <div>
+                                  {pos.market_id && (
+                                    <a
+                                      href={`https://polymarket.com/event/${pos.market_id}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 mt-2"
+                                    >
+                                      View Market <ExternalLink className="w-2.5 h-2.5" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </Card>
+                      )
+                    })}
+
+                    {/* Totals */}
+                    <Card className="flex items-center justify-between px-3 py-2.5 bg-card/40 border-border/40 rounded-xl shadow-none">
+                      <span className="text-xs text-muted-foreground font-medium">Total Unrealized P&L</span>
+                      <span className={cn("font-mono font-bold text-sm", positionsUnrealizedPnl >= 0 ? "text-green-400" : "text-red-400")}>
+                        {positionsUnrealizedPnl >= 0 ? '+' : ''}${positionsUnrealizedPnl.toFixed(2)}
+                      </span>
+                    </Card>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {dashboardTab === 'orders' && (
+              <div className="space-y-2">
+                {/* Filters */}
+                <div className="flex items-center gap-2">
+                  <select
+                    value={tradeFilter}
+                    onChange={(e) => setTradeFilter(e.target.value)}
+                    className="bg-card/40 border border-border/40 rounded-lg px-2.5 py-1.5 text-xs"
+                  >
+                    <option value="all">All Trades</option>
+                    <option value="open">Open</option>
+                    <option value="wins">Wins</option>
+                    <option value="losses">Losses</option>
+                  </select>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    {(['date', 'pnl', 'cost'] as const).map(s => (
+                      <Button
+                        key={s}
+                        variant="ghost"
+                        onClick={() => {
+                          if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                          else { setTradeSort(s); setTradeSortDir('desc') }
+                        }}
+                        className={cn(
+                          "px-2 py-1 h-auto rounded-md text-[10px]",
+                          tradeSort === s ? "bg-green-500/15 text-green-400" : "hover:bg-gray-800"
+                        )}
+                      >
+                        {s.charAt(0).toUpperCase() + s.slice(1)}
+                        {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-2.5 h-2.5 inline ml-0.5" /> : <ChevronUp className="w-2.5 h-2.5 inline ml-0.5" />)}
+                      </Button>
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground ml-auto font-mono">{processedTrades.length} trades</span>
+                </div>
+
+                {/* Trades */}
+                {processedTrades.length === 0 ? (
+                  <Card className="text-center py-10 bg-card/40 border-border/40 rounded-xl shadow-none">
+                    <p className="text-muted-foreground text-xs">No trades found</p>
+                  </Card>
+                ) : (
+                  <Card className="bg-card/40 border-border/40 rounded-xl shadow-none overflow-hidden">
+                    <CardContent className="p-0">
+                      <div className="max-h-[500px] overflow-y-auto">
+                        <table className="w-full text-xs">
+                          <thead className="sticky top-0 bg-card z-10">
+                            <tr className="border-b border-border/40 text-muted-foreground text-[10px] uppercase tracking-widest">
+                              <th className="text-left px-3 py-2">Date</th>
+                              <th className="text-left px-2 py-2">Strategy</th>
+                              <th className="text-center px-2 py-2">Mode</th>
+                              <th className="text-right px-2 py-2">Cost</th>
+                              <th className="text-center px-2 py-2">Status</th>
+                              <th className="text-right px-3 py-2">P&L</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {processedTrades.map((trade) => (
+                              <tr key={trade.id} className="border-b border-border/30 hover:bg-card/60 transition-colors">
+                                <td className="px-3 py-2">
+                                  <p className="font-mono text-[10px]">{new Date(trade.executed_at).toLocaleDateString()}</p>
+                                  <p className="font-mono text-[9px] text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
+                                </td>
+                                <td className="px-2 py-2 font-medium text-xs">{trade.strategy}</td>
+                                <td className="text-center px-2 py-2">
+                                  <Badge className={cn(
+                                    "rounded-md text-[9px] font-semibold border-0",
+                                    trade.mode === 'live' ? "bg-green-500/15 text-green-400" :
+                                    trade.mode === 'paper' ? "bg-blue-500/15 text-blue-400" : "bg-gray-500/15 text-muted-foreground"
+                                  )}>
+                                    {trade.mode.toUpperCase()}
+                                  </Badge>
+                                </td>
+                                <td className="text-right px-2 py-2 font-mono text-xs">${trade.total_cost.toFixed(2)}</td>
+                                <td className="text-center px-2 py-2">
+                                  <StatusBadge status={trade.status} />
+                                </td>
+                                <td className="text-right px-3 py-2">
+                                  {trade.actual_profit !== null ? (
+                                    <span className={cn("font-mono font-semibold text-xs", (trade.actual_profit || 0) >= 0 ? "text-green-400" : "text-red-400")}>
+                                      {(trade.actual_profit || 0) >= 0 ? '+' : ''}${(trade.actual_profit || 0).toFixed(2)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground font-mono text-[10px]">+${trade.expected_profit.toFixed(2)} exp</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            )}
+
+            {/* Settings tab: show empty center when settings overlay is active */}
+            {dashboardTab === 'settings' && (
+              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                <Settings className="w-8 h-8 mb-2 opacity-20" />
+                <p className="text-xs">Settings panel is open</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ==================== RIGHT COLUMN: Metrics Sidebar (3 cols) ==================== */}
+        <div className="col-span-12 lg:col-span-3 flex flex-col gap-2 min-h-0 overflow-y-auto scrollbar-thin">
+
+          {/* Key Stats */}
+          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-0.5">
+            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
+              <Crosshair className="w-3 h-3" /> Key Metrics
+            </h4>
+
+            <MetricRow
+              label="Total P&L"
+              value={`${(stats?.total_profit || 0) >= 0 ? '+' : ''}$${(stats?.total_profit || 0).toFixed(2)}`}
+              valueColor={(stats?.total_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
+              icon={<DollarSign className="w-3 h-3" />}
+              sparkData={performanceMetrics?.equityPoints.slice(-20).map(p => p.equity)}
+            />
+            <MetricRow
+              label="Daily P&L"
+              value={`${(stats?.daily_profit || 0) >= 0 ? '+' : ''}$${(stats?.daily_profit || 0).toFixed(2)}`}
+              valueColor={(stats?.daily_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
+              icon={<TrendingUp className="w-3 h-3" />}
+              sub={`${stats?.daily_trades || 0} today`}
+            />
+            <MetricRow
+              label="Win Rate"
+              value={`${((stats?.win_rate || 0) * 100).toFixed(1)}%`}
+              icon={<Award className="w-3 h-3" />}
+              sub={`${stats?.winning_trades || 0}W / ${stats?.losing_trades || 0}L`}
+              valueColor={(stats?.win_rate || 0) >= 0.5 ? 'text-green-400' : (stats?.win_rate || 0) > 0 ? 'text-yellow-400' : 'text-muted-foreground'}
+            />
+            <MetricRow
+              label="Total Trades"
+              value={stats?.total_trades?.toString() || '0'}
+              icon={<Activity className="w-3 h-3" />}
+            />
+            <MetricRow
+              label="ROI"
+              value={`${(stats?.roi_percent || 0) >= 0 ? '+' : ''}${(stats?.roi_percent || 0).toFixed(2)}%`}
+              valueColor={(stats?.roi_percent || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
+              icon={<Target className="w-3 h-3" />}
+            />
+            <MetricRow
+              label="Total Invested"
+              value={`$${(stats?.total_invested || 0).toFixed(2)}`}
+              icon={<Briefcase className="w-3 h-3" />}
+            />
+          </Card>
+
+          {/* Advanced Metrics */}
+          {performanceMetrics && (
+            <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-0.5">
+              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                <Flame className="w-3 h-3" /> Advanced
+              </h4>
+              <MetricRow
+                label="Profit Factor"
+                value={performanceMetrics.profitFactor > 0 ? performanceMetrics.profitFactor.toFixed(2) : 'N/A'}
+                icon={<PieChart className="w-3 h-3" />}
+                valueColor={performanceMetrics.profitFactor >= 1.5 ? 'text-green-400' : performanceMetrics.profitFactor >= 1 ? 'text-yellow-400' : 'text-red-400'}
+              />
+              <MetricRow
+                label="Max Drawdown"
+                value={`$${performanceMetrics.maxDrawdown.toFixed(2)}`}
+                icon={<AlertTriangle className="w-3 h-3" />}
+                valueColor="text-orange-400"
+              />
+              <MetricRow
+                label="Avg Win"
+                value={`$${performanceMetrics.avgWin.toFixed(2)}`}
+                icon={<ArrowUpRight className="w-3 h-3" />}
+                valueColor="text-green-400"
+              />
+              <MetricRow
+                label="Avg Loss"
+                value={`$${performanceMetrics.avgLoss.toFixed(2)}`}
+                icon={<ArrowDownRight className="w-3 h-3" />}
+                valueColor="text-red-400"
+              />
+              <MetricRow
+                label="Positions Value"
+                value={`$${positionsTotalValue.toFixed(2)}`}
+                icon={<Eye className="w-3 h-3" />}
+              />
+              <MetricRow
+                label="Unrealized P&L"
+                value={`${positionsUnrealizedPnl >= 0 ? '+' : ''}$${positionsUnrealizedPnl.toFixed(2)}`}
+                valueColor={positionsUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}
+                icon={positionsUnrealizedPnl >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              />
+            </Card>
           )}
 
-          {dashboardTab === 'settings' && (
-            <div className="space-y-4">
-              {/* Save/Reset Bar */}
-              {configDirty && (
-                <div className="flex items-center justify-between px-4 py-3 bg-blue-500/10 border border-blue-500/30 rounded-xl">
-                  <span className="text-sm text-blue-400 font-medium">Unsaved changes</span>
-                  <div className="flex items-center gap-2">
-                    <Button variant="ghost" onClick={resetDraft} className="gap-1.5 text-xs h-auto px-3 py-1.5">
+          {/* System Health */}
+          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
+              <Shield className="w-3 h-3" /> System
+            </h4>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">Engine</span>
+                <span className={cn("text-[10px] font-mono font-medium", status?.running ? "text-green-400" : "text-muted-foreground")}>
+                  {status?.running ? 'ACTIVE' : 'STOPPED'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">Mode</span>
+                <span className={cn("text-[10px] font-mono font-medium",
+                  config?.mode === 'live' ? "text-green-400" :
+                  config?.mode === 'paper' ? "text-blue-400" : "text-muted-foreground"
+                )}>
+                  {config?.mode?.toUpperCase() || 'DISABLED'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">Circuit Breaker</span>
+                <span className={cn("text-[10px] font-mono font-medium",
+                  stats?.circuit_breaker_active ? "text-yellow-400" : "text-muted-foreground"
+                )}>
+                  {stats?.circuit_breaker_active ? 'TRIGGERED' : 'OK'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">Consecutive Losses</span>
+                <span className={cn("text-[10px] font-mono font-medium",
+                  (stats?.consecutive_losses || 0) >= 3 ? "text-orange-400" : "text-muted-foreground"
+                )}>
+                  {stats?.consecutive_losses || 0} / {config?.circuit_breaker_losses || '?'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">Last Trade</span>
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {stats?.last_trade_at ? timeAgo(new Date(stats.last_trade_at)) : 'Never'}
+                </span>
+              </div>
+              {tradingStatus && (
+                <>
+                  <Separator className="my-1.5" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground">Wallet</span>
+                    <span className={cn("text-[10px] font-mono font-medium",
+                      tradingStatus.initialized ? "text-green-400" : "text-muted-foreground"
+                    )}>
+                      {tradingStatus.initialized ? 'CONNECTED' : 'OFFLINE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-muted-foreground">Balance</span>
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      ${balance?.balance?.toFixed(2) || '0.00'} USDC
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          </Card>
+
+          {/* Live Positions mini-list (always visible) */}
+          {livePositions.length > 0 && dashboardTab !== 'holdings' && (
+            <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                <Briefcase className="w-3 h-3" /> Open Positions
+                <span className="ml-auto text-green-400 font-mono">{livePositions.length}</span>
+              </h4>
+              <div className="space-y-1.5">
+                {livePositions.slice(0, 5).map((pos: TradingPosition, idx: number) => (
+                  <div key={idx} className="flex items-center justify-between py-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Badge className={cn(
+                        "w-4 h-4 rounded flex items-center justify-center text-[8px] font-bold shrink-0 border-0",
+                        pos.outcome.toLowerCase() === 'yes' ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                      )}>
+                        {pos.outcome[0].toUpperCase()}
+                      </Badge>
+                      <p className="text-[10px] truncate text-muted-foreground">{pos.market_question}</p>
+                    </div>
+                    <span className={cn(
+                      "text-[10px] font-mono font-medium shrink-0 ml-1.5",
+                      pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
+                    )}>
+                      {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+                {livePositions.length > 5 && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => setDashboardTab('holdings')}
+                    className="text-[10px] text-muted-foreground hover:text-gray-300 w-full h-auto pt-1 justify-center"
+                  >
+                    +{livePositions.length - 5} more...
+                  </Button>
+                )}
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* ==================== Settings Slide-Out Overlay ==================== */}
+      {dashboardTab === 'settings' && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/40 z-40 transition-opacity"
+            onClick={() => setDashboardTab('overview')}
+          />
+          {/* Drawer */}
+          <div className="fixed top-0 right-0 bottom-0 w-full max-w-2xl z-50 bg-background border-l border-border/40 shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300">
+            {/* Drawer Header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-background border-b border-border/40">
+              <div className="flex items-center gap-2">
+                <Settings className="w-4 h-4 text-green-500" />
+                <h3 className="text-sm font-semibold">Auto Trader Settings</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {configDirty && (
+                  <>
+                    <Button variant="ghost" onClick={resetDraft} className="gap-1 text-[10px] h-auto px-2.5 py-1">
                       <RotateCcw className="w-3 h-3" /> Reset
                     </Button>
                     <Button
                       onClick={saveDraft}
                       disabled={configMutation.isPending}
-                      className="gap-1.5 text-xs h-auto px-4 py-1.5 bg-blue-500 hover:bg-blue-600 text-white"
+                      className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white"
                     >
                       <Save className="w-3 h-3" /> {configMutation.isPending ? 'Saving...' : 'Save'}
                     </Button>
-                  </div>
+                  </>
+                )}
+                <Button
+                  variant="ghost"
+                  onClick={() => setDashboardTab('overview')}
+                  className="text-xs h-auto px-2.5 py-1 hover:bg-card"
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+
+            {/* Unsaved banner */}
+            {configDirty && (
+              <div className="mx-4 mt-3 flex items-center justify-between px-3 py-2 bg-blue-500/10 border border-blue-500/30 rounded-xl">
+                <span className="text-xs text-blue-400 font-medium">Unsaved changes</span>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" onClick={resetDraft} className="gap-1 text-[10px] h-auto px-2.5 py-1">
+                    <RotateCcw className="w-3 h-3" /> Reset
+                  </Button>
+                  <Button
+                    onClick={saveDraft}
+                    disabled={configMutation.isPending}
+                    className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white"
+                  >
+                    <Save className="w-3 h-3" /> {configMutation.isPending ? 'Saving...' : 'Save'}
+                  </Button>
                 </div>
-              )}
+              </div>
+            )}
+
+            {/* Settings content: 2-column grid */}
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
 
               {/* Spread Trading Exits */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Percent className="w-4 h-4 text-green-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Percent className="w-3.5 h-3.5 text-green-500" />
                   Spread Trading Exits
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SettingToggle
                     label="Enable Spread Exits"
                     description="Automatically set take-profit & stop-loss on new positions"
                     checked={configDraft.enable_spread_exits ?? true}
                     onChange={v => updateDraft('enable_spread_exits', v)}
                   />
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-3">
                     <SettingNumber
                       label="Take Profit %"
                       description="Sell when price rises above entry"
@@ -1058,12 +1337,12 @@ export default function TradingPanel() {
               </Card>
 
               {/* Position Sizing */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <DollarSign className="w-4 h-4 text-yellow-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <DollarSign className="w-3.5 h-3.5 text-yellow-500" />
                   Position Sizing
                 </h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <SettingNumber
                     label="Base Position Size"
                     description="Default trade size"
@@ -1092,12 +1371,12 @@ export default function TradingPanel() {
               </Card>
 
               {/* Entry Criteria */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Target className="w-4 h-4 text-cyan-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Target className="w-3.5 h-3.5 text-cyan-500" />
                   Entry Criteria
                 </h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <SettingNumber
                     label="Min ROI %"
                     description="Minimum return to trade"
@@ -1133,12 +1412,12 @@ export default function TradingPanel() {
               </Card>
 
               {/* Risk Management */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Shield className="w-4 h-4 text-orange-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Shield className="w-3.5 h-3.5 text-orange-500" />
                   Risk Management
                 </h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <SettingNumber
                     label="Max Daily Trades"
                     description="Maximum trades per day"
@@ -1180,22 +1459,22 @@ export default function TradingPanel() {
               </Card>
 
               {/* AI Resolution Gate */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Brain className="w-4 h-4 text-purple-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Brain className="w-3.5 h-3.5 text-purple-500" />
                   AI Resolution Gate
                   <Badge className={cn(
-                    "ml-auto rounded-md text-[10px] font-semibold border-0",
+                    "ml-auto rounded-md text-[9px] font-semibold border-0",
                     configDraft.ai_resolution_gate ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
                   )}>
                     {configDraft.ai_resolution_gate ? 'ON' : 'OFF'}
                   </Badge>
                 </h4>
-                <p className="text-xs text-muted-foreground mb-4">
+                <p className="text-[10px] text-muted-foreground mb-3">
                   Uses AI to analyze market resolution criteria before trading. For spread trading (buy/sell on price movement),
                   this should be OFF since you&apos;re not holding to resolution.
                 </p>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SettingToggle
                     label="Enable Resolution Gate"
                     description="Block trades that fail AI resolution analysis"
@@ -1216,7 +1495,7 @@ export default function TradingPanel() {
                         checked={configDraft.ai_skip_on_analysis_failure ?? false}
                         onChange={v => updateDraft('ai_skip_on_analysis_failure', v)}
                       />
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-2 gap-3">
                         <SettingNumber
                           label="Max Risk Score"
                           description="Block if risk exceeds this"
@@ -1238,18 +1517,18 @@ export default function TradingPanel() {
               </Card>
 
               {/* AI Position Sizing */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Zap className="w-4 h-4 text-amber-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Zap className="w-3.5 h-3.5 text-amber-500" />
                   AI Position Sizing
                   <Badge className={cn(
-                    "ml-auto rounded-md text-[10px] font-semibold border-0",
+                    "ml-auto rounded-md text-[9px] font-semibold border-0",
                     configDraft.ai_position_sizing ? "bg-green-500/15 text-green-400" : "bg-gray-500/15 text-muted-foreground"
                   )}>
                     {configDraft.ai_position_sizing ? 'ON' : 'OFF'}
                   </Badge>
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SettingToggle
                     label="Enable AI Position Sizing"
                     description="Use AI judge score to scale position sizes"
@@ -1264,7 +1543,7 @@ export default function TradingPanel() {
                         checked={configDraft.ai_score_size_multiplier ?? true}
                         onChange={v => updateDraft('ai_score_size_multiplier', v)}
                       />
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-2 gap-3">
                         <SettingNumber
                           label="Min Score to Trade"
                           description="Block if AI score below this (0 = disabled)"
@@ -1294,12 +1573,12 @@ export default function TradingPanel() {
               </Card>
 
               {/* Settlement Filters */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Crosshair className="w-4 h-4 text-teal-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Crosshair className="w-3.5 h-3.5 text-teal-500" />
                   Settlement Filters
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SettingToggle
                     label="Prefer Near Settlement"
                     description="Boost score for markets settling sooner"
@@ -1312,7 +1591,7 @@ export default function TradingPanel() {
                     checked={configDraft.use_profit_guarantee ?? true}
                     onChange={v => updateDraft('use_profit_guarantee', v)}
                   />
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-3">
                     <SettingNumber
                       label="Max Days to Settlement"
                       description="Skip markets further out (0 = no limit)"
@@ -1332,12 +1611,12 @@ export default function TradingPanel() {
               </Card>
 
               {/* AI Integration */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Brain className="w-4 h-4 text-purple-500" />
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Brain className="w-3.5 h-3.5 text-purple-500" />
                   AI Integration
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <SettingToggle
                     label="LLM Verify Before Trading"
                     description="Use AI to verify opportunities before executing trades"
@@ -1346,14 +1625,14 @@ export default function TradingPanel() {
                   />
                   {configDraft.llm_verify_trades && (
                     <div>
-                      <p className="text-sm font-medium mb-0.5">Strategies to LLM-Verify</p>
-                      <p className="text-[11px] text-muted-foreground mb-2">Comma-separated list (empty = verify all)</p>
+                      <p className="text-xs font-medium mb-0.5">Strategies to LLM-Verify</p>
+                      <p className="text-[10px] text-muted-foreground mb-1.5">Comma-separated list (empty = verify all)</p>
                       <input
                         type="text"
                         value={(configDraft.llm_verify_strategies || []).join(', ')}
                         onChange={e => updateDraft('llm_verify_strategies', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
                         placeholder="e.g. cross_platform, bayesian_cascade, stat_arb"
-                        className="w-full bg-card border border-border rounded-lg py-2 px-3 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50"
+                        className="w-full bg-card border border-border rounded-lg py-1.5 px-2.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50"
                       />
                     </div>
                   )}
@@ -1366,14 +1645,14 @@ export default function TradingPanel() {
                 </div>
               </Card>
 
-              {/* Enabled Strategies */}
-              <Card className="bg-background border-border/60 rounded-xl shadow-none p-5">
-                <h4 className="text-sm font-semibold flex items-center gap-2 mb-4">
-                  <Target className="w-4 h-4 text-emerald-500" />
+              {/* Enabled Strategies - full width */}
+              <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 md:col-span-2">
+                <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
+                  <Target className="w-3.5 h-3.5 text-emerald-500" />
                   Enabled Strategies
                 </h4>
-                <p className="text-[11px] text-muted-foreground mb-3">Select which strategies the auto trader should use</p>
-                <div className="flex flex-wrap gap-2">
+                <p className="text-[10px] text-muted-foreground mb-2">Select which strategies the auto trader should use</p>
+                <div className="flex flex-wrap gap-1.5">
                   {ALL_STRATEGIES.map(s => {
                     const enabled = (configDraft.enabled_strategies || []).includes(s.key)
                     return (
@@ -1388,7 +1667,7 @@ export default function TradingPanel() {
                           )
                         }}
                         className={cn(
-                          "px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+                          "px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-colors",
                           enabled
                             ? "bg-green-500/15 text-green-400 border-green-500/30"
                             : "bg-card text-muted-foreground border-border hover:border-green-500/20"
@@ -1399,226 +1678,28 @@ export default function TradingPanel() {
                     )
                   })}
                 </div>
-                <div className="flex items-center gap-2 pt-3">
+                <div className="flex items-center gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => updateDraft('enabled_strategies', ALL_STRATEGIES.map(s => s.key))}
-                    className="text-xs text-muted-foreground hover:text-green-400 transition-colors"
+                    className="text-[10px] text-muted-foreground hover:text-green-400 transition-colors"
                   >
                     Select All
                   </button>
-                  <span className="text-muted-foreground text-xs">|</span>
+                  <span className="text-muted-foreground text-[10px]">|</span>
                   <button
                     type="button"
                     onClick={() => updateDraft('enabled_strategies', [])}
-                    className="text-xs text-muted-foreground hover:text-red-400 transition-colors"
+                    className="text-[10px] text-muted-foreground hover:text-red-400 transition-colors"
                   >
                     Clear All
                   </button>
                 </div>
               </Card>
             </div>
-          )}
-        </div>
-
-        {/* ==================== RIGHT: Metrics Sidebar (5 cols) ==================== */}
-        <div className="col-span-12 lg:col-span-5 space-y-3">
-
-          {/* Key Stats - Vertical Stack with Sparklines */}
-          <Card className="bg-background border-border/60 rounded-xl shadow-none p-4 space-y-1">
-            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
-              <Crosshair className="w-3 h-3" /> Key Metrics
-            </h4>
-
-            <MetricRow
-              label="Total P&L"
-              value={`${(stats?.total_profit || 0) >= 0 ? '+' : ''}$${(stats?.total_profit || 0).toFixed(2)}`}
-              valueColor={(stats?.total_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
-              icon={<DollarSign className="w-3.5 h-3.5" />}
-              sparkData={performanceMetrics?.equityPoints.slice(-20).map(p => p.equity)}
-            />
-            <MetricRow
-              label="Daily P&L"
-              value={`${(stats?.daily_profit || 0) >= 0 ? '+' : ''}$${(stats?.daily_profit || 0).toFixed(2)}`}
-              valueColor={(stats?.daily_profit || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
-              icon={<TrendingUp className="w-3.5 h-3.5" />}
-              sub={`${stats?.daily_trades || 0} today`}
-            />
-            <MetricRow
-              label="Win Rate"
-              value={`${((stats?.win_rate || 0) * 100).toFixed(1)}%`}
-              icon={<Award className="w-3.5 h-3.5" />}
-              sub={`${stats?.winning_trades || 0}W / ${stats?.losing_trades || 0}L`}
-              valueColor={(stats?.win_rate || 0) >= 0.5 ? 'text-green-400' : (stats?.win_rate || 0) > 0 ? 'text-yellow-400' : 'text-muted-foreground'}
-            />
-            <MetricRow
-              label="Total Trades"
-              value={stats?.total_trades?.toString() || '0'}
-              icon={<Activity className="w-3.5 h-3.5" />}
-            />
-            <MetricRow
-              label="ROI"
-              value={`${(stats?.roi_percent || 0) >= 0 ? '+' : ''}${(stats?.roi_percent || 0).toFixed(2)}%`}
-              valueColor={(stats?.roi_percent || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
-              icon={<Target className="w-3.5 h-3.5" />}
-            />
-            <MetricRow
-              label="Total Invested"
-              value={`$${(stats?.total_invested || 0).toFixed(2)}`}
-              icon={<Briefcase className="w-3.5 h-3.5" />}
-            />
-          </Card>
-
-          {/* Advanced Metrics */}
-          {performanceMetrics && (
-            <Card className="bg-background border-border/60 rounded-xl shadow-none p-4 space-y-1">
-              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                <Flame className="w-3 h-3" /> Advanced
-              </h4>
-              <MetricRow
-                label="Profit Factor"
-                value={performanceMetrics.profitFactor > 0 ? performanceMetrics.profitFactor.toFixed(2) : 'N/A'}
-                icon={<PieChart className="w-3.5 h-3.5" />}
-                valueColor={performanceMetrics.profitFactor >= 1.5 ? 'text-green-400' : performanceMetrics.profitFactor >= 1 ? 'text-yellow-400' : 'text-red-400'}
-              />
-              <MetricRow
-                label="Max Drawdown"
-                value={`$${performanceMetrics.maxDrawdown.toFixed(2)}`}
-                icon={<AlertTriangle className="w-3.5 h-3.5" />}
-                valueColor="text-orange-400"
-              />
-              <MetricRow
-                label="Avg Win"
-                value={`$${performanceMetrics.avgWin.toFixed(2)}`}
-                icon={<ArrowUpRight className="w-3.5 h-3.5" />}
-                valueColor="text-green-400"
-              />
-              <MetricRow
-                label="Avg Loss"
-                value={`$${performanceMetrics.avgLoss.toFixed(2)}`}
-                icon={<ArrowDownRight className="w-3.5 h-3.5" />}
-                valueColor="text-red-400"
-              />
-              <MetricRow
-                label="Positions Value"
-                value={`$${positionsTotalValue.toFixed(2)}`}
-                icon={<Eye className="w-3.5 h-3.5" />}
-              />
-              <MetricRow
-                label="Unrealized P&L"
-                value={`${positionsUnrealizedPnl >= 0 ? '+' : ''}$${positionsUnrealizedPnl.toFixed(2)}`}
-                valueColor={positionsUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}
-                icon={positionsUnrealizedPnl >= 0 ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-              />
-            </Card>
-          )}
-
-          {/* System Health */}
-          <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
-            <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
-              <Shield className="w-3 h-3" /> System
-            </h4>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Engine</span>
-                <span className={cn("text-xs font-mono font-medium", status?.running ? "text-green-400" : "text-muted-foreground")}>
-                  {status?.running ? 'ACTIVE' : 'STOPPED'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Mode</span>
-                <span className={cn("text-xs font-mono font-medium",
-                  config?.mode === 'live' ? "text-green-400" :
-                  config?.mode === 'paper' ? "text-blue-400" : "text-muted-foreground"
-                )}>
-                  {config?.mode?.toUpperCase() || 'DISABLED'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Circuit Breaker</span>
-                <span className={cn("text-xs font-mono font-medium",
-                  stats?.circuit_breaker_active ? "text-yellow-400" : "text-muted-foreground"
-                )}>
-                  {stats?.circuit_breaker_active ? 'TRIGGERED' : 'OK'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Consecutive Losses</span>
-                <span className={cn("text-xs font-mono font-medium",
-                  (stats?.consecutive_losses || 0) >= 3 ? "text-orange-400" : "text-muted-foreground"
-                )}>
-                  {stats?.consecutive_losses || 0} / {config?.circuit_breaker_losses || '?'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Last Trade</span>
-                <span className="text-xs font-mono text-muted-foreground">
-                  {stats?.last_trade_at ? timeAgo(new Date(stats.last_trade_at)) : 'Never'}
-                </span>
-              </div>
-              {tradingStatus && (
-                <>
-                  <Separator className="my-2" />
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">Wallet</span>
-                    <span className={cn("text-xs font-mono font-medium",
-                      tradingStatus.initialized ? "text-green-400" : "text-muted-foreground"
-                    )}>
-                      {tradingStatus.initialized ? 'CONNECTED' : 'OFFLINE'}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">Balance</span>
-                    <span className="text-xs font-mono text-muted-foreground">
-                      ${balance?.balance?.toFixed(2) || '0.00'} USDC
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
-          </Card>
-
-          {/* Live Positions mini-list (always visible) */}
-          {livePositions.length > 0 && dashboardTab !== 'holdings' && (
-            <Card className="bg-background border-border/60 rounded-xl shadow-none p-4">
-              <h4 className="text-[10px] text-muted-foreground uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                <Briefcase className="w-3 h-3" /> Open Positions
-                <span className="ml-auto text-green-400 font-mono">{livePositions.length}</span>
-              </h4>
-              <div className="space-y-2">
-                {livePositions.slice(0, 5).map((pos: TradingPosition, idx: number) => (
-                  <div key={idx} className="flex items-center justify-between py-1.5">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Badge className={cn(
-                        "w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold shrink-0 border-0",
-                        pos.outcome.toLowerCase() === 'yes' ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
-                      )}>
-                        {pos.outcome[0].toUpperCase()}
-                      </Badge>
-                      <p className="text-xs truncate text-muted-foreground">{pos.market_question}</p>
-                    </div>
-                    <span className={cn(
-                      "text-xs font-mono font-medium shrink-0 ml-2",
-                      pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
-                    )}>
-                      {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
-                    </span>
-                  </div>
-                ))}
-                {livePositions.length > 5 && (
-                  <Button
-                    variant="ghost"
-                    onClick={() => setDashboardTab('holdings')}
-                    className="text-xs text-muted-foreground hover:text-gray-300 w-full h-auto pt-1 justify-center"
-                  >
-                    +{livePositions.length - 5} more...
-                  </Button>
-                )}
-              </div>
-            </Card>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1627,13 +1708,13 @@ export default function TradingPanel() {
 
 function FeedEventRow({ event, isNew }: { event: FeedEvent; isNew: boolean }) {
   const iconMap = {
-    trade: <Zap className="w-3.5 h-3.5 text-blue-400" />,
-    win: <ArrowUpRight className="w-3.5 h-3.5 text-green-400" />,
-    loss: <ArrowDownRight className="w-3.5 h-3.5 text-red-400" />,
-    scan: <Crosshair className="w-3.5 h-3.5 text-cyan-400" />,
-    alert: <AlertTriangle className="w-3.5 h-3.5 text-yellow-400" />,
-    system: <Cpu className="w-3.5 h-3.5 text-purple-400" />,
-    position: <Briefcase className="w-3.5 h-3.5 text-indigo-400" />,
+    trade: <Zap className="w-3 h-3 text-blue-400" />,
+    win: <ArrowUpRight className="w-3 h-3 text-green-400" />,
+    loss: <ArrowDownRight className="w-3 h-3 text-red-400" />,
+    scan: <Crosshair className="w-3 h-3 text-cyan-400" />,
+    alert: <AlertTriangle className="w-3 h-3 text-yellow-400" />,
+    system: <Cpu className="w-3 h-3 text-purple-400" />,
+    position: <Briefcase className="w-3 h-3 text-indigo-400" />,
   }
 
   const borderColorMap = {
@@ -1648,23 +1729,23 @@ function FeedEventRow({ event, isNew }: { event: FeedEvent; isNew: boolean }) {
 
   return (
     <div className={cn(
-      "flex items-start gap-3 px-4 py-2.5 border-l-2 transition-all",
+      "flex items-start gap-2 px-3 py-2 border-l-2 transition-all",
       borderColorMap[event.icon],
       isNew && "bg-white/[0.02]"
     )}>
       <div className="mt-0.5 shrink-0">{iconMap[event.icon]}</div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <p className="text-sm font-medium truncate">{event.title}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs font-medium truncate">{event.title}</p>
           {event.value && (
-            <span className={cn("text-xs font-mono font-semibold shrink-0", event.valueColor || 'text-muted-foreground')}>
+            <span className={cn("text-[10px] font-mono font-semibold shrink-0", event.valueColor || 'text-muted-foreground')}>
               {event.value}
             </span>
           )}
         </div>
-        <p className="text-[11px] text-muted-foreground truncate">{event.detail}</p>
+        <p className="text-[10px] text-muted-foreground truncate">{event.detail}</p>
       </div>
-      <span className="text-[10px] text-muted-foreground font-mono shrink-0 mt-0.5">
+      <span className="text-[9px] text-muted-foreground font-mono shrink-0 mt-0.5">
         {formatFeedTime(event.timestamp)}
       </span>
     </div>
@@ -1680,17 +1761,17 @@ function MetricRow({ label, value, valueColor = 'text-foreground', icon, sub, sp
   sparkData?: number[]
 }) {
   return (
-    <div className="flex items-center justify-between py-2 border-b border-border/20 last:border-0">
-      <div className="flex items-center gap-2">
+    <div className="flex items-center justify-between py-1.5 border-b border-border/20 last:border-0">
+      <div className="flex items-center gap-1.5">
         <span className="text-muted-foreground">{icon}</span>
         <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
+          <p className="text-[10px] text-muted-foreground">{label}</p>
+          {sub && <p className="text-[9px] text-muted-foreground">{sub}</p>}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         {sparkData && sparkData.length > 2 && <MiniSparkline data={sparkData} />}
-        <p className={cn("text-sm font-mono font-semibold", valueColor)}>{value}</p>
+        <p className={cn("text-xs font-mono font-semibold", valueColor)}>{value}</p>
       </div>
     </div>
   )
@@ -1737,7 +1818,7 @@ function StatusBadge({ status }: { status: string }) {
     shadow: 'bg-gray-500/15 text-muted-foreground',
   }
   return (
-    <Badge className={cn("px-2 py-0.5 rounded-md text-[10px] font-semibold border-0", colors[status] || 'bg-gray-500/15 text-muted-foreground')}>
+    <Badge className={cn("px-1.5 py-0.5 rounded-md text-[9px] font-semibold border-0", colors[status] || 'bg-gray-500/15 text-muted-foreground')}>
       {status.replace('_', ' ').toUpperCase()}
     </Badge>
   )
@@ -1857,10 +1938,10 @@ function SettingToggle({ label, description, checked, onChange }: {
   onChange: (v: boolean) => void
 }) {
   return (
-    <div className="flex items-center justify-between py-2">
-      <div className="flex-1 min-w-0 mr-4">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-[11px] text-muted-foreground">{description}</p>
+    <div className="flex items-center justify-between py-1.5">
+      <div className="flex-1 min-w-0 mr-3">
+        <p className="text-xs font-medium">{label}</p>
+        <p className="text-[10px] text-muted-foreground">{description}</p>
       </div>
       <button
         type="button"
@@ -1892,11 +1973,11 @@ function SettingNumber({ label, description, value, onChange, min, max, step, pr
 }) {
   return (
     <div>
-      <p className="text-sm font-medium mb-0.5">{label}</p>
-      <p className="text-[11px] text-muted-foreground mb-2">{description}</p>
+      <p className="text-xs font-medium mb-0.5">{label}</p>
+      <p className="text-[10px] text-muted-foreground mb-1.5">{description}</p>
       <div className="relative">
         {prefix && (
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{prefix}</span>
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">{prefix}</span>
         )}
         <input
           type="number"
@@ -1906,13 +1987,13 @@ function SettingNumber({ label, description, value, onChange, min, max, step, pr
           max={max}
           step={step}
           className={cn(
-            "w-full bg-card border border-border rounded-lg py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50",
-            prefix ? "pl-7 pr-3" : "px-3",
-            suffix ? "pr-8" : ""
+            "w-full bg-card border border-border rounded-lg py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-green-500/50 focus:border-green-500/50",
+            prefix ? "pl-6 pr-2.5" : "px-2.5",
+            suffix ? "pr-7" : ""
           )}
         />
         {suffix && (
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{suffix}</span>
+          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">{suffix}</span>
         )}
       </div>
     </div>

@@ -53,7 +53,6 @@ import { shortcutsHelpOpenAtom, simulationEnabledAtom } from './store/atoms'
 import { Button } from './components/ui/button'
 import { Card, CardContent } from './components/ui/card'
 import { Badge } from './components/ui/badge'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
 import { Input } from './components/ui/input'
 import { Separator } from './components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './components/ui/tooltip'
@@ -85,6 +84,17 @@ type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
 type TradingSubTab = 'auto' | 'copy'
 
 const ITEMS_PER_PAGE = 20
+
+const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: string }[] = [
+  { id: 'opportunities', icon: Zap, label: 'Opportunities', shortcut: '1' },
+  { id: 'trading', icon: Bot, label: 'Trading', shortcut: '2' },
+  { id: 'accounts', icon: Wallet, label: 'Accounts', shortcut: '3' },
+  { id: 'traders', icon: Users, label: 'Traders', shortcut: '4' },
+  { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '5' },
+  { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '6' },
+  { id: 'ai', icon: Brain, label: 'AI', shortcut: '7' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '8' },
+]
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
@@ -127,7 +137,6 @@ function App() {
   // Navigate to AI tab with specific section
   const handleNavigateToAI = useCallback((section: string) => {
     setActiveTab('ai')
-    // Dispatch event for the AI panel to pick up the section
     window.dispatchEvent(new CustomEvent('navigate-ai-section', { detail: section }))
   }, [])
 
@@ -267,765 +276,723 @@ function App() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background">
-        {/* Header */}
-        <header className="border-b border-border bg-background/80 backdrop-blur sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
-                  <Terminal className="w-6 h-6 text-green-500" />
-                </div>
-                <div>
-                  <h1 className="text-xl font-bold text-green-400">HOMERUN</h1>
-                  <p className="text-xs text-muted-foreground">Autonomous Prediction Market Trading Platform</p>
-                </div>
-              </div>
+      <div className="h-screen flex flex-col overflow-hidden bg-background">
+        {/* ==================== Top Bar ==================== */}
+        <header className="h-12 border-b border-border/50 bg-background/80 backdrop-blur-xl flex items-center px-4 shrink-0 z-50">
+          <div className="flex items-center gap-3 mr-6">
+            <div className="w-7 h-7 bg-green-500/20 rounded-lg flex items-center justify-center">
+              <Terminal className="w-4 h-4 text-green-500" />
+            </div>
+            <span className="text-sm font-bold text-green-400 tracking-wide">HOMERUN</span>
+          </div>
 
-              <div className="flex items-center gap-3">
-                {/* Connection Status */}
-                <Badge
-                  variant="outline"
+          {/* Inline Stats */}
+          <div className="hidden md:flex items-center gap-4 mr-auto text-xs">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+              <Target className="w-3 h-3 text-blue-400" />
+              <span className="text-muted-foreground">Opps</span>
+              <span className="font-mono font-semibold">{totalOpportunities}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+              <TrendingUp className="w-3 h-3 text-green-400" />
+              <span className="text-muted-foreground">ROI</span>
+              <span className={cn("font-mono font-semibold", avgROI >= 0 ? "text-green-400" : "text-red-400")}>{avgROI.toFixed(1)}%</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+              <DollarSign className="w-3 h-3 text-yellow-400" />
+              <span className="text-muted-foreground">Profit</span>
+              <span className={cn("font-mono font-semibold", totalProfit >= 0 ? "text-green-400" : "text-red-400")}>${totalProfit.toFixed(2)}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-card/50">
+              <Clock className="w-3 h-3 text-purple-400" />
+              <span className="text-muted-foreground">Scan</span>
+              <span className="font-mono text-muted-foreground">
+                {status?.last_scan ? new Date(status.last_scan).toLocaleTimeString() : 'Never'}
+              </span>
+            </div>
+          </div>
+
+          {/* Right Controls */}
+          <div className="flex items-center gap-1.5">
+            {/* Connection Status */}
+            <Badge
+              variant="outline"
+              className={cn(
+                "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-normal text-[10px]",
+                isConnected
+                  ? "border-green-500/30 bg-green-500/10 text-green-500"
+                  : "border-red-500/30 bg-red-500/10 text-red-500"
+              )}
+            >
+              <span className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                isConnected ? "bg-green-500" : "bg-red-500"
+              )} />
+              {isConnected ? 'Live' : 'Off'}
+            </Badge>
+
+            <DataFreshnessIndicator lastUpdated={status?.last_scan} />
+            <ThemeToggle />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShortcutsHelpOpen(true)}
+                  className="px-1.5 h-7 text-muted-foreground hover:text-foreground"
+                >
+                  <Keyboard className="w-3.5 h-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => status?.enabled ? pauseMutation.mutate() : startMutation.mutate()}
+                  disabled={pauseMutation.isPending || startMutation.isPending}
                   className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-full font-normal",
-                    isConnected
-                      ? "border-green-500/30 bg-green-500/10 text-green-500"
-                      : "border-red-500/30 bg-red-500/10 text-red-500"
+                    "h-7 px-2 text-xs gap-1",
+                    status?.enabled
+                      ? "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 hover:text-yellow-500"
+                      : "bg-green-500/10 text-green-500 hover:bg-green-500/20 hover:text-green-500"
                   )}
                 >
-                  <span className={cn(
-                    "w-2 h-2 rounded-full",
-                    isConnected ? "bg-green-500" : "bg-red-500"
-                  )} />
-                  {isConnected ? 'Live' : 'Disconnected'}
-                </Badge>
+                  {status?.enabled ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                  {status?.enabled ? 'Pause' : 'Start'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{status?.enabled ? 'Pause scanner' : 'Start scanner'}</TooltipContent>
+            </Tooltip>
 
-                {/* Data Freshness Indicator */}
-                <DataFreshnessIndicator lastUpdated={status?.last_scan} />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCommandBarOpen(true)}
+                  className="h-7 px-2 text-xs gap-1.5 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 hover:text-purple-400 border-purple-500/20"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span className="hidden sm:inline">AI</span>
+                  <kbd className="hidden sm:inline px-1 py-0.5 bg-purple-500/10 rounded text-[9px] text-purple-400 border border-purple-500/20">
+                    <Command className="w-2 h-2 inline" />K
+                  </kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>AI Command Bar (Cmd+K)</TooltipContent>
+            </Tooltip>
 
-                {/* Theme Toggle */}
-                <ThemeToggle />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCopilotOpen(!copilotOpen)}
+                  className={cn(
+                    "h-7 px-1.5",
+                    copilotOpen
+                      ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
+                      : "bg-card text-muted-foreground hover:text-purple-400 border-border hover:border-purple-500/30"
+                  )}
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>AI Copilot (Ctrl+.)</TooltipContent>
+            </Tooltip>
 
-                {/* Keyboard Shortcuts Help */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShortcutsHelpOpen(true)}
-                      className="px-2 text-muted-foreground hover:text-foreground"
-                    >
-                      <Keyboard className="w-3.5 h-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
-                </Tooltip>
-
-                {/* Scanner Status & Controls */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => status?.enabled ? pauseMutation.mutate() : startMutation.mutate()}
-                      disabled={pauseMutation.isPending || startMutation.isPending}
-                      className={cn(
-                        "flex items-center gap-1.5",
-                        status?.enabled
-                          ? "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 hover:text-yellow-500"
-                          : "bg-green-500/10 text-green-500 hover:bg-green-500/20 hover:text-green-500"
-                      )}
-                    >
-                      {status?.enabled ? (
-                        <>
-                          <Pause className="w-3.5 h-3.5" />
-                          Pause
-                        </>
-                      ) : (
-                        <>
-                          <Play className="w-3.5 h-3.5" />
-                          Start
-                        </>
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {status?.enabled ? 'Pause scanner' : 'Start scanner'}
-                  </TooltipContent>
-                </Tooltip>
-
-                {/* AI Command Bar Toggle */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCommandBarOpen(true)}
-                      className="flex items-center gap-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 hover:text-purple-400 border-purple-500/20"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">AI</span>
-                      <kbd className="hidden sm:inline px-1.5 py-0.5 bg-purple-500/10 rounded text-[10px] text-purple-400 border border-purple-500/20">
-                        <Command className="w-2.5 h-2.5 inline" />K
-                      </kbd>
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>AI Command Bar (Cmd+K)</TooltipContent>
-                </Tooltip>
-
-                {/* AI Copilot Toggle */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCopilotOpen(!copilotOpen)}
-                      className={cn(
-                        "flex items-center gap-1.5",
-                        copilotOpen
-                          ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
-                          : "bg-card text-muted-foreground hover:text-purple-400 border-border hover:border-purple-500/30"
-                      )}
-                    >
-                      <Bot className="w-3.5 h-3.5" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>AI Copilot (Ctrl+.)</TooltipContent>
-                </Tooltip>
-
-                {/* Scan Button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      onClick={() => scanMutation.mutate()}
-                      disabled={scanMutation.isPending}
-                      className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white"
-                    >
-                      <RefreshCw className={cn("w-4 h-4", scanMutation.isPending && "animate-spin")} />
-                      Scan Now
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Trigger Manual Scan (Ctrl+R)</TooltipContent>
-                </Tooltip>
-              </div>
-            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={() => scanMutation.mutate()}
+                  disabled={scanMutation.isPending}
+                  size="sm"
+                  className="h-7 px-2.5 text-xs gap-1.5 bg-blue-500 hover:bg-blue-600 text-white"
+                >
+                  <RefreshCw className={cn("w-3 h-3", scanMutation.isPending && "animate-spin")} />
+                  Scan
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Trigger Manual Scan (Ctrl+R)</TooltipContent>
+            </Tooltip>
           </div>
         </header>
 
-        {/* Stats Bar */}
-        <div className="border-b border-border bg-background">
-          <div className="max-w-7xl mx-auto px-4 py-4">
-            <div className="grid grid-cols-5 gap-4">
-              <StatCard
-                icon={<Target className="w-5 h-5 text-blue-500" />}
-                label="Total Opportunities"
-                value={totalOpportunities.toString()}
-              />
-              <StatCard
-                icon={<Activity className="w-5 h-5 text-cyan-500" />}
-                label="Showing"
-                value={opportunities.length.toString()}
-              />
-              <StatCard
-                icon={<TrendingUp className="w-5 h-5 text-green-500" />}
-                label="Avg ROI"
-                value={`${avgROI.toFixed(2)}%`}
-              />
-              <StatCard
-                icon={<DollarSign className="w-5 h-5 text-yellow-500" />}
-                label="Total Profit"
-                value={`$${totalProfit.toFixed(4)}`}
-              />
-              <StatCard
-                icon={<Clock className="w-5 h-5 text-purple-500" />}
-                label="Last Scan"
-                value={status?.last_scan
-                  ? new Date(status.last_scan).toLocaleTimeString()
-                  : 'Never'
-                }
-              />
-            </div>
-          </div>
-        </div>
+        {/* ==================== Main Layout ==================== */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Sidebar Navigation */}
+          <nav className="w-16 border-r border-border/50 bg-card/30 flex flex-col items-center py-3 gap-0.5 shrink-0">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon
+              const isActive = activeTab === item.id
+              return (
+                <Tooltip key={item.id} delayDuration={0}>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => setActiveTab(item.id)}
+                      className={cn(
+                        "w-11 h-11 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all relative group",
+                        isActive
+                          ? "bg-green-500/15 text-green-400"
+                          : "text-muted-foreground hover:text-foreground hover:bg-card/80"
+                      )}
+                    >
+                      {isActive && (
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-green-500 rounded-r" />
+                      )}
+                      <Icon className="w-4 h-4" />
+                      <span className="text-[8px] font-medium leading-none">{item.label.slice(0, 5)}</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" className="flex items-center gap-2">
+                    {item.label}
+                    <kbd className="px-1 py-0.5 text-[9px] font-mono bg-muted rounded border border-border">{item.shortcut}</kbd>
+                  </TooltipContent>
+                </Tooltip>
+              )
+            })}
+          </nav>
 
-        {/* Main Tabs */}
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Tab)}>
-          {/* Navigation Tabs */}
-          <div className="border-b border-border">
-            <div className="max-w-7xl mx-auto px-4">
-              <TabsList className="h-auto w-full justify-start bg-transparent p-0 gap-1 rounded-none">
-                <TabsTrigger
-                  value="opportunities"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Zap className="w-4 h-4" />
-                  Opportunities
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">1</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="trading"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Bot className="w-4 h-4" />
-                  Trading
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">2</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="accounts"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Wallet className="w-4 h-4" />
-                  Accounts
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">3</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="traders"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Users className="w-4 h-4" />
-                  Traders
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">4</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="positions"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Briefcase className="w-4 h-4" />
-                  Positions
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">5</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="performance"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <BarChart3 className="w-4 h-4" />
-                  Performance
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">6</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="ai"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Brain className="w-4 h-4" />
-                  AI
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">7</kbd>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="settings"
-                  className="flex items-center gap-2 px-4 py-3 text-sm font-medium rounded-none border-b-2 border-transparent data-[state=active]:border-green-500 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent text-muted-foreground hover:text-foreground/80"
-                >
-                  <Settings className="w-4 h-4" />
-                  Settings
-                  <kbd className="hidden lg:inline px-1 py-0.5 text-[10px] font-mono bg-muted rounded text-muted-foreground border border-border">8</kbd>
-                </TabsTrigger>
-              </TabsList>
-            </div>
-          </div>
+          {/* Content Area */}
+          <main className="flex-1 overflow-hidden flex flex-col">
+            {/* ==================== Opportunities ==================== */}
+            {activeTab === 'opportunities' && (
+              <div className="flex-1 overflow-y-auto section-enter">
+                <div className="max-w-6xl mx-auto px-6 py-5">
+                  {/* View Toggle */}
+                  <div className="flex items-center gap-2 mb-5">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setOpportunitiesView('arbitrage')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'arbitrage'
+                          ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      Markets
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setOpportunitiesView('recent_trades')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'recent_trades'
+                          ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <Activity className="w-3.5 h-3.5" />
+                      Tracked Traders
+                    </Button>
+                  </div>
 
-          {/* Main Content */}
-          <main className="max-w-7xl mx-auto px-4 py-6">
-            {/* Opportunities Tab */}
-            <TabsContent value="opportunities" className="mt-0">
-              <div>
-                {/* View Toggle */}
-                <div className="flex items-center gap-2 mb-6">
+                  {opportunitiesView === 'recent_trades' ? (
+                    <RecentTradesPanel
+                      onNavigateToWallet={(address) => {
+                        setWalletToAnalyze(address)
+                        setActiveTab('traders')
+                        setTradersSubTab('analysis')
+                      }}
+                    />
+                  ) : (
+                    <>
+                      {/* Search Mode Toggle + Search Input */}
+                      <div className="mb-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setSearchMode('current')}
+                            className={cn(
+                              'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                              searchMode === 'current'
+                                ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                                : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
+                            )}
+                          >
+                            Current Opportunities
+                          </button>
+                          <button
+                            onClick={() => setSearchMode('polymarket')}
+                            className={cn(
+                              'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
+                              searchMode === 'polymarket'
+                                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                                : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
+                            )}
+                          >
+                            <Globe className="w-3.5 h-3.5" />
+                            Search All Polymarket
+                          </button>
+                        </div>
+
+                        {searchMode === 'current' ? (
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            <Input
+                              type="text"
+                              placeholder="Search current opportunities by market, event, or keyword..."
+                              value={searchQuery}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              className="pl-10 bg-card border-border h-9"
+                            />
+                          </div>
+                        ) : (
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault()
+                              if (polymarketSearchQuery.trim()) {
+                                setPolymarketSearchSubmitted(polymarketSearchQuery.trim())
+                              }
+                            }}
+                            className="flex gap-2"
+                          >
+                            <div className="relative flex-1">
+                              <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-blue-400" />
+                              <Input
+                                type="text"
+                                placeholder="Search all Polymarket markets (e.g. 'bitcoin', 'election', 'FIFA')..."
+                                value={polymarketSearchQuery}
+                                onChange={(e) => setPolymarketSearchQuery(e.target.value)}
+                                className="pl-10 bg-card border-blue-500/20 focus:border-blue-500/40 h-9"
+                              />
+                            </div>
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={!polymarketSearchQuery.trim() || polySearchLoading}
+                              className="bg-blue-500 hover:bg-blue-600 text-white h-9"
+                            >
+                              {polySearchLoading ? (
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Search className="w-4 h-4" />
+                              )}
+                              Search
+                            </Button>
+                          </form>
+                        )}
+                      </div>
+
+                      {searchMode === 'polymarket' ? (
+                        <>
+                          {polySearchLoading ? (
+                            <div className="flex items-center justify-center py-12">
+                              <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
+                              <span className="ml-3 text-muted-foreground">Searching Polymarket and analyzing opportunities...</span>
+                            </div>
+                          ) : !polymarketSearchSubmitted ? (
+                            <div className="text-center py-12">
+                              <Globe className="w-12 h-12 text-blue-400/30 mx-auto mb-4" />
+                              <p className="text-muted-foreground">Search all of Polymarket for arbitrage opportunities</p>
+                              <p className="text-sm text-muted-foreground/70 mt-1">
+                                Enter a keyword above and press Search to find markets and analyze them
+                              </p>
+                            </div>
+                          ) : polymarketResults.length === 0 ? (
+                            <div className="text-center py-12">
+                              <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+                              <p className="text-muted-foreground">No arbitrage opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
+                              <p className="text-sm text-muted-foreground/70 mt-1">
+                                Try different keywords or broader search terms
+                              </p>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-2 mb-4">
+                                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10">
+                                  {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
+                                </Badge>
+                              </div>
+                              <div className="space-y-4">
+                                {polymarketResults.map((opp) => (
+                                  <OpportunityCard
+                                    key={opp.id}
+                                    opportunity={opp}
+                                    onExecute={setExecutingOpportunity}
+                                    onOpenCopilot={handleOpenCopilotForOpportunity}
+                                  />
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {/* Filters */}
+                          <div className="flex gap-3 mb-4">
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
+                              <select
+                                value={selectedStrategy}
+                                onChange={(e) => setSelectedStrategy(e.target.value)}
+                                className="w-full bg-card border border-border rounded-lg px-3 py-1.5 text-sm"
+                              >
+                                <option value="">All Strategies</option>
+                                {strategies.map((s) => (
+                                  <option key={s.type} value={s.type}>{s.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex-1">
+                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
+                              <select
+                                value={selectedCategory}
+                                onChange={(e) => setSelectedCategory(e.target.value)}
+                                className="w-full bg-card border border-border rounded-lg px-3 py-1.5 text-sm"
+                              >
+                                <option value="">All Categories</option>
+                                <option value="politics">Politics</option>
+                                <option value="sports">Sports</option>
+                                <option value="crypto">Crypto</option>
+                                <option value="culture">Culture</option>
+                                <option value="economics">Economics</option>
+                                <option value="tech">Tech</option>
+                                <option value="finance">Finance</option>
+                                <option value="weather">Weather</option>
+                              </select>
+                            </div>
+                            <div className="w-32">
+                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Min Profit %</label>
+                              <Input
+                                type="number"
+                                value={minProfit}
+                                onChange={(e) => setMinProfit(parseFloat(e.target.value) || 0)}
+                                step={0.5}
+                                min={0}
+                                className="bg-card border-border h-8"
+                              />
+                            </div>
+                            <div className="w-40">
+                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Risk: {maxRisk.toFixed(1)}</label>
+                              <input
+                                type="range"
+                                value={maxRisk}
+                                onChange={(e) => setMaxRisk(parseFloat(e.target.value))}
+                                step="0.1"
+                                min="0"
+                                max="1"
+                                className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer mt-1.5"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Sort Controls */}
+                          <div className="flex items-center gap-2 mb-4">
+                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Sort:</span>
+                            {([
+                              ['roi', 'ROI'],
+                              ['ai_score', 'AI Score'],
+                              ['profit', 'Profit'],
+                              ['liquidity', 'Liquidity'],
+                              ['risk', 'Risk'],
+                            ] as const).map(([key, label]) => (
+                              <button
+                                key={key}
+                                onClick={() => {
+                                  if (sortBy === key) {
+                                    setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                                  } else {
+                                    setSortBy(key)
+                                    setSortDir('desc')
+                                  }
+                                }}
+                                className={cn(
+                                  'px-2 py-1 rounded text-xs font-medium transition-colors',
+                                  sortBy === key
+                                    ? 'bg-primary/20 text-primary'
+                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted'
+                                )}
+                              >
+                                {label}
+                                {sortBy === key && (
+                                  sortDir === 'desc'
+                                    ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
+                                    : <ChevronUp className="w-3 h-3 inline ml-0.5" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Opportunities List */}
+                          {oppsLoading ? (
+                            <div className="flex items-center justify-center py-12">
+                              <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
+                            </div>
+                          ) : displayOpportunities.length === 0 ? (
+                            <div className="text-center py-12">
+                              <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+                              <p className="text-muted-foreground">No arbitrage opportunities found</p>
+                              <p className="text-sm text-muted-foreground/70 mt-1">
+                                Try lowering the minimum profit threshold
+                              </p>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="space-y-3">
+                                {displayOpportunities.map((opp) => (
+                                  <OpportunityCard
+                                    key={opp.id}
+                                    opportunity={opp}
+                                    onExecute={setExecutingOpportunity}
+                                    onOpenCopilot={handleOpenCopilotForOpportunity}
+                                  />
+                                ))}
+                              </div>
+
+                              {/* Pagination */}
+                              <div className="mt-5">
+                                <Separator />
+                                <div className="flex items-center justify-between pt-4">
+                                  <div className="text-xs text-muted-foreground">
+                                    {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities)} of {totalOpportunities}
+                                    {searchQuery && ` (filtered)`}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 text-xs"
+                                      onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                                      disabled={currentPage === 0}
+                                    >
+                                      <ChevronLeft className="w-3.5 h-3.5" />
+                                      Prev
+                                    </Button>
+                                    <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
+                                      {currentPage + 1}/{totalPages || 1}
+                                    </span>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 text-xs"
+                                      onClick={() => setCurrentPage(p => p + 1)}
+                                      disabled={currentPage >= totalPages - 1}
+                                    >
+                                      Next
+                                      <ChevronRight className="w-3.5 h-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ==================== Trading ==================== */}
+            {activeTab === 'trading' && (
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                {/* Sub-tab bar */}
+                <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
                   <Button
                     variant="outline"
-                    onClick={() => setOpportunitiesView('arbitrage')}
+                    size="sm"
+                    onClick={() => setTradingSubTab('auto')}
                     className={cn(
-                      "flex items-center gap-2",
-                      opportunitiesView === 'arbitrage'
+                      "gap-1.5 text-xs h-8",
+                      tradingSubTab === 'auto'
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    Auto Trader
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTradingSubTab('copy')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradingSubTab === 'copy'
+                        ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy Trading
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
+                    <TradingPanel />
+                  </div>
+                  <div className={tradingSubTab === 'copy' ? '' : 'hidden'}>
+                    <CopyTradingPanel />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ==================== Accounts ==================== */}
+            {activeTab === 'accounts' && (
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAccountsSubTab('paper')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      accountsSubTab === 'paper'
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <PlayCircle className="w-3.5 h-3.5" />
+                    Paper Accounts
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAccountsSubTab('live')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      accountsSubTab === 'live'
                         ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
                         : "bg-card text-muted-foreground hover:text-foreground border-border"
                     )}
                   >
-                    <Zap className="w-4 h-4" />
-                    Markets
+                    <DollarSign className="w-3.5 h-3.5" />
+                    Live Accounts
                   </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  <div className={accountsSubTab === 'paper' ? '' : 'hidden'}>
+                    <SimulationPanel />
+                  </div>
+                  <div className={accountsSubTab === 'live' ? '' : 'hidden'}>
+                    <LiveAccountPanel />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ==================== Traders ==================== */}
+            {activeTab === 'traders' && (
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
                   <Button
                     variant="outline"
-                    onClick={() => setOpportunitiesView('recent_trades')}
+                    size="sm"
+                    onClick={() => setTradersSubTab('tracked')}
                     className={cn(
-                      "flex items-center gap-2",
-                      opportunitiesView === 'recent_trades'
-                        ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'tracked'
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
                         : "bg-card text-muted-foreground hover:text-foreground border-border"
                     )}
                   >
-                    <Activity className="w-4 h-4" />
-                    Tracked Traders
+                    <Users className="w-3.5 h-3.5" />
+                    Tracked
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTradersSubTab('leaderboard')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'leaderboard'
+                        ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Trophy className="w-3.5 h-3.5" />
+                    Leaderboard
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTradersSubTab('discover')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'discover'
+                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Target className="w-3.5 h-3.5" />
+                    Discover
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTradersSubTab('analysis')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'analysis'
+                        ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Search className="w-3.5 h-3.5" />
+                    Analysis
                   </Button>
                 </div>
-
-                {opportunitiesView === 'recent_trades' ? (
-                  <RecentTradesPanel
-                    onNavigateToWallet={(address) => {
-                      setWalletToAnalyze(address)
-                      setActiveTab('traders')
-                      setTradersSubTab('analysis')
-                    }}
-                  />
-                ) : (
-                <>
-                {/* Search Mode Toggle + Search Input */}
-                <div className="mb-4 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setSearchMode('current')}
-                      className={cn(
-                        'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                        searchMode === 'current'
-                          ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                          : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
-                      )}
-                    >
-                      Current Opportunities
-                    </button>
-                    <button
-                      onClick={() => setSearchMode('polymarket')}
-                      className={cn(
-                        'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
-                        searchMode === 'polymarket'
-                          ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                          : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
-                      )}
-                    >
-                      <Globe className="w-3.5 h-3.5" />
-                      Search All Polymarket
-                    </button>
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
+                    <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
                   </div>
-
-                  {searchMode === 'current' ? (
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        type="text"
-                        placeholder="Search current opportunities by market, event, or keyword..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-10 bg-card border-border"
-                      />
-                    </div>
-                  ) : (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault()
-                        if (polymarketSearchQuery.trim()) {
-                          setPolymarketSearchSubmitted(polymarketSearchQuery.trim())
-                        }
-                      }}
-                      className="flex gap-2"
-                    >
-                      <div className="relative flex-1">
-                        <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-blue-400" />
-                        <Input
-                          type="text"
-                          placeholder="Search all Polymarket markets (e.g. 'bitcoin', 'election', 'FIFA')..."
-                          value={polymarketSearchQuery}
-                          onChange={(e) => setPolymarketSearchQuery(e.target.value)}
-                          className="pl-10 bg-card border-blue-500/20 focus:border-blue-500/40"
-                        />
-                      </div>
-                      <Button
-                        type="submit"
-                        disabled={!polymarketSearchQuery.trim() || polySearchLoading}
-                        className="bg-blue-500 hover:bg-blue-600 text-white"
-                      >
-                        {polySearchLoading ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Search className="w-4 h-4" />
-                        )}
-                        Search
-                      </Button>
-                    </form>
-                  )}
-                </div>
-
-                {searchMode === 'polymarket' ? (
-                  /* ========== Polymarket Search Results ========== */
-                  <>
-                    {polySearchLoading ? (
-                      <div className="flex items-center justify-center py-12">
-                        <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
-                        <span className="ml-3 text-muted-foreground">Searching Polymarket and analyzing opportunities...</span>
-                      </div>
-                    ) : !polymarketSearchSubmitted ? (
-                      <div className="text-center py-12">
-                        <Globe className="w-12 h-12 text-blue-400/30 mx-auto mb-4" />
-                        <p className="text-muted-foreground">Search all of Polymarket for arbitrage opportunities</p>
-                        <p className="text-sm text-muted-foreground/70 mt-1">
-                          Enter a keyword above and press Search to find markets and analyze them
-                        </p>
-                      </div>
-                    ) : polymarketResults.length === 0 ? (
-                      <div className="text-center py-12">
-                        <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                        <p className="text-muted-foreground">No arbitrage opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
-                        <p className="text-sm text-muted-foreground/70 mt-1">
-                          Try different keywords or broader search terms
-                        </p>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-2 mb-4">
-                          <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10">
-                            {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
-                          </Badge>
-                        </div>
-                        <div className="space-y-4">
-                          {polymarketResults.map((opp) => (
-                            <OpportunityCard
-                              key={opp.id}
-                              opportunity={opp}
-                              onExecute={setExecutingOpportunity}
-                              onOpenCopilot={handleOpenCopilotForOpportunity}
-                            />
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </>
-                ) : (
-                  /* ========== Current Opportunities (filters + list + pagination) ========== */
-                  <>
-                {/* Filters */}
-                <div className="flex gap-4 mb-6">
-                  <div className="flex-1">
-                    <label className="block text-xs text-muted-foreground mb-1">Strategy</label>
-                    <select
-                      value={selectedStrategy}
-                      onChange={(e) => setSelectedStrategy(e.target.value)}
-                      className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm"
-                    >
-                      <option value="">All Strategies</option>
-                      {strategies.map((s) => (
-                        <option key={s.type} value={s.type}>{s.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-xs text-muted-foreground mb-1">Category</label>
-                    <select
-                      value={selectedCategory}
-                      onChange={(e) => setSelectedCategory(e.target.value)}
-                      className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm"
-                    >
-                      <option value="">All Categories</option>
-                      <option value="politics">Politics</option>
-                      <option value="sports">Sports</option>
-                      <option value="crypto">Crypto</option>
-                      <option value="culture">Culture</option>
-                      <option value="economics">Economics</option>
-                      <option value="tech">Tech</option>
-                      <option value="finance">Finance</option>
-                      <option value="weather">Weather</option>
-                    </select>
-                  </div>
-                  <div className="w-40">
-                    <label className="block text-xs text-muted-foreground mb-1">Min Profit %</label>
-                    <Input
-                      type="number"
-                      value={minProfit}
-                      onChange={(e) => setMinProfit(parseFloat(e.target.value) || 0)}
-                      step={0.5}
-                      min={0}
-                      className="bg-card border-border"
+                  <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
+                    <DiscoveryPanel
+                      parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
+                      onAnalyzeWallet={handleAnalyzeWallet}
                     />
                   </div>
-                  <div className="w-48">
-                    <label className="block text-xs text-muted-foreground mb-1">Max Risk Score: {maxRisk.toFixed(1)}</label>
-                    <input
-                      type="range"
-                      value={maxRisk}
-                      onChange={(e) => setMaxRisk(parseFloat(e.target.value))}
-                      step="0.1"
-                      min="0"
-                      max="1"
-                      className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer mt-2"
+                  <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
+                    <WalletAnalysisPanel
+                      initialWallet={walletToAnalyze}
+                      initialUsername={walletUsername}
+                      onWalletAnalyzed={() => { setWalletToAnalyze(null); setWalletUsername(null) }}
                     />
                   </div>
                 </div>
+              </div>
+            )}
 
-                {/* Sort Controls */}
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="text-xs text-muted-foreground">Sort:</span>
-                  {([
-                    ['roi', 'ROI'],
-                    ['ai_score', 'AI Score'],
-                    ['profit', 'Profit'],
-                    ['liquidity', 'Liquidity'],
-                    ['risk', 'Risk'],
-                  ] as const).map(([key, label]) => (
-                    <button
-                      key={key}
-                      onClick={() => {
-                        if (sortBy === key) {
-                          setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-                        } else {
-                          setSortBy(key)
-                          setSortDir('desc')
-                        }
-                      }}
-                      className={cn(
-                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
-                        sortBy === key
-                          ? 'bg-primary/20 text-primary'
-                          : 'bg-muted/50 text-muted-foreground hover:bg-muted'
-                      )}
-                    >
-                      {label}
-                      {sortBy === key && (
-                        sortDir === 'desc'
-                          ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
-                          : <ChevronUp className="w-3 h-3 inline ml-0.5" />
-                      )}
-                    </button>
-                  ))}
-                </div>
+            {/* ==================== Positions ==================== */}
+            {activeTab === 'positions' && (
+              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
+                <PositionsPanel />
+              </div>
+            )}
 
-                {/* Opportunities List */}
-                {oppsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-                  </div>
-                ) : displayOpportunities.length === 0 ? (
-                  <div className="text-center py-12">
-                    <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                    <p className="text-muted-foreground">No arbitrage opportunities found</p>
-                    <p className="text-sm text-muted-foreground/70 mt-1">
-                      Try lowering the minimum profit threshold
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="space-y-4">
-                      {displayOpportunities.map((opp) => (
-                        <OpportunityCard
-                          key={opp.id}
-                          opportunity={opp}
-                          onExecute={setExecutingOpportunity}
-                          onOpenCopilot={handleOpenCopilotForOpportunity}
-                        />
-                      ))}
-                    </div>
+            {/* ==================== Performance ==================== */}
+            {activeTab === 'performance' && (
+              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
+                <PerformancePanel />
+              </div>
+            )}
 
-                    {/* Pagination */}
-                    <div className="mt-6">
-                      <Separator />
-                      <div className="flex items-center justify-between pt-4">
-                        <div className="text-sm text-muted-foreground">
-                          Showing {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities)} of {totalOpportunities}
-                          {searchQuery && ` (filtered by "${searchQuery}")`}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
-                            disabled={currentPage === 0}
-                          >
-                            <ChevronLeft className="w-4 h-4" />
-                            Previous
-                          </Button>
-                          <span className="px-3 py-1.5 bg-card rounded-lg text-sm border border-border">
-                            Page {currentPage + 1} of {totalPages || 1}
-                          </span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setCurrentPage(p => p + 1)}
-                            disabled={currentPage >= totalPages - 1}
-                          >
-                            Next
-                            <ChevronRight className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-                  </>
-                )}
-                </>
-                )}
+            {/* ==================== AI ==================== */}
+            {activeTab === 'ai' && (
+              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
+                <AIPanel />
               </div>
-            </TabsContent>
+            )}
 
-            {/* Trading Tab - Auto Trading + Copy Trading */}
-            <TabsContent value="trading" forceMount className="mt-0 data-[state=inactive]:hidden">
-              {/* Trading Subtabs Navigation */}
-              <div className="flex items-center gap-2 mb-6">
-                <Button
-                  variant="outline"
-                  onClick={() => setTradingSubTab('auto')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradingSubTab === 'auto'
-                      ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Bot className="w-4 h-4" />
-                  Auto Trader
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setTradingSubTab('copy')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradingSubTab === 'copy'
-                      ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Copy className="w-4 h-4" />
-                  Copy Trading
-                </Button>
+            {/* ==================== Settings ==================== */}
+            {activeTab === 'settings' && (
+              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
+                <SettingsPanel />
               </div>
-              {/* Trading Subtab Content */}
-              <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
-                <TradingPanel />
-              </div>
-              <div className={tradingSubTab === 'copy' ? '' : 'hidden'}>
-                <CopyTradingPanel />
-              </div>
-            </TabsContent>
-
-            {/* Accounts Tab with Paper/Live Subtabs */}
-            <TabsContent value="accounts" forceMount className="mt-0 data-[state=inactive]:hidden">
-              {/* Accounts Subtabs Navigation */}
-              <div className="flex items-center gap-2 mb-6">
-                <Button
-                  variant="outline"
-                  onClick={() => setAccountsSubTab('paper')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    accountsSubTab === 'paper'
-                      ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <PlayCircle className="w-4 h-4" />
-                  Paper Accounts
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setAccountsSubTab('live')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    accountsSubTab === 'live'
-                      ? "bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30 hover:text-green-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <DollarSign className="w-4 h-4" />
-                  Live Accounts
-                </Button>
-              </div>
-              {/* Accounts Subtab Content */}
-              <div className={accountsSubTab === 'paper' ? '' : 'hidden'}>
-                <SimulationPanel />
-              </div>
-              <div className={accountsSubTab === 'live' ? '' : 'hidden'}>
-                <LiveAccountPanel />
-              </div>
-            </TabsContent>
-
-            {/* Traders Tab with Subtabs */}
-            <TabsContent value="traders" forceMount className="mt-0 data-[state=inactive]:hidden">
-              {/* Traders Subtabs Navigation */}
-              <div className="flex items-center gap-2 mb-6">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTradersSubTab('tracked')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradersSubTab === 'tracked'
-                      ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Users className="w-4 h-4" />
-                  Tracked
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTradersSubTab('leaderboard')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradersSubTab === 'leaderboard'
-                      ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Trophy className="w-4 h-4" />
-                  Leaderboard
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTradersSubTab('discover')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradersSubTab === 'discover'
-                      ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30 hover:text-emerald-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Target className="w-4 h-4" />
-                  Discover
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTradersSubTab('analysis')}
-                  className={cn(
-                    "flex items-center gap-2",
-                    tradersSubTab === 'analysis'
-                      ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
-                      : "bg-card text-muted-foreground hover:text-foreground border-border"
-                  )}
-                >
-                  <Search className="w-4 h-4" />
-                  Analysis
-                </Button>
-              </div>
-              {/* Traders Subtab Content */}
-              <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
-                <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
-              </div>
-              <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
-                <DiscoveryPanel
-                  parentTab={tradersSubTab === 'discover' ? 'discover' : 'leaderboard'}
-                  onAnalyzeWallet={handleAnalyzeWallet}
-                />
-              </div>
-              <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
-                <WalletAnalysisPanel
-                  initialWallet={walletToAnalyze}
-                  initialUsername={walletUsername}
-                  onWalletAnalyzed={() => { setWalletToAnalyze(null); setWalletUsername(null) }}
-                />
-              </div>
-            </TabsContent>
-
-            <TabsContent value="positions" forceMount className="mt-0 data-[state=inactive]:hidden">
-              <PositionsPanel />
-            </TabsContent>
-            <TabsContent value="performance" forceMount className="mt-0 data-[state=inactive]:hidden">
-              <PerformancePanel />
-            </TabsContent>
-            <TabsContent value="ai" forceMount className="mt-0 data-[state=inactive]:hidden">
-              <AIPanel />
-            </TabsContent>
-            <TabsContent value="settings" forceMount className="mt-0 data-[state=inactive]:hidden">
-              <SettingsPanel />
-            </TabsContent>
+            )}
           </main>
-        </Tabs>
+        </div>
 
         {/* Trade Execution Modal */}
         {executingOpportunity && (
@@ -1060,20 +1027,6 @@ function App() {
         />
       </div>
     </TooltipProvider>
-  )
-}
-
-function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <Card className="border-border">
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className="p-2 bg-muted rounded-lg">{icon}</div>
-        <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="text-lg font-semibold">{value}</p>
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 
