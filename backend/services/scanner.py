@@ -738,7 +738,7 @@ class ArbitrageScanner:
         if expired_count:
             parts.append(f"{expired_count} expired removed")
         if parts:
-            print(f"  Merge: {', '.join(parts)} → {len(merged)} total")
+            print(f"  Merge: {', '.join(parts)} -> {len(merged)} total")
 
         return merged
 
@@ -795,7 +795,7 @@ class ArbitrageScanner:
                     )
                     print(
                         f"  AI Judge: {opp.title[:50]}... "
-                        f"\u2192 {result.get('recommendation', 'unknown')} "
+                        f"-> {result.get('recommendation', 'unknown')} "
                         f"(score: {result.get('overall_score', 0):.2f})"
                     )
 
