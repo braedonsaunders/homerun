@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronDown,
   ChevronUp,
@@ -83,6 +83,7 @@ interface Props {
 
 export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const queryClient = useQueryClient()
 
   const riskColor = opportunity.risk_score < 0.3
     ? 'text-green-400'
@@ -98,6 +99,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
     mutationFn: async () => {
       const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
       return data
+    },
+    onSuccess: () => {
+      // Refetch opportunities so the backend's updated ai_analysis is included
+      queryClient.invalidateQueries({ queryKey: ['opportunities'] })
     },
   })
 
