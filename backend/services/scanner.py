@@ -197,9 +197,11 @@ class ArbitrageScanner:
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
 
         try:
-            # Fetch all active events and markets from Polymarket
-            events = await self.client.get_all_events(closed=False)
-            markets = await self.client.get_all_markets(active=True)
+            # Fetch events and markets concurrently (they are independent)
+            events, markets = await asyncio.gather(
+                self.client.get_all_events(closed=False),
+                self.client.get_all_markets(active=True),
+            )
 
             # Filter out markets whose end_date has already passed —
             # these are resolved events awaiting settlement and can't
@@ -277,21 +279,37 @@ class ArbitrageScanner:
                 prices = await self.client.get_prices_batch(token_sample)
                 print(f"  Fetched prices for {len(prices)} tokens")
 
-            # Run all strategies and classify mispricing types
+            # Run all strategies concurrently in a thread pool.
+            # strategy.detect() is synchronous CPU-bound work; running it
+            # on the event loop blocks all async handlers (including
+            # GET /api/opportunities) causing the UI to hang during scans.
             all_opportunities = []
-            for strategy in self.strategies:
-                try:
-                    opps = strategy.detect(events, markets, prices)
-                    # Classify mispricing type if not already set by strategy
-                    for opp in opps:
-                        if opp.mispricing_type is None:
-                            opp.mispricing_type = self._strategy_mispricing_map.get(
-                                opp.strategy.value, MispricingType.WITHIN_MARKET
-                            )
-                    all_opportunities.extend(opps)
-                    print(f"  {strategy.name}: found {len(opps)} opportunities")
-                except Exception as e:
-                    print(f"  {strategy.name}: error - {e}")
+            loop = asyncio.get_running_loop()
+
+            async def _run_strategy(strategy):
+                """Run a single strategy in the default thread-pool executor."""
+                return strategy, await loop.run_in_executor(
+                    None, strategy.detect, events, markets, prices
+                )
+
+            results = await asyncio.gather(
+                *[_run_strategy(s) for s in self.strategies],
+                return_exceptions=True,
+            )
+
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f"  Strategy error: {result}")
+                    continue
+                strategy, opps = result
+                # Classify mispricing type if not already set by strategy
+                for opp in opps:
+                    if opp.mispricing_type is None:
+                        opp.mispricing_type = self._strategy_mispricing_map.get(
+                            opp.strategy.value, MispricingType.WITHIN_MARKET
+                        )
+                all_opportunities.extend(opps)
+                print(f"  {strategy.name}: found {len(opps)} opportunities")
 
             # Deduplicate across strategies: when the same underlying markets
             # are detected by multiple strategies, keep only the highest-ROI one.
@@ -568,9 +586,10 @@ class ArbitrageScanner:
         await self.save_settings()
         await self._notify_status_change()
 
-        # If not running, do an immediate scan
+        # Kick off an immediate scan in the background so this
+        # method returns quickly and doesn't block the API response.
         if self._running:
-            await self.scan_once()
+            asyncio.create_task(self.scan_once())
 
     async def pause(self):
         """Pause all background services (scanner, auto trader, copy trader, wallet tracker, discovery, etc.)"""
