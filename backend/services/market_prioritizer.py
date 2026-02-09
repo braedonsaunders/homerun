@@ -21,7 +21,7 @@ Also provides:
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
@@ -355,17 +355,10 @@ class MarketPrioritizer:
             return
 
         if near_creation:
-            # Flag all markets that look like crypto interval markets
-            import re
-            crypto_pattern = re.compile(
-                r"\b(BTC|ETH|Bitcoin|Ethereum)\b.*\b(15[\s-]?min|1[\s-]?h)",
-                re.IGNORECASE,
-            )
-            for state in self._states.values():
-                # We don't have the question text in state, but the monitor
-                # registry does — just flag everything as needing fast poll
-                # for the next cycle. The tier classification will pick it up.
-                pass  # Handled by has_monitor_alert through monitor alerts
+            # Crypto creation imminence is handled via the monitor's
+            # high-priority IDs — the classify_market() method picks up
+            # the has_monitor_alert flag set by _refresh_monitor_alerts().
+            pass
 
     def update_stability_scores(self) -> None:
         """Pull price stability scores from MarketMonitor snapshots."""
@@ -447,7 +440,6 @@ class MarketPrioritizer:
         - Then further filter to only markets whose prices have changed
         - Markets in HOT tier always pass (never skipped by change detection)
         """
-        now = datetime.now(timezone.utc)
         result = []
 
         tier_rank = {MarketTier.HOT: 0, MarketTier.WARM: 1, MarketTier.COLD: 2}
@@ -528,7 +520,6 @@ class MarketPrioritizer:
 
     def get_stats(self) -> dict:
         """Return current prioritizer statistics."""
-        now = datetime.now(timezone.utc)
         hot_ids = [s.market_id for s in self._states.values() if s.tier == MarketTier.HOT]
         return {
             "total_tracked": len(self._states),
