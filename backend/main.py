@@ -147,6 +147,29 @@ async def lifespan(app: FastAPI):
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
+        # Start WebSocket feeds for real-time price data
+        if settings.WS_FEED_ENABLED:
+            try:
+                from services.ws_feeds import get_feed_manager
+                from services.polymarket import polymarket_client
+
+                feed_manager = get_feed_manager()
+
+                # Register HTTP fallback for when WS data is stale
+                async def _http_book_fallback(token_id: str):
+                    """Fetch order book via HTTP when WS data is stale."""
+                    try:
+                        book = await polymarket_client.get_order_book(token_id)
+                        return book
+                    except Exception:
+                        return None
+
+                feed_manager.set_http_fallback(_http_book_fallback)
+                await feed_manager.start()
+                logger.info("WebSocket feeds started (real-time price data)")
+            except Exception as e:
+                logger.warning(f"WebSocket feeds failed to start (non-critical): {e}")
+
         # Start copy trading service
         await copy_trader.start()
 
@@ -261,6 +284,14 @@ async def lifespan(app: FastAPI):
             from services.news.feed_service import news_feed_service
 
             news_feed_service.stop()
+        except Exception:
+            pass
+
+        # Stop WebSocket feeds
+        try:
+            from services.ws_feeds import get_feed_manager
+            feed_mgr = get_feed_manager()
+            await feed_mgr.stop()
         except Exception:
             pass
 
@@ -390,6 +421,16 @@ def _get_ai_status() -> dict:
         return {"enabled": False}
 
 
+def _get_ws_feeds_status() -> dict:
+    """Get WebSocket feeds status for health check."""
+    try:
+        from services.ws_feeds import get_feed_manager
+        mgr = get_feed_manager()
+        return mgr.health_check()
+    except Exception:
+        return {"healthy": False, "started": False}
+
+
 @app.get("/health/detailed")
 async def detailed_health_check():
     """Detailed health check with all system stats"""
@@ -431,6 +472,7 @@ async def detailed_health_check():
             },
             "market_prioritizer": market_prioritizer.get_stats(),
             "ai_intelligence": _get_ai_status(),
+            "ws_feeds": _get_ws_feeds_status(),
             "news_intelligence": _get_news_status(),
             "wallet_discovery": {
                 "running": wallet_discovery._running,

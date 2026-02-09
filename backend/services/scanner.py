@@ -31,6 +31,7 @@ from services.strategies import (
 )
 from services.pause_state import global_pause_state
 from services.market_prioritizer import market_prioritizer, MarketTier
+from services.ws_feeds import get_feed_manager
 from sqlalchemy import select
 
 
@@ -155,6 +156,44 @@ class ArbitrageScanner:
                 await cb(activity)
             except Exception:
                 pass
+
+    def _merge_ws_prices(self, http_prices: dict, token_ids: list[str]) -> dict:
+        """Merge WebSocket real-time prices with HTTP-fetched prices.
+
+        WS prices take precedence when fresh (within stale TTL).
+        Falls back to HTTP prices for tokens not covered by WS.
+        """
+        if not settings.WS_FEED_ENABLED:
+            return http_prices
+
+        try:
+            feed_mgr = get_feed_manager()
+            if not feed_mgr._started:
+                return http_prices
+
+            merged = dict(http_prices)
+            ws_hits = 0
+
+            for token_id in token_ids:
+                if feed_mgr.is_fresh(token_id):
+                    mid = feed_mgr.cache.get_mid_price(token_id)
+                    if mid is not None:
+                        bba = feed_mgr.cache.get_best_bid_ask(token_id)
+                        if bba:
+                            bid, ask = bba
+                            merged[token_id] = {
+                                "mid": mid,
+                                "bid": bid,
+                                "ask": ask,
+                            }
+                            ws_hits += 1
+
+            if ws_hits > 0:
+                print(f"  WS price overlay: {ws_hits}/{len(token_ids)} tokens from real-time feed")
+            return merged
+        except Exception as e:
+            print(f"  WS price merge failed (using HTTP): {e}")
+            return http_prices
 
     async def _notify_status_change(self):
         """Notify all status callbacks of a change"""
@@ -324,10 +363,28 @@ class ArbitrageScanner:
                 prices = await self.client.get_prices_batch(token_sample)
                 print(f"  Fetched prices for {len(prices)} tokens")
 
+            # Overlay WebSocket real-time prices where available
+            prices = self._merge_ws_prices(prices, all_token_ids[:500])
+
             # Cache full data for fast scans between full scans
             self._cached_events = list(events)
             self._cached_markets = list(markets)
             self._cached_prices = dict(prices)
+
+            # Subscribe to WebSocket feeds for active market tokens
+            if settings.WS_FEED_ENABLED:
+                try:
+                    feed_mgr = get_feed_manager()
+                    if feed_mgr._started:
+                        # Subscribe to all active token IDs for real-time updates
+                        # The feed will auto-manage subscriptions
+                        poly_tokens = [t for t in all_token_ids[:500] if len(t) > 20]
+                        if poly_tokens:
+                            await feed_mgr.polymarket_feed.subscribe(
+                                token_ids=poly_tokens[:200]
+                            )
+                except Exception as e:
+                    print(f"  WS subscription failed (non-critical): {e}")
 
             # Tiered scanning: classify markets and apply change detection
             markets_to_evaluate = markets
@@ -560,6 +617,9 @@ class ArbitrageScanner:
                 )
                 hot_prices = await self.client.get_prices_batch(hot_token_ids[:200])
                 print(f"  Fetched prices for {len(hot_prices)} hot-tier tokens")
+
+            # Overlay WebSocket real-time prices where available
+            hot_prices = self._merge_ws_prices(hot_prices, hot_token_ids[:200])
 
             # Merge with cached prices
             merged_prices = {**self._cached_prices, **hot_prices}
@@ -1072,6 +1132,14 @@ class ArbitrageScanner:
                 }
             ],
         }
+
+        # Add WebSocket feed status
+        if settings.WS_FEED_ENABLED:
+            try:
+                feed_mgr = get_feed_manager()
+                status["ws_feeds"] = feed_mgr.health_check()
+            except Exception:
+                status["ws_feeds"] = {"healthy": False, "started": False}
 
         # Add tiered scanning status
         if settings.TIERED_SCANNING_ENABLED:

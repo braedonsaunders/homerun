@@ -56,6 +56,17 @@ async def get_opportunities(
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
         ]
 
+    # Server-side rejection: filter out STRONG SKIP opportunities
+    # These have been analyzed by AI and determined to be trash
+    # (false positives, guaranteed losses, etc.)
+    opportunities = [
+        opp for opp in opportunities
+        if not (
+            opp.ai_analysis is not None
+            and opp.ai_analysis.recommendation == "strong_skip"
+        )
+    ]
+
     # Sort opportunities — uses inline ai_analysis (no DB queries needed)
     reverse = sort_dir != "asc"
 

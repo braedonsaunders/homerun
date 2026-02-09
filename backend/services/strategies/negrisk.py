@@ -161,6 +161,15 @@ class NegRiskStrategy(BaseStrategy):
         if is_open_ended:
             return None
 
+        # --- Multi-winner / threshold detection ---
+        # Multi-winner events (relegation, advancement) break the "exactly 1 wins" assumption.
+        # Threshold markets (above $X) are hierarchical, not mutually exclusive.
+        questions = [m.question for m in active_markets]
+        if self._is_multi_winner_event(event.title, questions):
+            return None
+        if self._is_threshold_market(questions):
+            return None
+
         # --- Resolution date mismatch detection ---
         # All outcomes in a NegRisk bundle must resolve at the same time.
         # If outcome A resolves June 30 but outcome B resolves Dec 31,
@@ -215,6 +224,14 @@ class NegRiskStrategy(BaseStrategy):
         """
         n = len(active_markets)
         if n < 2:
+            return None
+
+        # Multi-winner and threshold markets are ESPECIALLY dangerous for short:
+        # the payout math assumes exactly 1 winner, but these can have 0 or 2+ winners.
+        questions = [m.question for m in active_markets]
+        if self._is_multi_winner_event(event.title, questions):
+            return None
+        if self._is_threshold_market(questions):
             return None
 
         total_no = 0.0
@@ -398,6 +415,12 @@ class NegRiskStrategy(BaseStrategy):
             "odd/even",
             "odd goals",
             "even goals",
+            # Independent action keywords - multiple entities can do these
+            "will join",
+            "will pass",
+            "will be passed",
+            "will launch",
+            "will be approved",
         ]
 
         return any(kw in question_lower for kw in independent_keywords)
@@ -450,6 +473,91 @@ class NegRiskStrategy(BaseStrategy):
         ]
 
         return any(kw in question_lower for kw in date_keywords)
+
+    def _is_multi_winner_event(self, event_title: str, questions: list[str]) -> bool:
+        """Check if an event allows MORE THAN ONE outcome to win simultaneously.
+
+        NegRisk short assumes exactly N-1 outcomes win. Multi-winner events
+        (relegation, advancement, multiple selections) break this assumption
+        and cause guaranteed losses.
+        """
+        title_lower = event_title.lower()
+
+        # Title-level patterns (event-wide signals)
+        multi_winner_title_keywords = [
+            "relegate",
+            "relegated",
+            "relegation",
+            "advance to runoff",
+            "qualify",
+            "top 2",
+            "top 3",
+            "top 4",
+            "top 5",
+            "which countries will",
+            "which cities will",
+            "which teams will",
+            "which candidates will advance",
+            "will join",
+            "countries will join",
+        ]
+
+        if any(kw in title_lower for kw in multi_winner_title_keywords):
+            return True
+
+        # Question-level patterns (individual market signals)
+        multi_winner_question_keywords = [
+            "relegate",
+            "relegated",
+            "relegation",
+            "advance to runoff",
+            "advance",
+            "qualify",
+            "top 2",
+            "top 3",
+            "top 4",
+            "top 5",
+            "will join",
+            "countries will join",
+        ]
+
+        for question in questions:
+            question_lower = question.lower()
+            if any(kw in question_lower for kw in multi_winner_question_keywords):
+                return True
+
+        return False
+
+    def _is_threshold_market(self, questions: list[str]) -> bool:
+        """Check if questions form a hierarchical threshold/cumulative set.
+
+        Markets like "FDV above $500M", "price above $100K" are NOT mutually
+        exclusive -- if above $1B then also above $500M. Buying NO on all
+        thresholds = guaranteed loss if the value lands above the lowest.
+        """
+        threshold_keywords = [
+            "above $",
+            "above ",
+            "below $",
+            "below ",
+            "over $",
+            "under $",
+            "more than",
+            "less than",
+            "greater than",
+            "fewer than",
+            "at least",
+            "at most",
+        ]
+
+        threshold_count = 0
+        for question in questions:
+            question_lower = question.lower()
+            if any(kw in question_lower for kw in threshold_keywords):
+                threshold_count += 1
+
+        # If >=50% of questions match threshold patterns, this is a threshold market
+        return len(questions) > 0 and threshold_count >= len(questions) * 0.5
 
     def _detect_multi_outcome(
         self, event: Event, prices: dict[str, dict]
@@ -545,6 +653,13 @@ class NegRiskStrategy(BaseStrategy):
         if self._is_open_ended_event(event.title):
             return None
 
+        # Multi-winner / threshold detection (same as NegRisk)
+        questions = [m.question for m in exclusive_markets]
+        if self._is_multi_winner_event(event.title, questions):
+            return None
+        if self._is_threshold_market(questions):
+            return None
+
         # Resolution date mismatch check (same as NegRisk)
         end_dates = [make_aware(m.end_date) for m in exclusive_markets if m.end_date]
         if len(end_dates) >= 2:
@@ -598,6 +713,14 @@ class NegRiskStrategy(BaseStrategy):
         """
         n = len(exclusive_markets)
         if n < 3:
+            return None
+
+        # Multi-winner and threshold markets are ESPECIALLY dangerous for short:
+        # the payout math assumes exactly 1 winner, but these can have 0 or 2+ winners.
+        questions = [m.question for m in exclusive_markets]
+        if self._is_multi_winner_event(event.title, questions):
+            return None
+        if self._is_threshold_market(questions):
             return None
 
         total_no = 0.0
