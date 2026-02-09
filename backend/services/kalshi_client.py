@@ -304,9 +304,7 @@ class KalshiClient:
         logger.info("Fetched Kalshi events", count=len(all_events))
         return all_events
 
-    async def search_events(
-        self, query: str, limit: int = 20
-    ) -> list[Event]:
+    async def search_events(self, query: str, limit: int = 20) -> list[Event]:
         """Search Kalshi events by keyword.
 
         Kalshi's API does not provide native text search, so we fetch
