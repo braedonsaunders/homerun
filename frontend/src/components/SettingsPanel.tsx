@@ -19,6 +19,7 @@ import {
   DollarSign,
   Brain,
   Shield,
+  BarChart3,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
