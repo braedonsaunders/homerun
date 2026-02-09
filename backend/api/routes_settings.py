@@ -300,7 +300,8 @@ class SearchFilterSettings(BaseModel):
 
     # Cross-platform arbitrage
     cross_platform_enabled: bool = Field(
-        default=True, description="Enable cross-platform (Polymarket vs Kalshi) arbitrage"
+        default=True,
+        description="Enable cross-platform (Polymarket vs Kalshi) arbitrage",
     )
 
     # Combinatorial arbitrage
@@ -849,7 +850,9 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings.btc_eth_hf_enabled = sf.btc_eth_hf_enabled
                 settings.cross_platform_enabled = sf.cross_platform_enabled
                 settings.combinatorial_min_confidence = sf.combinatorial_min_confidence
-                settings.combinatorial_high_confidence = sf.combinatorial_high_confidence
+                settings.combinatorial_high_confidence = (
+                    sf.combinatorial_high_confidence
+                )
                 settings.bayesian_cascade_enabled = sf.bayesian_cascade_enabled
                 settings.bayesian_min_edge_percent = sf.bayesian_min_edge_percent
                 settings.bayesian_propagation_depth = sf.bayesian_propagation_depth

@@ -322,7 +322,11 @@ async def apply_search_filters():
         ("BAYESIAN_MIN_EDGE_PERCENT", "bayesian_min_edge_percent", 5.0),
         ("BAYESIAN_PROPAGATION_DEPTH", "bayesian_propagation_depth", 3),
         ("LIQUIDITY_VACUUM_ENABLED", "liquidity_vacuum_enabled", True),
-        ("LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO", "liquidity_vacuum_min_imbalance_ratio", 5.0),
+        (
+            "LIQUIDITY_VACUUM_MIN_IMBALANCE_RATIO",
+            "liquidity_vacuum_min_imbalance_ratio",
+            5.0,
+        ),
         ("LIQUIDITY_VACUUM_MIN_DEPTH_USD", "liquidity_vacuum_min_depth_usd", 100.0),
         ("ENTROPY_ARB_ENABLED", "entropy_arb_enabled", True),
         ("ENTROPY_ARB_MIN_DEVIATION", "entropy_arb_min_deviation", 0.25),
