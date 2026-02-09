@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from datetime import datetime, timezone
@@ -224,25 +226,19 @@ async def get_opportunity(opportunity_id: str):
 
 @router.post("/scan")
 async def trigger_scan():
-    """Manually trigger a new scan"""
-    try:
-        opportunities = await scanner.scan_once()
-        return {
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
-            "opportunities_found": len(opportunities),
-            "top_opportunities": [
-                {
-                    "id": o.id,
-                    "strategy": o.strategy,
-                    "title": o.title,
-                    "roi_percent": o.roi_percent,
-                }
-                for o in opportunities[:10]
-            ],
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Manually trigger a new scan (non-blocking).
+
+    Kicks off scan_once() as a background task and returns immediately
+    so the UI stays responsive.  The frontend already polls
+    /scanner/status and /opportunities on intervals, so results
+    appear automatically once the scan completes.
+    """
+    asyncio.create_task(scanner.scan_once())
+    return {
+        "status": "started",
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": "Scan started in background",
+    }
 
 
 # ==================== SCANNER STATUS ====================
