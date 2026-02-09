@@ -107,13 +107,54 @@ _MATCH_THRESHOLD = 0.35
 
 # Common stop words that inflate the union and dilute Jaccard scores.
 # These add no discriminative value when matching market questions.
-_STOP_WORDS = frozenset({
-    "will", "the", "be", "in", "by", "on", "of", "to", "at", "is",
-    "it", "an", "or", "if", "as", "do", "no", "so", "up", "has",
-    "for", "not", "its", "was", "are", "did", "can", "than", "from",
-    "this", "that", "what", "which", "who", "how", "does", "have",
-    "been", "above", "below", "before", "after", "between", "during",
-})
+_STOP_WORDS = frozenset(
+    {
+        "will",
+        "the",
+        "be",
+        "in",
+        "by",
+        "on",
+        "of",
+        "to",
+        "at",
+        "is",
+        "it",
+        "an",
+        "or",
+        "if",
+        "as",
+        "do",
+        "no",
+        "so",
+        "up",
+        "has",
+        "for",
+        "not",
+        "its",
+        "was",
+        "are",
+        "did",
+        "can",
+        "than",
+        "from",
+        "this",
+        "that",
+        "what",
+        "which",
+        "who",
+        "how",
+        "does",
+        "have",
+        "been",
+        "above",
+        "below",
+        "before",
+        "after",
+        "between",
+        "during",
+    }
+)
 
 
 def _normalize_text(text: str) -> str:

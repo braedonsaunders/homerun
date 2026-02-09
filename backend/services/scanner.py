@@ -200,7 +200,9 @@ class ArbitrageScanner:
                     m for m in event.markets if m.end_date is None or m.end_date > now
                 ]
 
-            print(f"  Fetched {len(events)} Polymarket events and {len(markets)} markets")
+            print(
+                f"  Fetched {len(events)} Polymarket events and {len(markets)} markets"
+            )
 
             # Fetch Kalshi markets and merge them so ALL strategies
             # (not just cross-platform) can detect opportunities on Kalshi.
@@ -210,7 +212,8 @@ class ArbitrageScanner:
                 try:
                     kalshi_markets = await kalshi_client.get_all_markets(active=True)
                     kalshi_markets = [
-                        m for m in kalshi_markets
+                        m
+                        for m in kalshi_markets
                         if m.end_date is None or m.end_date > now
                     ]
                     kalshi_market_count = len(kalshi_markets)
@@ -219,7 +222,8 @@ class ArbitrageScanner:
                     kalshi_events = await kalshi_client.get_all_events(closed=False)
                     for ke in kalshi_events:
                         ke.markets = [
-                            m for m in ke.markets
+                            m
+                            for m in ke.markets
                             if m.end_date is None or m.end_date > now
                         ]
                     kalshi_event_count = len(kalshi_events)
