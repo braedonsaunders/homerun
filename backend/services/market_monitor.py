@@ -15,6 +15,8 @@ Key capabilities:
   - Score price stability to gauge remaining arb window
 """
 
+from __future__ import annotations
+
 import asyncio
 import re
 from dataclasses import dataclass, field
