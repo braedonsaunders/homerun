@@ -1203,6 +1203,7 @@ function ConfluenceCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const [searchingOpportunity, setSearchingOpportunity] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const strengthPercent = Math.round(signal.strength * 100)
   const signalColor = SIGNAL_TYPE_COLORS[signal.signal_type] || 'bg-gray-500/15 text-gray-400 border-gray-500/20'
 
@@ -1218,12 +1219,17 @@ function ConfluenceCard({
   const handleFindOpportunity = async () => {
     if (!onExecuteTrade) return
     setSearchingOpportunity(true)
+    setSearchError(null)
     try {
       const searchTerm = signal.market_question || signal.market_id
       const resp = await getOpportunities({ search: searchTerm, limit: 5 })
       if (resp.opportunities.length > 0) {
         onExecuteTrade(resp.opportunities[0])
+      } else {
+        setSearchError('No matching opportunity found for this signal')
       }
+    } catch {
+      setSearchError('Failed to search for opportunities')
     } finally {
       setSearchingOpportunity(false)
     }
@@ -1376,6 +1382,14 @@ function ConfluenceCard({
             <TooltipContent>{expanded ? 'Hide wallets' : 'Show participating wallets'}</TooltipContent>
           </Tooltip>
         </div>
+
+        {/* Search Error Feedback */}
+        {searchError && (
+          <div className="flex items-center gap-2 text-xs bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg px-3 py-2">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{searchError}</span>
+          </div>
+        )}
 
         {/* Expanded Wallet List */}
         {expanded && signal.wallets.length > 0 && (
