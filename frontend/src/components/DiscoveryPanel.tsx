@@ -6,7 +6,6 @@ import {
   Users,
   Target,
   Tag,
-  Layers,
   ChevronDown,
   ChevronUp,
   AlertCircle,
@@ -15,7 +14,6 @@ import {
   Search,
   Play,
   TrendingUp,
-  Eye,
   Zap,
   ExternalLink,
   Activity,
@@ -28,7 +26,6 @@ import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Input } from './ui/input'
-import { Separator } from './ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import {
   Table,
@@ -42,7 +39,6 @@ import {
   discoveryApi,
   type DiscoveredWallet,
   type ConfluenceSignal,
-  type WalletCluster,
   type TagInfo,
   type DiscoveryStats,
 } from '../services/discoveryApi'
@@ -50,7 +46,7 @@ import { analyzeAndTrackWallet, type Opportunity, getOpportunities } from '../se
 
 // ==================== TYPES ====================
 
-type DiscoveryTab = 'leaderboard' | 'confluence' | 'tags' | 'clusters'
+type DiscoveryTab = 'leaderboard' | 'confluence' | 'tags'
 
 type SortField = 'rank_score' | 'total_pnl' | 'win_rate' | 'sharpe_ratio' | 'total_trades' | 'avg_roi'
 
@@ -127,7 +123,7 @@ interface DiscoveryPanelProps {
 }
 
 export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWallet, onExecuteTrade }: DiscoveryPanelProps) {
-  const [discoverSubTab, setDiscoverSubTab] = useState<'confluence' | 'tags' | 'clusters'>('confluence')
+  const [discoverSubTab, setDiscoverSubTab] = useState<'confluence' | 'tags'>('confluence')
   const activeTab: DiscoveryTab = parentTab === 'leaderboard' ? 'leaderboard' : discoverSubTab
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -136,10 +132,12 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
   const [tagFilter, setTagFilter] = useState('')
-  const [selectedTag, setSelectedTag] = useState<string | null>(null)
+  const [tagFilters, setTagFilters] = useState<string[]>([])
+  const [tagSortBy, setTagSortBy] = useState<SortField>('rank_score')
+  const [tagSortDir, setTagSortDir] = useState<SortDir>('desc')
+  const [tagPage, setTagPage] = useState(0)
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [confluenceMinStrength, setConfluenceMinStrength] = useState(0)
-  const [clusterMinWallets, setClusterMinWallets] = useState(2)
   const queryClient = useQueryClient()
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -149,7 +147,6 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
       queryClient.invalidateQueries({ queryKey: ['discovery-leaderboard'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-stats'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-confluence'] })
-      queryClient.invalidateQueries({ queryKey: ['discovery-clusters'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-tags'] })
     }, 60000)
 
@@ -195,25 +192,29 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
     enabled: activeTab === 'confluence',
   })
 
-  const { data: clusters = [], isLoading: clustersLoading } = useQuery<WalletCluster[]>({
-    queryKey: ['discovery-clusters', clusterMinWallets],
-    queryFn: () => discoveryApi.getClusters(clusterMinWallets),
-    enabled: activeTab === 'clusters',
-  })
-
   const { data: tags = [], isLoading: tagsLoading } = useQuery<TagInfo[]>({
     queryKey: ['discovery-tags'],
     queryFn: discoveryApi.getTags,
     enabled: activeTab === 'tags',
   })
 
-  const { data: tagWalletsData, isLoading: tagWalletsLoading } = useQuery({
-    queryKey: ['discovery-tag-wallets', selectedTag],
-    queryFn: () => discoveryApi.getWalletsByTag(selectedTag!, 100),
-    enabled: !!selectedTag && activeTab === 'tags',
+  const tagFilterString = tagFilters.join(',')
+
+  const { data: tagLeaderboardData, isLoading: tagWalletsLoading } = useQuery({
+    queryKey: ['discovery-tags-leaderboard', tagSortBy, tagSortDir, tagPage, tagFilterString],
+    queryFn: () => discoveryApi.getLeaderboard({
+      sort_by: tagSortBy,
+      sort_dir: tagSortDir,
+      limit: ITEMS_PER_PAGE,
+      offset: tagPage * ITEMS_PER_PAGE,
+      min_trades: 0,
+      tags: tagFilterString || undefined,
+    }),
+    enabled: activeTab === 'tags',
   })
 
-  const tagWallets: DiscoveredWallet[] = tagWalletsData?.wallets || []
+  const tagWallets: DiscoveredWallet[] = tagLeaderboardData?.wallets || tagLeaderboardData || []
+  const tagTotalWallets: number = tagLeaderboardData?.total || tagWallets.length
 
   // ==================== MUTATIONS ====================
 
@@ -272,6 +273,25 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
     }
   }, [sortBy])
 
+  const handleTagSort = useCallback((field: SortField) => {
+    if (tagSortBy === field) {
+      setTagSortDir((d: SortDir) => d === 'desc' ? 'asc' : 'desc')
+    } else {
+      setTagSortBy(field)
+      setTagSortDir('desc')
+    }
+    setTagPage(0)
+  }, [tagSortBy])
+
+  const toggleTagFilter = useCallback((tagName: string) => {
+    setTagFilters(prev =>
+      prev.includes(tagName)
+        ? prev.filter(t => t !== tagName)
+        : [...prev, tagName]
+    )
+    setTagPage(0)
+  }, [])
+
   const handleCopyAddress = useCallback((address: string) => {
     navigator.clipboard.writeText(address).then(() => {
       setCopiedAddress(address)
@@ -287,7 +307,6 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
     { id: 'leaderboard', icon: Trophy, label: 'Leaderboard', color: 'yellow' },
     { id: 'confluence', icon: Zap, label: 'Confluence', color: 'cyan' },
     { id: 'tags', icon: Tag, label: 'Tags', color: 'purple' },
-    { id: 'clusters', icon: Layers, label: 'Clusters', color: 'blue' },
   ]
 
   return (
@@ -301,7 +320,7 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
           <p className="text-sm text-muted-foreground">
             {parentTab === 'leaderboard'
               ? 'Top performing traders ranked by metrics'
-              : 'Discover confluence signals, wallet clusters, and behavioral tags'}
+              : 'Discover confluence signals and filter traders by behavioral tags'}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -439,7 +458,7 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
                 key={tab.id}
                 variant="outline"
                 size="sm"
-                onClick={() => setDiscoverSubTab(tab.id as 'confluence' | 'tags' | 'clusters')}
+                onClick={() => setDiscoverSubTab(tab.id as 'confluence' | 'tags')}
                 className={cn("flex items-center gap-2", colorMap[tab.color])}
               >
                 <Icon className="w-4 h-4" />
@@ -697,206 +716,154 @@ export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWal
       {/* ==================== TAGS TAB ==================== */}
       {activeTab === 'tags' && (
         <div className="space-y-4">
+          {/* Tag Filters */}
           {tagsLoading ? (
+            <div className="flex items-center justify-center py-4">
+              <RefreshCw className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : tags.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-muted-foreground font-medium">Filter by Tags</label>
+                {tagFilters.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { setTagFilters([]); setTagPage(0) }}
+                    className="text-xs text-muted-foreground h-6 px-2"
+                  >
+                    Clear filters
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {tags.map(tag => {
+                  const isActive = tagFilters.includes(tag.name)
+                  const tagStyle = tag.color
+                    ? isActive
+                      ? { borderColor: tag.color, backgroundColor: `${tag.color}25`, color: tag.color }
+                      : { borderColor: `${tag.color}40`, color: `${tag.color}99` }
+                    : {}
+                  return (
+                    <button
+                      key={tag.name}
+                      onClick={() => toggleTagFilter(tag.name)}
+                      className={cn(
+                        "px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
+                        isActive
+                          ? "ring-1 ring-primary/30"
+                          : "hover:ring-1 hover:ring-primary/20 opacity-70 hover:opacity-100"
+                      )}
+                      style={tagStyle}
+                    >
+                      {tag.display_name || tag.name}
+                      <span className="ml-1.5 opacity-60">{tag.wallet_count}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Wallets Table */}
+          {tagWalletsLoading ? (
             <div className="flex items-center justify-center py-12">
               <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>
-          ) : tags.length === 0 ? (
+          ) : tagWallets.length === 0 ? (
             <Card className="border-border">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <Tag className="w-12 h-12 text-muted-foreground/30 mb-4" />
-                <p className="text-muted-foreground">No tags available</p>
+                <p className="text-muted-foreground">No wallets found</p>
                 <p className="text-sm text-muted-foreground/70 mt-1">
-                  Tags are generated automatically during discovery analysis
+                  {tagFilters.length > 0
+                    ? 'No wallets match the selected tag filters. Try removing some filters.'
+                    : 'Run discovery to find and tag traders.'}
                 </p>
               </CardContent>
             </Card>
           ) : (
             <>
-              {/* Tag Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {tags.map(tag => (
-                  <TagCard
-                    key={tag.name}
-                    tag={tag}
-                    isSelected={selectedTag === tag.name}
-                    onSelect={() => setSelectedTag(selectedTag === tag.name ? null : tag.name)}
-                  />
-                ))}
-              </div>
+              <Card className="border-border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-12">#</TableHead>
+                      <TableHead className="min-w-[180px]">Trader</TableHead>
+                      <TableHead>
+                        <SortButton field="total_pnl" label="PnL" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="win_rate" label="Win Rate" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="sharpe_ratio" label="Sharpe" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="total_trades" label="Trades" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="avg_roi" label="Avg ROI" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>Tags</TableHead>
+                      <TableHead>Rec.</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {tagWallets.map((wallet, idx) => (
+                      <LeaderboardRow
+                        key={wallet.address}
+                        wallet={wallet}
+                        rank={tagPage * ITEMS_PER_PAGE + idx + 1}
+                        copiedAddress={copiedAddress}
+                        onCopyAddress={handleCopyAddress}
+                        onAnalyze={onAnalyzeWallet}
+                        onTrack={(address, username) => trackWalletMutation.mutate({ address, username })}
+                        isTracking={trackWalletMutation.isPending}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </Card>
 
-              {/* Selected Tag Wallets */}
-              {selectedTag && (
-                <>
-                  <Separator />
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-medium flex items-center gap-2">
-                        <Tag className="w-4 h-4 text-muted-foreground" />
-                        Wallets tagged &quot;{selectedTag}&quot;
-                      </h3>
+              {/* Pagination */}
+              {(() => {
+                const tagTotalPages = Math.ceil(tagTotalWallets / ITEMS_PER_PAGE)
+                return tagTotalPages > 1 ? (
+                  <div className="flex items-center justify-between pt-2">
+                    <div className="text-sm text-muted-foreground">
+                      Showing {tagPage * ITEMS_PER_PAGE + 1} - {Math.min((tagPage + 1) * ITEMS_PER_PAGE, tagTotalWallets)} of {tagTotalWallets}
+                    </div>
+                    <div className="flex items-center gap-2">
                       <Button
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
-                        onClick={() => setSelectedTag(null)}
-                        className="text-xs text-muted-foreground"
+                        onClick={() => setTagPage(p => Math.max(0, p - 1))}
+                        disabled={tagPage === 0}
                       >
-                        Clear
+                        Previous
+                      </Button>
+                      <span className="px-3 py-1.5 bg-card rounded-lg text-sm border border-border">
+                        Page {tagPage + 1} of {tagTotalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setTagPage(p => p + 1)}
+                        disabled={tagPage >= tagTotalPages - 1}
+                      >
+                        Next
                       </Button>
                     </div>
-
-                    {tagWalletsLoading ? (
-                      <div className="flex items-center justify-center py-8">
-                        <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : tagWallets.length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        No wallets found with this tag
-                      </p>
-                    ) : (
-                      <Card className="border-border overflow-hidden">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Trader</TableHead>
-                              <TableHead>PnL</TableHead>
-                              <TableHead>Win Rate</TableHead>
-                              <TableHead>Trades</TableHead>
-                              <TableHead>Recommendation</TableHead>
-                              <TableHead>Actions</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {tagWallets.map(wallet => (
-                              <TableRow key={wallet.address}>
-                                <TableCell>
-                                  <WalletAddress
-                                    address={wallet.address}
-                                    username={wallet.username}
-                                    copiedAddress={copiedAddress}
-                                    onCopy={handleCopyAddress}
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <PnlDisplay value={wallet.total_pnl} />
-                                </TableCell>
-                                <TableCell>
-                                  <span className={cn(
-                                    "font-medium",
-                                    wallet.win_rate >= 60 ? 'text-green-400' : wallet.win_rate >= 45 ? 'text-yellow-400' : 'text-red-400'
-                                  )}>
-                                    {formatPercent(wallet.win_rate)}
-                                  </span>
-                                </TableCell>
-                                <TableCell className="text-muted-foreground">
-                                  {wallet.total_trades}
-                                </TableCell>
-                                <TableCell>
-                                  <RecommendationBadge recommendation={wallet.recommendation} />
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex items-center gap-1">
-                                    {onAnalyzeWallet && (
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button
-                                            onClick={() => onAnalyzeWallet(wallet.address, wallet.username || undefined)}
-                                            className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
-                                          >
-                                            <Activity className="w-3.5 h-3.5" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Analyze wallet</TooltipContent>
-                                      </Tooltip>
-                                    )}
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <button
-                                          onClick={() => trackWalletMutation.mutate({ address: wallet.address, username: wallet.username })}
-                                          disabled={trackWalletMutation.isPending}
-                                          className="p-1.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
-                                        >
-                                          <UserPlus className="w-3.5 h-3.5" />
-                                        </button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>Track wallet</TooltipContent>
-                                    </Tooltip>
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <a
-                                          href={`https://polymarket.com/profile/${wallet.address}`}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
-                                        >
-                                          <ExternalLink className="w-3.5 h-3.5" />
-                                        </a>
-                                      </TooltipTrigger>
-                                      <TooltipContent>View on Polymarket</TooltipContent>
-                                    </Tooltip>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </Card>
-                    )}
                   </div>
-                </>
-              )}
+                ) : null
+              })()}
             </>
           )}
         </div>
       )}
 
-      {/* ==================== CLUSTERS TAB ==================== */}
-      {activeTab === 'clusters' && (
-        <div className="space-y-4">
-          {/* Controls */}
-          <div className="flex items-center gap-4">
-            <div className="w-48">
-              <label className="block text-xs text-muted-foreground mb-1">Min Wallets per Cluster</label>
-              <Input
-                type="number"
-                value={clusterMinWallets}
-                onChange={e => setClusterMinWallets(parseInt(e.target.value) || 2)}
-                min={2}
-                max={50}
-                className="bg-card border-border h-8 text-sm"
-              />
-            </div>
-          </div>
-
-          {/* Clusters */}
-          {clustersLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : clusters.length === 0 ? (
-            <Card className="border-border">
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <Layers className="w-12 h-12 text-muted-foreground/30 mb-4" />
-                <p className="text-muted-foreground">No wallet clusters found</p>
-                <p className="text-sm text-muted-foreground/70 mt-1">
-                  Clusters are formed when wallets exhibit similar trading patterns
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-4">
-              {clusters.map(cluster => (
-                <ClusterCard
-                  key={cluster.id}
-                  cluster={cluster}
-                  copiedAddress={copiedAddress}
-                  onCopyAddress={handleCopyAddress}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -1463,157 +1430,3 @@ function ConfluenceCard({
   )
 }
 
-function TagCard({
-  tag,
-  isSelected,
-  onSelect,
-}: {
-  tag: TagInfo
-  isSelected: boolean
-  onSelect: () => void
-}) {
-  // Parse the tag color and generate a tailwind-compatible style
-  const tagColorStyle = tag.color ? { borderColor: tag.color, backgroundColor: `${tag.color}15` } : {}
-  const tagTextStyle = tag.color ? { color: tag.color } : {}
-
-  return (
-    <Card
-      className={cn(
-        "border-border cursor-pointer transition-all hover:border-primary/30",
-        isSelected && "ring-1 ring-primary/50 border-primary/30"
-      )}
-      onClick={onSelect}
-    >
-      <CardContent className="p-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <span
-            className="px-2 py-0.5 rounded-full text-xs font-semibold border"
-            style={{ ...tagColorStyle, ...tagTextStyle }}
-          >
-            {tag.display_name || tag.name}
-          </span>
-          <span className="text-xs text-muted-foreground font-medium">
-            {tag.wallet_count}
-          </span>
-        </div>
-        {tag.description && (
-          <p className="text-[10px] text-muted-foreground line-clamp-2">
-            {tag.description}
-          </p>
-        )}
-        <div className="flex items-center justify-between">
-          <Badge variant="outline" className="text-[10px] bg-muted text-muted-foreground border-border">
-            {tag.category}
-          </Badge>
-          {isSelected && (
-            <Eye className="w-3 h-3 text-primary" />
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function ClusterCard({
-  cluster,
-  copiedAddress,
-  onCopyAddress,
-}: {
-  cluster: WalletCluster
-  copiedAddress: string | null
-  onCopyAddress: (address: string) => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <Card className="border-border">
-      <CardContent className="p-4">
-        {/* Cluster Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-500/10 rounded-lg">
-              <Layers className="w-5 h-5 text-blue-500" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-medium text-foreground">
-                  {cluster.label || `Cluster ${cluster.id.slice(0, 8)}`}
-                </h3>
-                <Badge variant="outline" className="text-[10px]">
-                  {cluster.total_wallets} wallets
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Confidence: {(cluster.confidence * 100).toFixed(0)}%
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Stats inline */}
-            <div className="flex items-center gap-3 text-xs">
-              <div className="text-right">
-                <p className="text-muted-foreground">Combined PnL</p>
-                <PnlDisplay value={cluster.combined_pnl} />
-              </div>
-              <div className="text-right">
-                <p className="text-muted-foreground">Avg Win Rate</p>
-                <p className={cn(
-                  'font-medium',
-                  cluster.avg_win_rate >= 60 ? 'text-green-400' : cluster.avg_win_rate >= 45 ? 'text-yellow-400' : 'text-red-400'
-                )}>
-                  {formatPercent(cluster.avg_win_rate)}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-muted-foreground">Trades</p>
-                <p className="font-medium text-foreground">{formatNumber(cluster.combined_trades)}</p>
-              </div>
-            </div>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setExpanded(!expanded)}
-              className="px-2"
-            >
-              {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </Button>
-          </div>
-        </div>
-
-        {/* Expanded Members */}
-        {expanded && cluster.wallets && cluster.wallets.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-border">
-            <p className="text-xs text-muted-foreground mb-3">Cluster Members</p>
-            <div className="space-y-2">
-              {cluster.wallets.map(wallet => (
-                <div
-                  key={wallet.address}
-                  className="flex items-center justify-between bg-muted/30 px-3 py-2 rounded-lg"
-                >
-                  <WalletAddress
-                    address={wallet.address}
-                    username={wallet.username}
-                    copiedAddress={copiedAddress}
-                    onCopy={onCopyAddress}
-                  />
-                  <div className="flex items-center gap-4 text-xs">
-                    <PnlDisplay value={wallet.total_pnl} />
-                    <span className={cn(
-                      wallet.win_rate >= 60 ? 'text-green-400' : wallet.win_rate >= 45 ? 'text-yellow-400' : 'text-red-400'
-                    )}>
-                      {formatPercent(wallet.win_rate)}
-                    </span>
-                    <span className="text-muted-foreground">{wallet.total_trades} trades</span>
-                    <RecommendationBadge recommendation={wallet.recommendation} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
