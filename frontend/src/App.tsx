@@ -1112,7 +1112,14 @@ function App() {
                     />
                   </div>
                   <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
-                    <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
+                    <WalletTracker
+                      section="tracked"
+                      onAnalyzeWallet={handleAnalyzeWallet}
+                      onNavigateToWallet={(address) => {
+                        setWalletToAnalyze(address)
+                        setTradersSubTab('analysis')
+                      }}
+                    />
                   </div>
                   <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
                     <WalletAnalysisPanel

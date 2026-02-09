@@ -23,6 +23,7 @@ import { Card } from './ui/card'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import RecentTradesPanel from './RecentTradesPanel'
 import {
   getWallets,
   addWallet,
@@ -43,9 +44,10 @@ interface WalletTrackerProps {
   onAnalyzeWallet?: (address: string, username?: string) => void
   section?: 'tracked' | 'discover'
   discoverMode?: 'leaderboard' | 'winrate'
+  onNavigateToWallet?: (address: string) => void
 }
 
-export default function WalletTracker({ onAnalyzeWallet, section: propSection, discoverMode: propDiscoverMode }: WalletTrackerProps) {
+export default function WalletTracker({ onAnalyzeWallet, section: propSection, discoverMode: propDiscoverMode, onNavigateToWallet }: WalletTrackerProps) {
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
@@ -631,7 +633,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
 
           {/* Tracked Wallets */}
           <div>
-            <h3 className="text-lg font-medium mb-4">Tracked Wallets</h3>
+            <h3 className="text-lg font-medium mb-4">Tracked Wallets ({wallets.length})</h3>
 
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -658,6 +660,21 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
               </div>
             )}
           </div>
+
+          {/* Recent Trades Feed */}
+          {wallets.length > 0 && (
+            <div className="mt-6">
+              <RecentTradesPanel
+                onNavigateToWallet={(address) => {
+                  if (onNavigateToWallet) {
+                    onNavigateToWallet(address)
+                  } else if (onAnalyzeWallet) {
+                    onAnalyzeWallet(address)
+                  }
+                }}
+              />
+            </div>
+          )}
         </>
       )}
 

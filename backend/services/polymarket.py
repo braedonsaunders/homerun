@@ -363,11 +363,7 @@ class PolymarketClient:
 
             if data and len(data) > 0:
                 market_data = data[0]
-                info = {
-                    "question": market_data.get("question", ""),
-                    "slug": market_data.get("slug", ""),
-                    "groupItemTitle": market_data.get("groupItemTitle", ""),
-                }
+                info = self._extract_market_info(market_data)
                 self._market_cache[condition_id] = info
 
                 # Write-through to persistent SQL cache
@@ -384,10 +380,52 @@ class PolymarketClient:
 
         return None
 
+    async def get_market_by_token_id(self, token_id: str) -> Optional[dict]:
+        """Look up a market by CLOB token ID (asset_id), using cache when available."""
+        # Check if already cached under this token_id
+        cache_key = f"token:{token_id}"
+        if cache_key in self._market_cache:
+            return self._market_cache[cache_key]
+
+        try:
+            response = await self._rate_limited_get(
+                f"{self.gamma_url}/markets",
+                params={"clob_token_ids": token_id, "limit": 1},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data and len(data) > 0:
+                market_data = data[0]
+                info = self._extract_market_info(market_data)
+                self._market_cache[cache_key] = info
+
+                # Also cache by condition_id if available
+                cid = market_data.get("condition_id", "")
+                if cid:
+                    self._market_cache[cid] = info
+
+                return info
+        except Exception as e:
+            print(f"Market lookup by token_id failed for {token_id}: {e}")
+
+        return None
+
+    @staticmethod
+    def _extract_market_info(market_data: dict) -> dict:
+        """Extract standardized market info from a Gamma API market response."""
+        return {
+            "question": market_data.get("question", ""),
+            "slug": market_data.get("slug", ""),
+            "groupItemTitle": market_data.get("groupItemTitle", ""),
+            "event_slug": market_data.get("events", [{}])[0].get("slug", "") if market_data.get("events") else market_data.get("event_slug", ""),
+        }
+
     async def enrich_trades_with_market_info(self, trades: list[dict]) -> list[dict]:
         """
         Enrich a list of trades with market question/title and slug.
         Batches lookups and uses cache to minimize API calls.
+        Falls back to asset_id (token_id) lookup when condition_id lookup fails.
         """
         # Collect unique condition_ids that need lookup
         unknown_ids = set()
@@ -406,22 +444,49 @@ class PolymarketClient:
 
             await asyncio.gather(*[lookup(cid) for cid in unknown_ids])
 
+        # Collect trades that still need lookup via asset_id
+        token_lookups = set()
+        for trade in trades:
+            condition_id = trade.get("market", "")
+            if not self._market_cache.get(condition_id):
+                asset_id = trade.get("asset_id", "")
+                if asset_id and f"token:{asset_id}" not in self._market_cache:
+                    token_lookups.add(asset_id)
+
+        # Batch lookup by token_id for trades missing market info
+        if token_lookups:
+            semaphore = asyncio.Semaphore(15)
+
+            async def lookup_token(tid: str):
+                async with semaphore:
+                    await self.get_market_by_token_id(tid)
+
+            await asyncio.gather(*[lookup_token(tid) for tid in token_lookups])
+
         # Enrich trades
         enriched = []
         for trade in trades:
             condition_id = trade.get("market", "")
             market_info = self._market_cache.get(condition_id)
 
+            # Fallback: try asset_id lookup
+            if not market_info:
+                asset_id = trade.get("asset_id", "")
+                if asset_id:
+                    market_info = self._market_cache.get(f"token:{asset_id}")
+
             enriched_trade = {**trade}
             if market_info:
                 enriched_trade["market_title"] = market_info.get("question", "")
                 enriched_trade["market_slug"] = market_info.get("slug", "")
+                enriched_trade["event_slug"] = market_info.get("event_slug", "")
                 # Use groupItemTitle if available (for multi-outcome markets)
                 if market_info.get("groupItemTitle"):
                     enriched_trade["market_title"] = market_info["groupItemTitle"]
             else:
                 enriched_trade["market_title"] = ""
                 enriched_trade["market_slug"] = ""
+                enriched_trade["event_slug"] = ""
 
             # Normalize timestamp to ISO format
             ts = (

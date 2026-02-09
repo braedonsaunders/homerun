@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Clock,
@@ -13,7 +13,9 @@ import {
   Zap,
   Filter,
   DollarSign,
-  Hash
+  Hash,
+  Users,
+  BarChart3
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { getRecentTradesFromWallets, RecentTradeFromWallet } from '../services/api'
@@ -38,6 +40,37 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
   const filteredTrades = sideFilter === 'all'
     ? trades
     : trades.filter(t => t.side?.toUpperCase() === sideFilter)
+
+  // Compute market confluence - how many unique wallets are trading each market
+  const marketConfluence = useMemo(() => {
+    const confluence: Record<string, { wallets: Set<string>; marketTitle: string }> = {}
+    for (const trade of trades) {
+      const key = trade.market_title || trade.market || ''
+      if (!key || key === 'Unknown Market') continue
+      if (!confluence[key]) {
+        confluence[key] = { wallets: new Set(), marketTitle: trade.market_title || '' }
+      }
+      confluence[key].wallets.add(trade.wallet_address)
+    }
+    return confluence
+  }, [trades])
+
+  // Compute unique active markets and wallets
+  const uniqueMarkets = useMemo(() => {
+    const markets = new Set<string>()
+    for (const trade of filteredTrades) {
+      if (trade.market_title) markets.add(trade.market_title)
+    }
+    return markets.size
+  }, [filteredTrades])
+
+  const uniqueWallets = useMemo(() => {
+    const wallets = new Set<string>()
+    for (const trade of filteredTrades) {
+      wallets.add(trade.wallet_address)
+    }
+    return wallets.size
+  }, [filteredTrades])
 
   const toggleExpanded = (tradeId: string) => {
     const newExpanded = new Set(expandedTrades)
@@ -118,11 +151,30 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
   }
 
   const getMarketName = (trade: RecentTradeFromWallet) => {
-    return trade.market_title || trade.market || 'Unknown Market'
+    if (trade.market_title && trade.market_title.trim()) return trade.market_title
+    if (trade.market && !isConditionId(trade.market)) return trade.market
+    return ''
   }
 
   const isConditionId = (value: string) => {
     return value.startsWith('0x') && value.length > 20
+  }
+
+  const hasResolvedMarketName = (trade: RecentTradeFromWallet) => {
+    const name = getMarketName(trade)
+    return name.length > 0 && !isConditionId(name)
+  }
+
+  const getPolymarketUrl = (trade: RecentTradeFromWallet) => {
+    if (trade.market_slug) return `https://polymarket.com/event/${trade.market_slug}`
+    if (trade.event_slug) return `https://polymarket.com/event/${trade.event_slug}`
+    return ''
+  }
+
+  const getConfluenceCount = (trade: RecentTradeFromWallet) => {
+    const key = trade.market_title || trade.market || ''
+    const info = marketConfluence[key]
+    return info ? info.wallets.size : 0
   }
 
   const formatCurrency = (value: number) => {
@@ -170,7 +222,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-4 p-3 bg-card rounded-lg border border-border">
+      <div className="flex flex-wrap items-center gap-4 p-3 bg-card rounded-lg border border-border">
         <Filter className="w-4 h-4 text-muted-foreground/70" />
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground/70">Time:</span>
@@ -215,7 +267,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
 
       {/* Summary Stats */}
       {filteredTrades.length > 0 && (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-muted-foreground/70">Total Trades</p>
             <p className="text-lg font-semibold text-foreground">{filteredTrades.length}</p>
@@ -231,6 +283,14 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
           <div className="bg-card border border-border rounded-lg p-3">
             <p className="text-xs text-red-500">Sells</p>
             <p className="text-lg font-semibold text-red-400">{sellCount}</p>
+          </div>
+          <div className="bg-card border border-border rounded-lg p-3">
+            <p className="text-xs text-muted-foreground/70">Markets / Wallets</p>
+            <p className="text-lg font-semibold text-foreground">
+              <span className="text-blue-400">{uniqueMarkets}</span>
+              <span className="text-muted-foreground/50 mx-1">/</span>
+              <span className="text-orange-400">{uniqueWallets}</span>
+            </p>
           </div>
         </div>
       )}
@@ -257,13 +317,20 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
             const isExpanded = expandedTrades.has(tradeId)
             const isBuy = trade.side?.toUpperCase() === 'BUY'
             const marketName = getMarketName(trade)
-            const hasRealMarketName = trade.market_title && !isConditionId(trade.market_title)
+            const hasMarketName = hasResolvedMarketName(trade)
             const cost = trade.cost ?? (trade.size ?? 0) * (trade.price ?? 0)
+            const polymarketUrl = getPolymarketUrl(trade)
+            const confluenceCount = getConfluenceCount(trade)
+            const impliedProb = ((trade.price ?? 0) * 100)
 
             return (
               <div
                 key={tradeId}
-                className="bg-card border border-border rounded-lg overflow-hidden hover:border-border transition-colors"
+                className={cn(
+                  "bg-card border rounded-lg overflow-hidden transition-colors",
+                  confluenceCount > 1 ? "border-yellow-500/30" : "border-border",
+                  "hover:border-border/80"
+                )}
               >
                 {/* Trade Row */}
                 <div
@@ -279,7 +346,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
 
                     {/* Main content */}
                     <div className="flex-1 min-w-0">
-                      {/* Top row: side badge, market name, time */}
+                      {/* Top row: side badge, outcome, confluence, time */}
                       <div className="flex items-center gap-2 mb-1">
                         <span className={cn(
                           "flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-bold",
@@ -302,6 +369,13 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           </span>
                         )}
 
+                        {confluenceCount > 1 && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-500/10 text-yellow-400" title={`${confluenceCount} wallets trading this market`}>
+                            <Users className="w-3 h-3" />
+                            {confluenceCount}
+                          </span>
+                        )}
+
                         <span className="flex items-center gap-1 text-xs text-muted-foreground/70 ml-auto flex-shrink-0">
                           <Clock className="w-3 h-3" />
                           {formatTimestamp(trade)}
@@ -311,10 +385,12 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                       {/* Market name */}
                       <h3 className={cn(
                         "font-medium text-sm truncate",
-                        hasRealMarketName ? "text-foreground" : "text-muted-foreground/70"
+                        hasMarketName ? "text-foreground" : "text-muted-foreground/50 italic"
                       )}>
-                        {hasRealMarketName ? marketName : (
-                          isConditionId(marketName) ? `Market ${marketName.slice(0, 10)}...` : marketName
+                        {hasMarketName ? marketName : (
+                          trade.market && isConditionId(trade.market)
+                            ? `Unresolved market (${trade.market.slice(0, 8)}...${trade.market.slice(-4)})`
+                            : 'Market name pending...'
                         )}
                       </h3>
 
@@ -346,7 +422,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                           "text-sm font-semibold",
                           isBuy ? "text-green-400" : "text-red-400"
                         )}>
-                          {((trade.price ?? 0) * 100).toFixed(1)}c
+                          {impliedProb.toFixed(1)}c
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">
@@ -378,7 +454,7 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                         <p className="font-mono text-foreground">
                           ${(trade.price ?? 0).toFixed(4)}
                           <span className="text-muted-foreground/70 ml-1">
-                            ({((trade.price ?? 0) * 100).toFixed(1)}c)
+                            ({impliedProb.toFixed(1)}c)
                           </span>
                         </p>
                       </div>
@@ -402,6 +478,22 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                         </p>
                       </div>
                       <div>
+                        <p className="text-muted-foreground/70 text-xs">Implied Probability</p>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                            <div
+                              className={cn(
+                                "h-full rounded-full",
+                                impliedProb >= 70 ? "bg-green-500" :
+                                impliedProb >= 40 ? "bg-yellow-500" : "bg-red-500"
+                              )}
+                              style={{ width: `${Math.min(impliedProb, 100)}%` }}
+                            />
+                          </div>
+                          <span className="font-mono text-foreground/80 text-xs">{impliedProb.toFixed(1)}%</span>
+                        </div>
+                      </div>
+                      <div>
                         <p className="text-muted-foreground/70 text-xs">Time</p>
                         <p className="font-mono text-foreground/80 text-xs">{formatFullTimestamp(trade)}</p>
                       </div>
@@ -412,18 +504,34 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
                         </p>
                       </div>
                       {trade.market && isConditionId(trade.market) && (
-                        <div className="col-span-2">
+                        <div>
                           <p className="text-muted-foreground/70 text-xs">Condition ID</p>
                           <p className="font-mono text-muted-foreground text-xs truncate">{trade.market}</p>
                         </div>
                       )}
                     </div>
 
+                    {/* Potential profit display */}
+                    {trade.outcome && trade.price != null && (
+                      <div className="mt-3 p-2 bg-muted/50 rounded-lg">
+                        <div className="flex items-center gap-2 text-xs">
+                          <BarChart3 className="w-3 h-3 text-muted-foreground/70" />
+                          <span className="text-muted-foreground/70">If {trade.outcome} resolves correctly:</span>
+                          <span className="font-medium text-green-400">
+                            +${((trade.size ?? 0) * (1 - (trade.price ?? 0))).toFixed(2)} profit
+                          </span>
+                          <span className="text-muted-foreground/50">
+                            ({(((1 - (trade.price ?? 0)) / (trade.price ?? 1)) * 100).toFixed(0)}% ROI)
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Actions */}
                     <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-                      {trade.market_slug && (
+                      {polymarketUrl && (
                         <a
-                          href={`https://polymarket.com/event/${trade.market_slug}`}
+                          href={polymarketUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
