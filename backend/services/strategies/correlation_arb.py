@@ -34,15 +34,71 @@ _ZSCORE_THRESHOLD = 2.0
 _MAX_HISTORY = 200
 
 # Stop words for keyword-based pair matching
-_STOP_WORDS = frozenset({
-    "will", "the", "a", "an", "in", "on", "by", "to", "be", "is", "are",
-    "of", "for", "with", "this", "that", "it", "at", "from", "or", "and",
-    "do", "does", "did", "has", "have", "had", "was", "were", "been",
-    "not", "no", "yes", "what", "when", "how", "who", "which", "if",
-    "but", "can", "could", "would", "should", "may", "might", "than",
-    "then", "so", "as", "its", "their", "there", "they", "them",
-    "market", "price", "2024", "2025", "2026", "2027",
-})
+_STOP_WORDS = frozenset(
+    {
+        "will",
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "by",
+        "to",
+        "be",
+        "is",
+        "are",
+        "of",
+        "for",
+        "with",
+        "this",
+        "that",
+        "it",
+        "at",
+        "from",
+        "or",
+        "and",
+        "do",
+        "does",
+        "did",
+        "has",
+        "have",
+        "had",
+        "was",
+        "were",
+        "been",
+        "not",
+        "no",
+        "yes",
+        "what",
+        "when",
+        "how",
+        "who",
+        "which",
+        "if",
+        "but",
+        "can",
+        "could",
+        "would",
+        "should",
+        "may",
+        "might",
+        "than",
+        "then",
+        "so",
+        "as",
+        "its",
+        "their",
+        "there",
+        "they",
+        "them",
+        "market",
+        "price",
+        "2024",
+        "2025",
+        "2026",
+        "2027",
+    }
+)
 
 
 def _pearson_correlation(xs: list[float], ys: list[float]) -> float:
@@ -103,7 +159,9 @@ class CorrelationArbStrategy(BaseStrategy):
         # market_id -> Market (latest snapshot)
         self._market_cache: dict[str, Market] = {}
         # Cache of already-checked pairs (reset periodically)
-        self._pair_cache: dict[tuple[str, str], float] = {}  # (id_a, id_b) -> correlation
+        self._pair_cache: dict[
+            tuple[str, str], float
+        ] = {}  # (id_a, id_b) -> correlation
         self._pair_cache_time: float = 0.0
 
     def detect(
@@ -173,10 +231,7 @@ class CorrelationArbStrategy(BaseStrategy):
                 continue  # Not sufficiently correlated
 
             # Calculate spread: spread = price_A - corr * price_B
-            spreads = [
-                prices_a[i] - corr * prices_b[i]
-                for i in range(len(prices_a))
-            ]
+            spreads = [prices_a[i] - corr * prices_b[i] for i in range(len(prices_a))]
 
             # Z-score of the current spread
             current_spread = spreads[-1]
@@ -194,8 +249,13 @@ class CorrelationArbStrategy(BaseStrategy):
 
             # Create convergence opportunity
             opp = self._create_convergence_opportunity(
-                id_a, id_b, corr, zscore, current_spread,
-                mean_spread, prices,
+                id_a,
+                id_b,
+                corr,
+                zscore,
+                current_spread,
+                mean_spread,
+                prices,
             )
             if opp:
                 opportunities.append(opp)
@@ -217,9 +277,7 @@ class CorrelationArbStrategy(BaseStrategy):
                 yes_price = prices[token].get("mid", yes_price)
         return yes_price
 
-    def _find_candidate_pairs(
-        self, active_ids: list[str]
-    ) -> list[tuple[str, str]]:
+    def _find_candidate_pairs(self, active_ids: list[str]) -> list[tuple[str, str]]:
         """
         Find candidate market pairs that could be correlated.
 
@@ -339,11 +397,7 @@ class CorrelationArbStrategy(BaseStrategy):
             buy_price = yes_b
             fade_price = no_a
 
-            buy_token = (
-                market_b.clob_token_ids[0]
-                if market_b.clob_token_ids
-                else None
-            )
+            buy_token = market_b.clob_token_ids[0] if market_b.clob_token_ids else None
             fade_token = (
                 market_a.clob_token_ids[1]
                 if market_a.clob_token_ids and len(market_a.clob_token_ids) > 1
@@ -374,11 +428,7 @@ class CorrelationArbStrategy(BaseStrategy):
             buy_price = yes_a
             fade_price = no_b
 
-            buy_token = (
-                market_a.clob_token_ids[0]
-                if market_a.clob_token_ids
-                else None
-            )
+            buy_token = market_a.clob_token_ids[0] if market_a.clob_token_ids else None
             fade_token = (
                 market_b.clob_token_ids[1]
                 if market_b.clob_token_ids and len(market_b.clob_token_ids) > 1

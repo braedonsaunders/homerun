@@ -160,14 +160,10 @@ class _KalshiMarketCache:
 
             # Use midpoint of bid/ask when available; fall back to last_price
             yes_price = (
-                (yes_bid + yes_ask) / 2.0
-                if (yes_bid + yes_ask) > 0
-                else last_price
+                (yes_bid + yes_ask) / 2.0 if (yes_bid + yes_ask) > 0 else last_price
             )
             no_price = (
-                (no_bid + no_ask) / 2.0
-                if (no_bid + no_ask) > 0
-                else (1.0 - yes_price)
+                (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
             )
 
             # Skip markets with zero prices (no liquidity)
@@ -194,18 +190,14 @@ class _KalshiMarketCache:
                 raw = data.get(date_key)
                 if raw and isinstance(raw, str):
                     try:
-                        end_date = datetime.fromisoformat(
-                            raw.replace("Z", "+00:00")
-                        )
+                        end_date = datetime.fromisoformat(raw.replace("Z", "+00:00"))
                         break
                     except (ValueError, TypeError):
                         pass
 
             volume_raw = data.get("volume", 0) or 0
             liquidity_raw = (
-                data.get("liquidity", 0)
-                or data.get("open_interest", 0)
-                or 0
+                data.get("liquidity", 0) or data.get("open_interest", 0) or 0
             )
 
             from models.market import Token
@@ -264,9 +256,7 @@ class _KalshiMarketCache:
                         params["cursor"] = cursor
 
                     try:
-                        resp = client.get(
-                            f"{self._api_url}/markets", params=params
-                        )
+                        resp = client.get(f"{self._api_url}/markets", params=params)
                         resp.raise_for_status()
                         data = resp.json()
                     except httpx.HTTPStatusError as exc:
@@ -296,9 +286,7 @@ class _KalshiMarketCache:
                         break
 
         except Exception as exc:
-            logger.warning(
-                "Kalshi client creation failed", error=str(exc)
-            )
+            logger.warning("Kalshi client creation failed", error=str(exc))
             return []
 
         logger.info("Kalshi market cache refreshed", count=len(all_markets))
@@ -439,8 +427,12 @@ class CrossPlatformStrategy(BaseStrategy):
 
             # Guaranteed payout is $1.00 (one side always wins).
             # Profit depends on which side wins (different fees apply).
-            profit_if_a_wins = (1.0 - leg["cost_a"]) * (1.0 - leg["fee_a"]) - leg["cost_b"]
-            profit_if_b_wins = (1.0 - leg["cost_b"]) * (1.0 - leg["fee_b"]) - leg["cost_a"]
+            profit_if_a_wins = (1.0 - leg["cost_a"]) * (1.0 - leg["fee_a"]) - leg[
+                "cost_b"
+            ]
+            profit_if_b_wins = (1.0 - leg["cost_b"]) * (1.0 - leg["fee_b"]) - leg[
+                "cost_a"
+            ]
 
             # Guaranteed profit is the minimum of both scenarios
             guaranteed = min(profit_if_a_wins, profit_if_b_wins)
@@ -534,9 +526,7 @@ class CrossPlatformStrategy(BaseStrategy):
             pairs_checked += 1
 
             # Find the best-matching Kalshi market
-            match = self._find_best_match(
-                pm_tokens, kalshi_markets, kalshi_token_index
-            )
+            match = self._find_best_match(pm_tokens, kalshi_markets, kalshi_token_index)
             if match is None:
                 continue
 

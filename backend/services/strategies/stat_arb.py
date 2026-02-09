@@ -513,9 +513,7 @@ class StatArbStrategy(BaseStrategy):
                     "token_id": token_id,
                     "edge": round(edge, 4),
                     "fair_probability": round(fair_prob, 4),
-                    "signals": {
-                        k: round(v, 4) for k, v in signal_breakdown.items()
-                    },
+                    "signals": {k: round(v, 4) for k, v in signal_breakdown.items()},
                 }
             ]
 
@@ -560,9 +558,7 @@ class StatArbStrategy(BaseStrategy):
         # Sort by absolute edge (strongest signals first)
         opportunities.sort(
             key=lambda o: abs(
-                o.positions_to_take[0].get("edge", 0)
-                if o.positions_to_take
-                else 0
+                o.positions_to_take[0].get("edge", 0) if o.positions_to_take else 0
             ),
             reverse=True,
         )

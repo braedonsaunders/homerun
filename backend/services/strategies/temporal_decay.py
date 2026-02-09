@@ -50,12 +50,30 @@ _DEADLINE_PATTERNS = [
 
 # Month name -> number mapping
 _MONTH_MAP = {
-    "january": 1, "jan": 1, "february": 2, "feb": 2,
-    "march": 3, "mar": 3, "april": 4, "apr": 4,
-    "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
-    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
-    "october": 10, "oct": 10, "november": 11, "nov": 11,
-    "december": 12, "dec": 12,
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
 }
 
 # Default decay rate (square root decay for most markets)
@@ -148,7 +166,7 @@ class TemporalDecayStrategy(BaseStrategy):
 
             # Expected decay: p_expected = p_initial * (days_remaining / total_days)^decay_rate
             ratio = min(days_remaining / total_days, 1.0)
-            p_expected = initial_price * (ratio ** _DEFAULT_DECAY_RATE)
+            p_expected = initial_price * (ratio**_DEFAULT_DECAY_RATE)
 
             # Compare actual price to expected
             deviation = yes_price - p_expected
@@ -158,8 +176,13 @@ class TemporalDecayStrategy(BaseStrategy):
 
             # Build opportunity
             opp = self._create_decay_opportunity(
-                market, yes_price, p_expected, deviation,
-                days_remaining, deadline, prices,
+                market,
+                yes_price,
+                p_expected,
+                deviation,
+                days_remaining,
+                deadline,
+                prices,
             )
             if opp:
                 opportunities.append(opp)
@@ -277,11 +300,7 @@ class TemporalDecayStrategy(BaseStrategy):
             action = "BUY"
             outcome = "YES"
             entry_price = actual_price
-            token_id = (
-                market.clob_token_ids[0]
-                if market.clob_token_ids
-                else None
-            )
+            token_id = market.clob_token_ids[0] if market.clob_token_ids else None
             direction_desc = "underpriced"
 
         total_cost = entry_price

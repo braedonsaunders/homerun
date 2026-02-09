@@ -99,11 +99,14 @@ _COMPANY_ENTITIES: list[tuple[str, re.Pattern]] = [
 # Topic keywords for relationship detection
 _TOPIC_ENTITIES: list[tuple[str, re.Pattern]] = [
     ("rate_cut", re.compile(r"\brate\s*cuts?\b|\bcuts?\b.*\brates?\b", re.IGNORECASE)),
-    ("rate_hike", re.compile(
-        r"\brate\s*(?:hikes?|raises?|increases?)\b"
-        r"|\b(?:raises?|hikes?|increases?)\b.*\brates?\b",
-        re.IGNORECASE,
-    )),
+    (
+        "rate_hike",
+        re.compile(
+            r"\brate\s*(?:hikes?|raises?|increases?)\b"
+            r"|\b(?:raises?|hikes?|increases?)\b.*\brates?\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("interest_rate", re.compile(r"\binterest\s*rates?\b", re.IGNORECASE)),
     ("inflation", re.compile(r"\binflation\b", re.IGNORECASE)),
     ("recession", re.compile(r"\brecession\b", re.IGNORECASE)),
@@ -134,7 +137,9 @@ _IMPLIES_PATTERNS: list[tuple[re.Pattern, re.Pattern]] = [
     # Winning primary implies competing in general / winning nomination
     (
         re.compile(r"\bwins?\b.*\bprimary\b", re.IGNORECASE),
-        re.compile(r"\b(?:wins?\b.*\b(?:general|election|nomination)|nominat)", re.IGNORECASE),
+        re.compile(
+            r"\b(?:wins?\b.*\b(?:general|election|nomination)|nominat)", re.IGNORECASE
+        ),
     ),
     # Winning nomination implies being candidate
     (
@@ -577,9 +582,7 @@ class BayesianCascadeStrategy(BaseStrategy):
         for edge in graph.get_outgoing(source.market.id):
             if edge.target_id in visited:
                 continue
-            expected_delta = self._compute_expected_delta(
-                source.price_delta, edge
-            )
+            expected_delta = self._compute_expected_delta(source.price_delta, edge)
             queue.append((edge.target_id, expected_delta, 1))
             visited.add(edge.target_id)
 
@@ -614,21 +617,15 @@ class BayesianCascadeStrategy(BaseStrategy):
             if depth < max_depth:
                 for edge in graph.get_outgoing(target_id):
                     if edge.target_id not in visited:
-                        next_delta = self._compute_expected_delta(
-                            expected_delta, edge
-                        )
+                        next_delta = self._compute_expected_delta(expected_delta, edge)
                         # Only propagate if the cascaded delta is still
                         # meaningful (> 0.5%)
                         if abs(next_delta) >= 0.005:
-                            queue.append(
-                                (edge.target_id, next_delta, depth + 1)
-                            )
+                            queue.append((edge.target_id, next_delta, depth + 1))
                             visited.add(edge.target_id)
 
     @staticmethod
-    def _compute_expected_delta(
-        source_delta: float, edge: DependencyEdge
-    ) -> float:
+    def _compute_expected_delta(source_delta: float, edge: DependencyEdge) -> float:
         """
         Compute expected price delta for a target based on source delta,
         the edge relationship type, and edge strength.
@@ -718,7 +715,7 @@ class BayesianCascadeStrategy(BaseStrategy):
         description = (
             f"Source market moved {source_direction} by "
             f"{abs(source.price_delta) * 100:.1f}%: "
-            f"\"{source.market.question[:60]}\". "
+            f'"{source.market.question[:60]}". '
             f"Expected target to adjust by {expected_pct:.1f}%, "
             f"but actual adjustment is {actual_pct:.1f}% "
             f"(mispricing: {mispricing_pct:.1f}%). "

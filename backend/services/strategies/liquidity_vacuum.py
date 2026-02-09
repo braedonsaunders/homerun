@@ -414,9 +414,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
             "direction": direction,
             "imbalance_ratio": imbalance_ratio,
             "thick_depth": market.liquidity,  # Best estimate
-            "reason": (
-                f"Price velocity: YES {yes_delta:+.3f}, NO {no_delta:+.3f}"
-            ),
+            "reason": (f"Price velocity: YES {yes_delta:+.3f}, NO {no_delta:+.3f}"),
         }
 
     # ------------------------------------------------------------------

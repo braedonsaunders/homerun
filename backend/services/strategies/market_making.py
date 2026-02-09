@@ -144,9 +144,7 @@ class MarketMakingStrategy(BaseStrategy):
             factors.append(f"Price near 50/50 (YES={yes_price:.2f}) - balanced flow")
         elif inv_risk > 0.60:
             base_risk += 0.04
-            factors.append(
-                f"Extreme price (YES={yes_price:.2f}) - one-sided flow risk"
-            )
+            factors.append(f"Extreme price (YES={yes_price:.2f}) - one-sided flow risk")
         else:
             factors.append(f"Moderate inventory risk (YES={yes_price:.2f})")
 
