@@ -157,6 +157,17 @@ class ConfluenceDetector:
                     market_title = p["title"]
                     break
 
+            # Resolve market slug for Polymarket link
+            market_slug = None
+            try:
+                market_info = await polymarket_client.get_market_by_condition_id(market_id)
+                if market_info:
+                    market_slug = market_info.get("slug", None)
+                    if not market_title and market_info.get("question"):
+                        market_title = market_info["question"]
+            except Exception:
+                pass
+
             wallet_list = list(unique_wallets)
 
             await self._upsert_signal(
@@ -170,6 +181,7 @@ class ConfluenceDetector:
                 avg_entry_price=avg_entry_price,
                 total_size=total_size,
                 avg_wallet_rank=avg_rank,
+                market_slug=market_slug,
             )
             signals_created += 1
 
@@ -242,6 +254,7 @@ class ConfluenceDetector:
         avg_entry_price: Optional[float],
         total_size: Optional[float],
         avg_wallet_rank: Optional[float],
+        market_slug: Optional[str] = None,
     ):
         """Create or update a confluence signal in the database."""
         async with AsyncSessionLocal() as session:
@@ -264,11 +277,14 @@ class ConfluenceDetector:
                 existing.total_size = total_size
                 existing.avg_wallet_rank = avg_wallet_rank
                 existing.detected_at = datetime.utcnow()
+                if market_slug:
+                    existing.market_slug = market_slug
             else:
                 signal = MarketConfluenceSignal(
                     id=str(uuid.uuid4()),
                     market_id=market_id,
                     market_question=market_question,
+                    market_slug=market_slug,
                     signal_type=signal_type,
                     strength=strength,
                     wallet_count=wallet_count,
@@ -306,6 +322,7 @@ class ConfluenceDetector:
                     "id": s.id,
                     "market_id": s.market_id,
                     "market_question": s.market_question or "",
+                    "market_slug": s.market_slug or None,
                     "signal_type": s.signal_type,
                     "strength": s.strength,
                     "wallet_count": s.wallet_count,
