@@ -4,7 +4,6 @@ import time
 from typing import Optional
 from datetime import datetime
 
-from config import settings
 from models import Market, Event, Token
 from utils.logger import get_logger
 
@@ -58,13 +57,14 @@ class KalshiClient:
         """Get a proxy-aware client for trading-related Kalshi calls.
 
         Falls back to the standard client if proxy is not configured.
+        Reads proxy state from the DB-backed cached config.
         """
-        if not settings.TRADING_PROXY_ENABLED:
+        from services.trading_proxy import _get_config, get_async_proxy_client
+
+        if not _get_config().enabled:
             return await self._get_client()
 
         if self._trading_client is None or self._trading_client.is_closed:
-            from services.trading_proxy import get_async_proxy_client
-
             self._trading_client = get_async_proxy_client()
         return self._trading_client
 

@@ -127,6 +127,23 @@ class MaintenanceSettings(BaseModel):
     )
 
 
+class TradingProxySettings(BaseModel):
+    """Trading VPN/Proxy configuration - routes ONLY trading requests through proxy"""
+
+    enabled: bool = Field(default=False, description="Enable VPN proxy for trading")
+    proxy_url: Optional[str] = Field(
+        default=None,
+        description="Proxy URL: socks5://user:pass@host:port, http://host:port",
+    )
+    verify_ssl: bool = Field(default=True, description="Verify SSL certs through proxy")
+    timeout: float = Field(
+        default=30.0, ge=5, le=120, description="Timeout for proxied requests (seconds)"
+    )
+    require_vpn: bool = Field(
+        default=True, description="Block trades if VPN proxy is unreachable"
+    )
+
+
 class AllSettings(BaseModel):
     """Complete settings response"""
 
@@ -136,6 +153,7 @@ class AllSettings(BaseModel):
     scanner: ScannerSettingsModel
     trading: TradingSettings
     maintenance: MaintenanceSettings
+    trading_proxy: TradingProxySettings
     updated_at: Optional[str] = None
 
 
@@ -148,6 +166,7 @@ class UpdateSettingsRequest(BaseModel):
     scanner: Optional[ScannerSettingsModel] = None
     trading: Optional[TradingSettings] = None
     maintenance: Optional[MaintenanceSettings] = None
+    trading_proxy: Optional[TradingProxySettings] = None
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -234,6 +253,13 @@ async def get_settings():
                 auto_cleanup_enabled=settings.auto_cleanup_enabled,
                 cleanup_interval_hours=settings.cleanup_interval_hours,
                 cleanup_resolved_trade_days=settings.cleanup_resolved_trade_days,
+            ),
+            trading_proxy=TradingProxySettings(
+                enabled=settings.trading_proxy_enabled or False,
+                proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
+                verify_ssl=settings.trading_proxy_verify_ssl if settings.trading_proxy_verify_ssl is not None else True,
+                timeout=settings.trading_proxy_timeout or 30.0,
+                require_vpn=settings.trading_proxy_require_vpn if settings.trading_proxy_require_vpn is not None else True,
             ),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
@@ -330,10 +356,21 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings.cleanup_interval_hours = maint.cleanup_interval_hours
                 settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
 
+            # Update Trading Proxy settings
+            if request.trading_proxy:
+                proxy = request.trading_proxy
+                settings.trading_proxy_enabled = proxy.enabled
+                if proxy.proxy_url is not None:
+                    settings.trading_proxy_url = proxy.proxy_url or None
+                settings.trading_proxy_verify_ssl = proxy.verify_ssl
+                settings.trading_proxy_timeout = proxy.timeout
+                settings.trading_proxy_require_vpn = proxy.require_vpn
+
             settings.updated_at = datetime.utcnow()
             await session.commit()
             updated_at = settings.updated_at.isoformat()
             needs_llm_reinit = bool(request.llm)
+            needs_proxy_reinit = bool(request.trading_proxy)
 
         # Re-initialize LLM manager OUTSIDE the DB session so the new
         # session inside initialize() can see the just-committed data
@@ -352,6 +389,18 @@ async def update_settings(request: UpdateSettingsRequest):
             except Exception as reinit_err:
                 logger.error(
                     f"Failed to re-initialize LLM manager after settings update: {reinit_err}",
+                )
+
+        # Re-initialize trading proxy if settings changed
+        if needs_proxy_reinit:
+            try:
+                from services.trading_proxy import reload_proxy_settings
+
+                await reload_proxy_settings()
+                logger.info("Trading proxy re-initialized after settings update")
+            except Exception as reinit_err:
+                logger.error(
+                    f"Failed to re-initialize trading proxy: {reinit_err}",
                 )
 
         logger.info("Settings updated successfully")
@@ -482,6 +531,25 @@ async def update_maintenance_settings(request: MaintenanceSettings):
     return await update_settings(UpdateSettingsRequest(maintenance=request))
 
 
+@router.get("/trading-proxy")
+async def get_trading_proxy_settings():
+    """Get trading VPN/proxy settings only"""
+    settings = await get_or_create_settings()
+    return TradingProxySettings(
+        enabled=settings.trading_proxy_enabled or False,
+        proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
+        verify_ssl=settings.trading_proxy_verify_ssl if settings.trading_proxy_verify_ssl is not None else True,
+        timeout=settings.trading_proxy_timeout or 30.0,
+        require_vpn=settings.trading_proxy_require_vpn if settings.trading_proxy_require_vpn is not None else True,
+    )
+
+
+@router.put("/trading-proxy")
+async def update_trading_proxy_settings(request: TradingProxySettings):
+    """Update trading VPN/proxy settings only"""
+    return await update_settings(UpdateSettingsRequest(trading_proxy=request))
+
+
 # ==================== VALIDATION ENDPOINTS ====================
 
 
@@ -520,6 +588,37 @@ async def test_telegram_connection():
             "status": "success",
             "message": "Telegram credentials are configured (connection test not implemented)",
         }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/test/trading-proxy")
+async def test_trading_proxy():
+    """Test trading VPN proxy connectivity and verify IP differs from direct connection"""
+    try:
+        from services.trading_proxy import verify_vpn_active
+
+        status = await verify_vpn_active()
+
+        if not status.get("proxy_reachable"):
+            return {
+                "status": "error",
+                "message": f"Proxy unreachable: {status.get('proxy_ip_error', 'unknown error')}",
+                **status,
+            }
+
+        if status.get("vpn_active"):
+            return {
+                "status": "success",
+                "message": f"VPN active — trading through {status.get('proxy_ip')}",
+                **status,
+            }
+        else:
+            return {
+                "status": "warning",
+                "message": "Proxy reachable but IP matches direct connection — VPN may not be active",
+                **status,
+            }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

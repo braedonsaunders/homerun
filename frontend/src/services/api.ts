@@ -1118,6 +1118,14 @@ export interface MaintenanceSettings {
   cleanup_resolved_trade_days: number
 }
 
+export interface TradingProxySettings {
+  enabled: boolean
+  proxy_url: string | null
+  verify_ssl: boolean
+  timeout: number
+  require_vpn: boolean
+}
+
 export interface AllSettings {
   polymarket: PolymarketSettings
   llm: LLMSettings
@@ -1125,6 +1133,7 @@ export interface AllSettings {
   scanner: ScannerSettings
   trading: TradingSettingsConfig
   maintenance: MaintenanceSettings
+  trading_proxy: TradingProxySettings
   updated_at: string | null
 }
 
@@ -1135,6 +1144,7 @@ export interface UpdateSettingsRequest {
   scanner?: Partial<ScannerSettings>
   trading?: Partial<TradingSettingsConfig>
   maintenance?: Partial<MaintenanceSettings>
+  trading_proxy?: Partial<TradingProxySettings>
 }
 
 export const getSettings = async (): Promise<AllSettings> => {
@@ -1209,6 +1219,11 @@ export const testPolymarketConnection = async (): Promise<{ status: string; mess
 
 export const testTelegramConnection = async (): Promise<{ status: string; message: string }> => {
   const { data } = await api.post('/settings/test/telegram')
+  return data
+}
+
+export const testTradingProxy = async (): Promise<{ status: string; message: string; proxy_enabled?: boolean; proxy_ip?: string; direct_ip?: string; vpn_active?: boolean }> => {
+  const { data } = await api.post('/settings/test/trading-proxy')
   return data
 }
 

@@ -21,7 +21,7 @@ from services.trading import (
     OrderType,
     OrderStatus,
 )
-from services.trading_proxy import verify_vpn_active
+from services.trading_proxy import verify_vpn_active, _get_config as get_proxy_config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -144,8 +144,8 @@ async def get_trading_status():
             "max_slippage_percent": settings.MAX_SLIPPAGE_PERCENT,
         },
         vpn={
-            "proxy_enabled": settings.TRADING_PROXY_ENABLED,
-            "require_vpn": settings.TRADING_PROXY_REQUIRE_VPN,
+            "proxy_enabled": get_proxy_config().enabled,
+            "require_vpn": get_proxy_config().require_vpn,
         },
     )
 

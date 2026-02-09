@@ -4,21 +4,24 @@ Trading VPN/Proxy Service
 Routes trading HTTP requests through a configurable proxy (SOCKS5, HTTP, HTTPS)
 while leaving all scanning/data requests on the direct connection.
 
+Settings are stored in the database (AppSettings table) and managed through the
+Settings UI — no environment variables needed.
+
 Supports:
   - SOCKS5 proxy: socks5://user:pass@host:port
   - HTTP proxy:   http://host:port
   - HTTPS proxy:  https://host:port
 
 Usage:
-  1. Set TRADING_PROXY_ENABLED=true and TRADING_PROXY_URL in .env
+  1. Configure proxy in Settings > Trading VPN/Proxy
   2. Call patch_clob_client_proxy() after ClobClient init to route trades through VPN
   3. Use get_trading_http_client() for any async trading HTTP calls
 """
 
 import httpx
+from dataclasses import dataclass
 from typing import Optional
 
-from config import settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,13 +31,65 @@ _sync_proxy_client: Optional[httpx.Client] = None
 _async_proxy_client: Optional[httpx.AsyncClient] = None
 
 
+@dataclass
+class ProxyConfig:
+    """Snapshot of proxy settings from the database."""
+
+    enabled: bool = False
+    proxy_url: Optional[str] = None
+    verify_ssl: bool = True
+    timeout: float = 30.0
+    require_vpn: bool = True
+
+
+# In-memory cache of the last-loaded config so synchronous code
+# (e.g. patch_clob_client_proxy) doesn't need to await a DB read.
+_cached_config: ProxyConfig = ProxyConfig()
+
+
+async def _load_config_from_db() -> ProxyConfig:
+    """Load proxy settings from the AppSettings database table."""
+    global _cached_config
+    try:
+        from sqlalchemy import select
+        from models.database import AsyncSessionLocal, AppSettings
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(AppSettings).where(AppSettings.id == "default")
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                _cached_config = ProxyConfig()
+                return _cached_config
+
+            _cached_config = ProxyConfig(
+                enabled=bool(row.trading_proxy_enabled),
+                proxy_url=row.trading_proxy_url or None,
+                verify_ssl=row.trading_proxy_verify_ssl if row.trading_proxy_verify_ssl is not None else True,
+                timeout=row.trading_proxy_timeout or 30.0,
+                require_vpn=row.trading_proxy_require_vpn if row.trading_proxy_require_vpn is not None else True,
+            )
+            return _cached_config
+    except Exception as e:
+        logger.error(f"Failed to load proxy config from DB: {e}")
+        _cached_config = ProxyConfig()
+        return _cached_config
+
+
+def _get_config() -> ProxyConfig:
+    """Return the in-memory cached config (populated by _load_config_from_db)."""
+    return _cached_config
+
+
 def _get_proxy_url() -> Optional[str]:
     """Return the configured proxy URL if proxy is enabled, else None."""
-    if not settings.TRADING_PROXY_ENABLED:
+    cfg = _get_config()
+    if not cfg.enabled:
         return None
-    url = settings.TRADING_PROXY_URL
+    url = cfg.proxy_url
     if not url:
-        logger.warning("TRADING_PROXY_ENABLED=true but TRADING_PROXY_URL is not set")
+        logger.warning("Trading proxy enabled but proxy_url is not set")
         return None
     return url
 
@@ -50,11 +105,12 @@ def get_sync_proxy_client() -> httpx.Client:
     if _sync_proxy_client is not None and not _sync_proxy_client.is_closed:
         return _sync_proxy_client
 
+    cfg = _get_config()
     proxy_url = _get_proxy_url()
     kwargs = {
         "http2": True,
-        "timeout": settings.TRADING_PROXY_TIMEOUT,
-        "verify": settings.TRADING_PROXY_VERIFY_SSL,
+        "timeout": cfg.timeout,
+        "verify": cfg.verify_ssl,
     }
     if proxy_url:
         kwargs["proxy"] = proxy_url
@@ -80,10 +136,11 @@ def get_async_proxy_client() -> httpx.AsyncClient:
     if _async_proxy_client is not None and not _async_proxy_client.is_closed:
         return _async_proxy_client
 
+    cfg = _get_config()
     proxy_url = _get_proxy_url()
     kwargs = {
-        "timeout": settings.TRADING_PROXY_TIMEOUT,
-        "verify": settings.TRADING_PROXY_VERIFY_SSL,
+        "timeout": cfg.timeout,
+        "verify": cfg.verify_ssl,
     }
     if proxy_url:
         kwargs["proxy"] = proxy_url
@@ -108,7 +165,8 @@ def patch_clob_client_proxy() -> bool:
 
     Returns True if patching succeeded, False otherwise.
     """
-    if not settings.TRADING_PROXY_ENABLED:
+    cfg = _get_config()
+    if not cfg.enabled:
         logger.debug("Trading proxy not enabled, skipping CLOB client patch")
         return False
 
@@ -149,19 +207,20 @@ async def verify_vpn_active() -> dict:
     Verify the VPN proxy is active by checking the external IP through the proxy
     vs. the direct connection. Returns status dict.
 
-    If TRADING_PROXY_REQUIRE_VPN is True and the proxy is enabled,
-    this should be called before placing trades.
+    Loads fresh settings from the DB each time to pick up UI changes.
     """
+    cfg = await _load_config_from_db()
+
     result = {
-        "proxy_enabled": settings.TRADING_PROXY_ENABLED,
-        "proxy_url": _mask_proxy_url(settings.TRADING_PROXY_URL) if settings.TRADING_PROXY_URL else None,
+        "proxy_enabled": cfg.enabled,
+        "proxy_url": _mask_proxy_url(cfg.proxy_url) if cfg.proxy_url else None,
         "proxy_reachable": False,
         "direct_ip": None,
         "proxy_ip": None,
         "vpn_active": False,
     }
 
-    if not settings.TRADING_PROXY_ENABLED or not settings.TRADING_PROXY_URL:
+    if not cfg.enabled or not cfg.proxy_url:
         result["vpn_active"] = False
         result["error"] = "Proxy not configured"
         return result
@@ -201,13 +260,17 @@ async def pre_trade_vpn_check() -> tuple[bool, str]:
     """
     Pre-trade VPN verification gate.
 
-    Returns (allowed, reason). If TRADING_PROXY_REQUIRE_VPN is True
+    Returns (allowed, reason). If require_vpn is True
     and the proxy is enabled but unreachable, trades are blocked.
+
+    Loads fresh settings from the DB.
     """
-    if not settings.TRADING_PROXY_ENABLED:
+    cfg = await _load_config_from_db()
+
+    if not cfg.enabled:
         return True, "Proxy not enabled, direct trading allowed"
 
-    if not settings.TRADING_PROXY_REQUIRE_VPN:
+    if not cfg.require_vpn:
         return True, "VPN verification not required"
 
     status = await verify_vpn_active()
@@ -219,6 +282,22 @@ async def pre_trade_vpn_check() -> tuple[bool, str]:
         return False, "VPN not active: proxy IP matches direct IP"
 
     return True, f"VPN active, trading through {status['proxy_ip']}"
+
+
+async def reload_proxy_settings():
+    """
+    Reload proxy config from DB and recreate HTTP clients.
+
+    Called by the settings API after a user updates proxy config.
+    """
+    await close()
+    await _load_config_from_db()
+    cfg = _get_config()
+    if cfg.enabled and cfg.proxy_url:
+        patch_clob_client_proxy()
+        logger.info("Trading proxy reloaded from DB settings")
+    else:
+        logger.info("Trading proxy disabled or not configured after reload")
 
 
 def _mask_proxy_url(url: Optional[str]) -> Optional[str]:
