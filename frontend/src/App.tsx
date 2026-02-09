@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 // framer-motion used in AnimatedNumber component
@@ -118,7 +118,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades'>('arbitrage')
-  const [polymarketSearchQuery, setPolymarketSearchQuery] = useState('')
+  const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
   const [searchMode, setSearchMode] = useState<'current' | 'polymarket'>('current')
   const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
@@ -127,6 +127,10 @@ function App() {
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
+  const [headerSearchQuery, setHeaderSearchQuery] = useState('')
+  const [headerSearchOpen, setHeaderSearchOpen] = useState(false)
+  const headerSearchRef = useRef<HTMLInputElement>(null)
+  const headerSearchContainerRef = useRef<HTMLDivElement>(null)
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
   const [simulationEnabled] = useAtom(simulationEnabledAtom)
   const queryClient = useQueryClient()
@@ -155,6 +159,49 @@ function App() {
     setActiveTab('traders')
     setTradersSubTab('analysis')
   }
+
+  // Header search handler
+  const handleHeaderSearch = useCallback((query: string) => {
+    const trimmed = query.trim()
+    if (!trimmed) return
+
+    // Detect wallet address (0x prefix with hex chars)
+    if (/^0x[a-fA-F0-9]{20,}$/.test(trimmed)) {
+      setWalletToAnalyze(trimmed)
+      setWalletUsername(null)
+      setActiveTab('traders')
+      setTradersSubTab('analysis')
+    }
+    // Detect potential username (starts with @ or short alphanumeric)
+    else if (trimmed.startsWith('@')) {
+      setWalletToAnalyze(trimmed.slice(1))
+      setWalletUsername(trimmed.slice(1))
+      setActiveTab('traders')
+      setTradersSubTab('analysis')
+    }
+    // Default: search markets
+    else {
+      setActiveTab('opportunities')
+      setOpportunitiesView('arbitrage')
+      setSearchMode('polymarket')
+      setPolymarketSearchQuery(trimmed)
+      setPolymarketSearchSubmitted(trimmed)
+    }
+
+    setHeaderSearchQuery('')
+    setHeaderSearchOpen(false)
+  }, [])
+
+  // Close header search dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (headerSearchContainerRef.current && !headerSearchContainerRef.current.contains(e.target as Node)) {
+        setHeaderSearchOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
@@ -259,8 +306,8 @@ function App() {
     { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
     { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => scanMutation.mutate() },
     { key: '/', description: 'Focus Search', category: 'Actions', action: () => {
-      setActiveTab('opportunities')
-      setTimeout(() => document.querySelector<HTMLInputElement>('input[placeholder*="Search"]')?.focus(), 100)
+      headerSearchRef.current?.focus()
+      setHeaderSearchOpen(true)
     }},
     { key: '.', ctrl: true, description: 'Toggle AI Copilot', category: 'Actions', action: () => setCopilotOpen(v => !v) },
     { key: '?', shift: true, description: 'Show Keyboard Shortcuts', category: 'Help', action: () => setShortcutsHelpOpen(v => !v) },
@@ -297,7 +344,7 @@ function App() {
           </div>
 
           {/* Inline Stats — Enhanced with animated numbers */}
-          <div className="hidden md:flex items-center gap-3 mr-auto text-xs">
+          <div className="hidden md:flex items-center gap-3 text-xs">
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <Target className="w-3 h-3 text-blue-400" />
               <span className="text-muted-foreground">Opps</span>
@@ -317,9 +364,117 @@ function App() {
               <Clock className="w-3 h-3 text-purple-400" />
               <span className="text-muted-foreground">Scan</span>
               <span className="font-data text-muted-foreground">
-                {status?.last_scan ? new Date(status.last_scan).toLocaleTimeString() : 'Never'}
+                {status?.last_scan && !isNaN(new Date(status.last_scan).getTime()) ? new Date(status.last_scan).toLocaleTimeString() : 'Never'}
               </span>
             </div>
+          </div>
+
+          {/* Universal Search Bar */}
+          <div ref={headerSearchContainerRef} className="relative flex-1 max-w-md mx-4">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                handleHeaderSearch(headerSearchQuery)
+              }}
+            >
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <input
+                  ref={headerSearchRef}
+                  type="text"
+                  value={headerSearchQuery}
+                  onChange={(e) => {
+                    setHeaderSearchQuery(e.target.value)
+                    setHeaderSearchOpen(e.target.value.trim().length > 0)
+                  }}
+                  onFocus={() => {
+                    if (headerSearchQuery.trim()) setHeaderSearchOpen(true)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setHeaderSearchOpen(false)
+                      headerSearchRef.current?.blur()
+                    }
+                  }}
+                  placeholder="Search markets, wallets, traders..."
+                  className="w-full h-7 pl-8 pr-12 text-xs bg-card/60 border border-border/50 rounded-md text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-green-500/40 focus:bg-card transition-colors"
+                />
+                <kbd className="absolute right-2 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[9px] font-data bg-muted/50 rounded border border-border/50 text-muted-foreground">
+                  /
+                </kbd>
+              </div>
+            </form>
+
+            {/* Search Dropdown */}
+            {headerSearchOpen && headerSearchQuery.trim() && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border/60 rounded-lg shadow-xl shadow-black/20 overflow-hidden z-[100]">
+                <div className="p-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleHeaderSearch(headerSearchQuery)}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs hover:bg-muted/60 transition-colors text-left"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-foreground">Search markets for </span>
+                      <span className="text-blue-400 font-medium truncate">&quot;{headerSearchQuery.trim()}&quot;</span>
+                    </div>
+                    <kbd className="px-1 py-0.5 text-[9px] font-data bg-muted/50 rounded border border-border/50 text-muted-foreground shrink-0">Enter</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery(headerSearchQuery.trim())
+                      setActiveTab('opportunities')
+                      setOpportunitiesView('arbitrage')
+                      setSearchMode('current')
+                      setHeaderSearchQuery('')
+                      setHeaderSearchOpen(false)
+                    }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs hover:bg-muted/60 transition-colors text-left"
+                  >
+                    <Target className="w-3.5 h-3.5 text-green-400 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-foreground">Filter opportunities for </span>
+                      <span className="text-green-400 font-medium truncate">&quot;{headerSearchQuery.trim()}&quot;</span>
+                    </div>
+                  </button>
+                  {/^0x[a-fA-F0-9]{6,}$/i.test(headerSearchQuery.trim()) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWalletToAnalyze(headerSearchQuery.trim())
+                        setWalletUsername(null)
+                        setActiveTab('traders')
+                        setTradersSubTab('analysis')
+                        setHeaderSearchQuery('')
+                        setHeaderSearchOpen(false)
+                      }}
+                      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs hover:bg-muted/60 transition-colors text-left"
+                    >
+                      <Wallet className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-foreground">Analyze wallet </span>
+                        <span className="text-yellow-400 font-medium font-data truncate">{headerSearchQuery.trim().slice(0, 10)}...{headerSearchQuery.trim().slice(-4)}</span>
+                      </div>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('traders')
+                      setTradersSubTab('discover')
+                      setHeaderSearchQuery('')
+                      setHeaderSearchOpen(false)
+                    }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs hover:bg-muted/60 transition-colors text-left"
+                  >
+                    <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    <span className="text-foreground">Browse traders</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right Controls */}
@@ -534,79 +689,37 @@ function App() {
                     />
                   ) : (
                     <>
-                      {/* Search Mode Toggle + Search Input */}
-                      <div className="mb-4 space-y-3">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setSearchMode('current')}
-                            className={cn(
-                              'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                              searchMode === 'current'
-                                ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                                : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
-                            )}
-                          >
-                            Current Opportunities
-                          </button>
-                          <button
-                            onClick={() => setSearchMode('polymarket')}
-                            className={cn(
-                              'px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5',
-                              searchMode === 'polymarket'
-                                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                                : 'bg-muted/50 text-muted-foreground hover:bg-muted border border-transparent'
-                            )}
-                          >
-                            <Globe className="w-3.5 h-3.5" />
-                            Search All Markets
-                          </button>
-                        </div>
-
-                        {searchMode === 'current' ? (
+                      {/* Search Input */}
+                      <div className="mb-4">
+                        {searchMode === 'polymarket' && polymarketSearchSubmitted && (
+                          <div className="flex items-center gap-2 mb-3">
+                            <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10 gap-1.5">
+                              <Globe className="w-3 h-3" />
+                              Market search: &quot;{polymarketSearchSubmitted}&quot;
+                            </Badge>
+                            <button
+                              onClick={() => {
+                                setSearchMode('current')
+                                setPolymarketSearchSubmitted('')
+                                setPolymarketSearchQuery('')
+                              }}
+                              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        )}
+                        {searchMode === 'current' && (
                           <div className="relative">
                             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                             <Input
                               type="text"
-                              placeholder="Search current opportunities by market, event, or keyword..."
+                              placeholder="Filter opportunities by market, event, or keyword..."
                               value={searchQuery}
                               onChange={(e) => setSearchQuery(e.target.value)}
                               className="pl-10 bg-card border-border h-9"
                             />
                           </div>
-                        ) : (
-                          <form
-                            onSubmit={(e) => {
-                              e.preventDefault()
-                              if (polymarketSearchQuery.trim()) {
-                                setPolymarketSearchSubmitted(polymarketSearchQuery.trim())
-                              }
-                            }}
-                            className="flex gap-2"
-                          >
-                            <div className="relative flex-1">
-                              <Globe className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-blue-400" />
-                              <Input
-                                type="text"
-                                placeholder="Search Polymarket & Kalshi markets (e.g. 'bitcoin', 'election', 'FIFA')..."
-                                value={polymarketSearchQuery}
-                                onChange={(e) => setPolymarketSearchQuery(e.target.value)}
-                                className="pl-10 bg-card border-blue-500/20 focus:border-blue-500/40 h-9"
-                              />
-                            </div>
-                            <Button
-                              type="submit"
-                              size="sm"
-                              disabled={!polymarketSearchQuery.trim() || polySearchLoading}
-                              className="bg-blue-500 hover:bg-blue-600 text-white h-9"
-                            >
-                              {polySearchLoading ? (
-                                <RefreshCw className="w-4 h-4 animate-spin" />
-                              ) : (
-                                <Search className="w-4 h-4" />
-                              )}
-                              Search
-                            </Button>
-                          </form>
                         )}
                       </div>
 
@@ -616,14 +729,6 @@ function App() {
                             <div className="flex items-center justify-center py-12">
                               <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
                               <span className="ml-3 text-muted-foreground">Searching Polymarket & Kalshi and analyzing opportunities...</span>
-                            </div>
-                          ) : !polymarketSearchSubmitted ? (
-                            <div className="text-center py-12">
-                              <Globe className="w-12 h-12 text-blue-400/30 mx-auto mb-4" />
-                              <p className="text-muted-foreground">Search Polymarket & Kalshi for arbitrage opportunities</p>
-                              <p className="text-sm text-muted-foreground/70 mt-1">
-                                Enter a keyword above and press Search to find markets and analyze them
-                              </p>
                             </div>
                           ) : polymarketResults.length === 0 ? (
                             <div className="text-center py-12">
