@@ -66,9 +66,13 @@ async def _load_config_from_db() -> ProxyConfig:
             _cached_config = ProxyConfig(
                 enabled=bool(row.trading_proxy_enabled),
                 proxy_url=row.trading_proxy_url or None,
-                verify_ssl=row.trading_proxy_verify_ssl if row.trading_proxy_verify_ssl is not None else True,
+                verify_ssl=row.trading_proxy_verify_ssl
+                if row.trading_proxy_verify_ssl is not None
+                else True,
                 timeout=row.trading_proxy_timeout or 30.0,
-                require_vpn=row.trading_proxy_require_vpn if row.trading_proxy_require_vpn is not None else True,
+                require_vpn=row.trading_proxy_require_vpn
+                if row.trading_proxy_require_vpn is not None
+                else True,
             )
             return _cached_config
     except Exception as e:
@@ -276,7 +280,10 @@ async def pre_trade_vpn_check() -> tuple[bool, str]:
     status = await verify_vpn_active()
 
     if not status["proxy_reachable"]:
-        return False, f"Trading proxy unreachable: {status.get('proxy_ip_error', 'unknown error')}"
+        return (
+            False,
+            f"Trading proxy unreachable: {status.get('proxy_ip_error', 'unknown error')}",
+        )
 
     if not status["vpn_active"]:
         return False, "VPN not active: proxy IP matches direct IP"

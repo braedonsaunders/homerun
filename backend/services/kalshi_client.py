@@ -28,7 +28,9 @@ class KalshiClient:
     def __init__(self):
         self.base_url: str = KALSHI_API_BASE
         self._client: Optional[httpx.AsyncClient] = None
-        self._trading_client: Optional[httpx.AsyncClient] = None  # Proxy-aware for trading
+        self._trading_client: Optional[httpx.AsyncClient] = (
+            None  # Proxy-aware for trading
+        )
 
         # Simple token-bucket rate limiter: 10 requests / second
         self._rate_limit: float = 10.0  # requests per second
