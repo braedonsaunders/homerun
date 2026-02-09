@@ -104,6 +104,7 @@ class ArbitrageOpportunity(BaseModel):
 
     # Timing
     detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_seen_at: Optional[datetime] = None  # Last scan that detected this opportunity
     resolution_date: Optional[datetime] = None
 
     # Mispricing classification (from article Part IV)
