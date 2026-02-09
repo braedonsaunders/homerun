@@ -175,7 +175,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
     const label = `Discovered Trader (${selectedTrader?.volume?.toFixed(0) || '?'} vol${winRateStr})`
 
     if (usePaper && selectedAccountId) {
-      // Paper mode: track and copy to simulation account
+      // Sandbox mode: track and copy to simulation account
       trackAndCopyMutation.mutate({
         address: selectedTrader.address,
         label,
@@ -692,23 +692,23 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                 Choose how you want to copy trades from this trader:
               </p>
 
-              {/* Paper Trading Option */}
+              {/* Sandbox Trading Option */}
               <div className="space-y-3">
                 <div
                   className={cn(
                     "p-4 rounded-lg border-2 cursor-pointer transition-all",
                     simAccounts.length > 0
-                      ? "border-blue-500/50 bg-blue-500/10 hover:bg-blue-500/20"
+                      ? "border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20"
                       : "border-border bg-muted/50 opacity-60 cursor-not-allowed"
                   )}
                   onClick={() => simAccounts.length > 0 && handleCopyTradeConfirm(true)}
                 >
                   <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center flex-shrink-0">
-                      <FileText className="w-5 h-5 text-blue-400" />
+                    <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center flex-shrink-0">
+                      <FileText className="w-5 h-5 text-amber-400" />
                     </div>
                     <div className="flex-1">
-                      <h4 className="font-medium text-blue-400">Paper Trading</h4>
+                      <h4 className="font-medium text-amber-400">Sandbox Trading</h4>
                       <p className="text-sm text-muted-foreground mt-1">
                         Copy trades to a simulation account with virtual money. Safe for testing.
                       </p>
@@ -733,7 +733,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
                         </div>
                       ) : (
                         <p className="text-xs text-yellow-500 mt-2">
-                          No paper accounts available. Create one in the Accounts tab first.
+                          No sandbox accounts available. Create one in the Accounts tab first.
                         </p>
                       )}
                     </div>
