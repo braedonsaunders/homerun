@@ -3,6 +3,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, List
 
 from config import settings
+
+
+def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure a datetime is timezone-aware (UTC). Returns None for None input."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
@@ -197,13 +208,17 @@ class ArbitrageScanner:
             # these are resolved events awaiting settlement and can't
             # be traded profitably.
             now = datetime.now(timezone.utc)
-            markets = [m for m in markets if m.end_date is None or m.end_date > now]
+            markets = [
+                m for m in markets
+                if m.end_date is None or _make_aware(m.end_date) > now
+            ]
 
             # Also prune expired markets inside events so strategies
             # like NegRisk that iterate event.markets don't pick them up.
             for event in events:
                 event.markets = [
-                    m for m in event.markets if m.end_date is None or m.end_date > now
+                    m for m in event.markets
+                    if m.end_date is None or _make_aware(m.end_date) > now
                 ]
 
             print(
@@ -220,7 +235,7 @@ class ArbitrageScanner:
                     kalshi_markets = [
                         m
                         for m in kalshi_markets
-                        if m.end_date is None or m.end_date > now
+                        if m.end_date is None or _make_aware(m.end_date) > now
                     ]
                     kalshi_market_count = len(kalshi_markets)
                     markets.extend(kalshi_markets)
@@ -230,7 +245,7 @@ class ArbitrageScanner:
                         ke.markets = [
                             m
                             for m in ke.markets
-                            if m.end_date is None or m.end_date > now
+                            if m.end_date is None or _make_aware(m.end_date) > now
                         ]
                     kalshi_event_count = len(kalshi_events)
                     events.extend(kalshi_events)
@@ -290,7 +305,7 @@ class ArbitrageScanner:
             await self._attach_ai_judgments(all_opportunities)
 
             self._opportunities = all_opportunities
-            self._last_scan = datetime.utcnow()
+            self._last_scan = datetime.now(timezone.utc)
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
             # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
@@ -411,7 +426,7 @@ class ArbitrageScanner:
                         recommendation=result.get("recommendation", "review"),
                         reasoning=result.get("reasoning"),
                         risk_factors=result.get("risk_factors", []),
-                        judged_at=datetime.utcnow(),
+                        judged_at=datetime.now(timezone.utc),
                     )
                     print(
                         f"  AI Judge: {opp.title[:50]}... "
@@ -461,7 +476,7 @@ class ArbitrageScanner:
         try:
             from sqlalchemy import func
 
-            cutoff = datetime.utcnow() - timedelta(
+            cutoff = datetime.now(timezone.utc) - timedelta(
                 seconds=self.AI_SCORE_CACHE_TTL_SECONDS
             )
 
@@ -661,13 +676,14 @@ class ArbitrageScanner:
 
     def remove_expired_opportunities(self) -> int:
         """Remove opportunities whose resolution date has passed. Returns count removed."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         before_count = len(self._opportunities)
 
         self._opportunities = [
             opp
             for opp in self._opportunities
-            if opp.resolution_date is None or opp.resolution_date > now
+            if opp.resolution_date is None
+            or _make_aware(opp.resolution_date) > now
         ]
 
         removed = before_count - len(self._opportunities)
@@ -677,11 +693,13 @@ class ArbitrageScanner:
 
     def remove_old_opportunities(self, max_age_minutes: int = 60) -> int:
         """Remove opportunities older than max_age_minutes. Returns count removed."""
-        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
         before_count = len(self._opportunities)
 
         self._opportunities = [
-            opp for opp in self._opportunities if opp.detected_at >= cutoff
+            opp
+            for opp in self._opportunities
+            if _make_aware(opp.detected_at) >= cutoff
         ]
 
         removed = before_count - len(self._opportunities)
