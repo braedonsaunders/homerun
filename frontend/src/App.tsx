@@ -7,7 +7,6 @@ import {
   RefreshCw,
   Wallet,
   AlertCircle,
-  Clock,
   DollarSign,
   Target,
   Zap,
@@ -29,7 +28,6 @@ import {
   Brain,
   Sparkles,
   Command,
-  Keyboard,
   Copy,
   Globe,
   SlidersHorizontal,
@@ -79,7 +77,6 @@ import SettingsPanel from './components/SettingsPanel'
 import AIPanel from './components/AIPanel'
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
-import DataFreshnessIndicator from './components/DataFreshnessIndicator'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 import DiscoveryPanel from './components/DiscoveryPanel'
@@ -87,7 +84,7 @@ import LiveTickerTape from './components/LiveTickerTape'
 import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
-import AccountModeSelector, { SandboxIndicator } from './components/AccountModeSelector'
+import AccountModeSelector from './components/AccountModeSelector'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'tracked' | 'leaderboard' | 'discover' | 'analysis'
@@ -356,7 +353,6 @@ function App() {
           </div>
 
           <AccountModeSelector />
-          <SandboxIndicator />
 
           {/* Inline Stats — Enhanced with animated numbers */}
           <div className="hidden md:flex items-center gap-3 text-xs">
@@ -374,13 +370,6 @@ function App() {
               <DollarSign className="w-3 h-3 text-yellow-400" />
               <span className="text-muted-foreground">Profit</span>
               <FlashNumber value={totalProfit} prefix="$" decimals={2} className={cn("font-data font-semibold", totalProfit >= 0 ? "text-green-400" : "text-red-400")} />
-            </div>
-            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
-              <Clock className="w-3 h-3 text-purple-400" />
-              <span className="text-muted-foreground">Scan</span>
-              <span className="font-data text-muted-foreground">
-                {status?.last_scan && !isNaN(new Date(status.last_scan).getTime()) ? new Date(status.last_scan).toLocaleTimeString() : 'Never'}
-              </span>
             </div>
           </div>
 
@@ -494,39 +483,60 @@ function App() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-1.5">
-            {/* Connection Status — Enhanced with live dot */}
-            <Badge
-              variant="outline"
-              className={cn(
-                "flex items-center gap-1.5 px-2 py-0.5 rounded-full font-normal text-[10px]",
-                isConnected
-                  ? "border-green-500/30 bg-green-500/10 text-green-500"
-                  : "border-red-500/30 bg-red-500/10 text-red-500"
-              )}
-            >
-              <span className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                isConnected ? "bg-green-500 live-dot" : "bg-red-500"
-              )} />
-              {isConnected ? 'Live' : 'Off'}
-            </Badge>
-
-            <DataFreshnessIndicator lastUpdated={status?.last_scan} />
-            <ThemeToggle />
-
+            {/* Unified Status Indicator */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShortcutsHelpOpen(true)}
-                  className="px-1.5 h-7 text-muted-foreground hover:text-foreground"
-                >
-                  <Keyboard className="w-3.5 h-3.5" />
-                </Button>
+                <div className={cn(
+                  "flex items-center gap-2 px-2.5 py-1 rounded-full border text-[10px] font-medium transition-all",
+                  isConnected
+                    ? status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000
+                      ? "border-green-500/30 bg-green-500/8 text-green-400"
+                      : status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 120000
+                        ? "border-yellow-500/30 bg-yellow-500/8 text-yellow-400"
+                        : "border-orange-500/30 bg-orange-500/8 text-orange-400"
+                    : "border-red-500/30 bg-red-500/8 text-red-400"
+                )}>
+                  <span className="relative flex h-1.5 w-1.5">
+                    {isConnected && status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000 && (
+                      <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 animate-ping" />
+                    )}
+                    <span className={cn(
+                      "relative inline-flex rounded-full h-1.5 w-1.5",
+                      isConnected
+                        ? status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000
+                          ? "bg-green-400"
+                          : status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 120000
+                            ? "bg-yellow-400"
+                            : "bg-orange-400"
+                        : "bg-red-400"
+                    )} />
+                  </span>
+                  <span>
+                    {!isConnected
+                      ? 'Offline'
+                      : !status?.last_scan || isNaN(new Date(status.last_scan).getTime())
+                        ? 'Waiting...'
+                        : (() => {
+                            const secs = Math.floor((Date.now() - new Date(status.last_scan).getTime()) / 1000)
+                            if (secs < 5) return 'Live'
+                            if (secs < 60) return `${secs}s`
+                            if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+                            return `${Math.floor(secs / 3600)}h ago`
+                          })()
+                    }
+                  </span>
+                </div>
               </TooltipTrigger>
-              <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
+              <TooltipContent>
+                {!isConnected
+                  ? 'WebSocket disconnected'
+                  : status?.last_scan && !isNaN(new Date(status.last_scan).getTime())
+                    ? `Connected — Last scan: ${new Date(status.last_scan).toLocaleTimeString()}`
+                    : 'Connected — No scan data yet'
+                }
+              </TooltipContent>
             </Tooltip>
+            <ThemeToggle />
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -549,57 +559,7 @@ function App() {
               <TooltipContent>{status?.enabled ? 'Pause scanner' : 'Start scanner'}</TooltipContent>
             </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCommandBarOpen(true)}
-                  className="h-7 px-2 text-xs gap-1.5 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 hover:text-purple-400 border-purple-500/20"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span className="hidden sm:inline">AI</span>
-                  <kbd className="hidden sm:inline px-1 py-0.5 bg-purple-500/10 rounded text-[9px] text-purple-400 border border-purple-500/20">
-                    <Command className="w-2 h-2 inline" />K
-                  </kbd>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>AI Command Bar (Cmd+K)</TooltipContent>
-            </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCopilotOpen(!copilotOpen)}
-                  className={cn(
-                    "h-7 px-1.5",
-                    copilotOpen
-                      ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
-                      : "bg-card text-muted-foreground hover:text-purple-400 border-border hover:border-purple-500/30"
-                  )}
-                >
-                  <Bot className="w-3.5 h-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>AI Copilot (Ctrl+.)</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  onClick={() => scanMutation.mutate()}
-                  disabled={scanMutation.isPending}
-                  size="sm"
-                  className="h-7 px-2.5 text-xs gap-1.5 bg-blue-500 hover:bg-blue-600 text-white"
-                >
-                  <RefreshCw className={cn("w-3 h-3", scanMutation.isPending && "animate-spin")} />
-                  Scan
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Trigger Manual Scan (Ctrl+R)</TooltipContent>
-            </Tooltip>
           </div>
         </header>
 
@@ -1210,6 +1170,26 @@ function App() {
             opportunity={executingOpportunity}
             onClose={() => setExecutingOpportunity(null)}
           />
+        )}
+
+        {/* Floating AI FAB — bottom-right */}
+        {!copilotOpen && (
+          <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setCopilotOpen(true)}
+                  className="group relative w-11 h-11 rounded-full bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 hover:scale-105 transition-all flex items-center justify-center"
+                >
+                  <Sparkles className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                  <kbd className="absolute -top-1 -right-1 px-1 py-0.5 text-[8px] font-data bg-background/90 rounded border border-border/60 text-muted-foreground leading-none">
+                    <Command className="w-2 h-2 inline" />K
+                  </kbd>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left">AI Copilot (Ctrl+.)</TooltipContent>
+            </Tooltip>
+          </div>
         )}
 
         {/* AI Copilot Panel (floating) */}
