@@ -160,6 +160,7 @@ interface Props {
 
 export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const [aiExpanded, setAiExpanded] = useState(false)
   const queryClient = useQueryClient()
 
   // AI analysis
@@ -355,7 +356,14 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
         ) : null}
 
         {judgment?.reasoning && (
-          <p className="text-[10px] text-muted-foreground leading-relaxed line-clamp-2 px-0.5">
+          <p
+            className={cn(
+              "text-[10px] text-muted-foreground leading-relaxed px-0.5 cursor-pointer hover:text-muted-foreground/80 transition-colors",
+              !aiExpanded && "line-clamp-2"
+            )}
+            onClick={(e) => { e.stopPropagation(); setAiExpanded(!aiExpanded) }}
+            title={aiExpanded ? "Click to collapse" : "Click to expand full analysis"}
+          >
             {judgment.reasoning}
           </p>
         )}
