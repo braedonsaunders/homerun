@@ -364,23 +364,27 @@ class MiracleStrategy(BaseStrategy):
         for resolved in resolved_events:
             resolved_lower = resolved.lower()
             # Extract "X wins Y" pattern
-            wins_match = re.search(r'(\w[\w\s]*?)\s+wins?\s+(.*)', resolved_lower)
+            wins_match = re.search(r"(\w[\w\s]*?)\s+wins?\s+(.*)", resolved_lower)
             if wins_match:
                 winner = wins_match.group(1).strip()
                 context = wins_match.group(2).strip()
-                resolved_entities.append({
-                    'type': 'winner',
-                    'winner': winner,
-                    'context': context,
-                    'original': resolved_lower,
-                })
+                resolved_entities.append(
+                    {
+                        "type": "winner",
+                        "winner": winner,
+                        "context": context,
+                        "original": resolved_lower,
+                    }
+                )
                 continue
 
             # Extract "X resolved YES/NO" pattern
-            resolved_entities.append({
-                'type': 'generic',
-                'original': resolved_lower,
-            })
+            resolved_entities.append(
+                {
+                    "type": "generic",
+                    "original": resolved_lower,
+                }
+            )
 
         for market in markets:
             if market.closed or not market.active:
@@ -394,13 +398,13 @@ class MiracleStrategy(BaseStrategy):
                 is_impossible = False
                 reason = ""
 
-                if entity['type'] == 'winner':
+                if entity["type"] == "winner":
                     # If someone else won, this market's candidate can't win the same thing
-                    winner = entity['winner']
-                    context = entity['context']
+                    winner = entity["winner"]
+                    context = entity["context"]
 
                     # Check if this market asks about a DIFFERENT entity winning the SAME thing
-                    market_wins = re.search(r'(\w[\w\s]*?)\s+wins?\s+(.*)', q_lower)
+                    market_wins = re.search(r"(\w[\w\s]*?)\s+wins?\s+(.*)", q_lower)
                     if market_wins:
                         market_candidate = market_wins.group(1).strip()
                         market_context = market_wins.group(2).strip()
@@ -410,19 +414,43 @@ class MiracleStrategy(BaseStrategy):
                         market_context_words = set(market_context.split())
                         context_overlap = len(context_words & market_context_words)
 
-                        if (context_overlap >= 2 and
-                            market_candidate != winner and
-                            winner not in market_candidate and
-                            market_candidate not in winner):
+                        if (
+                            context_overlap >= 2
+                            and market_candidate != winner
+                            and winner not in market_candidate
+                            and market_candidate not in winner
+                        ):
                             is_impossible = True
                             reason = f"'{winner}' already won {context}; '{market_candidate}' cannot also win"
 
-                if entity['type'] == 'generic':
+                if entity["type"] == "generic":
                     # Check for direct contradiction
-                    resolved_text = entity['original']
+                    resolved_text = entity["original"]
                     # If the resolved event contains key words from this market
-                    resolved_words = set(resolved_text.split()) - {'the', 'a', 'an', 'in', 'on', 'by', 'to', 'is', 'was', 'will'}
-                    market_words = set(q_lower.split()) - {'the', 'a', 'an', 'in', 'on', 'by', 'to', 'is', 'was', 'will'}
+                    resolved_words = set(resolved_text.split()) - {
+                        "the",
+                        "a",
+                        "an",
+                        "in",
+                        "on",
+                        "by",
+                        "to",
+                        "is",
+                        "was",
+                        "will",
+                    }
+                    market_words = set(q_lower.split()) - {
+                        "the",
+                        "a",
+                        "an",
+                        "in",
+                        "on",
+                        "by",
+                        "to",
+                        "is",
+                        "was",
+                        "will",
+                    }
                     overlap = resolved_words & market_words
                     if len(overlap) >= 3:
                         # High word overlap suggests related market
@@ -436,7 +464,9 @@ class MiracleStrategy(BaseStrategy):
                         pass
 
                     yes_price = market.yes_price
-                    if yes_price > 0.05:  # Only interesting if YES is still priced significantly
+                    if (
+                        yes_price > 0.05
+                    ):  # Only interesting if YES is still priced significantly
                         total_cost = no_price
                         expected_payout = 1.0
                         gross_profit = expected_payout - total_cost
@@ -460,23 +490,29 @@ class MiracleStrategy(BaseStrategy):
                                     f"Stale market: {reason}",
                                     "Verify resolution of related event before trading",
                                 ],
-                                markets=[{
-                                    "id": market.id,
-                                    "question": market.question,
-                                    "yes_price": yes_price,
-                                    "no_price": no_price,
-                                    "liquidity": market.liquidity,
-                                }],
+                                markets=[
+                                    {
+                                        "id": market.id,
+                                        "question": market.question,
+                                        "yes_price": yes_price,
+                                        "no_price": no_price,
+                                        "liquidity": market.liquidity,
+                                    }
+                                ],
                                 min_liquidity=market.liquidity,
                                 max_position_size=market.liquidity * 0.05,
                                 resolution_date=market.end_date,
-                                positions_to_take=[{
-                                    "action": "BUY",
-                                    "outcome": "NO",
-                                    "market": market.question[:50],
-                                    "price": no_price,
-                                    "token_id": market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None,
-                                }],
+                                positions_to_take=[
+                                    {
+                                        "action": "BUY",
+                                        "outcome": "NO",
+                                        "market": market.question[:50],
+                                        "price": no_price,
+                                        "token_id": market.clob_token_ids[1]
+                                        if len(market.clob_token_ids) > 1
+                                        else None,
+                                    }
+                                ],
                             )
                             opportunities.append(opp)
                     break  # Only match first resolved entity per market

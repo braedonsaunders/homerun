@@ -156,11 +156,18 @@ class NewsEdgeDetector:
         results = await asyncio.gather(*tasks)
 
         for result in results:
-            if result is not None and result.edge_percent >= settings.NEWS_MIN_EDGE_PERCENT:
+            if (
+                result is not None
+                and result.edge_percent >= settings.NEWS_MIN_EDGE_PERCENT
+            ):
                 edges.append(result)
 
         edges.sort(key=lambda e: e.edge_percent, reverse=True)
-        logger.info("Edge detection: %d edges found from %d matches", len(edges), len(unique_matches))
+        logger.info(
+            "Edge detection: %d edges found from %d matches",
+            len(edges),
+            len(unique_matches),
+        )
         return edges
 
     async def _estimate_edge(

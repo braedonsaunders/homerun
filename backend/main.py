@@ -259,6 +259,7 @@ async def lifespan(app: FastAPI):
         opportunity_recorder.stop()
         try:
             from services.news.feed_service import news_feed_service
+
             news_feed_service.stop()
         except Exception:
             pass

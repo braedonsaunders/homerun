@@ -262,7 +262,7 @@ class NegRiskStrategy(BaseStrategy):
         opp = ArbitrageOpportunity(
             strategy=self.strategy_type,
             title=f"NegRisk Short: {event.title[:50]}...",
-            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
             expected_payout=expected_payout,
             gross_profit=gross_profit,
@@ -680,7 +680,7 @@ class NegRiskStrategy(BaseStrategy):
         opp = ArbitrageOpportunity(
             strategy=self.strategy_type,
             title=f"Multi-Outcome Short: {event.title[:40]}...",
-            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
             expected_payout=expected_payout,
             gross_profit=gross_profit,

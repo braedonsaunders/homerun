@@ -77,6 +77,7 @@ class SettlementLagStrategy(BaseStrategy):
             if hasattr(settings, "SETTLEMENT_LAG_MIN_SUM_DEVIATION")
             else 0.03
         )
+
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
 
     def detect(
@@ -236,7 +237,9 @@ class SettlementLagStrategy(BaseStrategy):
 
             opp.risk_factors.append(f"Settlement urgency: {urgency}")
             if urgency == "LOW":
-                opp.risk_factors.append("WARNING: Opportunity may already be captured by faster bots")
+                opp.risk_factors.append(
+                    "WARNING: Opportunity may already be captured by faster bots"
+                )
         return opp
 
     def _check_negrisk_settlement(
@@ -359,7 +362,9 @@ class SettlementLagStrategy(BaseStrategy):
             if any_overdue:
                 signals.append("past resolution date")
             if likely_winner and likely_winner_price > self.NEAR_ONE_THRESHOLD:
-                signals.append(f"likely winner: {likely_winner} (${likely_winner_price:.3f})")
+                signals.append(
+                    f"likely winner: {likely_winner} (${likely_winner_price:.3f})"
+                )
 
             opp = self.create_opportunity(
                 title=f"Settlement Lag (NegRisk): {event.title[:50]}",

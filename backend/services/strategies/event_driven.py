@@ -328,7 +328,10 @@ class EventDrivenStrategy(BaseStrategy):
             union = catalyst_keywords | mid_keywords
             jaccard = len(shared) / len(union) if union else 0.0
 
-            if len(shared) >= _MIN_SHARED_KEYWORDS and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO:
+            if (
+                len(shared) >= _MIN_SHARED_KEYWORDS
+                and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO
+            ):
                 related[mid] = True
 
         return list(related.keys())

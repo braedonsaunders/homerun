@@ -420,7 +420,9 @@ class ArbitrageScanner:
                         if opp.mispricing_type is None:
                             opp.mispricing_type = MispricingType.NEWS_INFORMATION
                     all_opportunities.extend(news_opps)
-                    print(f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities")
+                    print(
+                        f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities"
+                    )
                 except Exception as e:
                     print(f"  {self._news_edge_strategy.name}: error - {e}")
 
@@ -1062,8 +1064,12 @@ class ArbitrageScanner:
             "current_activity": self._current_activity,
             "strategies": [
                 {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
-            ] + [
-                {"name": self._news_edge_strategy.name, "type": self._news_edge_strategy.strategy_type.value}
+            ]
+            + [
+                {
+                    "name": self._news_edge_strategy.name,
+                    "type": self._news_edge_strategy.strategy_type.value,
+                }
             ],
         }
 

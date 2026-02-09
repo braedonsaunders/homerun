@@ -22,9 +22,9 @@ POLYMARKET_FEE = 0.02  # 2 % winner-take fee
 KALSHI_FEE = 0.05  # 5% default (mid-tier conservative estimate)
 KALSHI_FEE_TIERS = [
     (10_000, 0.01),  # $10K+ volume: 1%
-    (1_000, 0.03),   # $1K-$9.9K volume: 3%
-    (100, 0.05),     # $100-$999 volume: 5%
-    (0, 0.07),       # <$100 volume: 7%
+    (1_000, 0.03),  # $1K-$9.9K volume: 3%
+    (100, 0.05),  # $100-$999 volume: 5%
+    (0, 0.07),  # <$100 volume: 7%
 ]
 
 
@@ -599,12 +599,18 @@ def _resolution_methods_compatible(
     m2 = e2.resolution_methods
 
     if not m1 and not m2:
-        return True, "no explicit resolution method detected on either side (proceed with caution)"
+        return (
+            True,
+            "no explicit resolution method detected on either side (proceed with caution)",
+        )
 
     if not m1 or not m2:
         # One side has explicit resolution criteria, the other doesn't.
         # This is a risk - they might resolve differently.
-        return True, "WARNING: resolution method detected on only one side; compatibility unconfirmed"
+        return (
+            True,
+            "WARNING: resolution method detected on only one side; compatibility unconfirmed",
+        )
 
     # Both sides have resolution methods -- check for conflicts
     if m1 == m2:
@@ -1145,7 +1151,7 @@ class CrossPlatformScanner:
             return None
 
         # Adjust Kalshi fee based on market volume if available
-        if hasattr(kalshi_market, 'volume') and kalshi_market.volume > 0:
+        if hasattr(kalshi_market, "volume") and kalshi_market.volume > 0:
             kalshi_fee = kalshi_fee_for_volume(kalshi_market.volume)
 
         best_opportunity: Optional[ArbitrageOpportunity] = None

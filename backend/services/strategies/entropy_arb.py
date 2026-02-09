@@ -91,18 +91,44 @@ ELECTION_MIN_TOTAL_YES = 0.95
 MAX_RESOLUTION_SPREAD_DAYS = 14
 
 # Keywords that suggest election/primary markets
-_ELECTION_KEYWORDS = frozenset({
-    "election", "primary", "winner", "nominee", "nomination",
-    "governor", "senate", "house", "president", "congressional",
-    "mayoral", "caucus", "runoff", "special election",
-})
+_ELECTION_KEYWORDS = frozenset(
+    {
+        "election",
+        "primary",
+        "winner",
+        "nominee",
+        "nomination",
+        "governor",
+        "senate",
+        "house",
+        "president",
+        "congressional",
+        "mayoral",
+        "caucus",
+        "runoff",
+        "special election",
+    }
+)
 
 # Keywords that suggest open-ended events (outcome universe unbounded)
-_OPEN_ENDED_KEYWORDS = frozenset({
-    "nobel", "oscar", "grammy", "emmy", "pulitzer", "ballon d'or",
-    "mvp", "best picture", "album of the year", "song of the year",
-    "time person", "word of the year", "best", "award",
-})
+_OPEN_ENDED_KEYWORDS = frozenset(
+    {
+        "nobel",
+        "oscar",
+        "grammy",
+        "emmy",
+        "pulitzer",
+        "ballon d'or",
+        "mvp",
+        "best picture",
+        "album of the year",
+        "song of the year",
+        "time person",
+        "word of the year",
+        "best",
+        "award",
+    }
+)
 
 DEFAULT_TOTAL_DAYS = 90
 ENTROPY_DECAY_ALPHA = 0.5
@@ -142,7 +168,7 @@ class EntropyArbStrategy(BaseStrategy):
         if total_days <= 0:
             return 0.0
         ratio = min(max(days_remaining, 0.0) / total_days, 1.0)
-        return h_max * (ratio ** ENTROPY_DECAY_ALPHA)
+        return h_max * (ratio**ENTROPY_DECAY_ALPHA)
 
     # ------------------------------------------------------------------
     # Price helpers
@@ -176,9 +202,7 @@ class EntropyArbStrategy(BaseStrategy):
         """Detect cumulative date-based events like 'by March/June/Dec'."""
         questions = [m.question.lower() for m in event.markets if m.question]
         date_keywords = {"by ", "before ", "prior to "}
-        date_count = sum(
-            1 for q in questions if any(kw in q for kw in date_keywords)
-        )
+        date_count = sum(1 for q in questions if any(kw in q for kw in date_keywords))
         return date_count >= len(questions) * 0.5
 
     # ------------------------------------------------------------------
@@ -186,8 +210,12 @@ class EntropyArbStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def _compute_entropy_quality(
-        self, event_id: str, probs: list[float], n_outcomes: int,
-        days_remaining: float, total_days: float,
+        self,
+        event_id: str,
+        probs: list[float],
+        n_outcomes: int,
+        days_remaining: float,
+        total_days: float,
     ) -> dict:
         """Compute entropy-based quality metrics for an event.
 
@@ -296,17 +324,17 @@ class EntropyArbStrategy(BaseStrategy):
             yes_price = self._get_live_yes_price(market, prices)
             total_yes += yes_price
             yes_prices.append(yes_price)
-            positions.append({
-                "action": "BUY",
-                "outcome": "YES",
-                "market": market.question[:50],
-                "price": yes_price,
-                "token_id": (
-                    market.clob_token_ids[0]
-                    if market.clob_token_ids
-                    else None
-                ),
-            })
+            positions.append(
+                {
+                    "action": "BUY",
+                    "outcome": "YES",
+                    "market": market.question[:50],
+                    "price": yes_price,
+                    "token_id": (
+                        market.clob_token_ids[0] if market.clob_token_ids else None
+                    ),
+                }
+            )
 
         # Core arbitrage condition: sum < $1.00
         if total_yes >= 1.0:
@@ -340,9 +368,7 @@ class EntropyArbStrategy(BaseStrategy):
             return None
 
         # Resolution date spread check
-        end_dates = [
-            make_aware(m.end_date) for m in active_markets if m.end_date
-        ]
+        end_dates = [make_aware(m.end_date) for m in active_markets if m.end_date]
         if len(end_dates) >= 2:
             earliest = min(end_dates)
             latest = max(end_dates)
@@ -356,16 +382,18 @@ class EntropyArbStrategy(BaseStrategy):
         total_days = DEFAULT_TOTAL_DAYS
         if end_dates:
             resolution = min(end_dates)
-            days_remaining = max(
-                (resolution - now).total_seconds() / 86400.0, 0.0
-            )
+            days_remaining = max((resolution - now).total_seconds() / 86400.0, 0.0)
             total_days = max(days_remaining, DEFAULT_TOTAL_DAYS)
 
         # Normalize prices to probability distribution for entropy calc
         probs = [p / total_yes for p in yes_prices] if total_yes > 0 else []
 
         entropy_info = self._compute_entropy_quality(
-            event.id, probs, n_outcomes, days_remaining, total_days,
+            event.id,
+            probs,
+            n_outcomes,
+            days_remaining,
+            total_days,
         )
 
         # Build description
@@ -385,10 +413,7 @@ class EntropyArbStrategy(BaseStrategy):
 
         neg_risk_label = "NegRisk " if event.neg_risk else ""
         opp = self.create_opportunity(
-            title=(
-                f"Entropy Arb: {neg_risk_label}"
-                f"{event.title[:50]}..."
-            ),
+            title=(f"Entropy Arb: {neg_risk_label}{event.title[:50]}..."),
             description=description,
             total_cost=total_yes,
             markets=active_markets,
@@ -421,9 +446,7 @@ class EntropyArbStrategy(BaseStrategy):
                     "Election/primary: unlisted candidates may win."
                 )
             if is_open_ended:
-                opp.risk_factors.append(
-                    "Open-ended event: outcome universe unbounded."
-                )
+                opp.risk_factors.append("Open-ended event: outcome universe unbounded.")
             if entropy_info["spike"]:
                 opp.risk_factors.append(
                     "Entropy spike detected (distribution changed "

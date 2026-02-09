@@ -446,9 +446,7 @@ def _parse_gdelt_date(date_str: str) -> Optional[datetime]:
     try:
         # GDELT uses YYYYMMDDTHHMMSSZ format
         cleaned = date_str.replace("Z", "").replace("z", "")
-        return datetime.strptime(cleaned, "%Y%m%dT%H%M%S").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(cleaned, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
     except ValueError:
         pass
     try:

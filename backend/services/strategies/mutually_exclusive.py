@@ -52,17 +52,24 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         # Win/lose - RISKY: ignores draws
         (["win", "victory", "wins"], ["lose", "defeat", "loses"]),
         # Pass/fail - usually binary
-        (["pass", "passes", "passed", "approve", "approves", "approved"],
-         ["fail", "fails", "failed", "reject", "rejects", "rejected"]),
+        (
+            ["pass", "passes", "passed", "approve", "approves", "approved"],
+            ["fail", "fails", "failed", "reject", "rejects", "rejected"],
+        ),
         # Confirmed/denied
         (["confirm", "confirmed", "confirms"], ["deny", "denied", "denies"]),
         # Guilty/not guilty - legal proceedings
         (["guilty", "convicted"], ["acquitted", "not guilty", "innocent"]),
         # Increase/decrease - economic
-        (["increase", "increases", "raise", "raises", "hike", "hikes"],
-         ["decrease", "decreases", "cut", "cuts", "lower", "lowers"]),
+        (
+            ["increase", "increases", "raise", "raises", "hike", "hikes"],
+            ["decrease", "decreases", "cut", "cuts", "lower", "lowers"],
+        ),
         # Stay/leave
-        (["stay", "stays", "remain", "remains"], ["leave", "leaves", "depart", "departs"]),
+        (
+            ["stay", "stays", "remain", "remains"],
+            ["leave", "leaves", "depart", "departs"],
+        ),
     ]
 
     def detect(
