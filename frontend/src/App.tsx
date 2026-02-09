@@ -128,6 +128,7 @@ function App() {
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
+  const [scannerActivity, setScannerActivity] = useState<string>('Idle')
   const [headerSearchQuery, setHeaderSearchQuery] = useState('')
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false)
   const headerSearchRef = useRef<HTMLInputElement>(null)
@@ -216,6 +217,9 @@ function App() {
     if (lastMessage?.type === 'scanner_status') {
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
     }
+    if (lastMessage?.type === 'scanner_activity') {
+      setScannerActivity(lastMessage.data?.activity || 'Idle')
+    }
   }, [lastMessage, queryClient])
 
   // Reset page when filters change
@@ -248,6 +252,13 @@ function App() {
     queryFn: getScannerStatus,
     refetchInterval: 5000,
   })
+
+  // Sync scanner activity from polled status as fallback
+  useEffect(() => {
+    if (status?.current_activity) {
+      setScannerActivity(status.current_activity)
+    }
+  }, [status?.current_activity])
 
   const { data: strategies = [] } = useQuery({
     queryKey: ['strategies'],
@@ -683,6 +694,30 @@ function App() {
                       </Button>
                     </div>
                   </div>
+
+                  {/* Live Scanning Status Line */}
+                  {status?.enabled && opportunitiesView === 'arbitrage' && (
+                    <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-card/60 border border-border/30">
+                      {scannerActivity.startsWith('Idle') || scannerActivity.startsWith('Scan complete') || scannerActivity.startsWith('Fast scan complete') || scannerActivity.includes('unchanged, skipping') ? (
+                        <>
+                          <div className="relative flex h-2 w-2 shrink-0">
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+                          </div>
+                          <span className="text-xs text-muted-foreground font-data truncate">{scannerActivity}</span>
+                        </>
+                      ) : scannerActivity.startsWith('Scan error') || scannerActivity.startsWith('Fast scan error') ? (
+                        <>
+                          <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                          <span className="text-xs text-red-400 font-data truncate">{scannerActivity}</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400 shrink-0" />
+                          <span className="text-xs text-blue-400 font-data truncate">{scannerActivity}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   {opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel

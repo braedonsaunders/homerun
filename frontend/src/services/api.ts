@@ -82,6 +82,7 @@ export interface ScannerStatus {
   interval_seconds: number
   last_scan: string | null
   opportunities_count: number
+  current_activity?: string
   strategies: Strategy[]
 }
 

@@ -98,7 +98,11 @@ class ArbitrageScanner:
         self._opportunities: list[ArbitrageOpportunity] = []
         self._scan_callbacks: List[Callable] = []
         self._status_callbacks: List[Callable] = []
+        self._activity_callbacks: List[Callable] = []
         self._scan_task: Optional[asyncio.Task] = None
+
+        # Live scanning activity line (streamed to frontend via WebSocket)
+        self._current_activity: str = "Idle"
 
         # Track the running AI scoring task so we can cancel it on pause
         self._ai_scoring_task: Optional[asyncio.Task] = None
@@ -133,6 +137,19 @@ class ArbitrageScanner:
     def add_status_callback(self, callback: Callable):
         """Add callback to be notified of scanner status changes"""
         self._status_callbacks.append(callback)
+
+    def add_activity_callback(self, callback: Callable):
+        """Add callback to be notified of scanning activity updates"""
+        self._activity_callbacks.append(callback)
+
+    async def _set_activity(self, activity: str):
+        """Update the current scanning activity and broadcast to clients."""
+        self._current_activity = activity
+        for cb in self._activity_callbacks:
+            try:
+                await cb(activity)
+            except Exception:
+                pass
 
     async def _notify_status_change(self):
         """Notify all status callbacks of a change"""
@@ -207,6 +224,7 @@ class ArbitrageScanner:
     async def scan_once(self) -> list[ArbitrageOpportunity]:
         """Perform a single scan for arbitrage opportunities"""
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
+        await self._set_activity("Fetching Polymarket events and markets...")
 
         try:
             # Fetch events and markets concurrently (they are independent)
@@ -237,12 +255,16 @@ class ArbitrageScanner:
             print(
                 f"  Fetched {len(events)} Polymarket events and {len(markets)} markets"
             )
+            await self._set_activity(
+                f"Fetched {len(events)} events, {len(markets)} markets"
+            )
 
             # Fetch Kalshi markets and merge them so ALL strategies
             # (not just cross-platform) can detect opportunities on Kalshi.
             kalshi_market_count = 0
             kalshi_event_count = 0
             if settings.CROSS_PLATFORM_ENABLED:
+                await self._set_activity("Fetching Kalshi markets...")
                 try:
                     kalshi_markets = await kalshi_client.get_all_markets(active=True)
                     kalshi_markets = [
@@ -268,6 +290,9 @@ class ArbitrageScanner:
                             f"  Fetched {kalshi_event_count} Kalshi events "
                             f"and {kalshi_market_count} Kalshi markets"
                         )
+                        await self._set_activity(
+                            f"Fetched {kalshi_event_count} Kalshi events, {kalshi_market_count} markets"
+                        )
                 except Exception as e:
                     print(f"  Kalshi fetch failed (non-fatal): {e}")
 
@@ -286,6 +311,7 @@ class ArbitrageScanner:
             # Batch price fetching (limit to avoid rate limits)
             prices = {}
             if all_token_ids:
+                await self._set_activity(f"Fetching prices for {min(len(all_token_ids), 500)} tokens...")
                 # Sample tokens if too many
                 token_sample = all_token_ids[:500]
                 prices = await self.client.get_prices_batch(token_sample)
@@ -343,6 +369,7 @@ class ArbitrageScanner:
             # GET /api/opportunities) causing the UI to hang during scans.
             all_opportunities = []
             loop = asyncio.get_running_loop()
+            await self._set_activity(f"Running {len(self.strategies)} strategies...")
 
             async def _run_strategy(strategy):
                 """Run a single strategy in the default thread-pool executor."""
@@ -430,10 +457,15 @@ class ArbitrageScanner:
                 f"{len(all_opportunities)} detected this scan, "
                 f"{len(self._opportunities)} total in pool{scan_suffix}"
             )
+            await self._set_activity(
+                f"Scan complete — {len(all_opportunities)} found, "
+                f"{len(self._opportunities)} total in pool"
+            )
             return self._opportunities
 
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
+            await self._set_activity(f"Scan error: {e}")
             raise
 
     async def scan_fast(self) -> list[ArbitrageOpportunity]:
@@ -451,6 +483,7 @@ class ArbitrageScanner:
         """
         now = datetime.now(timezone.utc)
         print(f"[{now.isoformat()}] Starting fast scan (hot-tier + incremental)...")
+        await self._set_activity("Fast scan: fetching recent markets...")
 
         try:
             # 1. Incremental fetch: get only recently created markets
@@ -499,6 +532,7 @@ class ArbitrageScanner:
 
             hot_prices = {}
             if hot_token_ids:
+                await self._set_activity(f"Fast scan: fetching prices for {min(len(hot_token_ids), 200)} hot-tier tokens...")
                 hot_prices = await self.client.get_prices_batch(hot_token_ids[:200])
                 print(f"  Fetched prices for {len(hot_prices)} hot-tier tokens")
 
@@ -511,12 +545,18 @@ class ArbitrageScanner:
                 print(
                     f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies"
                 )
+                await self._set_activity(
+                    f"Fast scan: {len(hot_markets)} markets unchanged, skipping"
+                )
                 self._prioritizer.update_after_evaluation(hot_markets, now)
                 self._last_fast_scan = now
                 return self._opportunities
 
             print(
                 f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes"
+            )
+            await self._set_activity(
+                f"Fast scan: running strategies on {len(changed_markets)} changed markets..."
             )
 
             # 7. Run strategies on changed markets only
@@ -589,10 +629,15 @@ class ArbitrageScanner:
                 f"{len(self._opportunities)} total in pool "
                 f"({unchanged} unchanged markets skipped)"
             )
+            await self._set_activity(
+                f"Fast scan complete — {len(fast_opportunities)} found, "
+                f"{len(self._opportunities)} total"
+            )
             return self._opportunities
 
         except Exception as e:
             print(f"[{datetime.utcnow().isoformat()}] Fast scan error: {e}")
+            await self._set_activity(f"Fast scan error: {e}")
             raise
 
     def _deduplicate_cross_strategy(
@@ -827,6 +872,9 @@ class ArbitrageScanner:
                         print(f"Full scan error (first run): {e}")
 
             # Sleep for fast interval (the loop will decide full vs fast next iteration)
+            await self._set_activity(
+                f"Idle — next scan in {settings.FAST_SCAN_INTERVAL_SECONDS}s"
+            )
             await asyncio.sleep(settings.FAST_SCAN_INTERVAL_SECONDS)
 
     async def _attach_ai_judgments(self, opportunities: list):
@@ -987,6 +1035,7 @@ class ArbitrageScanner:
             if self._last_scan
             else None,
             "opportunities_count": len(self._opportunities),
+            "current_activity": self._current_activity,
             "strategies": [
                 {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
             ],

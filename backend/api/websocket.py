@@ -133,7 +133,13 @@ async def broadcast_scanner_status(status):
     await manager.broadcast({"type": "scanner_status", "data": status})
 
 
+async def broadcast_scanner_activity(activity: str):
+    """Callback to broadcast scanning activity updates (live status line)"""
+    await manager.broadcast({"type": "scanner_activity", "data": {"activity": activity}})
+
+
 # Register callbacks
 scanner.add_callback(broadcast_opportunities)
 scanner.add_status_callback(broadcast_scanner_status)
+scanner.add_activity_callback(broadcast_scanner_activity)
 wallet_tracker.add_callback(broadcast_wallet_trade)
