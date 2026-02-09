@@ -77,6 +77,8 @@ MIRACLE_KEYWORDS = {
     "assassinated": 0.70,
     # Crypto impossibilities (extreme short-term moves)
     "bitcoin.*1 million": 0.85,
+    "bitcoin.*1,000,000": 0.85,
+    "bitcoin.*1000000": 0.85,
     "btc.*1m": 0.85,
     "eth.*100k": 0.85,
     # Hoax indicators
@@ -142,13 +144,16 @@ class MiracleStrategy(BaseStrategy):
     name = "Miracle Scanner"
     description = "Bet NO on impossible/absurd events (garbage collection)"
 
+    # Properties read from config (persisted in DB via Settings UI).
+    # max_no_price default raised from 0.995 to 0.999: Swisstony reportedly
+    # bought NO at 99.5-99.9 cents; the strategy should capture those.
     @property
     def min_no_price(self):
         return getattr(settings, "MIRACLE_MIN_NO_PRICE", 0.90)
 
     @property
     def max_no_price(self):
-        return getattr(settings, "MIRACLE_MAX_NO_PRICE", 0.995)
+        return getattr(settings, "MIRACLE_MAX_NO_PRICE", 0.999)
 
     @property
     def min_impossibility_score(self):
@@ -203,10 +208,12 @@ class MiracleStrategy(BaseStrategy):
                 reasons.append("Resolves within 1 week (short window)")
 
         # Check for logical impossibilities (past events)
-        if "2023" in question_lower or "2022" in question_lower:
-            if utcnow().year >= 2024:
+        current_year = utcnow().year
+        for past_year in range(2020, current_year):
+            if str(past_year) in question_lower:
                 score += 0.30
-                reasons.append("Question references past year")
+                reasons.append(f"Question references past year ({past_year})")
+                break
 
         # Cap score at 1.0
         score = min(score, 1.0)
@@ -346,11 +353,132 @@ class MiracleStrategy(BaseStrategy):
         Returns:
             Opportunities where the market should now be 100% NO
         """
-        # This is a more advanced feature that requires:
-        # 1. Tracking relationships between markets
-        # 2. Understanding logical dependencies
-        # 3. Monitoring resolution events
+        if not resolved_events:
+            return []
 
-        # For now, return empty - this can be enhanced later
-        # with NLP or manual relationship mapping
-        return []
+        opportunities = []
+
+        # Build patterns from resolved events
+        # Extract key entities (names, teams, outcomes) from resolved event strings
+        resolved_entities = []
+        for resolved in resolved_events:
+            resolved_lower = resolved.lower()
+            # Extract "X wins Y" pattern
+            wins_match = re.search(r'(\w[\w\s]*?)\s+wins?\s+(.*)', resolved_lower)
+            if wins_match:
+                winner = wins_match.group(1).strip()
+                context = wins_match.group(2).strip()
+                resolved_entities.append({
+                    'type': 'winner',
+                    'winner': winner,
+                    'context': context,
+                    'original': resolved_lower,
+                })
+                continue
+
+            # Extract "X resolved YES/NO" pattern
+            resolved_entities.append({
+                'type': 'generic',
+                'original': resolved_lower,
+            })
+
+        for market in markets:
+            if market.closed or not market.active:
+                continue
+            if len(market.outcome_prices) != 2:
+                continue
+
+            q_lower = market.question.lower()
+
+            for entity in resolved_entities:
+                is_impossible = False
+                reason = ""
+
+                if entity['type'] == 'winner':
+                    # If someone else won, this market's candidate can't win the same thing
+                    winner = entity['winner']
+                    context = entity['context']
+
+                    # Check if this market asks about a DIFFERENT entity winning the SAME thing
+                    market_wins = re.search(r'(\w[\w\s]*?)\s+wins?\s+(.*)', q_lower)
+                    if market_wins:
+                        market_candidate = market_wins.group(1).strip()
+                        market_context = market_wins.group(2).strip()
+
+                        # Same context but different candidate = impossible
+                        context_words = set(context.split())
+                        market_context_words = set(market_context.split())
+                        context_overlap = len(context_words & market_context_words)
+
+                        if (context_overlap >= 2 and
+                            market_candidate != winner and
+                            winner not in market_candidate and
+                            market_candidate not in winner):
+                            is_impossible = True
+                            reason = f"'{winner}' already won {context}; '{market_candidate}' cannot also win"
+
+                if entity['type'] == 'generic':
+                    # Check for direct contradiction
+                    resolved_text = entity['original']
+                    # If the resolved event contains key words from this market
+                    resolved_words = set(resolved_text.split()) - {'the', 'a', 'an', 'in', 'on', 'by', 'to', 'is', 'was', 'will'}
+                    market_words = set(q_lower.split()) - {'the', 'a', 'an', 'in', 'on', 'by', 'to', 'is', 'was', 'will'}
+                    overlap = resolved_words & market_words
+                    if len(overlap) >= 3:
+                        # High word overlap suggests related market
+                        # This is a weak signal - just flag it
+                        is_impossible = False  # Don't auto-flag generic matches
+
+                if is_impossible:
+                    no_price = market.no_price
+                    if market.clob_token_ids and len(market.clob_token_ids) > 1:
+                        # We'd use live prices if available, but we don't have prices dict here
+                        pass
+
+                    yes_price = market.yes_price
+                    if yes_price > 0.05:  # Only interesting if YES is still priced significantly
+                        total_cost = no_price
+                        expected_payout = 1.0
+                        gross_profit = expected_payout - total_cost
+                        fee = expected_payout * self.fee
+                        net_profit = gross_profit - fee
+                        roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+
+                        if roi > 0.5:
+                            opp = ArbitrageOpportunity(
+                                strategy=self.strategy_type,
+                                title=f"Stale Market: {market.question[:60]}...",
+                                description=f"Logically impossible: {reason}",
+                                total_cost=total_cost,
+                                expected_payout=expected_payout,
+                                gross_profit=gross_profit,
+                                fee=fee,
+                                net_profit=net_profit,
+                                roi_percent=roi,
+                                risk_score=0.10,  # Low risk - logically impossible
+                                risk_factors=[
+                                    f"Stale market: {reason}",
+                                    "Verify resolution of related event before trading",
+                                ],
+                                markets=[{
+                                    "id": market.id,
+                                    "question": market.question,
+                                    "yes_price": yes_price,
+                                    "no_price": no_price,
+                                    "liquidity": market.liquidity,
+                                }],
+                                min_liquidity=market.liquidity,
+                                max_position_size=market.liquidity * 0.05,
+                                resolution_date=market.end_date,
+                                positions_to_take=[{
+                                    "action": "BUY",
+                                    "outcome": "NO",
+                                    "market": market.question[:50],
+                                    "price": no_price,
+                                    "token_id": market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None,
+                                }],
+                            )
+                            opportunities.append(opp)
+                    break  # Only match first resolved entity per market
+
+        return opportunities

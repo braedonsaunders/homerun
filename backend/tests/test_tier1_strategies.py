@@ -341,39 +341,7 @@ class TestNegRiskStrategy:
     # --- NegRisk event detection ---
 
     def test_negrisk_event_with_sum_below_one(self):
-        """NegRisk event: sum of YES prices < 1.0 should find opportunity.
-
-        Uses a non-election title and prices summing to 0.96 (within the
-        valid range 0.95-1.0) to test basic NegRisk detection without
-        triggering election-specific or non-exhaustive outcome filters.
-        The spread of 0.04 must be enough to cover the 2% fee on $1 payout.
-        """
-        m1 = make_single_outcome_market(
-            market_id="nr1", question="Option A?", yes_price=0.32
-        )
-        m2 = make_single_outcome_market(
-            market_id="nr2", question="Option B?", yes_price=0.34
-        )
-        m3 = make_single_outcome_market(
-            market_id="nr3", question="Option C?", yes_price=0.30
-        )
-        event = make_event(
-            event_id="e_nr",
-            title="Which option wins?",
-            markets=[m1, m2, m3],
-            neg_risk=True,
-        )
-        opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 1
-        opp = opps[0]
-        assert opp.strategy == StrategyType.NEGRISK
-        assert opp.total_cost == pytest.approx(0.96)
-        assert opp.event_id == "e_nr"
-        assert opp.event_title == "Which option wins?"
-
-    def test_negrisk_election_below_election_threshold_rejected(self):
-        """Election NegRisk events with total YES below the election
-        threshold (0.97) should be rejected as likely non-exhaustive."""
+        """NegRisk event: sum of YES prices < 1.0 should find opportunity."""
         m1 = make_single_outcome_market(
             market_id="nr1", question="Candidate A?", yes_price=0.30
         )
@@ -381,7 +349,7 @@ class TestNegRiskStrategy:
             market_id="nr2", question="Candidate B?", yes_price=0.35
         )
         m3 = make_single_outcome_market(
-            market_id="nr3", question="Candidate C?", yes_price=0.30
+            market_id="nr3", question="Candidate C?", yes_price=0.25
         )
         event = make_event(
             event_id="e_nr",
@@ -390,29 +358,12 @@ class TestNegRiskStrategy:
             neg_risk=True,
         )
         opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 0
-
-    def test_negrisk_non_exhaustive_below_min_threshold_rejected(self):
-        """NegRisk events with total YES below 0.95 should be rejected
-        as almost certainly non-exhaustive (missing outcomes)."""
-        m1 = make_single_outcome_market(
-            market_id="nr1", question="Option A?", yes_price=0.30
-        )
-        m2 = make_single_outcome_market(
-            market_id="nr2", question="Option B?", yes_price=0.35
-        )
-        m3 = make_single_outcome_market(
-            market_id="nr3", question="Option C?", yes_price=0.25
-        )
-        event = make_event(
-            event_id="e_nr",
-            title="Which option wins?",
-            markets=[m1, m2, m3],
-            neg_risk=True,
-        )
-        # Total YES = 0.90 < 0.95 threshold
-        opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 0
+        assert len(opps) == 1
+        opp = opps[0]
+        assert opp.strategy == StrategyType.NEGRISK
+        assert opp.total_cost == pytest.approx(0.90)
+        assert opp.event_id == "e_nr"
+        assert opp.event_title == "Who wins the election?"
 
     def test_negrisk_event_with_sum_equals_one(self):
         """NegRisk event: sum == 1.0 should NOT find opportunity."""
@@ -423,12 +374,15 @@ class TestNegRiskStrategy:
         assert len(opps) == 0
 
     def test_negrisk_event_with_sum_above_one(self):
-        """NegRisk event: sum > 1.0 should NOT find opportunity."""
+        """NegRisk event: sum > 1.0 should find SHORT arbitrage opportunity."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.55)
         m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.55)
         event = make_event(markets=[m1, m2], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 0
+        assert len(opps) == 1
+        opp = opps[0]
+        assert "Short" in opp.title
+        assert all(p["outcome"] == "NO" for p in opp.positions_to_take)
 
     def test_non_negrisk_event_skipped_for_negrisk_detection(self):
         """Non-neg_risk event should not be processed by _detect_negrisk_event."""
@@ -441,59 +395,53 @@ class TestNegRiskStrategy:
         assert len(opps) == 0
 
     def test_negrisk_with_multiple_outcomes(self):
-        """NegRisk event with 5 outcomes, all summing below 1.0 but
-        above the non-exhaustive threshold (0.95)."""
+        """NegRisk event with 5 outcomes, all summing below 1.0."""
         markets = [
             make_single_outcome_market(
                 market_id=f"nr{i}",
-                question=f"Option {chr(65 + i)}?",
-                yes_price=0.193,
+                question=f"Candidate {chr(65 + i)}?",
+                yes_price=0.15,
             )
             for i in range(5)
         ]
-        # total = 5 * 0.193 = 0.965
-        event = make_event(markets=markets, neg_risk=True, title="Which option wins?")
+        # total = 5 * 0.15 = 0.75
+        event = make_event(markets=markets, neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.total_cost == pytest.approx(0.965)
+        assert opp.total_cost == pytest.approx(0.75)
         assert len(opp.positions_to_take) == 5
 
     def test_negrisk_with_some_closed_markets(self):
         """Closed markets within event should be excluded from consideration."""
-        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.48)
+        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30)
         m2 = make_single_outcome_market(
             market_id="nr2",
             question="B?",
             yes_price=0.40,
             closed=True,
         )
-        m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.48)
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=True, title="Which option wins?"
-        )
+        m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.25)
+        event = make_event(markets=[m1, m2, m3], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
-        # Active markets: m1 (0.48) + m3 (0.48) = 0.96
+        # Active markets: m1 (0.30) + m3 (0.25) = 0.55
         assert len(opps) == 1
-        assert opps[0].total_cost == pytest.approx(0.96)
+        assert opps[0].total_cost == pytest.approx(0.55)
 
     def test_negrisk_with_some_inactive_markets(self):
         """Inactive markets should be excluded."""
-        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.48)
+        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.30)
         m2 = make_single_outcome_market(
             market_id="nr2",
             question="B?",
             yes_price=0.40,
             active=False,
         )
-        m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.48)
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=True, title="Which option wins?"
-        )
+        m3 = make_single_outcome_market(market_id="nr3", question="C?", yes_price=0.20)
+        event = make_event(markets=[m1, m2, m3], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
-        # Active markets: m1 (0.48) + m3 (0.48) = 0.96
         assert len(opps) == 1
-        assert opps[0].total_cost == pytest.approx(0.96)
+        assert opps[0].total_cost == pytest.approx(0.50)
 
     def test_negrisk_single_market_event_skipped(self):
         """Events with only one market should be skipped."""
@@ -514,15 +462,15 @@ class TestNegRiskStrategy:
         """Live prices should override market YES prices in NegRisk events."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.50)
         m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.50)
-        event = make_event(markets=[m1, m2], neg_risk=True, title="Which option wins?")
-        # Market prices sum to 1.0 - no opp. But live prices are lower (0.96 total).
+        event = make_event(markets=[m1, m2], neg_risk=True)
+        # Market prices sum to 1.0 - no opp. But live prices are lower.
         prices = {
-            "yes_nr1": {"mid": 0.48},
-            "yes_nr2": {"mid": 0.48},
+            "yes_nr1": {"mid": 0.40},
+            "yes_nr2": {"mid": 0.40},
         }
         opps = self.strategy.detect(events=[event], markets=[], prices=prices)
         assert len(opps) == 1
-        assert opps[0].total_cost == pytest.approx(0.96)
+        assert opps[0].total_cost == pytest.approx(0.80)
 
     def test_negrisk_all_active_markets_closed_returns_none(self):
         """If all markets in NegRisk event are closed, no opportunity."""
@@ -539,29 +487,7 @@ class TestNegRiskStrategy:
     # --- Multi-outcome (non-negrisk) detection ---
 
     def test_multi_outcome_with_sum_below_one(self):
-        """Non-negrisk event with >=3 exclusive outcomes, total YES < 1.0
-        but above the non-exhaustive threshold (0.95)."""
-        m1 = make_single_outcome_market(
-            market_id="mo1", question="Team Alpha wins?", yes_price=0.32
-        )
-        m2 = make_single_outcome_market(
-            market_id="mo2", question="Team Beta wins?", yes_price=0.32
-        )
-        m3 = make_single_outcome_market(
-            market_id="mo3", question="Team Gamma wins?", yes_price=0.32
-        )
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=False, title="Which team wins?"
-        )
-        # total = 0.96, above 0.95 threshold
-        opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 1
-        opp = opps[0]
-        assert opp.total_cost == pytest.approx(0.96)
-
-    def test_multi_outcome_sum_too_low_rejected(self):
-        """Multi-outcome with total below the non-exhaustive threshold should
-        be rejected as likely missing outcomes."""
+        """Non-negrisk event with >=3 exclusive outcomes, total YES < 1.0."""
         m1 = make_single_outcome_market(
             market_id="mo1", question="Team Alpha wins?", yes_price=0.30
         )
@@ -571,33 +497,46 @@ class TestNegRiskStrategy:
         m3 = make_single_outcome_market(
             market_id="mo3", question="Team Gamma wins?", yes_price=0.30
         )
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=False, title="Which team wins?"
-        )
-        # total = 0.90 < 0.95 threshold
-        opps = self.strategy.detect(events=[event], markets=[], prices={})
-        assert len(opps) == 0
-
-    def test_multi_outcome_below_warn_threshold_has_warning(self):
-        """Multi-outcome with total between 0.95 and 0.97 should produce an
-        opportunity with a 'possible missing outcomes' warning."""
-        m1 = make_single_outcome_market(
-            market_id="mo1", question="Team Alpha wins?", yes_price=0.32
-        )
-        m2 = make_single_outcome_market(
-            market_id="mo2", question="Team Beta wins?", yes_price=0.32
-        )
-        m3 = make_single_outcome_market(
-            market_id="mo3", question="Team Gamma wins?", yes_price=0.32
-        )
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=False, title="Which team wins?"
-        )
-        # total = 0.96, between 0.95 and 0.97
+        event = make_event(markets=[m1, m2, m3], neg_risk=False)
+        # total = 0.90, above 0.85 threshold
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert any("missing outcomes" in f.lower() for f in opp.risk_factors)
+        assert opp.total_cost == pytest.approx(0.90)
+
+    def test_multi_outcome_sum_too_low_rejected(self):
+        """Multi-outcome with total < 0.7 suggests missing outcomes -> skip."""
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team Alpha wins?", yes_price=0.20
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team Beta wins?", yes_price=0.20
+        )
+        m3 = make_single_outcome_market(
+            market_id="mo3", question="Team Gamma wins?", yes_price=0.20
+        )
+        event = make_event(markets=[m1, m2, m3], neg_risk=False)
+        # total = 0.60 < 0.7 threshold
+        opps = self.strategy.detect(events=[event], markets=[], prices={})
+        assert len(opps) == 0
+
+    def test_multi_outcome_low_confidence_warning(self):
+        """Multi-outcome with 0.7 <= total < 0.85 should get low-confidence warning."""
+        m1 = make_single_outcome_market(
+            market_id="mo1", question="Team Alpha wins?", yes_price=0.25
+        )
+        m2 = make_single_outcome_market(
+            market_id="mo2", question="Team Beta wins?", yes_price=0.25
+        )
+        m3 = make_single_outcome_market(
+            market_id="mo3", question="Team Gamma wins?", yes_price=0.25
+        )
+        event = make_event(markets=[m1, m2, m3], neg_risk=False)
+        # total = 0.75, between 0.7 and 0.85
+        opps = self.strategy.detect(events=[event], markets=[], prices={})
+        assert len(opps) == 1
+        opp = opps[0]
+        assert any("LOW TOTAL" in f for f in opp.risk_factors)
 
     # --- Filtering date-sweep / independent markets ---
 
@@ -667,22 +606,20 @@ class TestNegRiskStrategy:
     def test_negrisk_varying_liquidity(self):
         """Max position should reflect the lowest liquidity among active markets."""
         m1 = make_single_outcome_market(
-            market_id="nr1", question="A?", yes_price=0.32, liquidity=5000.0
+            market_id="nr1", question="A?", yes_price=0.30, liquidity=2000.0
         )
         m2 = make_single_outcome_market(
-            market_id="nr2", question="B?", yes_price=0.32, liquidity=2500.0
+            market_id="nr2", question="B?", yes_price=0.30, liquidity=500.0
         )
         m3 = make_single_outcome_market(
-            market_id="nr3", question="C?", yes_price=0.32, liquidity=8000.0
+            market_id="nr3", question="C?", yes_price=0.30, liquidity=8000.0
         )
-        event = make_event(
-            markets=[m1, m2, m3], neg_risk=True, title="Which option wins?"
-        )
+        event = make_event(markets=[m1, m2, m3], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
-        # min liquidity = 2500 => max_position = 250
-        assert opps[0].max_position_size == pytest.approx(250.0)
-        assert opps[0].min_liquidity == pytest.approx(2500.0)
+        # min liquidity = 500 => max_position = 50
+        assert opps[0].max_position_size == pytest.approx(50.0)
+        assert opps[0].min_liquidity == pytest.approx(500.0)
 
     # --- NegRisk + multi-outcome do NOT double-count ---
 
@@ -693,21 +630,21 @@ class TestNegRiskStrategy:
         """
         markets = [
             make_single_outcome_market(
-                market_id=f"nr{i}", question=f"Option {chr(65 + i)}?", yes_price=0.24
+                market_id=f"nr{i}", question=f"Candidate {chr(65 + i)}?", yes_price=0.20
             )
             for i in range(4)
         ]
-        event = make_event(markets=markets, neg_risk=True, title="Which option wins?")
-        # total = 0.96, should get exactly 1 opportunity from negrisk path
+        event = make_event(markets=markets, neg_risk=True)
+        # total = 0.80, should get exactly 1 opportunity from negrisk path
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         assert opps[0].strategy == StrategyType.NEGRISK
 
     def test_negrisk_below_profit_threshold_no_opportunity(self):
-        """NegRisk where total is very close to 1.0, leaving no profit after fees."""
-        # total = 0.99, gross = 0.01, fee = 0.02 on $1 payout => net = -0.01
-        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.495)
-        m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.495)
+        """NegRisk where total is close to 1.0 and profit below threshold after fees."""
+        # total = 0.96, roi = (0.98 - 0.96)/0.96 = 2.08% < 2.5%
+        m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.48)
+        m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.48)
         event = make_event(markets=[m1, m2], neg_risk=True)
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 0

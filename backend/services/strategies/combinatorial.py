@@ -258,11 +258,49 @@ class DependencyAccuracyTracker:
     confidence threshold if accuracy drops below 70%.
     """
 
-    def __init__(self, base_threshold: float = MIN_LLM_CONFIDENCE):
+    def __init__(self, base_threshold: float = MIN_LLM_CONFIDENCE, persistence_path: str | None = None):
         self._base_threshold = base_threshold
         self._records: list[dict] = []  # {dep_key, correct, timestamp}
         self._accuracy_cache: Optional[float] = None
         self._threshold_override: Optional[float] = None
+        self._persistence_path = persistence_path
+        self._load_from_disk()
+
+    def _load_from_disk(self) -> None:
+        """Load accuracy records from disk if persistence is enabled."""
+        if not self._persistence_path:
+            return
+        try:
+            import json
+            from pathlib import Path
+            path = Path(self._persistence_path)
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+                self._records = data.get("records", [])
+                self._threshold_override = data.get("threshold_override")
+                self._accuracy_cache = None
+                logger.info(f"Loaded {len(self._records)} dependency accuracy records from disk")
+        except Exception as e:
+            logger.warning(f"Failed to load accuracy data: {e}")
+
+    def _save_to_disk(self) -> None:
+        """Persist accuracy records to disk if persistence is enabled."""
+        if not self._persistence_path:
+            return
+        try:
+            import json
+            from pathlib import Path
+            path = Path(self._persistence_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "records": self._records[-500:],  # Keep last 500 records
+                "threshold_override": self._threshold_override,
+            }
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.warning(f"Failed to save accuracy data: {e}")
 
     def record_dependency(
         self, market_a_id: str, market_b_id: str, dep_type: str, acted_on: bool = True
@@ -278,6 +316,7 @@ class DependencyAccuracyTracker:
             }
         )
         self._accuracy_cache = None
+        self._save_to_disk()
         return dep_key
 
     def record_resolution(
@@ -290,6 +329,7 @@ class DependencyAccuracyTracker:
                 record["correct"] = was_correct
                 self._accuracy_cache = None
                 self._update_threshold()
+                self._save_to_disk()
                 return
 
     @property
@@ -792,7 +832,11 @@ class CombinatorialStrategy(BaseStrategy):
         super().__init__()
         self._dependency_cache: dict[tuple, list] = {}
         self._pair_cache: dict[str, bool] = {}
-        self._accuracy_tracker = DependencyAccuracyTracker()
+
+        # Persist accuracy data across restarts
+        from pathlib import Path
+        persistence_path = str(Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json")
+        self._accuracy_tracker = DependencyAccuracyTracker(persistence_path=persistence_path)
         self._validator = DependencyValidator(self._accuracy_tracker)
 
     def detect(
@@ -814,9 +858,9 @@ class CombinatorialStrategy(BaseStrategy):
 
         # Check high-potential pairs based on keyword similarity
         checked = set()
-        for market_a in all_active[:100]:  # Limit for performance
+        for market_a in all_active[:200]:  # Limit for performance
             candidates = self._find_related_markets(market_a, all_active)
-            for market_b in candidates[:5]:  # Top 5 most related
+            for market_b in candidates[:8]:  # Top 8 most related
                 pair_key = tuple(sorted([market_a.id, market_b.id]))
                 if pair_key in checked:
                     continue
@@ -1065,8 +1109,8 @@ class CombinatorialStrategy(BaseStrategy):
         words_b = set(q_b.split()) - stop_words
 
         # Filter short words
-        words_a = {w for w in words_a if len(w) > 3}
-        words_b = {w for w in words_b if len(w) > 3}
+        words_a = {w for w in words_a if len(w) > 2}
+        words_b = {w for w in words_b if len(w) > 2}
 
         common = words_a & words_b
         return len(common) >= 2
@@ -1080,20 +1124,43 @@ class CombinatorialStrategy(BaseStrategy):
         # Extract key entities
         entities = set()
         entity_patterns = [
-            "trump",
-            "biden",
-            "harris",
-            "republican",
-            "democrat",
-            "bitcoin",
-            "btc",
-            "ethereum",
-            "eth",
-            "pennsylvania",
-            "georgia",
-            "michigan",
-            "arizona",
-            "nevada",
+            # US Politics - Candidates
+            "trump", "biden", "harris", "desantis", "haley", "vance",
+            "newsom", "pence", "obama", "clinton",
+            # US Politics - Parties & Institutions
+            "republican", "democrat", "gop", "democratic",
+            "senate", "house", "congress", "supreme court",
+            # International Politics
+            "putin", "zelensky", "xi jinping", "modi", "macron",
+            "starmer", "trudeau", "netanyahu", "milei",
+            "nato", "european union", "united nations",
+            # Crypto
+            "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
+            "xrp", "dogecoin", "doge", "cardano", "ada",
+            "binance", "coinbase", "crypto",
+            # US States (swing states + major)
+            "pennsylvania", "georgia", "michigan", "arizona", "nevada",
+            "wisconsin", "north carolina", "florida", "texas",
+            "california", "new york", "ohio",
+            # Sports - Major leagues
+            "nfl", "nba", "mlb", "nhl", "premier league",
+            "champions league", "world cup", "super bowl",
+            "world series", "stanley cup",
+            # Sports - Teams (major)
+            "lakers", "celtics", "warriors", "yankees", "dodgers",
+            "chiefs", "eagles", "cowboys", "49ers",
+            "manchester united", "manchester city", "real madrid",
+            "barcelona", "liverpool", "arsenal",
+            # Tech / Companies
+            "apple", "google", "microsoft", "nvidia", "tesla",
+            "meta", "amazon", "openai", "anthropic",
+            # Economics
+            "federal reserve", "inflation", "interest rate",
+            "gdp", "recession", "unemployment",
+            "s&p 500", "nasdaq", "dow jones",
+            # Countries (for geopolitical events)
+            "ukraine", "russia", "china", "taiwan", "israel",
+            "iran", "north korea",
         ]
         for e in entity_patterns:
             if e in q:
@@ -1207,9 +1274,9 @@ class CombinatorialStrategy(BaseStrategy):
         pairs = []
         all_active = [m for m in markets if not m.closed and m.active]
 
-        for i, market_a in enumerate(all_active[:50]):
+        for i, market_a in enumerate(all_active[:100]):
             candidates = self._find_related_markets(market_a, all_active)
-            for market_b in candidates[:3]:
+            for market_b in candidates[:5]:
                 pairs.append((market_a, market_b))
 
         # Batch LLM dependency detection

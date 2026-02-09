@@ -1190,28 +1190,28 @@ class TestSettlementLagStrategy:
     # --- Appears resolved (YES near zero) ---
 
     def test_detects_near_zero_yes_as_resolved(self, strategy):
-        """If YES price < 0.05, market appears resolved to NO."""
+        """If YES price < 0.02 (NEAR_ZERO_THRESHOLD), market appears resolved to NO."""
         m = _make_market(
             id="sl2",
             question="Will candidate Z win the election?",
-            yes_price=0.02,
-            no_price=0.90,
+            yes_price=0.01,
+            no_price=0.92,
             liquidity=10000.0,
         )
         opps = strategy.detect(events=[], markets=[m], prices={})
         assert len(opps) == 1
         opp = opps[0]
-        assert opp.total_cost == pytest.approx(0.92, abs=0.01)
+        assert opp.total_cost == pytest.approx(0.93, abs=0.01)
 
     # --- Appears resolved (NO near zero) ---
 
     def test_detects_near_zero_no_as_resolved(self, strategy):
-        """If NO price < 0.05, market appears resolved to YES."""
+        """If NO price < 0.02 (NEAR_ZERO_THRESHOLD), market appears resolved to YES."""
         m = _make_market(
             id="sl3",
             question="Will the bill pass the final vote?",
-            yes_price=0.88,
-            no_price=0.03,
+            yes_price=0.92,
+            no_price=0.01,
             liquidity=10000.0,
         )
         opps = strategy.detect(events=[], markets=[m], prices={})

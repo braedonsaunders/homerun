@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
         14  # Only detect settlement lag within this window
     )
-    SETTLEMENT_LAG_NEAR_ZERO: float = 0.05  # Price below this suggests resolved to NO
+    SETTLEMENT_LAG_NEAR_ZERO: float = 0.02  # Price below this suggests resolved to NO
     SETTLEMENT_LAG_NEAR_ONE: float = 0.95  # Price above this suggests resolved to YES
     SETTLEMENT_LAG_MIN_SUM_DEVIATION: float = 0.03  # Min deviation from 1.0
 
@@ -165,7 +165,7 @@ class Settings(BaseSettings):
 
     # Miracle Strategy Thresholds
     MIRACLE_MIN_NO_PRICE: float = 0.90  # Only consider NO prices >= this
-    MIRACLE_MAX_NO_PRICE: float = 0.995  # Skip if NO already at this+
+    MIRACLE_MAX_NO_PRICE: float = 0.999  # Skip if NO already at this+
     MIRACLE_MIN_IMPOSSIBILITY_SCORE: float = 0.70  # Min confidence event is impossible
 
     # Risk Scoring Thresholds
@@ -306,7 +306,7 @@ async def apply_search_filters():
             "settlement_lag_max_days_to_resolution",
             14,
         ),
-        ("SETTLEMENT_LAG_NEAR_ZERO", "settlement_lag_near_zero", 0.05),
+        ("SETTLEMENT_LAG_NEAR_ZERO", "settlement_lag_near_zero", 0.02),
         ("SETTLEMENT_LAG_NEAR_ONE", "settlement_lag_near_one", 0.95),
         ("SETTLEMENT_LAG_MIN_SUM_DEVIATION", "settlement_lag_min_sum_deviation", 0.03),
         ("BTC_ETH_HF_PURE_ARB_MAX_COMBINED", "btc_eth_pure_arb_max_combined", 0.98),
@@ -314,7 +314,7 @@ async def apply_search_filters():
         ("BTC_ETH_HF_THIN_LIQUIDITY_USD", "btc_eth_thin_liquidity_usd", 500.0),
         # Miracle strategy
         ("MIRACLE_MIN_NO_PRICE", "miracle_min_no_price", 0.90),
-        ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.995),
+        ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.999),
         ("MIRACLE_MIN_IMPOSSIBILITY_SCORE", "miracle_min_impossibility_score", 0.70),
         # Risk scoring
         ("RISK_VERY_SHORT_DAYS", "risk_very_short_days", 2),
