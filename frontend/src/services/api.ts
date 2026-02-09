@@ -300,6 +300,7 @@ export interface WalletTrade {
   id: string
   market: string
   market_slug: string
+  market_title: string
   outcome: string
   side: string
   size: number

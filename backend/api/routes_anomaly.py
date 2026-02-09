@@ -270,6 +270,9 @@ async def get_wallet_trades(
 
     trades = await polymarket_client.get_wallet_trades(address, limit=limit)
 
+    # Enrich trades with market titles from Gamma API / cache
+    trades = await polymarket_client.enrich_trades_with_market_info(trades)
+
     # Enrich trades with calculated fields
     enriched_trades = []
     for trade in trades:
@@ -285,6 +288,7 @@ async def get_wallet_trades(
                     "market", trade.get("condition_id", trade.get("asset", ""))
                 ),
                 "market_slug": trade.get("market_slug", trade.get("slug", "")),
+                "market_title": trade.get("market_title", ""),
                 "outcome": trade.get("outcome", trade.get("outcome_index", "")),
                 "side": side,
                 "size": size,

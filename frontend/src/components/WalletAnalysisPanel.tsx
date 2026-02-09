@@ -970,9 +970,17 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
               )}>
                 {trade.side}
               </span>
-              <span className="text-sm font-medium text-foreground">{trade.outcome || 'Unknown'}</span>
+              <span className={cn(
+                "text-xs font-medium px-2 py-0.5 rounded-full",
+                trade.outcome?.toUpperCase() === 'YES' ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
+              )}>
+                {trade.outcome || 'Unknown'}
+              </span>
             </div>
-            <p className="text-xs text-muted-foreground/70 mt-1">{timestamp}</p>
+            <p className="text-sm font-medium text-foreground mt-1 line-clamp-1" title={trade.market_title}>
+              {trade.market_title || trade.market?.slice(0, 20) + '...'}
+            </p>
+            <p className="text-xs text-muted-foreground/70 mt-0.5">{timestamp}</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -1000,9 +1008,15 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div className="bg-muted/60 rounded-lg p-3">
               <p className="text-xs text-muted-foreground/70 mb-1">Market</p>
-              <p className="font-mono text-xs text-foreground/80 truncate" title={trade.market}>
-                {trade.market.length > 30 ? trade.market.slice(0, 30) + '...' : trade.market}
-              </p>
+              {trade.market_title ? (
+                <p className="text-xs text-foreground/80 truncate" title={trade.market_title}>
+                  {trade.market_title}
+                </p>
+              ) : (
+                <p className="font-mono text-xs text-foreground/80 truncate" title={trade.market}>
+                  {trade.market.length > 30 ? trade.market.slice(0, 30) + '...' : trade.market}
+                </p>
+              )}
             </div>
             <div className="bg-muted/60 rounded-lg p-3">
               <p className="text-xs text-muted-foreground/70 mb-1">Size</p>
