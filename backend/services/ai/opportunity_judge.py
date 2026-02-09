@@ -298,9 +298,14 @@ class OpportunityJudge:
                 purpose="opportunity_judge",
             )
 
-            # structured_output() returns a dict directly
-            if llm_response:
+            # structured_output() returns a dict directly, but some
+            # providers may return a list or other non-dict JSON.
+            if llm_response and isinstance(llm_response, dict):
                 judgment = llm_response
+            elif llm_response:
+                judgment = self._fallback_judgment(
+                    f"LLM returned {type(llm_response).__name__} instead of dict"
+                )
             else:
                 judgment = self._fallback_judgment("LLM returned empty response")
 
@@ -743,6 +748,27 @@ class OpportunityJudge:
 
     def _validate_judgment(self, judgment: dict) -> dict:
         """Ensure all required fields exist with sensible defaults."""
+        # Guard: if the LLM returned a non-dict (e.g. a list), return
+        # safe defaults instead of crashing with a TypeError.
+        if not isinstance(judgment, dict):
+            logger.warning(
+                "Judgment validation received %s instead of dict, using defaults",
+                type(judgment).__name__,
+            )
+            return {
+                "overall_score": 0.2,
+                "profit_viability": 0.2,
+                "resolution_safety": 0.3,
+                "execution_feasibility": 0.2,
+                "market_efficiency": 0.2,
+                "recommendation": "strong_skip",
+                "reasoning": (
+                    "LLM returned a non-dict response. "
+                    "Defaulting to strong_skip as a safety measure."
+                ),
+                "risk_factors": ["LLM response format error"],
+            }
+
         defaults = {
             "overall_score": 0.3,
             "profit_viability": 0.3,

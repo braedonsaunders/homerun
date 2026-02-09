@@ -33,6 +33,20 @@ _ZSCORE_THRESHOLD = 2.0
 # Maximum number of price history entries per market
 _MAX_HISTORY = 200
 
+# Minimum price variance to consider a series informative.
+# If a price hasn't moved (variance near zero), correlation is meaningless.
+_MIN_PRICE_VARIANCE = 1e-6
+
+# Maximum plausible correlation threshold.
+# r > 0.98 with sparse data almost always indicates two static series
+# that happen not to move, not a genuine economic relationship.
+_MAX_PLAUSIBLE_CORRELATION = 0.98
+
+# Minimum keyword overlap for cross-event (category-based) pairing.
+# Prevents pairing completely unrelated markets just because they share
+# a category (e.g., two different hockey games under "Sports").
+_MIN_KEYWORD_OVERLAP = 2
+
 # Stop words for keyword-based pair matching
 _STOP_WORDS = frozenset(
     {
@@ -101,16 +115,21 @@ _STOP_WORDS = frozenset(
 )
 
 
-def _pearson_correlation(xs: list[float], ys: list[float]) -> float:
+def _pearson_correlation(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
     """
     Calculate Pearson correlation coefficient between two lists.
 
-    Returns a value in [-1, 1]. Returns 0.0 if calculation is
-    not possible (e.g. zero variance).
+    Returns (correlation, var_x, var_y):
+    - correlation: value in [-1, 1], 0.0 if calculation impossible
+    - var_x: variance of xs (unnormalized)
+    - var_y: variance of ys (unnormalized)
+
+    Callers should check var_x and var_y against _MIN_PRICE_VARIANCE
+    to reject correlations computed from static (non-moving) series.
     """
     n = len(xs)
     if n < 2 or n != len(ys):
-        return 0.0
+        return 0.0, 0.0, 0.0
 
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
@@ -128,9 +147,25 @@ def _pearson_correlation(xs: list[float], ys: list[float]) -> float:
         var_y += dy * dy
 
     if var_x == 0 or var_y == 0:
-        return 0.0
+        return 0.0, var_x / n, var_y / n
 
-    return cov / (math.sqrt(var_x) * math.sqrt(var_y))
+    corr = cov / (math.sqrt(var_x) * math.sqrt(var_y))
+    return corr, var_x / n, var_y / n
+
+
+def _extract_keywords(text: str) -> set[str]:
+    """Extract meaningful keywords from a market question.
+
+    Strips stop words and short tokens to produce a set of
+    content-bearing keywords for semantic similarity comparison.
+    """
+    words = set()
+    for word in text.lower().split():
+        # Strip punctuation
+        cleaned = word.strip("?.,!:;\"'()[]{}/-")
+        if len(cleaned) > 2 and cleaned not in _STOP_WORDS:
+            words.add(cleaned)
+    return words
 
 
 class CorrelationArbStrategy(BaseStrategy):
@@ -224,11 +259,24 @@ class CorrelationArbStrategy(BaseStrategy):
             if pair_key in self._pair_cache:
                 corr = self._pair_cache[pair_key]
             else:
-                corr = _pearson_correlation(prices_a, prices_b)
+                corr, var_a, var_b = _pearson_correlation(prices_a, prices_b)
                 self._pair_cache[pair_key] = corr
+
+                # Reject pairs where either series has near-zero variance.
+                # Static prices that barely move produce spurious r≈1.0
+                # correlations that have no predictive value.
+                if var_a < _MIN_PRICE_VARIANCE or var_b < _MIN_PRICE_VARIANCE:
+                    continue
 
             if corr < min_corr:
                 continue  # Not sufficiently correlated
+
+            # Reject suspiciously perfect correlations (r > 0.98).
+            # With sparse data, two unrelated markets that happen to be
+            # stable produce r≈1.0 — this is a statistical artifact, not
+            # a genuine economic relationship.
+            if corr > _MAX_PLAUSIBLE_CORRELATION:
+                continue
 
             # Calculate spread: spread = price_A - corr * price_B
             spreads = [prices_a[i] - corr * prices_b[i] for i in range(len(prices_a))]
@@ -281,11 +329,14 @@ class CorrelationArbStrategy(BaseStrategy):
         """
         Find candidate market pairs that could be correlated.
 
-        Pairs markets that share the same event or the same category.
+        Pairs markets that share the same event (always eligible) or
+        the same category (only if their questions share keyword overlap,
+        to prevent pairing completely unrelated markets like different
+        sports games that happen to be in the same category).
         """
         pairs: set[tuple[str, str]] = set()
 
-        # Group by event
+        # Group by event — same-event markets are always valid candidates
         event_groups: dict[str, list[str]] = {}
         for mid in active_ids:
             eid = self._market_to_event.get(mid)
@@ -300,7 +351,8 @@ class CorrelationArbStrategy(BaseStrategy):
                     pair_key = (min(group[i], group[j]), max(group[i], group[j]))
                     pairs.add(pair_key)
 
-        # Group by category
+        # Group by category — require keyword overlap to avoid pairing
+        # unrelated markets (e.g., different hockey games under "Sports")
         cat_groups: dict[str, list[str]] = {}
         for mid in active_ids:
             cat = self._market_to_category.get(mid, "")
@@ -315,6 +367,18 @@ class CorrelationArbStrategy(BaseStrategy):
                 continue
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
+                    # Require semantic similarity: market questions must
+                    # share at least _MIN_KEYWORD_OVERLAP content words.
+                    # This prevents pairing "Will Hurricanes win?" with
+                    # "Will Sabres win?" — different games, not correlated.
+                    mkt_i = self._market_cache.get(group[i])
+                    mkt_j = self._market_cache.get(group[j])
+                    if mkt_i and mkt_j:
+                        kw_i = _extract_keywords(mkt_i.question)
+                        kw_j = _extract_keywords(mkt_j.question)
+                        overlap = len(kw_i & kw_j)
+                        if overlap < _MIN_KEYWORD_OVERLAP:
+                            continue
                     pair_key = (min(group[i], group[j]), max(group[i], group[j]))
                     pairs.add(pair_key)
 
@@ -482,6 +546,11 @@ class CorrelationArbStrategy(BaseStrategy):
 
         if opp:
             opp.risk_score = risk_score
+            opp.risk_factors.insert(
+                0,
+                "STATISTICAL EDGE — not arbitrage. "
+                "Convergence is not guaranteed; losses possible.",
+            )
             opp.risk_factors.append(
                 f"Statistical edge (not risk-free): "
                 f"correlation r={correlation:.2f}, z-score={zscore:.2f}"
@@ -493,6 +562,11 @@ class CorrelationArbStrategy(BaseStrategy):
                 opp.risk_factors.append(
                     f"Extreme divergence (z={zscore:.2f}): "
                     f"may indicate structural break, not mean-reversion"
+                )
+            if correlation > 0.95:
+                opp.risk_factors.append(
+                    f"Very high correlation (r={correlation:.2f}): "
+                    f"verify pair has genuine economic relationship"
                 )
 
         return opp

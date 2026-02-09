@@ -473,8 +473,12 @@ class EntropyArbStrategy(BaseStrategy):
         # --- Filter: leading outcome already dominant ---
         # If the favorite is > 0.75, the market has strong consensus.
         # Entropy deviation is not a useful signal at this point.
+        # Check BOTH the raw price and the normalized probability,
+        # because NegRisk event prices often don't sum to 1.0 —
+        # a market at $0.94 can slip past a normalized-only check
+        # when the price sum exceeds 1.0 (e.g., 0.94/1.26 = 0.746).
         max_yes = max(yes_prices)
-        if max_yes / total_yes > 0.75:
+        if max_yes > 0.75 or max_yes / total_yes > 0.75:
             return None
 
         # Normalize to a proper probability distribution
