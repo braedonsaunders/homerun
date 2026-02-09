@@ -2,7 +2,7 @@ import hashlib
 
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -102,7 +102,7 @@ class ArbitrageOpportunity(BaseModel):
     max_position_size: float = 0.0  # How much can be executed
 
     # Timing
-    detected_at: datetime = Field(default_factory=datetime.utcnow)
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolution_date: Optional[datetime] = None
 
     # Mispricing classification (from article Part IV)
