@@ -150,14 +150,19 @@ class TemporalDecayStrategy(BaseStrategy):
             if days_remaining > _MAX_DAYS_TO_DEADLINE:
                 continue  # Too far from deadline, decay is gentle
 
-            # Establish or retrieve baseline for this market
+            # Establish or update baseline for this market.
+            # Use the historical maximum observed price as the baseline,
+            # which better approximates the initial/peak price than a
+            # single first-seen snapshot.
             if market.id not in self._market_baselines:
-                # Use current price as proxy for initial price on first scan
                 initial_price = max(yes_price, 0.10)  # Floor at 0.10
                 self._market_baselines[market.id] = (deadline, initial_price)
             else:
-                # Use stored baseline
-                _, initial_price = self._market_baselines[market.id]
+                stored_deadline, stored_price = self._market_baselines[market.id]
+                # Update baseline if we see a higher price (better peak estimate)
+                initial_price = max(stored_price, yes_price)
+                if initial_price > stored_price:
+                    self._market_baselines[market.id] = (stored_deadline, initial_price)
 
             # Calculate total days from first observation to deadline
             first_seen_time = self._price_history[market.id][0][0]
@@ -248,9 +253,8 @@ class TemporalDecayStrategy(BaseStrategy):
                 # "March 2026" -> end of that month
                 try:
                     year = int(parts[1])
-                    # End of month: use day 28 as safe default
-                    # (approximation, but close enough for decay calculation)
-                    day = 28
+                    import calendar
+                    _, day = calendar.monthrange(year, month)
                     return datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
                 except ValueError:
                     return None
@@ -309,12 +313,12 @@ class TemporalDecayStrategy(BaseStrategy):
         if entry_price < 0.05 or entry_price > 0.95:
             return None
 
-        # Risk score: 0.35 - 0.50
+        # Risk score: 0.55 - 0.65
         # Closer to deadline = steeper decay = higher confidence = lower risk
-        base_risk = 0.50
+        base_risk = 0.65
         # Reduce risk as deviation increases (stronger signal)
-        deviation_adjustment = min(abs(deviation) * 2.0, 0.15)
-        risk_score = max(base_risk - deviation_adjustment, 0.35)
+        deviation_adjustment = min(abs(deviation) * 1.5, 0.10)
+        risk_score = max(base_risk - deviation_adjustment, 0.55)
 
         question_short = market.question[:50]
         positions = [
@@ -344,6 +348,7 @@ class TemporalDecayStrategy(BaseStrategy):
             total_cost=total_cost,
             markets=[market],
             positions=positions,
+            is_guaranteed=False,
         )
 
         if opp:
@@ -356,6 +361,11 @@ class TemporalDecayStrategy(BaseStrategy):
             opp.risk_factors.append(
                 f"Deadline in {days_remaining:.0f} days "
                 f"({deadline.strftime('%Y-%m-%d')})"
+            )
+            opp.risk_factors.insert(
+                0,
+                "DIRECTIONAL BET — not arbitrage. "
+                "Decay deviation may reflect new information, not mispricing.",
             )
             if days_remaining < 7:
                 opp.risk_factors.append(

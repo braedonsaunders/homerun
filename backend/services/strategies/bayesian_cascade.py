@@ -693,7 +693,7 @@ class BayesianCascadeStrategy(BaseStrategy):
         # the edge cleanly into the create_opportunity ROI framework:
         #   mispricing 5%  -> total_cost 0.95 -> ROI ~3%
         #   mispricing 10% -> total_cost 0.90 -> ROI ~9%
-        total_cost = 1.0 - abs(mispricing)
+        total_cost = price
 
         positions = [
             {
@@ -729,6 +729,7 @@ class BayesianCascadeStrategy(BaseStrategy):
             markets=[target_market],
             positions=positions,
             event=event,
+            is_guaranteed=False,
         )
 
         if opp is not None:

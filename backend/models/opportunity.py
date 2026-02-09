@@ -85,6 +85,7 @@ class ArbitrageOpportunity(BaseModel):
     fee: float
     net_profit: float
     roi_percent: float
+    is_guaranteed: bool = True  # True for structural arb, False for directional bets
 
     # Risk assessment
     risk_score: float = Field(ge=0.0, le=1.0, default=0.5)
