@@ -452,9 +452,7 @@ class TestNegRiskStrategy:
             for i in range(5)
         ]
         # total = 5 * 0.193 = 0.965
-        event = make_event(
-            markets=markets, neg_risk=True, title="Which option wins?"
-        )
+        event = make_event(markets=markets, neg_risk=True, title="Which option wins?")
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1
         opp = opps[0]
@@ -516,9 +514,7 @@ class TestNegRiskStrategy:
         """Live prices should override market YES prices in NegRisk events."""
         m1 = make_single_outcome_market(market_id="nr1", question="A?", yes_price=0.50)
         m2 = make_single_outcome_market(market_id="nr2", question="B?", yes_price=0.50)
-        event = make_event(
-            markets=[m1, m2], neg_risk=True, title="Which option wins?"
-        )
+        event = make_event(markets=[m1, m2], neg_risk=True, title="Which option wins?")
         # Market prices sum to 1.0 - no opp. But live prices are lower (0.96 total).
         prices = {
             "yes_nr1": {"mid": 0.48},
@@ -701,9 +697,7 @@ class TestNegRiskStrategy:
             )
             for i in range(4)
         ]
-        event = make_event(
-            markets=markets, neg_risk=True, title="Which option wins?"
-        )
+        event = make_event(markets=markets, neg_risk=True, title="Which option wins?")
         # total = 0.96, should get exactly 1 opportunity from negrisk path
         opps = self.strategy.detect(events=[event], markets=[], prices={})
         assert len(opps) == 1

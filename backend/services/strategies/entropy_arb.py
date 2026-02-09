@@ -124,7 +124,9 @@ class EntropyArbStrategy(BaseStrategy):
 
     strategy_type = StrategyType.ENTROPY_ARB
     name = "Entropy Signal"
-    description = "Directional edge via information-theoretic entropy analysis (NOT arbitrage)"
+    description = (
+        "Directional edge via information-theoretic entropy analysis (NOT arbitrage)"
+    )
 
     def __init__(self) -> None:
         super().__init__()
