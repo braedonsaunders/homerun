@@ -92,8 +92,12 @@ _STOP_WORDS = frozenset(
 
 # Minimum word length for keyword significance
 _MIN_WORD_LENGTH = 3
-# Minimum shared keywords for relatedness
+# Minimum shared keywords for relatedness (simple markets)
 _MIN_SHARED_KEYWORDS = 2
+# Minimum shared keywords for multi-leg / parlay markets
+_MIN_SHARED_KEYWORDS_PARLAY = 5
+# Minimum Jaccard keyword overlap ratio to consider related
+_MIN_KEYWORD_OVERLAP_RATIO = 0.3
 # Catalyst move threshold (10%)
 _CATALYST_THRESHOLD = 0.10
 # Minimum proportional lag to flag an opportunity
@@ -242,42 +246,82 @@ class EventDrivenStrategy(BaseStrategy):
 
         return catalysts
 
+    @staticmethod
+    def _is_parlay_or_multileg(question: str) -> bool:
+        """Detect multi-leg/parlay market questions.
+
+        Parlays contain multiple comma-separated conditions like
+        "yes Orlando, yes Southern University, yes Central Arkansas".
+        """
+        q = question.lower()
+        # Count comma-separated "yes <X>" or similar condition patterns
+        conditions = q.count("yes ") + q.count("no ")
+        if conditions >= 2:
+            return True
+        # Also flag questions with many commas (multi-condition)
+        if q.count(",") >= 2:
+            return True
+        return False
+
     def _find_related_markets(
         self, catalyst_id: str, event_market_ids: dict[str, list[str]]
     ) -> list[str]:
         """
         Find markets related to the catalyst via:
-        1. Same event
-        2. Same category
-        3. Shared keywords (2+ significant words)
+        1. Same event (always valid)
+        2. Shared keywords with Jaccard overlap ratio check
+
+        Category-only matching is intentionally excluded — it is far too
+        broad (e.g., all NCAA basketball markets would match each other).
+        Multi-leg / parlay markets require a much higher keyword threshold
+        because they contain many entity names that can spuriously overlap.
         """
         related: dict[str, bool] = {}
 
         catalyst_event = self._market_to_event.get(catalyst_id)
-        catalyst_category = self._market_to_category.get(catalyst_id, "")
         catalyst_keywords = self._market_keywords.get(catalyst_id, set())
+        catalyst_market = self._market_cache.get(catalyst_id)
+        catalyst_is_parlay = (
+            self._is_parlay_or_multileg(catalyst_market.question)
+            if catalyst_market
+            else False
+        )
 
-        # 1. Same event
+        # 1. Same event — structurally related, always valid
         if catalyst_event and catalyst_event in event_market_ids:
             for mid in event_market_ids[catalyst_event]:
                 if mid != catalyst_id:
                     related[mid] = True
 
-        # 2. Same category and 3. Shared keywords
+        # 2. Keyword overlap with Jaccard ratio check
         for mid in self._price_history:
             if mid == catalyst_id or mid in related:
                 continue
 
-            # Same category (non-empty)
-            mid_category = self._market_to_category.get(mid, "")
-            if catalyst_category and mid_category and catalyst_category == mid_category:
-                related[mid] = True
+            mid_keywords = self._market_keywords.get(mid, set())
+            if not mid_keywords or not catalyst_keywords:
                 continue
 
-            # Shared keywords
-            mid_keywords = self._market_keywords.get(mid, set())
             shared = catalyst_keywords & mid_keywords
-            if len(shared) >= _MIN_SHARED_KEYWORDS:
+            union = catalyst_keywords | mid_keywords
+            jaccard = len(shared) / len(union) if union else 0.0
+
+            # Determine minimum thresholds based on market type
+            mid_market = self._market_cache.get(mid)
+            mid_is_parlay = (
+                self._is_parlay_or_multileg(mid_market.question)
+                if mid_market
+                else False
+            )
+            either_is_parlay = catalyst_is_parlay or mid_is_parlay
+
+            min_shared = (
+                _MIN_SHARED_KEYWORDS_PARLAY
+                if either_is_parlay
+                else _MIN_SHARED_KEYWORDS
+            )
+
+            if len(shared) >= min_shared and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO:
                 related[mid] = True
 
         return list(related.keys())

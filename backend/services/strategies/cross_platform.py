@@ -411,6 +411,57 @@ class _KalshiMarketCache:
 # ---------------------------------------------------------------------------
 
 
+# Keywords that indicate player prop / contingent markets where
+# Polymarket and Kalshi may have different DNP (Did Not Play) or
+# void/cancellation rules.  These markets carry resolution divergence
+# risk: one platform may void while the other resolves as NO.
+_RESOLUTION_DIVERGENCE_KEYWORDS = frozenset(
+    {
+        # Player performance thresholds
+        "points",
+        "rebounds",
+        "assists",
+        "yards",
+        "touchdowns",
+        "goals",
+        "saves",
+        "strikeouts",
+        "hits",
+        "home runs",
+        "passes",
+        "tackles",
+        "sacks",
+        "receptions",
+        "carries",
+        "completions",
+        "interceptions",
+        # Common prop patterns
+        "scorer",
+        "anytime",
+        "first goal",
+        "last goal",
+        "most",
+        "mvp",
+        "prop",
+        # Threshold markers (e.g., "20+", "over 10.5")
+        "over",
+        "under",
+    }
+)
+
+
+def _has_resolution_divergence_risk(question: str) -> bool:
+    """Check if a market question involves player/game props where
+    platforms may resolve differently on DNP, void, or cancellation."""
+    q = question.lower()
+    # Check for numeric thresholds like "20+", "10.5+"
+    import re
+
+    if re.search(r"\d+\.?\d*\+", q):
+        return True
+    return any(kw in q for kw in _RESOLUTION_DIVERGENCE_KEYWORDS)
+
+
 class CrossPlatformStrategy(BaseStrategy):
     """Cross-platform arbitrage between Polymarket and Kalshi.
 
@@ -733,6 +784,21 @@ class CrossPlatformStrategy(BaseStrategy):
                 if similarity < 0.6:
                     opp.risk_factors.append(
                         f"Moderate match confidence ({similarity:.2f})"
+                    )
+
+                # Resolution divergence risk for player props and contingent markets.
+                # Different platforms often have different rules for DNP (Did Not
+                # Play), void, and cancellation — e.g., Polymarket may void and
+                # refund while Kalshi resolves as NO.  This breaks the "guaranteed
+                # profit" assumption because one leg can lose without the hedge.
+                if _has_resolution_divergence_risk(
+                    pm_market.question
+                ) or _has_resolution_divergence_risk(kalshi_market.question):
+                    opp.risk_score = min(1.0, opp.risk_score + 0.25)
+                    opp.risk_factors.insert(
+                        0,
+                        "Resolution divergence risk: player prop / contingent market "
+                        "— platforms may have different DNP/void/cancellation rules",
                     )
 
                 opportunities.append(opp)

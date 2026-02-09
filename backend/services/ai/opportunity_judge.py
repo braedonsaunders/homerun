@@ -302,6 +302,23 @@ class OpportunityJudge:
             # providers may return a list or other non-dict JSON.
             if llm_response and isinstance(llm_response, dict):
                 judgment = llm_response
+            elif llm_response and isinstance(llm_response, list):
+                # Some LLM providers wrap structured output in a list.
+                # Try to extract the first dict element before falling back.
+                extracted = next(
+                    (item for item in llm_response if isinstance(item, dict)),
+                    None,
+                )
+                if extracted:
+                    logger.warning(
+                        "LLM returned list instead of dict, extracted first dict element",
+                        opportunity_id=opportunity.id,
+                    )
+                    judgment = extracted
+                else:
+                    judgment = self._fallback_judgment(
+                        "LLM returned list with no dict elements"
+                    )
             elif llm_response:
                 judgment = self._fallback_judgment(
                     f"LLM returned {type(llm_response).__name__} instead of dict"
