@@ -230,7 +230,9 @@ class PolymarketClient:
                 # Check if the oldest market in this page is older than cutoff.
                 # If so, we've gone far enough back in time.
                 oldest_in_page = data[-1]
-                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get("created_at")
+                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get(
+                    "created_at"
+                )
                 if created_at_raw:
                     try:
                         if isinstance(created_at_raw, str):
@@ -238,7 +240,9 @@ class PolymarketClient:
                                 created_at_raw.replace("Z", "+00:00")
                             ).replace(tzinfo=None)
                         else:
-                            created_at = datetime.utcfromtimestamp(float(created_at_raw))
+                            created_at = datetime.utcfromtimestamp(
+                                float(created_at_raw)
+                            )
                         if created_at < cutoff:
                             break
                     except (ValueError, TypeError, OSError):

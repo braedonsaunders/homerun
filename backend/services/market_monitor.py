@@ -925,12 +925,10 @@ class MarketMonitor:
         hp_ids = self.get_high_priority_market_ids()
 
         new_count = sum(
-            1 for s in self._registry.values()
-            if s.age_seconds(now) <= self._new_window
+            1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window
         )
         unstable_count = sum(
-            1 for s in self._registry.values()
-            if s.price_stability_score < 0.5
+            1 for s in self._registry.values() if s.price_stability_score < 0.5
         )
         thin_count = sum(1 for s in self._registry.values() if s.has_thin_book)
 
@@ -940,7 +938,9 @@ class MarketMonitor:
 
         # Check if any crypto creation is imminent
         crypto_imminent = False
-        for pred_time in list(btc_predictions.values()) + list(eth_predictions.values()):
+        for pred_time in list(btc_predictions.values()) + list(
+            eth_predictions.values()
+        ):
             if pred_time is not None:
                 seconds_until = (pred_time - now).total_seconds()
                 if 0 <= seconds_until <= 60:
@@ -955,12 +955,10 @@ class MarketMonitor:
             "thin_book_count": thin_count,
             "crypto_imminent": crypto_imminent,
             "btc_predictions": {
-                k: v.isoformat() if v else None
-                for k, v in btc_predictions.items()
+                k: v.isoformat() if v else None for k, v in btc_predictions.items()
             },
             "eth_predictions": {
-                k: v.isoformat() if v else None
-                for k, v in eth_predictions.items()
+                k: v.isoformat() if v else None for k, v in eth_predictions.items()
             },
         }
 

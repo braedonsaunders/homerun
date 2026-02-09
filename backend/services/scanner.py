@@ -320,8 +320,10 @@ class ArbitrageScanner:
                     # However, for COLD-tier markets, we DO skip them if unchanged.
                     cold_ids = {m.id for m in tier_map[MarketTier.COLD]}
                     markets_to_evaluate = [
-                        m for m in markets
-                        if m.id not in cold_ids or self._prioritizer.has_market_changed(m)
+                        m
+                        for m in markets
+                        if m.id not in cold_ids
+                        or self._prioritizer.has_market_changed(m)
                     ]
                     cold_skipped = len(markets) - len(markets_to_evaluate)
 
@@ -457,7 +459,9 @@ class ArbitrageScanner:
                 try:
                     new_markets = await self.client.get_recent_markets(since_minutes=5)
                     if new_markets:
-                        print(f"  Incremental: {len(new_markets)} recently created markets")
+                        print(
+                            f"  Incremental: {len(new_markets)} recently created markets"
+                        )
                 except Exception as e:
                     print(f"  Incremental fetch failed (non-fatal): {e}")
 
@@ -471,6 +475,7 @@ class ArbitrageScanner:
             # 3. Update MarketMonitor with the new markets to generate alerts
             try:
                 from services.market_monitor import market_monitor
+
                 await market_monitor.get_fresh_opportunities()
             except Exception:
                 pass
@@ -503,12 +508,16 @@ class ArbitrageScanner:
             # 6. Change detection: only evaluate markets whose prices moved
             changed_markets = self._prioritizer.get_changed_markets(hot_markets)
             if not changed_markets:
-                print(f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies")
+                print(
+                    f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies"
+                )
                 self._prioritizer.update_after_evaluation(hot_markets, now)
                 self._last_fast_scan = now
                 return self._opportunities
 
-            print(f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes")
+            print(
+                f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes"
+            )
 
             # 7. Run strategies on changed markets only
             # Use the full cached events/markets for context, but strategies
@@ -518,7 +527,8 @@ class ArbitrageScanner:
 
             # Filter expired
             all_markets_for_strategies = [
-                m for m in all_markets_for_strategies
+                m
+                for m in all_markets_for_strategies
                 if m.end_date is None or _make_aware(m.end_date) > now
             ]
 
@@ -527,8 +537,11 @@ class ArbitrageScanner:
 
             async def _run_strategy(strategy):
                 return strategy, await loop.run_in_executor(
-                    None, strategy.detect, events_for_strategies,
-                    all_markets_for_strategies, merged_prices,
+                    None,
+                    strategy.detect,
+                    events_for_strategies,
+                    all_markets_for_strategies,
+                    merged_prices,
                 )
 
             results = await asyncio.gather(
