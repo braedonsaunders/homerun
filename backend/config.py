@@ -33,11 +33,11 @@ class Settings(BaseSettings):
     MIN_LIQUIDITY: float = 1000.0  # Minimum liquidity in USD
 
     # Opportunity Quality Filters (hard rejection thresholds)
-    MIN_LIQUIDITY_HARD: float = 200.0  # Reject opportunities below this liquidity
+    MIN_LIQUIDITY_HARD: float = 1000.0  # Reject opportunities below this liquidity ($)
     MIN_POSITION_SIZE: float = (
-        25.0  # Reject if max position < this (absolute profit too small)
+        50.0  # Reject if max position < this (absolute profit too small)
     )
-    MIN_ABSOLUTE_PROFIT: float = 1.0  # Reject if net profit on max position < this
+    MIN_ABSOLUTE_PROFIT: float = 10.0  # Reject if net profit on max position < this
     MIN_ANNUALIZED_ROI: float = 10.0  # Reject if annualized ROI < this percent
     MAX_RESOLUTION_MONTHS: int = (
         18  # Reject if resolution > this many months away (capital lockup)
@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     # Maximum ROI that's plausible for real arbitrage (filter stale/invalid data)
     MAX_PLAUSIBLE_ROI: float = 30.0  # >30% ROI is almost certainly a false positive
     # Max number of legs in a multi-leg trade (slippage compounds per leg)
-    MAX_TRADE_LEGS: int = 8
+    MAX_TRADE_LEGS: int = 6
+    # Minimum liquidity per leg: total_liquidity must exceed this * num_legs
+    MIN_LIQUIDITY_PER_LEG: float = 500.0  # $500 per leg minimum
 
     # Settlement Lag Timing
     SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
@@ -290,13 +292,14 @@ async def apply_search_filters():
 
     # Map DB columns → config singleton attributes
     _apply = [
-        ("MIN_LIQUIDITY_HARD", "min_liquidity_hard", 200.0),
-        ("MIN_POSITION_SIZE", "min_position_size", 25.0),
-        ("MIN_ABSOLUTE_PROFIT", "min_absolute_profit", 5.0),
+        ("MIN_LIQUIDITY_HARD", "min_liquidity_hard", 1000.0),
+        ("MIN_POSITION_SIZE", "min_position_size", 50.0),
+        ("MIN_ABSOLUTE_PROFIT", "min_absolute_profit", 10.0),
         ("MIN_ANNUALIZED_ROI", "min_annualized_roi", 10.0),
         ("MAX_RESOLUTION_MONTHS", "max_resolution_months", 18),
         ("MAX_PLAUSIBLE_ROI", "max_plausible_roi", 30.0),
-        ("MAX_TRADE_LEGS", "max_trade_legs", 8),
+        ("MAX_TRADE_LEGS", "max_trade_legs", 6),
+        ("MIN_LIQUIDITY_PER_LEG", "min_liquidity_per_leg", 500.0),
         ("NEGRISK_MIN_TOTAL_YES", "negrisk_min_total_yes", 0.95),
         ("NEGRISK_WARN_TOTAL_YES", "negrisk_warn_total_yes", 0.97),
         ("NEGRISK_ELECTION_MIN_TOTAL_YES", "negrisk_election_min_total_yes", 0.97),

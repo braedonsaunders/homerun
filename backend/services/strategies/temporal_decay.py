@@ -76,6 +76,9 @@ _MONTH_MAP = {
     "dec": 12,
 }
 
+# Regex to detect player stat line patterns like "LaMelo Ball: 4+", "Joel Embiid: 30+"
+_PLAYER_STAT_RE = re.compile(r"[A-Z][a-z]+ [A-Z][a-z]+:\s*\d+\+", re.IGNORECASE)
+
 # Default decay rate (square root decay for most markets)
 _DEFAULT_DECAY_RATE = 0.5
 
@@ -126,6 +129,10 @@ class TemporalDecayStrategy(BaseStrategy):
             if market.closed or not market.active:
                 continue
             if len(market.outcome_prices) < 2:
+                continue
+
+            # Skip sports parlays -- temporal decay model is invalid for discrete events
+            if self._is_sports_parlay(market):
                 continue
 
             yes_price = self._get_live_price(market, prices)
@@ -207,6 +214,59 @@ class TemporalDecayStrategy(BaseStrategy):
             if token in prices:
                 yes_price = prices[token].get("mid", yes_price)
         return yes_price
+
+    def _is_sports_parlay(self, market: Market) -> bool:
+        """Check if a market is a sports parlay where temporal decay is invalid.
+
+        Sports outcomes are discrete events (team wins or loses), so the
+        continuous time-decay model produces garbage results.  We check
+        the market question for league names, team names, player stat
+        patterns, spread/line syntax, and other sport-specific keywords.
+        """
+        q = market.question.lower()
+
+        # Check sport league / general sport keywords
+        sport_keywords = [
+            "nba", "nfl", "mlb", "nhl", "ufc", "mma", "boxing",
+            "ncaa", "march madness", "college basketball", "ncaab", "college",
+            "premier league", "la liga", "bundesliga", "serie a",
+            "champions league", "mls", "ligue 1", "epl",
+            "moneyline", "parlay", "spread",
+            "halftime", "quarter", "inning", "period", "overtime",
+            "points", "rebounds", "assists", "touchdowns", "yards",
+            "goals scored",
+        ]
+        if any(kw in q for kw in sport_keywords):
+            return True
+
+        # Check for team names (NBA + NFL + popular college + soccer)
+        team_keywords = [
+            # NBA
+            "lakers", "celtics", "76ers", "sixers", "warriors", "bucks",
+            "heat", "nuggets", "suns", "clippers", "nets", "knicks",
+            "bulls", "cavaliers", "mavericks", "timberwolves", "pelicans",
+            "thunder", "grizzlies", "hawks", "pacers", "raptors", "magic",
+            "wizards", "hornets", "pistons", "kings", "blazers", "spurs",
+            "jazz", "rockets",
+            # NFL
+            "chiefs", "49ers", "eagles", "cowboys", "dolphins", "bills",
+            "ravens", "bengals", "steelers", "lions", "packers", "bears",
+            "vikings", "saints", "buccaneers", "falcons", "panthers",
+            "seahawks", "cardinals", "rams", "commanders", "giants",
+            "jets", "patriots", "broncos", "raiders", "chargers",
+            "titans", "colts", "jaguars", "texans", "browns",
+            # College
+            "bucknell", "duke", "kentucky", "gonzaga", "villanova",
+            "michigan", "ohio state", "alabama", "clemson",
+        ]
+        if any(team in q for team in team_keywords):
+            return True
+
+        # Check for player stat patterns like "LaMelo Ball: 4+"
+        if _PLAYER_STAT_RE.search(market.question):
+            return True
+
+        return False
 
     def _extract_deadline(self, market: Market) -> Optional[datetime]:
         """

@@ -69,6 +69,7 @@ class FeeModel:
         spread_bps: Optional[float] = None,
         total_cost: float = 0.0,
         maker_mode: Optional[bool] = None,
+        total_liquidity: float = 0.0,  # NEW: total liquidity across all legs
     ) -> FeeBreakdown:
         """Calculate all fees for a trade.
 
@@ -111,12 +112,26 @@ class FeeModel:
             )
             spread_cost = total_cost * (effective_spread_bps / 10_000)
 
-        # 4. Multi-leg slippage: modeled as compounding — each leg adds ~0.3%
-        #    slippage on top of the previous. The first leg has 0 compounding;
-        #    slippage starts from the second leg onward.
-        #    Formula: total_cost * ((1 + r)^(n-1) - 1) for n > 1, else 0
+        # 4. Multi-leg slippage: depth-aware model
+        # When we know the total liquidity, estimate slippage based on
+        # position size relative to available depth. Thin books amplify
+        # slippage far beyond the base 0.3% per leg.
         if num_legs > 1 and total_cost > 0:
-            compounding_factor = (1 + self.SLIPPAGE_PER_LEG) ** (num_legs - 1) - 1
+            base_rate = self.SLIPPAGE_PER_LEG  # 0.3% baseline
+
+            # Depth-adjusted slippage: if position is >5% of total liquidity,
+            # slippage increases quadratically (market impact model)
+            if total_liquidity > 0:
+                utilization = total_cost / total_liquidity
+                if utilization > 0.05:
+                    # Quadratic market impact: slippage scales with utilization^2
+                    depth_multiplier = 1.0 + (utilization * 10.0) ** 2
+                    base_rate = base_rate * min(depth_multiplier, 10.0)  # Cap at 10x
+                elif utilization > 0.02:
+                    # Linear scaling for moderate utilization
+                    base_rate = base_rate * (1.0 + utilization * 5.0)
+
+            compounding_factor = (1 + base_rate) ** (num_legs - 1) - 1
             multi_leg_slippage = total_cost * compounding_factor
         else:
             multi_leg_slippage = 0.0
@@ -147,6 +162,7 @@ class FeeModel:
         spread_bps: Optional[float] = None,
         total_cost: float = 0.0,
         maker_mode: Optional[bool] = None,
+        total_liquidity: float = 0.0,  # NEW
     ) -> tuple[float, FeeBreakdown]:
         """Calculate net profit after subtracting all fees.
 
@@ -172,6 +188,7 @@ class FeeModel:
             spread_bps=spread_bps,
             total_cost=total_cost,
             maker_mode=maker_mode,
+            total_liquidity=total_liquidity,
         )
         net_profit = gross_profit - breakdown.total_fees
         return net_profit, breakdown

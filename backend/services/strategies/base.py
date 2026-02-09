@@ -153,6 +153,7 @@ class BaseStrategy(ABC):
 
         # --- Comprehensive fee model (gas, spread, multi-leg slippage) ---
         is_negrisk = any(getattr(m, "neg_risk", False) for m in markets)
+        total_liquidity = sum(m.liquidity for m in markets)
         fee_breakdown = fee_model.calculate_fees(
             expected_payout=expected_payout,
             num_legs=len(markets),
@@ -160,6 +161,7 @@ class BaseStrategy(ABC):
             spread_bps=spread_bps,
             total_cost=total_cost,
             maker_mode=settings.FEE_MODEL_MAKER_MODE,
+            total_liquidity=total_liquidity,
         )
 
         # --- VWAP-adjusted realistic profit ---
@@ -191,6 +193,15 @@ class BaseStrategy(ABC):
         # even 0.5% slippage loses 4% of margin before execution completes.
         if len(markets) > settings.MAX_TRADE_LEGS:
             return None
+
+        # --- Hard filter: minimum liquidity per leg ---
+        # Multi-leg trades need proportionally more liquidity to avoid
+        # slippage cascading across legs.
+        min_liq_per_leg = getattr(settings, "MIN_LIQUIDITY_PER_LEG", 500.0)
+        if len(markets) > 1:
+            required_liquidity = min_liq_per_leg * len(markets)
+            if total_liquidity < required_liquidity:
+                return None
 
         # Calculate max position size based on liquidity
         min_liquidity = min((m.liquidity for m in markets), default=0)
@@ -277,6 +288,8 @@ class BaseStrategy(ABC):
                 },
             }
 
+        roi_type = "guaranteed_spread" if is_guaranteed else "directional_payout"
+
         return ArbitrageOpportunity(
             strategy=self.strategy_type,
             title=title,
@@ -288,6 +301,7 @@ class BaseStrategy(ABC):
             net_profit=net_profit,
             roi_percent=roi,
             is_guaranteed=is_guaranteed,
+            roi_type=roi_type,
             risk_score=risk_score,
             risk_factors=risk_factors,
             markets=market_dicts,

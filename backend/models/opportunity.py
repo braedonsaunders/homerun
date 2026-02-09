@@ -54,6 +54,12 @@ class MispricingType(str, Enum):
     NEWS_INFORMATION = "news_information"  # Informational edge from breaking news
 
 
+class ROIType(str, Enum):
+    """Distinguishes between guaranteed arbitrage spread and directional bet payout."""
+    GUARANTEED_SPREAD = "guaranteed_spread"  # Structural arb: locked-in profit
+    DIRECTIONAL_PAYOUT = "directional_payout"  # Statistical edge: payout-if-win ratio
+
+
 class AIAnalysis(BaseModel):
     """Inline AI judgment data attached to an opportunity."""
 
@@ -90,6 +96,7 @@ class ArbitrageOpportunity(BaseModel):
     net_profit: float
     roi_percent: float
     is_guaranteed: bool = True  # True for structural arb, False for directional bets
+    roi_type: Optional[str] = None  # "guaranteed_spread" or "directional_payout"
 
     # Risk assessment
     risk_score: float = Field(ge=0.0, le=1.0, default=0.5)

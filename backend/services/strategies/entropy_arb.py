@@ -205,6 +205,80 @@ class EntropyArbStrategy(BaseStrategy):
         date_count = sum(1 for q in questions if any(kw in q for kw in date_keywords))
         return date_count >= len(questions) * 0.5
 
+    @staticmethod
+    def _is_multi_winner_event(title: str, questions: list[str]) -> bool:
+        """Check if an event allows MORE THAN ONE outcome to win simultaneously."""
+        title_lower = title.lower()
+
+        multi_winner_title_keywords = [
+            "relegate",
+            "relegated",
+            "relegation",
+            "advance to runoff",
+            "qualify",
+            "top 2",
+            "top 3",
+            "top 4",
+            "top 5",
+            "which countries will",
+            "which cities will",
+            "which teams will",
+            "which candidates will advance",
+            "will join",
+            "countries will join",
+        ]
+
+        if any(kw in title_lower for kw in multi_winner_title_keywords):
+            return True
+
+        multi_winner_question_keywords = [
+            "relegate",
+            "relegated",
+            "relegation",
+            "advance to runoff",
+            "advance",
+            "qualify",
+            "top 2",
+            "top 3",
+            "top 4",
+            "top 5",
+            "will join",
+            "countries will join",
+        ]
+
+        for question in questions:
+            question_lower = question.lower()
+            if any(kw in question_lower for kw in multi_winner_question_keywords):
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_threshold_market(questions: list[str]) -> bool:
+        """Check if questions form a hierarchical threshold/cumulative set."""
+        threshold_keywords = [
+            "above $",
+            "above ",
+            "below $",
+            "below ",
+            "over $",
+            "under $",
+            "more than",
+            "less than",
+            "greater than",
+            "fewer than",
+            "at least",
+            "at most",
+        ]
+
+        threshold_count = 0
+        for question in questions:
+            question_lower = question.lower()
+            if any(kw in question_lower for kw in threshold_keywords):
+                threshold_count += 1
+
+        return len(questions) > 0 and threshold_count >= len(questions) * 0.5
+
     # ------------------------------------------------------------------
     # Entropy quality score
     # ------------------------------------------------------------------
@@ -313,6 +387,15 @@ class EntropyArbStrategy(BaseStrategy):
 
         # Skip date-sweep events (cumulative, not mutually exclusive)
         if self._is_date_sweep(event):
+            return None
+
+        # Multi-winner detection (relegation, advancement, multiple selections)
+        questions = [m.question for m in active_markets]
+        if self._is_multi_winner_event(event.title, questions):
+            return None
+
+        # Threshold/cumulative detection (above $X, below $X)
+        if self._is_threshold_market(questions):
             return None
 
         # Get YES prices for all outcomes
