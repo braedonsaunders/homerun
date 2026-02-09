@@ -481,7 +481,7 @@ class ArbitrageScanner:
             hot_markets = tier_map[MarketTier.HOT]
 
             if not hot_markets:
-                print(f"  No HOT-tier markets, skipping fast scan")
+                print("  No HOT-tier markets, skipping fast scan")
                 self._last_fast_scan = now
                 return self._opportunities
 
