@@ -227,7 +227,7 @@ function App() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(0)
-  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery])
+  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted])
 
   // Queries
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
@@ -287,6 +287,55 @@ function App() {
 
   const polymarketResults = polymarketSearchData?.opportunities || []
   const polymarketTotal = polymarketSearchData?.total || 0
+
+  // Client-side sorting and filtering for polymarket search results
+  const processedPolymarketResults = useMemo(() => {
+    let results = [...polymarketResults]
+
+    // Apply strategy filter
+    if (selectedStrategy) {
+      results = results.filter(r => r.strategy === selectedStrategy)
+    }
+
+    // Apply category filter
+    if (selectedCategory) {
+      results = results.filter(r => r.category?.toLowerCase() === selectedCategory.toLowerCase())
+    }
+
+    // Apply sort
+    const reverse = sortDir !== 'asc'
+    const dir = reverse ? -1 : 1
+    const effectiveSort = sortBy || 'ai_score'
+
+    if (effectiveSort === 'ai_score') {
+      results.sort((a, b) => {
+        const aScored = a.ai_analysis && a.ai_analysis.recommendation !== 'pending' ? 1 : 0
+        const bScored = b.ai_analysis && b.ai_analysis.recommendation !== 'pending' ? 1 : 0
+        if (aScored !== bScored) return (bScored - aScored) * dir
+        const aScore = a.ai_analysis?.overall_score || 0
+        const bScore = b.ai_analysis?.overall_score || 0
+        if (aScore !== bScore) return (bScore - aScore) * dir
+        return (b.roi_percent - a.roi_percent) * dir
+      })
+    } else if (effectiveSort === 'roi') {
+      results.sort((a, b) => (b.roi_percent - a.roi_percent) * dir)
+    } else if (effectiveSort === 'profit') {
+      results.sort((a, b) => (b.net_profit - a.net_profit) * dir)
+    } else if (effectiveSort === 'liquidity') {
+      results.sort((a, b) => (b.min_liquidity - a.min_liquidity) * dir)
+    } else if (effectiveSort === 'risk') {
+      results.sort((a, b) => (b.risk_score - a.risk_score) * dir)
+    }
+
+    return results
+  }, [polymarketResults, selectedStrategy, selectedCategory, sortBy, sortDir])
+
+  const polymarketTotalFiltered = processedPolymarketResults.length
+  const polymarketTotalPages = Math.ceil(polymarketTotalFiltered / ITEMS_PER_PAGE)
+  const paginatedPolymarketResults = useMemo(() => {
+    const start = currentPage * ITEMS_PER_PAGE
+    return processedPolymarketResults.slice(start, start + ITEMS_PER_PAGE)
+  }, [processedPolymarketResults, currentPage])
 
   // Mutations
   const scanMutation = useMutation({
@@ -792,28 +841,126 @@ function App() {
                             </div>
                           ) : (
                             <>
+                              {/* Filters */}
+                              <div className="flex gap-3 mb-4">
+                                <div className="flex-1">
+                                  <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
+                                  <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
+                                    <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                      <SelectValue placeholder="All Strategies" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="_all">All Strategies</SelectItem>
+                                      {strategies.map((s) => (
+                                        <SelectItem key={s.type} value={s.type}>
+                                          {s.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="flex-1">
+                                  <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
+                                  <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
+                                    <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                      <SelectValue placeholder="All Categories" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="_all">All Categories</SelectItem>
+                                      {[
+                                        { value: 'politics', label: 'Politics' },
+                                        { value: 'sports', label: 'Sports' },
+                                        { value: 'crypto', label: 'Crypto' },
+                                        { value: 'culture', label: 'Culture' },
+                                        { value: 'economics', label: 'Economics' },
+                                        { value: 'tech', label: 'Tech' },
+                                        { value: 'finance', label: 'Finance' },
+                                        { value: 'weather', label: 'Weather' },
+                                      ].map((cat) => (
+                                        <SelectItem key={cat.value} value={cat.value}>
+                                          {cat.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+
+                              {/* Sort Controls */}
                               <div className="flex items-center gap-2 mb-4">
                                 <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10">
-                                  {polymarketTotal} opportunities found for &quot;{polymarketSearchSubmitted}&quot;
+                                  {polymarketTotalFiltered}{polymarketTotalFiltered !== polymarketTotal ? ` / ${polymarketTotal}` : ''} opportunities for &quot;{polymarketSearchSubmitted}&quot;
                                 </Badge>
+                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider ml-2">Sort:</span>
+                                {([
+                                  ['roi', 'ROI'],
+                                  ['ai_score', 'AI Score'],
+                                  ['profit', 'Profit'],
+                                  ['liquidity', 'Liquidity'],
+                                  ['risk', 'Risk'],
+                                ] as const).map(([key, label]) => (
+                                  <button
+                                    key={key}
+                                    onClick={() => {
+                                      if (sortBy === key) {
+                                        setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                                      } else {
+                                        setSortBy(key)
+                                        setSortDir('desc')
+                                      }
+                                    }}
+                                    className={cn(
+                                      'px-2 py-1 rounded text-xs font-medium transition-colors',
+                                      sortBy === key
+                                        ? 'bg-primary/20 text-primary'
+                                        : 'bg-muted/50 text-muted-foreground hover:bg-muted'
+                                    )}
+                                  >
+                                    {label}
+                                    {sortBy === key && (
+                                      sortDir === 'desc'
+                                        ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
+                                        : <ChevronUp className="w-3 h-3 inline ml-0.5" />
+                                    )}
+                                  </button>
+                                ))}
+
+                                <div className="ml-auto">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => analyzeAllMutation.mutate()}
+                                    disabled={analyzeAllMutation.isPending || processedPolymarketResults.length === 0}
+                                    className="text-xs gap-1.5"
+                                  >
+                                    {analyzeAllMutation.isPending ? (
+                                      <RefreshCw className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Brain className="w-3 h-3" />
+                                    )}
+                                    {analyzeAllMutation.isPending ? 'Analyzing...' : 'Analyze All'}
+                                  </Button>
+                                </div>
                               </div>
+
+                              {/* Search Results Views */}
                               {oppsViewMode === 'terminal' ? (
                                 <OpportunityTerminal
-                                  opportunities={polymarketResults}
+                                  opportunities={paginatedPolymarketResults}
                                   onExecute={setExecutingOpportunity}
                                   onOpenCopilot={handleOpenCopilotForOpportunity}
                                   isConnected={isConnected}
-                                  totalCount={polymarketTotal}
+                                  totalCount={polymarketTotalFiltered}
                                 />
                               ) : oppsViewMode === 'list' ? (
                                 <OpportunityTable
-                                  opportunities={polymarketResults}
+                                  opportunities={paginatedPolymarketResults}
                                   onExecute={setExecutingOpportunity}
                                   onOpenCopilot={handleOpenCopilotForOpportunity}
                                 />
                               ) : (
                                 <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
-                                  {polymarketResults.map((opp) => (
+                                  {paginatedPolymarketResults.map((opp) => (
                                     <OpportunityCard
                                       key={opp.id}
                                       opportunity={opp}
@@ -821,6 +968,44 @@ function App() {
                                       onOpenCopilot={handleOpenCopilotForOpportunity}
                                     />
                                   ))}
+                                </div>
+                              )}
+
+                              {/* Pagination */}
+                              {polymarketTotalPages > 1 && (
+                                <div className="mt-5">
+                                  <Separator />
+                                  <div className="flex items-center justify-between pt-4">
+                                    <div className="text-xs text-muted-foreground">
+                                      {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, polymarketTotalFiltered)} of {polymarketTotalFiltered}
+                                      {(selectedStrategy || selectedCategory) && ` (filtered from ${polymarketTotal})`}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                                        disabled={currentPage === 0}
+                                      >
+                                        <ChevronLeft className="w-3.5 h-3.5" />
+                                        Prev
+                                      </Button>
+                                      <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
+                                        {currentPage + 1}/{polymarketTotalPages}
+                                      </span>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() => setCurrentPage(p => p + 1)}
+                                        disabled={currentPage >= polymarketTotalPages - 1}
+                                      >
+                                        Next
+                                        <ChevronRight className="w-3.5 h-3.5" />
+                                      </Button>
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                             </>
