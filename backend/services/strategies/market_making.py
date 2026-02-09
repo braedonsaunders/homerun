@@ -291,9 +291,6 @@ class MarketMakingStrategy(BaseStrategy):
             yes_token_id = (
                 market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
             )
-            no_token_id = (
-                market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-            )
 
             positions = [
                 {

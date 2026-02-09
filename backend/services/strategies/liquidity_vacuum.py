@@ -15,7 +15,7 @@ NOT risk-free arbitrage - this is statistical edge trading.
 """
 
 from typing import Optional
-from datetime import datetime, timezone
+
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from config import settings
