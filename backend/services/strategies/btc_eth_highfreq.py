@@ -885,7 +885,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         elif c.market.volume < 500:
             base_score += 12.0  # Very new
         elif c.market.volume < _NEW_MARKET_VOLUME_THRESHOLD:
-            base_score += 5.0   # Relatively new
+            base_score += 5.0  # Relatively new
 
         # Bonus for the expected profit
         base_score += target_profit * 300.0

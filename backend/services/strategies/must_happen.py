@@ -122,8 +122,15 @@ class MustHappenStrategy(BaseStrategy):
 
         # Check if markets include an explicit "Other" / "None of the above" outcome
         # which strongly suggests the event is designed to be exhaustive
-        other_keywords = ["other", "none of the above", "someone else", "no one",
-                          "field", "another", "different"]
+        other_keywords = [
+            "other",
+            "none of the above",
+            "someone else",
+            "no one",
+            "field",
+            "another",
+            "different",
+        ]
         for m in event.markets:
             q_lower = m.question.lower()
             if any(kw in q_lower for kw in other_keywords):
