@@ -527,11 +527,14 @@ class StatArbStrategy(BaseStrategy):
                 continue
             if max_position < settings.MIN_POSITION_SIZE:
                 continue
-            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            absolute_profit = (
+                max_position * (net_profit / total_cost) if total_cost > 0 else 0
+            )
             if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
                 continue
             if market.end_date:
                 from .base import make_aware, utcnow
+
                 resolution_aware = make_aware(market.end_date)
                 days_until = (resolution_aware - utcnow()).days
                 if days_until > settings.MAX_RESOLUTION_MONTHS * 30:
