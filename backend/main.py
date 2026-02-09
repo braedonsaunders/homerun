@@ -56,7 +56,7 @@ logger = get_logger("main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    logger.info("Starting Polymarket Arbitrage Scanner...")
+    logger.info("Starting Autonomous Prediction Market Trading Platform...")
 
     try:
         # Initialize database
