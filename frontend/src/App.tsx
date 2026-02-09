@@ -426,7 +426,7 @@ function App() {
         {/* ==================== Main Layout ==================== */}
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar Navigation */}
-          <nav className="w-16 border-r border-border/50 bg-card/30 flex flex-col items-center py-3 gap-0.5 shrink-0">
+          <nav className="w-[88px] border-r border-border/50 bg-card/30 flex flex-col items-center py-3 gap-0.5 shrink-0">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon
               const isActive = activeTab === item.id
@@ -436,7 +436,7 @@ function App() {
                     <button
                       onClick={() => setActiveTab(item.id)}
                       className={cn(
-                        "w-11 h-11 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all relative group",
+                        "w-[72px] h-12 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-all relative group",
                         isActive
                           ? "bg-green-500/15 text-green-400"
                           : "text-muted-foreground hover:text-foreground hover:bg-card/80"
@@ -446,7 +446,7 @@ function App() {
                         <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-green-500 rounded-r" />
                       )}
                       <Icon className="w-4 h-4" />
-                      <span className="text-[8px] font-medium leading-none">{item.label.slice(0, 5)}</span>
+                      <span className="text-[9px] font-medium leading-none truncate max-w-full">{item.label}</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right" className="flex items-center gap-2">
