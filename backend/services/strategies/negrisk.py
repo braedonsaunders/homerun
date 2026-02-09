@@ -249,7 +249,7 @@ class NegRiskStrategy(BaseStrategy):
 
         opp = self.create_opportunity(
             title=f"NegRisk Short: {event.title[:50]}...",
-            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
             markets=active_markets,
             positions=positions,
@@ -632,7 +632,7 @@ class NegRiskStrategy(BaseStrategy):
 
         opp = self.create_opportunity(
             title=f"Multi-Outcome Short: {event.title[:40]}...",
-            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n-1} win = ${expected_payout:.0f} payout",
+            description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
             markets=exclusive_markets,
             positions=positions,
@@ -641,7 +641,9 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            opp.risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
+            opp.risk_factors.insert(
+                0, f"Short Multi-Outcome: buying NO on all {n} outcomes"
+            )
             opp.risk_factors.insert(
                 1, "Verify manually: ensure all possible outcomes are listed"
             )

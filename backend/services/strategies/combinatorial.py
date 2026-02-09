@@ -258,7 +258,11 @@ class DependencyAccuracyTracker:
     confidence threshold if accuracy drops below 70%.
     """
 
-    def __init__(self, base_threshold: float = MIN_LLM_CONFIDENCE, persistence_path: str | None = None):
+    def __init__(
+        self,
+        base_threshold: float = MIN_LLM_CONFIDENCE,
+        persistence_path: str | None = None,
+    ):
         self._base_threshold = base_threshold
         self._records: list[dict] = []  # {dep_key, correct, timestamp}
         self._accuracy_cache: Optional[float] = None
@@ -273,6 +277,7 @@ class DependencyAccuracyTracker:
         try:
             import json
             from pathlib import Path
+
             path = Path(self._persistence_path)
             if path.exists():
                 with open(path) as f:
@@ -280,7 +285,9 @@ class DependencyAccuracyTracker:
                 self._records = data.get("records", [])
                 self._threshold_override = data.get("threshold_override")
                 self._accuracy_cache = None
-                logger.info(f"Loaded {len(self._records)} dependency accuracy records from disk")
+                logger.info(
+                    f"Loaded {len(self._records)} dependency accuracy records from disk"
+                )
         except Exception as e:
             logger.warning(f"Failed to load accuracy data: {e}")
 
@@ -291,6 +298,7 @@ class DependencyAccuracyTracker:
         try:
             import json
             from pathlib import Path
+
             path = Path(self._persistence_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -835,8 +843,13 @@ class CombinatorialStrategy(BaseStrategy):
 
         # Persist accuracy data across restarts
         from pathlib import Path
-        persistence_path = str(Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json")
-        self._accuracy_tracker = DependencyAccuracyTracker(persistence_path=persistence_path)
+
+        persistence_path = str(
+            Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json"
+        )
+        self._accuracy_tracker = DependencyAccuracyTracker(
+            persistence_path=persistence_path
+        )
         self._validator = DependencyValidator(self._accuracy_tracker)
 
     def detect(
@@ -1125,42 +1138,121 @@ class CombinatorialStrategy(BaseStrategy):
         entities = set()
         entity_patterns = [
             # US Politics - Candidates
-            "trump", "biden", "harris", "desantis", "haley", "vance",
-            "newsom", "pence", "obama", "clinton",
+            "trump",
+            "biden",
+            "harris",
+            "desantis",
+            "haley",
+            "vance",
+            "newsom",
+            "pence",
+            "obama",
+            "clinton",
             # US Politics - Parties & Institutions
-            "republican", "democrat", "gop", "democratic",
-            "senate", "house", "congress", "supreme court",
+            "republican",
+            "democrat",
+            "gop",
+            "democratic",
+            "senate",
+            "house",
+            "congress",
+            "supreme court",
             # International Politics
-            "putin", "zelensky", "xi jinping", "modi", "macron",
-            "starmer", "trudeau", "netanyahu", "milei",
-            "nato", "european union", "united nations",
+            "putin",
+            "zelensky",
+            "xi jinping",
+            "modi",
+            "macron",
+            "starmer",
+            "trudeau",
+            "netanyahu",
+            "milei",
+            "nato",
+            "european union",
+            "united nations",
             # Crypto
-            "bitcoin", "btc", "ethereum", "eth", "solana", "sol",
-            "xrp", "dogecoin", "doge", "cardano", "ada",
-            "binance", "coinbase", "crypto",
+            "bitcoin",
+            "btc",
+            "ethereum",
+            "eth",
+            "solana",
+            "sol",
+            "xrp",
+            "dogecoin",
+            "doge",
+            "cardano",
+            "ada",
+            "binance",
+            "coinbase",
+            "crypto",
             # US States (swing states + major)
-            "pennsylvania", "georgia", "michigan", "arizona", "nevada",
-            "wisconsin", "north carolina", "florida", "texas",
-            "california", "new york", "ohio",
+            "pennsylvania",
+            "georgia",
+            "michigan",
+            "arizona",
+            "nevada",
+            "wisconsin",
+            "north carolina",
+            "florida",
+            "texas",
+            "california",
+            "new york",
+            "ohio",
             # Sports - Major leagues
-            "nfl", "nba", "mlb", "nhl", "premier league",
-            "champions league", "world cup", "super bowl",
-            "world series", "stanley cup",
+            "nfl",
+            "nba",
+            "mlb",
+            "nhl",
+            "premier league",
+            "champions league",
+            "world cup",
+            "super bowl",
+            "world series",
+            "stanley cup",
             # Sports - Teams (major)
-            "lakers", "celtics", "warriors", "yankees", "dodgers",
-            "chiefs", "eagles", "cowboys", "49ers",
-            "manchester united", "manchester city", "real madrid",
-            "barcelona", "liverpool", "arsenal",
+            "lakers",
+            "celtics",
+            "warriors",
+            "yankees",
+            "dodgers",
+            "chiefs",
+            "eagles",
+            "cowboys",
+            "49ers",
+            "manchester united",
+            "manchester city",
+            "real madrid",
+            "barcelona",
+            "liverpool",
+            "arsenal",
             # Tech / Companies
-            "apple", "google", "microsoft", "nvidia", "tesla",
-            "meta", "amazon", "openai", "anthropic",
+            "apple",
+            "google",
+            "microsoft",
+            "nvidia",
+            "tesla",
+            "meta",
+            "amazon",
+            "openai",
+            "anthropic",
             # Economics
-            "federal reserve", "inflation", "interest rate",
-            "gdp", "recession", "unemployment",
-            "s&p 500", "nasdaq", "dow jones",
+            "federal reserve",
+            "inflation",
+            "interest rate",
+            "gdp",
+            "recession",
+            "unemployment",
+            "s&p 500",
+            "nasdaq",
+            "dow jones",
             # Countries (for geopolitical events)
-            "ukraine", "russia", "china", "taiwan", "israel",
-            "iran", "north korea",
+            "ukraine",
+            "russia",
+            "china",
+            "taiwan",
+            "israel",
+            "iran",
+            "north korea",
         ]
         for e in entity_patterns:
             if e in q:
