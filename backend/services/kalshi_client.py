@@ -466,7 +466,6 @@ class KalshiClient:
 
         return prices
 
-
     # ------------------------------------------------------------------ #
     #  Authentication
     # ------------------------------------------------------------------ #
@@ -616,17 +615,19 @@ class KalshiClient:
                     # Estimate average cost from total_traded / size
                     avg_cost = (total_traded / 100.0 / size) if size > 0 else 0.0
 
-                    positions.append({
-                        "token_id": f"{ticker}_{'yes' if outcome == 'YES' else 'no'}",
-                        "market_id": ticker,
-                        "market_question": ticker,  # Will be enriched with title if available
-                        "outcome": outcome,
-                        "size": float(size),
-                        "average_cost": avg_cost,
-                        "current_price": 0.0,  # Will be enriched with live price
-                        "unrealized_pnl": realized_pnl / 100.0,
-                        "platform": "kalshi",
-                    })
+                    positions.append(
+                        {
+                            "token_id": f"{ticker}_{'yes' if outcome == 'YES' else 'no'}",
+                            "market_id": ticker,
+                            "market_question": ticker,  # Will be enriched with title if available
+                            "outcome": outcome,
+                            "size": float(size),
+                            "average_cost": avg_cost,
+                            "current_price": 0.0,  # Will be enriched with live price
+                            "unrealized_pnl": realized_pnl / 100.0,
+                            "platform": "kalshi",
+                        }
+                    )
 
                 cursor = data.get("cursor")
                 if not cursor:
@@ -646,8 +647,8 @@ class KalshiClient:
                                     if p["outcome"] == "YES"
                                     else market.no_price
                                 )
-                                p["unrealized_pnl"] = (
-                                    p["size"] * (p["current_price"] - p["average_cost"])
+                                p["unrealized_pnl"] = p["size"] * (
+                                    p["current_price"] - p["average_cost"]
                                 )
 
             return positions
@@ -692,7 +693,9 @@ class KalshiClient:
                 "type": order_type,
             }
             if order_type == "limit":
-                body["yes_price"] = price_cents if side == "yes" else (100 - price_cents)
+                body["yes_price"] = (
+                    price_cents if side == "yes" else (100 - price_cents)
+                )
 
             data = await self._post("/portfolio/orders", json_body=body)
             order = data.get("order", data)
