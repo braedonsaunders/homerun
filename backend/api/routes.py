@@ -1,9 +1,12 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from datetime import datetime, timezone
 
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
 from services import scanner, wallet_tracker, polymarket_client
+from services.kalshi_client import kalshi_client
 
 router = APIRouter()
 
@@ -101,18 +104,32 @@ async def get_opportunities(
 @router.get("/opportunities/search-polymarket")
 async def search_polymarket_opportunities(
     q: str = Query(
-        ..., min_length=1, description="Search query for Polymarket markets"
+        ..., min_length=1, description="Search query for Polymarket and Kalshi markets"
     ),
     limit: int = Query(20, ge=1, le=50, description="Maximum results to return"),
 ):
     """
-    Search all of Polymarket for markets matching a keyword, then run
+    Search Polymarket and Kalshi for markets matching a keyword, then run
     arbitrage detection strategies on the results. Returns opportunities
     in the same format as the main /opportunities endpoint.
     """
+    import asyncio
+
     try:
-        # Search Polymarket Gamma API for matching events
-        events = await polymarket_client.search_events(q, limit=limit)
+        # Search both platforms concurrently
+        poly_task = polymarket_client.search_events(q, limit=limit)
+        kalshi_task = kalshi_client.search_events(q, limit=limit)
+        poly_events, kalshi_events = await asyncio.gather(
+            poly_task, kalshi_task, return_exceptions=True
+        )
+
+        # Handle errors gracefully - use empty list if a platform fails
+        if isinstance(poly_events, BaseException):
+            poly_events = []
+        if isinstance(kalshi_events, BaseException):
+            kalshi_events = []
+
+        events = list(poly_events) + list(kalshi_events)
 
         if not events:
             from fastapi.responses import JSONResponse
@@ -130,15 +147,28 @@ async def search_polymarket_opportunities(
             ]
             all_markets.extend(event.markets)
 
-        # Fetch live prices for tokens
-        all_token_ids = []
+        # Separate markets by platform for price fetching
+        poly_token_ids = []
+        kalshi_token_ids = []
         for market in all_markets:
-            all_token_ids.extend(market.clob_token_ids)
+            if getattr(market, "platform", None) == "kalshi":
+                kalshi_token_ids.extend(market.clob_token_ids)
+            else:
+                poly_token_ids.extend(market.clob_token_ids)
 
+        # Fetch live prices from both platforms concurrently
         prices = {}
-        if all_token_ids:
-            token_sample = all_token_ids[:200]
-            prices = await polymarket_client.get_prices_batch(token_sample)
+        price_tasks = []
+        if poly_token_ids:
+            price_tasks.append(polymarket_client.get_prices_batch(poly_token_ids[:200]))
+        if kalshi_token_ids:
+            price_tasks.append(kalshi_client.get_prices_batch(kalshi_token_ids[:200]))
+
+        if price_tasks:
+            price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
+            for result in price_results:
+                if isinstance(result, dict):
+                    prices.update(result)
 
         # Run arbitrage detection strategies
         all_opportunities: list[ArbitrageOpportunity] = []
@@ -163,8 +193,6 @@ async def search_polymarket_opportunities(
         all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
         # Kick off AI scoring in background (non-blocking)
-        import asyncio
-
         try:
             from services.ai import get_llm_manager
 
@@ -186,6 +214,50 @@ async def search_polymarket_opportunities(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/opportunities/counts")
+async def get_opportunity_counts(
+    min_profit: float = Query(0.0, description="Minimum profit percentage"),
+    max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
+    min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
+    search: Optional[str] = Query(None, description="Search query for market titles"),
+):
+    """Get counts of opportunities grouped by strategy and category.
+
+    Applies base filters (profit, risk, liquidity, search) but NOT strategy/category
+    filters, so the UI can show how many opportunities each filter value would match.
+    """
+    filter = OpportunityFilter(
+        min_profit=min_profit / 100,
+        max_risk=max_risk,
+        min_liquidity=min_liquidity,
+    )
+
+    opportunities = scanner.get_opportunities(filter)
+
+    # Apply search filter if provided
+    if search:
+        search_lower = search.lower()
+        opportunities = [
+            opp
+            for opp in opportunities
+            if search_lower in opp.title.lower()
+            or (opp.event_title and search_lower in opp.event_title.lower())
+            or any(search_lower in m.get("question", "").lower() for m in opp.markets)
+        ]
+
+    # Count by strategy
+    strategy_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    for opp in opportunities:
+        s = opp.strategy.value if hasattr(opp.strategy, "value") else str(opp.strategy)
+        strategy_counts[s] = strategy_counts.get(s, 0) + 1
+        if opp.category:
+            cat = opp.category.lower()
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    return {"strategies": strategy_counts, "categories": category_counts}
+
+
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
 async def get_opportunity(opportunity_id: str):
     """Get a specific opportunity by ID"""
@@ -198,25 +270,19 @@ async def get_opportunity(opportunity_id: str):
 
 @router.post("/scan")
 async def trigger_scan():
-    """Manually trigger a new scan"""
-    try:
-        opportunities = await scanner.scan_once()
-        return {
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
-            "opportunities_found": len(opportunities),
-            "top_opportunities": [
-                {
-                    "id": o.id,
-                    "strategy": o.strategy,
-                    "title": o.title,
-                    "roi_percent": o.roi_percent,
-                }
-                for o in opportunities[:10]
-            ],
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Manually trigger a new scan (non-blocking).
+
+    Kicks off scan_once() as a background task and returns immediately
+    so the UI stays responsive.  The frontend already polls
+    /scanner/status and /opportunities on intervals, so results
+    appear automatically once the scan completes.
+    """
+    asyncio.create_task(scanner.scan_once())
+    return {
+        "status": "started",
+        "timestamp": datetime.utcnow().isoformat(),
+        "message": "Scan started in background",
+    }
 
 
 # ==================== SCANNER STATUS ====================

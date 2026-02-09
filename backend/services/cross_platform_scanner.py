@@ -646,6 +646,74 @@ def _sports_entities_compatible(e1: ExtractedEntities, e2: ExtractedEntities) ->
 
 
 # ====================================================================== #
+#  Sport outcome type detection (3-way market guard)
+# ====================================================================== #
+
+# Kalshi ticker suffixes that indicate the outcome type
+_KALSHI_DRAW_SUFFIXES = ("-TIE", "-DRW", "-DRAW")
+_KALSHI_HOME_SUFFIXES = ("-WIN", "-HOM", "-HOME")
+_KALSHI_AWAY_SUFFIXES = ("-AWY", "-AWAY", "-VIS")
+
+_DRAW_KEYWORDS = frozenset(
+    {
+        "tie",
+        "draw",
+        "drawn",
+        "tied",
+        "ties",
+        "draws",
+    }
+)
+_WIN_KEYWORDS = frozenset(
+    {
+        "win",
+        "winner",
+        "wins",
+        "victory",
+        "victorious",
+        "beat",
+        "beats",
+        "defeat",
+        "defeats",
+    }
+)
+
+
+def _extract_sport_outcome_type(market: Market) -> Optional[str]:
+    """Classify a market as 'draw' or 'team_win' based on ticker/question."""
+    ticker_upper = market.id.upper()
+    if any(ticker_upper.endswith(s) for s in _KALSHI_DRAW_SUFFIXES):
+        return "draw"
+    if any(ticker_upper.endswith(s) for s in _KALSHI_HOME_SUFFIXES):
+        return "team_win"
+    if any(ticker_upper.endswith(s) for s in _KALSHI_AWAY_SUFFIXES):
+        return "team_win"
+
+    q = market.question.lower()
+    has_draw = any(kw in q for kw in _DRAW_KEYWORDS)
+    has_win = any(kw in q for kw in _WIN_KEYWORDS)
+    if has_draw and not has_win:
+        return "draw"
+    if has_win and not has_draw:
+        return "team_win"
+    return None
+
+
+def _sport_outcome_types_compatible(poly_market: Market, kalshi_market: Market) -> bool:
+    """Return True if both markets have compatible sport outcome types.
+
+    Prevents matching a 'Team Win' market against a 'Draw' market in
+    3-way soccer events — the most common source of catastrophic false
+    positives in cross-platform sports arbitrage.
+    """
+    pm_type = _extract_sport_outcome_type(poly_market)
+    k_type = _extract_sport_outcome_type(kalshi_market)
+    if pm_type is None or k_type is None:
+        return True  # can't determine — allow the match
+    return pm_type == k_type
+
+
+# ====================================================================== #
 #  Crypto-specific matching helpers
 # ====================================================================== #
 
@@ -748,6 +816,10 @@ class MarketMatcher:
         if not _sports_entities_compatible(e_poly, e_kalshi):
             return None
         if not _crypto_entities_compatible(e_poly, e_kalshi):
+            return None
+
+        # 3-way sport outcome gate — never match WIN vs TIE/DRAW
+        if not _sport_outcome_types_compatible(poly_market, kalshi_market):
             return None
 
         # ---- Stage 3: Resolution validation ----

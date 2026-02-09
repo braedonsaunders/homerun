@@ -244,7 +244,7 @@ export default function PerformancePanel() {
         <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
           <TabsList>
             <TabsTrigger value="all">All Trading</TabsTrigger>
-            <TabsTrigger value="simulation">Paper Trading</TabsTrigger>
+            <TabsTrigger value="simulation">Sandbox Trading</TabsTrigger>
             <TabsTrigger value="live">Live Trading</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -279,12 +279,12 @@ export default function PerformancePanel() {
       ) : (
         <>
           {/* Summary Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 card-stagger">
             {(viewMode === 'simulation' || viewMode === 'all') && (
               <>
                 <MetricCard
                   icon={<Activity className="w-5 h-5 text-blue-500" />}
-                  label="Paper Trades"
+                  label="Sandbox Trades"
                   value={simMetrics.totalTrades.toString()}
                   subtitle={`${simMetrics.openTrades} open`}
                 />
@@ -293,13 +293,13 @@ export default function PerformancePanel() {
                     ? <TrendingUp className="w-5 h-5 text-green-500" />
                     : <TrendingDown className="w-5 h-5 text-red-500" />
                   }
-                  label="Paper P&L"
+                  label="Sandbox P&L"
                   value={`${simMetrics.totalPnl >= 0 ? '+' : ''}$${simMetrics.totalPnl.toFixed(2)}`}
                   valueColor={simMetrics.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}
                 />
                 <MetricCard
                   icon={<Award className="w-5 h-5 text-yellow-500" />}
-                  label="Paper Win Rate"
+                  label="Sandbox Win Rate"
                   value={`${simMetrics.winRate.toFixed(1)}%`}
                   subtitle={`${simMetrics.wins}W / ${simMetrics.losses}L`}
                 />
@@ -359,7 +359,7 @@ export default function PerformancePanel() {
                 <CardHeader>
                   <CardTitle className="text-base font-semibold flex items-center gap-2">
                     <PieChart className="w-5 h-5 text-blue-500" />
-                    Paper Trading by Strategy
+                    Sandbox Trading by Strategy
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -473,7 +473,7 @@ function MetricCard({
         <div className="p-2 bg-muted rounded-lg">{icon}</div>
         <div>
           <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={cn("text-lg font-semibold", valueColor)}>{value}</p>
+          <p className={cn("text-lg font-semibold font-data", valueColor)}>{value}</p>
           {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
         </div>
       </CardContent>
@@ -511,8 +511,8 @@ function StrategyRow({
       </div>
       <div className="text-right">
         <p className={cn(
-          "font-mono font-medium",
-          isProfitable ? "text-green-400" : "text-red-400"
+          "font-data font-medium",
+          isProfitable ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
         )}>
           {isProfitable ? '+' : ''}${pnl.toFixed(2)}
         </p>
@@ -566,11 +566,11 @@ function TradeRow({
               variant="outline"
               className={cn(
                 type === 'paper'
-                  ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                  ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
                   : "bg-purple-500/20 text-purple-400 border-purple-500/30"
               )}
             >
-              {type === 'paper' ? 'Paper' : 'Live'}
+              {type === 'paper' ? 'Sandbox' : 'Live'}
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -588,7 +588,7 @@ function TradeRow({
         </Badge>
         {pnl != null && (
           <p className={cn(
-            "font-mono text-sm mt-1",
+            "font-data text-sm mt-1",
             isProfitable ? "text-green-400" : "text-red-400"
           )}>
             {isProfitable ? '+' : ''}${pnl.toFixed(2)}
@@ -636,37 +636,37 @@ function SimplePnlChart({
             <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
         <XAxis
           dataKey="date"
           tickFormatter={formatDate}
-          stroke="#6b7280"
+          stroke="hsl(var(--muted-foreground))"
           tick={{ fontSize: 11 }}
-          axisLine={{ stroke: '#374151' }}
+          axisLine={{ stroke: 'hsl(var(--border))' }}
         />
         <YAxis
           tickFormatter={formatDollar}
-          stroke="#6b7280"
+          stroke="hsl(var(--muted-foreground))"
           tick={{ fontSize: 11 }}
-          axisLine={{ stroke: '#374151' }}
+          axisLine={{ stroke: 'hsl(var(--border))' }}
           width={65}
         />
         <Tooltip
           contentStyle={{
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #374151',
+            backgroundColor: 'hsl(var(--popover))',
+            border: '1px solid hsl(var(--border))',
             borderRadius: '8px',
             fontSize: '12px',
-            color: '#fff',
+            color: 'hsl(var(--popover-foreground))',
           }}
           labelFormatter={(label) => `Date: ${label}`}
           formatter={(value: any, name: any) => [
             typeof value === 'number' ? `$${value.toFixed(2)}` : '$0.00',
-            name === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'
+            name === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'
           ]}
         />
         <Legend
-          formatter={(value) => value === 'cumSimPnl' ? 'Paper P&L' : 'Live P&L'}
+          formatter={(value) => value === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'}
           wrapperStyle={{ fontSize: '12px' }}
         />
         {showSim && (
@@ -677,7 +677,7 @@ function SimplePnlChart({
             strokeWidth={2}
             fill="url(#simGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: '#1a1a1a' }}
+            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
         {showAuto && (
@@ -688,7 +688,7 @@ function SimplePnlChart({
             strokeWidth={2}
             fill="url(#autoGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: '#1a1a1a' }}
+            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
       </AreaChart>

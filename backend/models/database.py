@@ -500,6 +500,11 @@ class AppSettings(Base):
     polymarket_api_passphrase = Column(String, nullable=True)
     polymarket_private_key = Column(String, nullable=True)
 
+    # Kalshi Account Settings
+    kalshi_email = Column(String, nullable=True)
+    kalshi_password = Column(String, nullable=True)
+    kalshi_api_key = Column(String, nullable=True)
+
     # LLM/AI Service Settings
     openai_api_key = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
@@ -543,10 +548,106 @@ class AppSettings(Base):
     max_open_positions = Column(Integer, default=10)
     max_slippage_percent = Column(Float, default=2.0)
 
+    # Opportunity Search Filters (hard rejection thresholds)
+    min_liquidity_hard = Column(Float, default=200.0)
+    min_position_size = Column(Float, default=25.0)
+    min_absolute_profit = Column(Float, default=5.0)
+    min_annualized_roi = Column(Float, default=10.0)
+    max_resolution_months = Column(Integer, default=18)
+    max_plausible_roi = Column(Float, default=30.0)
+    max_trade_legs = Column(Integer, default=8)
+
+    # NegRisk Exhaustivity Thresholds
+    negrisk_min_total_yes = Column(Float, default=0.95)
+    negrisk_warn_total_yes = Column(Float, default=0.97)
+    negrisk_election_min_total_yes = Column(Float, default=0.97)
+    negrisk_max_resolution_spread_days = Column(Integer, default=7)
+
+    # Settlement Lag
+    settlement_lag_max_days_to_resolution = Column(Integer, default=14)
+    settlement_lag_near_zero = Column(Float, default=0.05)
+    settlement_lag_near_one = Column(Float, default=0.95)
+    settlement_lag_min_sum_deviation = Column(Float, default=0.03)
+
+    # Risk Scoring Thresholds
+    risk_very_short_days = Column(Integer, default=2)
+    risk_short_days = Column(Integer, default=7)
+    risk_long_lockup_days = Column(Integer, default=180)
+    risk_extended_lockup_days = Column(Integer, default=90)
+    risk_low_liquidity = Column(Float, default=1000.0)
+    risk_moderate_liquidity = Column(Float, default=5000.0)
+    risk_complex_legs = Column(Integer, default=5)
+    risk_multiple_legs = Column(Integer, default=3)
+
+    # BTC/ETH High-Frequency Strategy
+    btc_eth_pure_arb_max_combined = Column(Float, default=0.98)
+    btc_eth_dump_hedge_drop_pct = Column(Float, default=0.05)
+    btc_eth_thin_liquidity_usd = Column(Float, default=500.0)
+
+    # Miracle Strategy
+    miracle_min_no_price = Column(Float, default=0.90)
+    miracle_max_no_price = Column(Float, default=0.995)
+    miracle_min_impossibility_score = Column(Float, default=0.70)
+
+    # BTC/ETH High-Frequency Enable
+    btc_eth_hf_enabled = Column(Boolean, default=True)
+
+    # Cross-Platform Arbitrage
+    cross_platform_enabled = Column(Boolean, default=True)
+
+    # Combinatorial Arbitrage
+    combinatorial_min_confidence = Column(Float, default=0.75)
+    combinatorial_high_confidence = Column(Float, default=0.90)
+
+    # Bayesian Cascade
+    bayesian_cascade_enabled = Column(Boolean, default=True)
+    bayesian_min_edge_percent = Column(Float, default=5.0)
+    bayesian_propagation_depth = Column(Integer, default=3)
+
+    # Liquidity Vacuum
+    liquidity_vacuum_enabled = Column(Boolean, default=True)
+    liquidity_vacuum_min_imbalance_ratio = Column(Float, default=5.0)
+    liquidity_vacuum_min_depth_usd = Column(Float, default=100.0)
+
+    # Entropy Arbitrage
+    entropy_arb_enabled = Column(Boolean, default=True)
+    entropy_arb_min_deviation = Column(Float, default=0.25)
+
+    # Event-Driven Arbitrage
+    event_driven_enabled = Column(Boolean, default=True)
+
+    # Temporal Decay
+    temporal_decay_enabled = Column(Boolean, default=True)
+
+    # Correlation Arbitrage
+    correlation_arb_enabled = Column(Boolean, default=True)
+    correlation_arb_min_correlation = Column(Float, default=0.7)
+    correlation_arb_min_divergence = Column(Float, default=0.05)
+
+    # Market Making
+    market_making_enabled = Column(Boolean, default=True)
+    market_making_spread_bps = Column(Float, default=100.0)
+    market_making_max_inventory_usd = Column(Float, default=500.0)
+
+    # Statistical Arbitrage
+    stat_arb_enabled = Column(Boolean, default=True)
+    stat_arb_min_edge = Column(Float, default=0.05)
+
     # Database Maintenance
     auto_cleanup_enabled = Column(Boolean, default=False)
     cleanup_interval_hours = Column(Integer, default=24)
     cleanup_resolved_trade_days = Column(Integer, default=30)
+
+    # Trading VPN/Proxy (routes ONLY trading requests through proxy)
+    trading_proxy_enabled = Column(Boolean, default=False)
+    trading_proxy_url = Column(
+        String, nullable=True
+    )  # socks5://host:port, http://host:port
+    trading_proxy_verify_ssl = Column(Boolean, default=True)
+    trading_proxy_timeout = Column(Float, default=30.0)
+    trading_proxy_require_vpn = Column(
+        Boolean, default=True
+    )  # Block trades if VPN unreachable
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -836,6 +937,214 @@ class LLMUsageLog(Base):
         Index("idx_llm_usage_model", "model"),
         Index("idx_llm_usage_time", "requested_at"),
         Index("idx_llm_usage_purpose", "purpose"),
+    )
+
+
+# ==================== TRADER DISCOVERY ====================
+
+
+class DiscoveredWallet(Base):
+    """Wallet discovered and profiled by the automated discovery engine.
+    Contains comprehensive performance metrics, risk-adjusted scores, and rolling window stats."""
+
+    __tablename__ = "discovered_wallets"
+
+    address = Column(String, primary_key=True)
+    username = Column(String, nullable=True)  # Polymarket username if resolved
+
+    # Discovery metadata
+    discovered_at = Column(DateTime, default=datetime.utcnow)
+    last_analyzed_at = Column(DateTime, nullable=True)
+    discovery_source = Column(String, default="scan")  # scan, manual, referral
+
+    # Basic stats
+    total_trades = Column(Integer, default=0)
+    wins = Column(Integer, default=0)
+    losses = Column(Integer, default=0)
+    win_rate = Column(Float, default=0.0)
+    total_pnl = Column(Float, default=0.0)
+    realized_pnl = Column(Float, default=0.0)
+    unrealized_pnl = Column(Float, default=0.0)
+    total_invested = Column(Float, default=0.0)
+    total_returned = Column(Float, default=0.0)
+    avg_roi = Column(Float, default=0.0)
+    max_roi = Column(Float, default=0.0)
+    min_roi = Column(Float, default=0.0)
+    roi_std = Column(Float, default=0.0)
+    unique_markets = Column(Integer, default=0)
+    open_positions = Column(Integer, default=0)
+    days_active = Column(Integer, default=0)
+    avg_hold_time_hours = Column(Float, default=0.0)
+    trades_per_day = Column(Float, default=0.0)
+    avg_position_size = Column(Float, default=0.0)
+
+    # Risk-adjusted metrics
+    sharpe_ratio = Column(Float, nullable=True)
+    sortino_ratio = Column(Float, nullable=True)
+    max_drawdown = Column(
+        Float, nullable=True
+    )  # Stored as positive fraction (0.15 = 15% drawdown)
+    profit_factor = Column(Float, nullable=True)  # gross_profit / gross_loss
+    calmar_ratio = Column(Float, nullable=True)  # annualized_return / max_drawdown
+
+    # Rolling window metrics (JSON dicts keyed by period: "1d", "7d", "30d", "90d")
+    rolling_pnl = Column(JSON, nullable=True)  # {"1d": 50.0, "7d": 200.0, ...}
+    rolling_roi = Column(JSON, nullable=True)
+    rolling_win_rate = Column(JSON, nullable=True)
+    rolling_trade_count = Column(JSON, nullable=True)
+    rolling_sharpe = Column(JSON, nullable=True)
+
+    # Classification
+    anomaly_score = Column(Float, default=0.0)
+    is_bot = Column(Boolean, default=False)
+    is_profitable = Column(Boolean, default=False)
+    recommendation = Column(
+        String, default="unanalyzed"
+    )  # copy_candidate, monitor, avoid, unanalyzed
+    strategies_detected = Column(JSON, default=list)
+
+    # Leaderboard ranking (computed periodically)
+    rank_score = Column(Float, default=0.0)  # Composite score for sorting
+    rank_position = Column(Integer, nullable=True)  # Position on leaderboard
+
+    # Tags (many-to-many via JSON for simplicity in SQLite)
+    tags = Column(JSON, default=list)  # ["smart_predictor", "whale", "consistent", ...]
+
+    # Entity clustering
+    cluster_id = Column(String, nullable=True)  # Which cluster this wallet belongs to
+
+    __table_args__ = (
+        Index("idx_discovered_rank", "rank_score"),
+        Index("idx_discovered_pnl", "total_pnl"),
+        Index("idx_discovered_win_rate", "win_rate"),
+        Index("idx_discovered_profitable", "is_profitable"),
+        Index("idx_discovered_recommendation", "recommendation"),
+        Index("idx_discovered_cluster", "cluster_id"),
+        Index("idx_discovered_analyzed", "last_analyzed_at"),
+    )
+
+
+class WalletTag(Base):
+    """Tag definition for classifying wallets"""
+
+    __tablename__ = "wallet_tags"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, unique=True)  # e.g., "smart_predictor"
+    display_name = Column(String, nullable=False)  # e.g., "Smart Predictor"
+    description = Column(Text, nullable=True)
+    category = Column(
+        String, default="behavioral"
+    )  # behavioral, performance, risk, strategy
+    color = Column(String, default="#6B7280")  # Hex color for UI
+    criteria = Column(JSON, nullable=True)  # Auto-assignment criteria
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_tag_name", "name"),
+        Index("idx_tag_category", "category"),
+    )
+
+
+class WalletCluster(Base):
+    """Group of wallets believed to belong to the same entity"""
+
+    __tablename__ = "wallet_clusters"
+
+    id = Column(String, primary_key=True)
+    label = Column(String, nullable=True)  # Human-readable label
+    confidence = Column(Float, default=0.0)  # How confident we are these are related
+
+    # Aggregate stats across all wallets in cluster
+    total_wallets = Column(Integer, default=0)
+    combined_pnl = Column(Float, default=0.0)
+    combined_trades = Column(Integer, default=0)
+    avg_win_rate = Column(Float, default=0.0)
+
+    # Detection method
+    detection_method = Column(
+        String, nullable=True
+    )  # funding_source, timing_correlation, pattern_match
+    evidence = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_cluster_pnl", "combined_pnl"),)
+
+
+class MarketConfluenceSignal(Base):
+    """Signal generated when multiple top wallets converge on the same market"""
+
+    __tablename__ = "market_confluence_signals"
+
+    id = Column(String, primary_key=True)
+    market_id = Column(String, nullable=False)
+    market_question = Column(Text, nullable=True)
+    market_slug = Column(String, nullable=True)
+
+    # Signal details
+    signal_type = Column(
+        String, nullable=False
+    )  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
+    strength = Column(Float, default=0.0)  # 0-1 signal strength
+    wallet_count = Column(Integer, default=0)  # How many wallets are converging
+    wallets = Column(JSON, default=list)  # List of wallet addresses involved
+
+    # Market context
+    outcome = Column(String, nullable=True)  # YES or NO
+    avg_entry_price = Column(Float, nullable=True)
+    total_size = Column(Float, nullable=True)  # Combined position size
+    avg_wallet_rank = Column(
+        Float, nullable=True
+    )  # Average rank of participating wallets
+
+    # Status
+    is_active = Column(Boolean, default=True)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    expired_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_confluence_market", "market_id"),
+        Index("idx_confluence_strength", "strength"),
+        Index("idx_confluence_active", "is_active"),
+        Index("idx_confluence_detected", "detected_at"),
+    )
+
+
+class CrossPlatformEntity(Base):
+    """Tracks a trader across multiple prediction market platforms"""
+
+    __tablename__ = "cross_platform_entities"
+
+    id = Column(String, primary_key=True)
+    label = Column(String, nullable=True)
+
+    # Platform identifiers
+    polymarket_address = Column(String, nullable=True)
+    kalshi_username = Column(String, nullable=True)
+
+    # Cross-platform stats
+    polymarket_pnl = Column(Float, default=0.0)
+    kalshi_pnl = Column(Float, default=0.0)
+    combined_pnl = Column(Float, default=0.0)
+
+    # Behavioral analysis
+    cross_platform_arb = Column(
+        Boolean, default=False
+    )  # Trades same event on both platforms
+    hedging_detected = Column(Boolean, default=False)
+    matching_markets = Column(JSON, default=list)  # Markets traded on both platforms
+
+    confidence = Column(Float, default=0.0)  # Confidence that these are the same entity
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_cross_platform_poly", "polymarket_address"),
+        Index("idx_cross_platform_kalshi", "kalshi_username"),
+        Index("idx_cross_platform_pnl", "combined_pnl"),
     )
 
 

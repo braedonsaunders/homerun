@@ -642,8 +642,8 @@ function TradeRow({ trade }: { trade: CopiedTrade }) {
     executed: { icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10' },
     pending: { icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/10' },
     failed: { icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10' },
-    skipped: { icon: AlertCircle, color: 'text-gray-400', bg: 'bg-gray-500/10' },
-  }[trade.status] || { icon: Clock, color: 'text-gray-400', bg: 'bg-gray-500/10' }
+    skipped: { icon: AlertCircle, color: 'text-muted-foreground', bg: 'bg-muted-foreground/10' },
+  }[trade.status] || { icon: Clock, color: 'text-muted-foreground', bg: 'bg-muted-foreground/10' }
 
   const StatusIcon = statusConfig.icon
   const isBuy = trade.side === 'BUY'

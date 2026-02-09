@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAtom } from 'jotai'
 import {
   Plus,
   TrendingUp,
@@ -23,6 +24,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { selectedAccountIdAtom } from '../store/atoms'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -44,7 +46,23 @@ type DetailTab = 'overview' | 'holdings' | 'trades' | 'execute'
 
 export default function SimulationPanel() {
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
+  const [globalSelectedId, setGlobalSelectedId] = useAtom(selectedAccountIdAtom)
+  const [selectedAccount, setSelectedAccountLocal] = useState<string | null>(null)
+
+  // Sync local view with global selection (only for sandbox accounts)
+  useEffect(() => {
+    if (globalSelectedId && !globalSelectedId.startsWith('live:')) {
+      setSelectedAccountLocal(globalSelectedId)
+    }
+  }, [globalSelectedId])
+
+  // When user selects an account locally, also update the global selection
+  const setSelectedAccount = (id: string | null) => {
+    setSelectedAccountLocal(id)
+    if (id && !id.startsWith('live:')) {
+      setGlobalSelectedId(id)
+    }
+  }
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
   const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)
@@ -145,7 +163,7 @@ export default function SimulationPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">Paper Trading Simulation</h2>
+          <h2 className="text-xl font-bold">Sandbox Trading</h2>
           <p className="text-sm text-muted-foreground">Practice trading without risking real money</p>
         </div>
         <Button
@@ -202,7 +220,7 @@ export default function SimulationPanel() {
         <Card className="text-center py-12 bg-card border-border shadow-none">
           <DollarSign className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
           <p className="text-muted-foreground">No simulation accounts yet</p>
-          <p className="text-sm text-muted-foreground">Create one to start paper trading</p>
+          <p className="text-sm text-muted-foreground">Create one to start sandbox trading</p>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -573,7 +591,7 @@ export default function SimulationPanel() {
                       }}
                       className={cn(
                         "px-2 py-1 h-auto rounded text-xs",
-                        tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-gray-800"
+                        tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-muted"
                       )}
                     >
                       {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -656,7 +674,7 @@ export default function SimulationPanel() {
                   opportunities.slice(0, 10).map((opp) => (
                     <div
                       key={opp.id}
-                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-[#222] transition-colors"
+                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-accent transition-colors"
                     >
                       <div className="flex-1">
                         <p className="text-sm font-medium line-clamp-1">{opp.title}</p>
@@ -697,7 +715,7 @@ export default function SimulationPanel() {
 
       {/* Delete Confirmation Modal */}
       {accountToDelete && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-background/80 flex items-center justify-center z-50">
           <Card className="bg-muted border-border shadow-none p-6 max-w-md mx-4">
             <h3 className="text-lg font-medium mb-2">Delete Account</h3>
             <p className="text-muted-foreground mb-4">
@@ -795,7 +813,7 @@ function AccountCard({
           <span>{account.total_trades ?? 0} trades</span>
           <span>{account.open_positions ?? 0} open</span>
         </div>
-        <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
             className={cn("h-full rounded-full transition-all", account.roi_percent >= 0 ? "bg-green-500" : "bg-red-500")}
             style={{ width: `${Math.min(Math.max(50 + account.roi_percent / 2, 5), 100)}%` }}

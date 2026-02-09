@@ -298,9 +298,31 @@ class OpportunityJudge:
                 purpose="opportunity_judge",
             )
 
-            # structured_output() returns a dict directly
-            if llm_response:
+            # structured_output() returns a dict directly, but some
+            # providers may return a list or other non-dict JSON.
+            if llm_response and isinstance(llm_response, dict):
                 judgment = llm_response
+            elif llm_response and isinstance(llm_response, list):
+                # Some LLM providers wrap structured output in a list.
+                # Try to extract the first dict element before falling back.
+                extracted = next(
+                    (item for item in llm_response if isinstance(item, dict)),
+                    None,
+                )
+                if extracted:
+                    logger.warning(
+                        "LLM returned list instead of dict, extracted first dict element",
+                        opportunity_id=opportunity.id,
+                    )
+                    judgment = extracted
+                else:
+                    judgment = self._fallback_judgment(
+                        "LLM returned list with no dict elements"
+                    )
+            elif llm_response:
+                judgment = self._fallback_judgment(
+                    f"LLM returned {type(llm_response).__name__} instead of dict"
+                )
             else:
                 judgment = self._fallback_judgment("LLM returned empty response")
 
@@ -555,21 +577,35 @@ class OpportunityJudge:
                     round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
                 )
 
+                avg_overall = round(float(avg_score), 4) if avg_score else 0.0
+
                 return {
                     "total_judgments": total_all,
+                    "total_judged": total_all,
                     "total_with_ml_comparison": total_with_ml,
                     "agreements": agreements,
                     "disagreements": disagreements,
-                    "agreement_rate": agreement_rate,
-                    "average_overall_score": round(float(avg_score), 4)
-                    if avg_score
-                    else None,
+                    "ml_overrides": disagreements,
+                    "agreement_rate": agreement_rate
+                    if agreement_rate is not None
+                    else 0.0,
+                    "average_overall_score": avg_overall,
+                    "avg_score": avg_overall,
                     "recommendation_distribution": recommendation_counts,
                 }
         except Exception as exc:
             logger.error("Failed to compute agreement stats", error=str(exc))
             return {
                 "total_judgments": 0,
+                "total_judged": 0,
+                "total_with_ml_comparison": 0,
+                "agreements": 0,
+                "disagreements": 0,
+                "ml_overrides": 0,
+                "agreement_rate": 0.0,
+                "average_overall_score": 0.0,
+                "avg_score": 0.0,
+                "recommendation_distribution": {},
                 "error": str(exc),
             }
 
@@ -632,27 +668,35 @@ class OpportunityJudge:
         if opportunity.markets:
             sections.append("\n### Markets Involved")
             for i, mkt in enumerate(opportunity.markets):
-                sections.append(f"\n**Market {i + 1}:**")
-                sections.append(
-                    f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
-                )
-                sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
-                yes_price = mkt.get(
-                    "yes_price",
-                    mkt.get("outcome_prices", [None, None])[0]
-                    if len(mkt.get("outcome_prices", [])) > 0
-                    else "N/A",
-                )
-                no_price = mkt.get(
-                    "no_price",
-                    mkt.get("outcome_prices", [None, None])[1]
-                    if len(mkt.get("outcome_prices", [])) > 1
-                    else "N/A",
-                )
-                sections.append(f"  - YES price: {yes_price}")
-                sections.append(f"  - NO price: {no_price}")
-                if mkt.get("liquidity"):
-                    sections.append(f"  - Liquidity: ${mkt['liquidity']:.2f}")
+                try:
+                    if not isinstance(mkt, dict):
+                        sections.append(f"\n**Market {i + 1}:** {mkt}")
+                        continue
+                    sections.append(f"\n**Market {i + 1}:**")
+                    sections.append(
+                        f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
+                    )
+                    sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
+                    yes_price = mkt.get("yes_price", "N/A")
+                    no_price = mkt.get("no_price", "N/A")
+                    if yes_price == "N/A":
+                        outcome_prices = mkt.get("outcome_prices")
+                        if isinstance(outcome_prices, list) and len(outcome_prices) > 0:
+                            yes_price = outcome_prices[0]
+                        if isinstance(outcome_prices, list) and len(outcome_prices) > 1:
+                            no_price = outcome_prices[1]
+                    sections.append(f"  - YES price: {yes_price}")
+                    sections.append(f"  - NO price: {no_price}")
+                    liquidity = mkt.get("liquidity")
+                    if liquidity is not None:
+                        try:
+                            sections.append(f"  - Liquidity: ${float(liquidity):.2f}")
+                        except (ValueError, TypeError):
+                            sections.append(f"  - Liquidity: {liquidity}")
+                except Exception as exc:
+                    sections.append(
+                        f"\n**Market {i + 1}:** (error reading market data: {exc})"
+                    )
 
         # Event context
         if opportunity.event_title:
@@ -721,6 +765,27 @@ class OpportunityJudge:
 
     def _validate_judgment(self, judgment: dict) -> dict:
         """Ensure all required fields exist with sensible defaults."""
+        # Guard: if the LLM returned a non-dict (e.g. a list), return
+        # safe defaults instead of crashing with a TypeError.
+        if not isinstance(judgment, dict):
+            logger.warning(
+                "Judgment validation received %s instead of dict, using defaults",
+                type(judgment).__name__,
+            )
+            return {
+                "overall_score": 0.2,
+                "profit_viability": 0.2,
+                "resolution_safety": 0.3,
+                "execution_feasibility": 0.2,
+                "market_efficiency": 0.2,
+                "recommendation": "strong_skip",
+                "reasoning": (
+                    "LLM returned a non-dict response. "
+                    "Defaulting to strong_skip as a safety measure."
+                ),
+                "risk_factors": ["LLM response format error"],
+            }
+
         defaults = {
             "overall_score": 0.3,
             "profit_viability": 0.3,

@@ -10,9 +10,13 @@ export function useWebSocket(url: string) {
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const intentionalCloseRef = useRef(false)
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    const readyState = wsRef.current?.readyState
+    if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return
+
+    intentionalCloseRef.current = false
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = url.startsWith('ws') ? url : `${protocol}//${window.location.host}${url}`
@@ -37,10 +41,12 @@ export function useWebSocket(url: string) {
       setIsConnected(false)
       console.log('WebSocket disconnected')
 
-      // Reconnect after 3 seconds
-      reconnectTimeoutRef.current = setTimeout(() => {
-        connect()
-      }, 3000)
+      // Only reconnect if this was not an intentional close
+      if (!intentionalCloseRef.current) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect()
+        }, 3000)
+      }
     }
 
     ws.onerror = (error) => {
@@ -51,10 +57,13 @@ export function useWebSocket(url: string) {
   }, [url])
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
     }
     wsRef.current?.close()
+    wsRef.current = null
   }, [])
 
   const sendMessage = useCallback((message: object) => {

@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from services.polymarket import polymarket_client
+from services.pause_state import global_pause_state
 from models.database import TrackedWallet, AsyncSessionLocal
 
 
@@ -177,14 +178,15 @@ class WalletTracker:
         print(f"Starting wallet monitor (interval: {interval_seconds}s)")
 
         while self._running:
-            try:
-                new_trades = await self.check_all_wallets()
-                if new_trades:
-                    print(
-                        f"[{datetime.utcnow().isoformat()}] {len(new_trades)} new trades detected"
-                    )
-            except Exception as e:
-                print(f"Wallet monitor error: {e}")
+            if not global_pause_state.is_paused:
+                try:
+                    new_trades = await self.check_all_wallets()
+                    if new_trades:
+                        print(
+                            f"[{datetime.utcnow().isoformat()}] {len(new_trades)} new trades detected"
+                        )
+                except Exception as e:
+                    print(f"Wallet monitor error: {e}")
 
             await asyncio.sleep(interval_seconds)
 

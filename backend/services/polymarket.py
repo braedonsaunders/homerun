@@ -1,10 +1,20 @@
 import httpx
 import asyncio
+import random
 from typing import Optional
 from datetime import datetime, timedelta
 
 from config import settings
 from models import Market, Event
+from utils.rate_limiter import rate_limiter, endpoint_for_url
+from utils.logger import get_logger
+
+_logger = get_logger("polymarket")
+
+# Retry settings for rate-limited requests
+_MAX_RETRIES = 4
+_BASE_DELAY = 1.0
+_MAX_DELAY = 30.0
 
 
 class PolymarketClient:
@@ -15,6 +25,9 @@ class PolymarketClient:
         self.clob_url = settings.CLOB_API_URL
         self.data_url = settings.DATA_API_URL
         self._client: Optional[httpx.AsyncClient] = None
+        self._trading_client: Optional[httpx.AsyncClient] = (
+            None  # Proxy-aware for trading
+        )
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._persistent_cache = None  # Lazy-loaded MarketCacheService
@@ -40,9 +53,95 @@ class PolymarketClient:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
 
+    async def _get_trading_client(self) -> httpx.AsyncClient:
+        """Get a proxy-aware client for trading-related CLOB calls.
+
+        Falls back to the standard client if proxy is not configured.
+        Reads proxy state from the DB-backed cached config.
+        """
+        from services.trading_proxy import _get_config, get_async_proxy_client
+
+        if not _get_config().enabled:
+            return await self._get_client()
+
+        if self._trading_client is None or self._trading_client.is_closed:
+            self._trading_client = get_async_proxy_client()
+        return self._trading_client
+
+    async def _rate_limited_get(
+        self, url: str, client: Optional[httpx.AsyncClient] = None, **kwargs
+    ) -> httpx.Response:
+        """GET request with rate limiting and retry on 429/5xx errors.
+
+        Acquires a token from the global rate limiter before each attempt,
+        then retries with exponential backoff when the server returns 429
+        or a transient 5xx error.
+        """
+        if client is None:
+            client = await self._get_client()
+
+        endpoint = endpoint_for_url(url)
+        last_response: Optional[httpx.Response] = None
+
+        for attempt in range(_MAX_RETRIES):
+            await rate_limiter.acquire(endpoint)
+
+            try:
+                response = await client.get(url, **kwargs)
+            except (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.ConnectError,
+            ) as exc:
+                if attempt < _MAX_RETRIES - 1:
+                    delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
+                    delay *= 0.5 + random.random()
+                    _logger.warning(
+                        "Network error, retrying",
+                        url=url,
+                        attempt=attempt + 1,
+                        delay=round(delay, 2),
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+
+            if response.status_code == 429 or response.status_code >= 500:
+                last_response = response
+                if attempt < _MAX_RETRIES - 1:
+                    delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
+                    delay *= 0.5 + random.random()
+                    # Respect Retry-After header if present
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = max(delay, float(retry_after))
+                        except ValueError:
+                            pass
+                    _logger.debug(
+                        "Rate limited, retrying",
+                        url=url,
+                        status=response.status_code,
+                        attempt=attempt + 1,
+                        delay=round(delay, 2),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                # Final attempt exhausted — return the response as-is so
+                # callers that check status_code still work correctly.
+                return response
+
+            return response
+
+        # Should not be reached, but just in case
+        return last_response  # type: ignore[return-value]
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+        if self._trading_client and not self._trading_client.is_closed:
+            await self._trading_client.aclose()
 
     # ==================== GAMMA API ====================
 
@@ -54,7 +153,6 @@ class PolymarketClient:
         offset: int = 0,
     ) -> list[Market]:
         """Fetch markets from Gamma API"""
-        client = await self._get_client()
         params = {
             "active": str(active).lower(),
             "closed": str(closed).lower(),
@@ -62,7 +160,9 @@ class PolymarketClient:
             "offset": offset,
         }
 
-        response = await client.get(f"{self.gamma_url}/markets", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/markets", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -87,14 +187,86 @@ class PolymarketClient:
 
         return all_markets
 
+    async def get_recent_markets(
+        self,
+        since_minutes: int = 10,
+        active: bool = True,
+    ) -> list[Market]:
+        """Fetch only recently created/updated markets (incremental delta fetch).
+
+        Instead of fetching all 500 markets, this queries for markets ordered
+        by creation date descending and stops once it hits markets older than
+        `since_minutes`. Much lighter on API quota and lets us detect new
+        markets faster by polling this endpoint more frequently.
+        """
+        all_markets = []
+        offset = 0
+        limit = 50
+        cutoff = datetime.utcnow() - timedelta(minutes=since_minutes)
+
+        while True:
+            try:
+                params = {
+                    "active": str(active).lower(),
+                    "closed": "false",
+                    "limit": limit,
+                    "offset": offset,
+                    "order": "createdAt",
+                    "ascending": "false",
+                }
+                response = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets", params=params
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                if not data:
+                    break
+
+                page_markets = [Market.from_gamma_response(m) for m in data]
+                all_markets.extend(page_markets)
+                offset += limit
+
+                # Check if the oldest market in this page is older than cutoff.
+                # If so, we've gone far enough back in time.
+                oldest_in_page = data[-1]
+                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get(
+                    "created_at"
+                )
+                if created_at_raw:
+                    try:
+                        if isinstance(created_at_raw, str):
+                            created_at = datetime.fromisoformat(
+                                created_at_raw.replace("Z", "+00:00")
+                            ).replace(tzinfo=None)
+                        else:
+                            created_at = datetime.utcfromtimestamp(
+                                float(created_at_raw)
+                            )
+                        if created_at < cutoff:
+                            break
+                    except (ValueError, TypeError, OSError):
+                        pass
+
+                # Safety: don't fetch more than 200 in incremental mode
+                if len(all_markets) >= 200:
+                    break
+
+            except Exception as e:
+                _logger.warning("Incremental market fetch failed", error=str(e))
+                break
+
+        return all_markets
+
     async def get_events(
         self, closed: bool = False, limit: int = 100, offset: int = 0
     ) -> list[Event]:
         """Fetch events from Gamma API (events contain grouped markets)"""
-        client = await self._get_client()
         params = {"closed": str(closed).lower(), "limit": limit, "offset": offset}
 
-        response = await client.get(f"{self.gamma_url}/events", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -127,7 +299,6 @@ class PolymarketClient:
         Searches by slug, title, and tag concurrently, then merges and
         deduplicates results.
         """
-        client = await self._get_client()
         base_params = {
             "closed": str(closed).lower(),
             "limit": limit,
@@ -139,7 +310,7 @@ class PolymarketClient:
 
         async def _fetch(extra_params: dict) -> list[dict]:
             try:
-                resp = await client.get(
+                resp = await self._rate_limited_get(
                     f"{self.gamma_url}/events",
                     params={**base_params, **extra_params},
                 )
@@ -167,8 +338,9 @@ class PolymarketClient:
 
     async def get_event_by_slug(self, slug: str) -> Optional[Event]:
         """Get a specific event by slug"""
-        client = await self._get_client()
-        response = await client.get(f"{self.gamma_url}/events", params={"slug": slug})
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params={"slug": slug}
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -182,8 +354,7 @@ class PolymarketClient:
             return self._market_cache[condition_id]
 
         try:
-            client = await self._get_client()
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.gamma_url}/markets",
                 params={"condition_id": condition_id, "limit": 1},
             )
@@ -192,11 +363,7 @@ class PolymarketClient:
 
             if data and len(data) > 0:
                 market_data = data[0]
-                info = {
-                    "question": market_data.get("question", ""),
-                    "slug": market_data.get("slug", ""),
-                    "groupItemTitle": market_data.get("groupItemTitle", ""),
-                }
+                info = self._extract_market_info(market_data)
                 self._market_cache[condition_id] = info
 
                 # Write-through to persistent SQL cache
@@ -213,10 +380,54 @@ class PolymarketClient:
 
         return None
 
+    async def get_market_by_token_id(self, token_id: str) -> Optional[dict]:
+        """Look up a market by CLOB token ID (asset_id), using cache when available."""
+        # Check if already cached under this token_id
+        cache_key = f"token:{token_id}"
+        if cache_key in self._market_cache:
+            return self._market_cache[cache_key]
+
+        try:
+            response = await self._rate_limited_get(
+                f"{self.gamma_url}/markets",
+                params={"clob_token_ids": token_id, "limit": 1},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data and len(data) > 0:
+                market_data = data[0]
+                info = self._extract_market_info(market_data)
+                self._market_cache[cache_key] = info
+
+                # Also cache by condition_id if available
+                cid = market_data.get("condition_id", "")
+                if cid:
+                    self._market_cache[cid] = info
+
+                return info
+        except Exception as e:
+            print(f"Market lookup by token_id failed for {token_id}: {e}")
+
+        return None
+
+    @staticmethod
+    def _extract_market_info(market_data: dict) -> dict:
+        """Extract standardized market info from a Gamma API market response."""
+        return {
+            "question": market_data.get("question", ""),
+            "slug": market_data.get("slug", ""),
+            "groupItemTitle": market_data.get("groupItemTitle", ""),
+            "event_slug": market_data.get("events", [{}])[0].get("slug", "")
+            if market_data.get("events")
+            else market_data.get("event_slug", ""),
+        }
+
     async def enrich_trades_with_market_info(self, trades: list[dict]) -> list[dict]:
         """
         Enrich a list of trades with market question/title and slug.
         Batches lookups and uses cache to minimize API calls.
+        Falls back to asset_id (token_id) lookup when condition_id lookup fails.
         """
         # Collect unique condition_ids that need lookup
         unknown_ids = set()
@@ -227,7 +438,7 @@ class PolymarketClient:
 
         # Batch lookup unknown condition_ids with concurrency limit
         if unknown_ids:
-            semaphore = asyncio.Semaphore(5)
+            semaphore = asyncio.Semaphore(15)
 
             async def lookup(cid: str):
                 async with semaphore:
@@ -235,22 +446,49 @@ class PolymarketClient:
 
             await asyncio.gather(*[lookup(cid) for cid in unknown_ids])
 
+        # Collect trades that still need lookup via asset_id
+        token_lookups = set()
+        for trade in trades:
+            condition_id = trade.get("market", "")
+            if not self._market_cache.get(condition_id):
+                asset_id = trade.get("asset_id", "")
+                if asset_id and f"token:{asset_id}" not in self._market_cache:
+                    token_lookups.add(asset_id)
+
+        # Batch lookup by token_id for trades missing market info
+        if token_lookups:
+            semaphore = asyncio.Semaphore(15)
+
+            async def lookup_token(tid: str):
+                async with semaphore:
+                    await self.get_market_by_token_id(tid)
+
+            await asyncio.gather(*[lookup_token(tid) for tid in token_lookups])
+
         # Enrich trades
         enriched = []
         for trade in trades:
             condition_id = trade.get("market", "")
             market_info = self._market_cache.get(condition_id)
 
+            # Fallback: try asset_id lookup
+            if not market_info:
+                asset_id = trade.get("asset_id", "")
+                if asset_id:
+                    market_info = self._market_cache.get(f"token:{asset_id}")
+
             enriched_trade = {**trade}
             if market_info:
                 enriched_trade["market_title"] = market_info.get("question", "")
                 enriched_trade["market_slug"] = market_info.get("slug", "")
+                enriched_trade["event_slug"] = market_info.get("event_slug", "")
                 # Use groupItemTitle if available (for multi-outcome markets)
                 if market_info.get("groupItemTitle"):
                     enriched_trade["market_title"] = market_info["groupItemTitle"]
             else:
                 enriched_trade["market_title"] = ""
                 enriched_trade["market_slug"] = ""
+                enriched_trade["event_slug"] = ""
 
             # Normalize timestamp to ISO format
             ts = (
@@ -293,31 +531,45 @@ class PolymarketClient:
 
     # ==================== CLOB API ====================
 
-    async def get_midpoint(self, token_id: str) -> float:
+    async def get_midpoint(
+        self, token_id: str, use_trading_proxy: bool = False
+    ) -> float:
         """Get midpoint price for a token"""
-        client = await self._get_client()
-        response = await client.get(
-            f"{self.clob_url}/midpoint", params={"token_id": token_id}
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/midpoint", client=client, params={"token_id": token_id}
         )
         response.raise_for_status()
         data = response.json()
         return float(data.get("mid", 0))
 
-    async def get_price(self, token_id: str, side: str = "BUY") -> float:
+    async def get_price(
+        self, token_id: str, side: str = "BUY", use_trading_proxy: bool = False
+    ) -> float:
         """Get best price for a token (BUY = best ask, SELL = best bid)"""
-        client = await self._get_client()
-        response = await client.get(
-            f"{self.clob_url}/price", params={"token_id": token_id, "side": side}
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/price",
+            client=client,
+            params={"token_id": token_id, "side": side},
         )
         response.raise_for_status()
         data = response.json()
         return float(data.get("price", 0))
 
-    async def get_order_book(self, token_id: str) -> dict:
+    async def get_order_book(
+        self, token_id: str, use_trading_proxy: bool = False
+    ) -> dict:
         """Get full order book for a token"""
-        client = await self._get_client()
-        response = await client.get(
-            f"{self.clob_url}/book", params={"token_id": token_id}
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/book", client=client, params={"token_id": token_id}
         )
         response.raise_for_status()
         return response.json()
@@ -327,7 +579,7 @@ class PolymarketClient:
         prices = {}
 
         # Batch requests with concurrency limit
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(25)
 
         async def fetch_price(token_id: str):
             async with semaphore:
@@ -344,8 +596,7 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/positions", params={"user": address}
         )
         response.raise_for_status()
@@ -406,7 +657,6 @@ class PolymarketClient:
         Get user profile info from Polymarket.
         Tries multiple sources: username cache, leaderboard API, data API, and website scraping.
         """
-        client = await self._get_client()
         address_lower = address.lower()
 
         # Check username cache first (populated by discover/leaderboard scans)
@@ -452,7 +702,7 @@ class PolymarketClient:
 
         # Try the data API profile endpoint
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/profile", params={"address": address}
             )
             if response.status_code == 200:
@@ -468,7 +718,7 @@ class PolymarketClient:
 
         # Try the users endpoint which may have username
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/users", params={"proxyAddress": address}
             )
             if response.status_code == 200:
@@ -485,6 +735,7 @@ class PolymarketClient:
 
         # Try fetching from the Polymarket website profile page
         try:
+            client = await self._get_client()
             response = await client.get(
                 f"https://polymarket.com/profile/{address}",
                 headers={
@@ -519,8 +770,7 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
         )
         response.raise_for_status()
@@ -530,8 +780,7 @@ class PolymarketClient:
         self, condition_id: str, limit: int = 100
     ) -> list[dict]:
         """Get recent trades for a market"""
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._rate_limited_get(
             f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
         )
         response.raise_for_status()
@@ -558,7 +807,6 @@ class PolymarketClient:
             category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE
             offset: Number of results to skip (for pagination)
         """
-        client = await self._get_client()
         try:
             # Polymarket data API leaderboard endpoint
             params = {
@@ -572,13 +820,13 @@ class PolymarketClient:
             if category.upper() != "OVERALL":
                 params["category"] = category.upper()
 
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/v1/leaderboard", params=params
             )
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"Leaderboard fetch error: {e}")
+            _logger.warning("Leaderboard fetch error", error=str(e))
             return []
 
     async def get_leaderboard_paginated(
@@ -870,9 +1118,8 @@ class PolymarketClient:
         self, address: str, limit: int = 50, offset: int = 0
     ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
-        client = await self._get_client()
         try:
-            response = await client.get(
+            response = await self._rate_limited_get(
                 f"{self.data_url}/closed-positions",
                 params={
                     "user": address,

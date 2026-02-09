@@ -910,7 +910,7 @@ class CombinatorialStrategy(BaseStrategy):
             market_b_question=market_b.question,
             prices_a=prices_a,
             prices_b=prices_b,
-            llm_confidence=0.6,  # Heuristic-only path has implicit 0.6 confidence
+            llm_confidence=0.80,  # Heuristic-only path: raised so it can reach HIGH tier
             heuristic_found=True,  # Sync path is always heuristic
             share_context=share_context,
         )

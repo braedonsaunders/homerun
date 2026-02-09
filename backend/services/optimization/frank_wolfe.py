@@ -275,6 +275,7 @@ class FrankWolfeSolver:
         mu = (
             np.mean(active_set, axis=0) if len(active_set) > 1 else active_set[0].copy()
         )
+        best_mu = mu.copy()
         barrier_epsilon = self.epsilon
 
         gap_history: List[float] = []
@@ -410,7 +411,7 @@ class FrankWolfeSolver:
         final_profit = final_divergence - final_gap
 
         # Use best iterate if it was better than the final one
-        if best_guaranteed_profit > final_profit and "best_mu" in dir():
+        if best_guaranteed_profit > final_profit:
             mu = best_mu
             final_divergence = objective(mu)
             final_profit = best_guaranteed_profit

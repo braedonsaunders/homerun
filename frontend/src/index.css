@@ -1,43 +1,57 @@
+/* JetBrains Mono for data/monospace */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 4%;
-    --foreground: 0 0% 100%;
-    --card: 0 0% 8%;
-    --card-foreground: 0 0% 100%;
-    --popover: 0 0% 8%;
-    --popover-foreground: 0 0% 100%;
-    --primary: 142 71% 45%;
+    --background: 230 15% 4%;
+    --foreground: 210 40% 98%;
+    --card: 230 12% 7%;
+    --card-foreground: 210 40% 98%;
+    --popover: 230 12% 7%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 155 100% 50%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 10%;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 0 0% 10%;
-    --muted-foreground: 0 0% 63%;
-    --accent: 0 0% 10%;
-    --accent-foreground: 0 0% 100%;
+    --secondary: 230 10% 10%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 230 10% 10%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 230 10% 12%;
+    --accent-foreground: 210 40% 98%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 14%;
-    --input: 0 0% 14%;
-    --ring: 142 71% 45%;
+    --border: 220 13% 13%;
+    --input: 220 13% 13%;
+    --ring: 155 100% 50%;
     --radius: 0.5rem;
 
-    /* App-specific tokens */
-    --bg-primary: #0a0a0a;
-    --bg-secondary: #141414;
-    --bg-tertiary: #1a1a1a;
-    --bg-hover: #222222;
-    --text-primary: #ffffff;
-    --text-secondary: #a0a0a0;
-    --text-muted: #6b7280;
-    --accent-green: #22c55e;
-    --accent-red: #ef4444;
+    /* App-specific tokens — enhanced */
+    --bg-primary: #06070a;
+    --bg-secondary: #0c0d12;
+    --bg-tertiary: #12131a;
+    --bg-hover: #1a1b24;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8892a4;
+    --text-muted: #505872;
+    --accent-green: #00ff88;
+    --accent-red: #ff4757;
     --accent-blue: #3b82f6;
-    --accent-yellow: #eab308;
+    --accent-yellow: #fbbf24;
     --accent-purple: #a855f7;
+    --accent-cyan: #22d3ee;
+
+    /* Sidebar */
+    --sidebar-width: 88px;
+    --sidebar-width-expanded: 200px;
+
+    /* Glow intensities */
+    --glow-green: rgba(0, 255, 136, 0.15);
+    --glow-red: rgba(255, 71, 87, 0.15);
+    --glow-blue: rgba(59, 130, 246, 0.15);
+    --glow-purple: rgba(168, 85, 247, 0.15);
   }
 
   .theme-light {
@@ -47,7 +61,7 @@
     --card-foreground: 0 0% 7%;
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 7%;
-    --primary: 142 71% 35%;
+    --primary: 155 80% 40%;
     --primary-foreground: 0 0% 100%;
     --secondary: 0 0% 94%;
     --secondary-foreground: 0 0% 7%;
@@ -59,7 +73,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 0 0% 90%;
     --input: 0 0% 90%;
-    --ring: 142 71% 35%;
+    --ring: 155 80% 40%;
 
     --bg-primary: #f8f9fa;
     --bg-secondary: #ffffff;
@@ -73,6 +87,12 @@
     --accent-blue: #2563eb;
     --accent-yellow: #ca8a04;
     --accent-purple: #9333ea;
+    --accent-cyan: #0891b2;
+
+    --glow-green: rgba(22, 163, 74, 0.08);
+    --glow-red: rgba(220, 38, 38, 0.08);
+    --glow-blue: rgba(37, 99, 235, 0.08);
+    --glow-purple: rgba(147, 51, 234, 0.08);
   }
 }
 
@@ -83,36 +103,398 @@
   body {
     @apply bg-background text-foreground;
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
     transition: background-color 0.2s ease, color 0.2s ease;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+}
+
+/* Data font class for monospace numbers */
+.font-data {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
-  background: hsl(var(--muted));
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background: hsl(var(--border));
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.3);
 }
 
-/* Flash animation for simulated data updates */
+/* ============================================
+   FLASH & PULSE ANIMATIONS
+   ============================================ */
+
 @keyframes flash-update {
-  0% { background-color: rgba(34, 197, 94, 0.1); }
+  0% { background-color: rgba(0, 255, 136, 0.08); }
   100% { background-color: transparent; }
 }
 
 .flash-update {
-  animation: flash-update 0.5s ease-out;
+  animation: flash-update 0.6s ease-out;
+}
+
+@keyframes flash-update-red {
+  0% { background-color: rgba(255, 71, 87, 0.08); }
+  100% { background-color: transparent; }
+}
+
+.flash-update-red {
+  animation: flash-update-red 0.6s ease-out;
+}
+
+/* Pulse glow for active status indicators */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px 0 currentColor; }
+  50% { box-shadow: 0 0 14px 3px currentColor; }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Live dot pulse */
+@keyframes live-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.8); }
+}
+
+.live-dot {
+  animation: live-dot-pulse 2s ease-in-out infinite;
+}
+
+/* Sidebar nav item active glow */
+@keyframes nav-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+/* ============================================
+   SECTION TRANSITIONS
+   ============================================ */
+
+.section-enter {
+  animation: section-fade-in 0.3s ease-out;
+}
+
+@keyframes section-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Staggered card entrance */
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card-stagger > * {
+  animation: card-enter 0.3s ease-out both;
+}
+
+.card-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.card-stagger > *:nth-child(2) { animation-delay: 40ms; }
+.card-stagger > *:nth-child(3) { animation-delay: 80ms; }
+.card-stagger > *:nth-child(4) { animation-delay: 120ms; }
+.card-stagger > *:nth-child(5) { animation-delay: 160ms; }
+.card-stagger > *:nth-child(6) { animation-delay: 200ms; }
+.card-stagger > *:nth-child(7) { animation-delay: 240ms; }
+.card-stagger > *:nth-child(8) { animation-delay: 280ms; }
+.card-stagger > *:nth-child(9) { animation-delay: 320ms; }
+.card-stagger > *:nth-child(10) { animation-delay: 360ms; }
+.card-stagger > *:nth-child(n+11) { animation-delay: 400ms; }
+
+/* ============================================
+   GRADIENT & BORDER EFFECTS
+   ============================================ */
+
+.gradient-border {
+  position: relative;
+}
+
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg,
+    rgba(0, 255, 136, 0.25),
+    rgba(59, 130, 246, 0.25),
+    rgba(168, 85, 247, 0.25)
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.gradient-border:hover::before {
+  opacity: 1;
+}
+
+/* Always-visible gradient border (for active cards) */
+.gradient-border-active::before {
+  opacity: 1;
+}
+
+/* ============================================
+   GLASSMORPHISM
+   ============================================ */
+
+.glass-panel {
+  background: hsl(var(--card) / 0.5);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid hsl(var(--border) / 0.5);
+}
+
+/* Card with subtle glow on hover */
+.card-glow {
+  transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 0.2s ease;
+}
+
+.card-glow:hover {
+  box-shadow: 0 0 20px -5px var(--glow-blue),
+              0 4px 20px -8px rgba(0, 0, 0, 0.4);
+  border-color: hsl(var(--border) / 0.8);
+  transform: translateY(-1px);
+}
+
+/* Green glow variant for positive values */
+.card-glow-green:hover {
+  box-shadow: 0 0 20px -5px var(--glow-green),
+              0 4px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+/* Red glow variant */
+.card-glow-red:hover {
+  box-shadow: 0 0 20px -5px var(--glow-red),
+              0 4px 20px -8px rgba(0, 0, 0, 0.4);
+}
+
+/* Data update glow pulse on card border */
+@keyframes border-glow-pulse {
+  0% { box-shadow: 0 0 0 0 var(--glow-green); }
+  50% { box-shadow: 0 0 16px 0 var(--glow-green); }
+  100% { box-shadow: 0 0 0 0 var(--glow-green); }
+}
+
+.border-glow-pulse {
+  animation: border-glow-pulse 0.8s ease-out;
+}
+
+/* ============================================
+   GRID BACKGROUND PATTERN
+   ============================================ */
+
+.grid-bg {
+  background-image:
+    linear-gradient(hsl(var(--border) / 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.15) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Dot grid variant */
+.dot-grid-bg {
+  background-image: radial-gradient(circle, hsl(var(--border) / 0.3) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* ============================================
+   METRIC VALUE EFFECTS
+   ============================================ */
+
+.metric-positive {
+  color: var(--accent-green);
+  text-shadow: 0 0 24px rgba(0, 255, 136, 0.25);
+}
+
+.metric-negative {
+  color: var(--accent-red);
+  text-shadow: 0 0 24px rgba(255, 71, 87, 0.25);
+}
+
+/* Subtle glow text for key data points */
+.data-glow-green {
+  text-shadow: 0 0 12px rgba(0, 255, 136, 0.2);
+}
+
+.data-glow-red {
+  text-shadow: 0 0 12px rgba(255, 71, 87, 0.2);
+}
+
+.data-glow-blue {
+  text-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+}
+
+/* ============================================
+   TICKER TAPE
+   ============================================ */
+
+@keyframes ticker-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.ticker-animate {
+  animation: ticker-scroll var(--ticker-duration, 30s) linear infinite;
+}
+
+.ticker-animate:hover {
+  animation-play-state: paused;
+}
+
+/* ============================================
+   SCANLINE OVERLAY (optional, subtle)
+   ============================================ */
+
+.scanlines::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.015) 2px,
+    rgba(0, 0, 0, 0.015) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ============================================
+   ACCORDION ANIMATIONS
+   ============================================ */
+
+@keyframes accordion-down {
+  from { height: 0; opacity: 0; }
+  to { height: var(--radix-accordion-content-height); opacity: 1; }
+}
+
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); opacity: 1; }
+  to { height: 0; opacity: 0; }
+}
+
+/* ============================================
+   SETTINGS CARD HOVER
+   ============================================ */
+
+.settings-card {
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.settings-card:hover {
+  border-color: hsl(var(--border) / 0.8);
+  background-color: hsl(var(--card) / 0.8);
+  box-shadow: 0 2px 12px -4px rgba(0, 0, 0, 0.3);
+}
+
+/* ============================================
+   HEADER STAT PILLS
+   ============================================ */
+
+.stat-pill {
+  background: hsl(var(--card) / 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid hsl(var(--border) / 0.4);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.stat-pill:hover {
+  border-color: hsl(var(--border) / 0.7);
+  background: hsl(var(--card) / 0.8);
+}
+
+/* ============================================
+   SIDEBAR ENHANCEMENTS
+   ============================================ */
+
+.sidebar-item-active {
+  background: linear-gradient(135deg, rgba(0, 255, 136, 0.08), rgba(0, 255, 136, 0.03));
+  box-shadow: inset 2px 0 0 0 hsl(var(--primary));
+}
+
+/* ============================================
+   TERMINAL VIEW
+   ============================================ */
+
+.terminal-view {
+  font-variant-ligatures: none;
+  -webkit-font-feature-settings: "liga" 0;
+  font-feature-settings: "liga" 0;
+}
+
+.terminal-view ::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.15);
+}
+
+.terminal-view ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 136, 0.25);
+}
+
+/* Terminal scanline effect */
+.terminal-view::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 136, 0.008) 2px,
+    rgba(0, 255, 136, 0.008) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ============================================
+   COMPACT CARD GRID ENHANCEMENTS
+   ============================================ */
+
+/* Grid stagger animation for cards */
+.card-stagger > * {
+  animation: card-enter 0.25s ease-out both;
+}
+
+/* Opportunity card hover lift */
+.group:hover .card-hover-lift {
+  transform: translateY(-1px);
+}
+
+/* Smooth sparkline fade-in */
+@keyframes sparkline-draw {
+  from { opacity: 0; transform: scaleX(0); }
+  to { opacity: 1; transform: scaleX(1); }
+}
+
+.sparkline-animate {
+  animation: sparkline-draw 0.6s ease-out;
+  transform-origin: left center;
 }

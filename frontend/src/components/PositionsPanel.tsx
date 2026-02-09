@@ -106,7 +106,7 @@ export default function PositionsPanel() {
         <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
           <TabsList>
             <TabsTrigger value="all">All Positions</TabsTrigger>
-            <TabsTrigger value="simulation">Paper Trading</TabsTrigger>
+            <TabsTrigger value="simulation">Sandbox Trading</TabsTrigger>
             <TabsTrigger value="live">Live Trading</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -131,12 +131,12 @@ export default function PositionsPanel() {
           <>
             <StatCard
               icon={<Briefcase className="w-5 h-5 text-blue-500" />}
-              label="Paper Positions"
+              label="Sandbox Positions"
               value={simulationPositions.length.toString()}
             />
             <StatCard
               icon={<DollarSign className="w-5 h-5 text-green-500" />}
-              label="Paper Value"
+              label="Sandbox Value"
               value={`$${simTotalValue.toFixed(2)}`}
             />
           </>
@@ -184,15 +184,15 @@ export default function PositionsPanel() {
               {viewMode === 'all' && (
                 <h3 className="text-lg font-semibold text-muted-foreground flex items-center gap-2">
                   <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                  Paper Trading Positions
+                  Sandbox Trading Positions
                 </h3>
               )}
               {simulationPositions.length === 0 ? (
                 <Card>
                   <CardContent className="text-center py-8">
                     <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
-                    <p className="text-muted-foreground">No open paper trading positions</p>
-                    <p className="text-sm text-muted-foreground">Execute opportunities from the Paper Trading tab</p>
+                    <p className="text-muted-foreground">No open sandbox trading positions</p>
+                    <p className="text-sm text-muted-foreground">Execute opportunities from the Sandbox tab</p>
                   </CardContent>
                 </Card>
               ) : (

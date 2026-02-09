@@ -135,7 +135,7 @@ class ParallelExecutor:
 
         # Pre-validation: Check all legs before executing any
         validation_errors = self._validate_legs(legs)
-        if validation_errors:
+        if any(e is not None for e in validation_errors):
             logger.error(f"Leg validation failed: {validation_errors}")
             return ParallelExecutionResult(
                 status=ExecutionStatus.FAILED,
