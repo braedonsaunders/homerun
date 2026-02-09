@@ -206,7 +206,8 @@ class ArbitrageScanner:
             # be traded profitably.
             now = datetime.now(timezone.utc)
             markets = [
-                m for m in markets
+                m
+                for m in markets
                 if m.end_date is None or _make_aware(m.end_date) > now
             ]
 
@@ -214,7 +215,8 @@ class ArbitrageScanner:
             # like NegRisk that iterate event.markets don't pick them up.
             for event in events:
                 event.markets = [
-                    m for m in event.markets
+                    m
+                    for m in event.markets
                     if m.end_date is None or _make_aware(m.end_date) > now
                 ]
 
@@ -679,8 +681,7 @@ class ArbitrageScanner:
         self._opportunities = [
             opp
             for opp in self._opportunities
-            if opp.resolution_date is None
-            or _make_aware(opp.resolution_date) > now
+            if opp.resolution_date is None or _make_aware(opp.resolution_date) > now
         ]
 
         removed = before_count - len(self._opportunities)
@@ -694,9 +695,7 @@ class ArbitrageScanner:
         before_count = len(self._opportunities)
 
         self._opportunities = [
-            opp
-            for opp in self._opportunities
-            if _make_aware(opp.detected_at) >= cutoff
+            opp for opp in self._opportunities if _make_aware(opp.detected_at) >= cutoff
         ]
 
         removed = before_count - len(self._opportunities)
