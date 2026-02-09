@@ -17,6 +17,9 @@ import {
   TrendingUp,
   Eye,
   Zap,
+  ExternalLink,
+  Activity,
+  UserPlus,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -41,6 +44,7 @@ import {
   type TagInfo,
   type DiscoveryStats,
 } from '../services/discoveryApi'
+import { analyzeAndTrackWallet } from '../services/api'
 
 // ==================== TYPES ====================
 
@@ -114,8 +118,14 @@ function timeAgo(dateStr: string | null): string {
 
 // ==================== MAIN COMPONENT ====================
 
-export default function DiscoveryPanel() {
-  const [activeTab, setActiveTab] = useState<DiscoveryTab>('leaderboard')
+interface DiscoveryPanelProps {
+  parentTab?: 'leaderboard' | 'discover'
+  onAnalyzeWallet?: (address: string, username?: string) => void
+}
+
+export default function DiscoveryPanel({ parentTab = 'leaderboard', onAnalyzeWallet }: DiscoveryPanelProps) {
+  const [discoverSubTab, setDiscoverSubTab] = useState<'confluence' | 'tags' | 'clusters'>('confluence')
+  const activeTab: DiscoveryTab = parentTab === 'leaderboard' ? 'leaderboard' : discoverSubTab
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [currentPage, setCurrentPage] = useState(0)
@@ -227,6 +237,27 @@ export default function DiscoveryPanel() {
     },
   })
 
+  const trackWalletMutation = useMutation({
+    mutationFn: (params: { address: string; username?: string | null }) =>
+      analyzeAndTrackWallet({
+        address: params.address,
+        label: params.username || `Discovered ${params.address.slice(0, 6)}...${params.address.slice(-4)}`,
+        auto_copy: false,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    },
+  })
+
+  const { data: activeSignalCount = 0 } = useQuery({
+    queryKey: ['discovery-active-signal-count'],
+    queryFn: async () => {
+      const signals = await discoveryApi.getConfluenceSignals(0, 100)
+      return signals.filter((s: ConfluenceSignal) => s.is_active).length
+    },
+    refetchInterval: 60000,
+  })
+
   // ==================== HANDLERS ====================
 
   const handleSort = useCallback((field: SortField) => {
@@ -261,9 +292,13 @@ export default function DiscoveryPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">Trader Discovery</h2>
+          <h2 className="text-xl font-bold">
+            {parentTab === 'leaderboard' ? 'Leaderboard' : 'Trader Discovery'}
+          </h2>
           <p className="text-sm text-muted-foreground">
-            Discover profitable traders, confluence signals, and wallet clusters
+            {parentTab === 'leaderboard'
+              ? 'Top performing traders ranked by metrics'
+              : 'Discover confluence signals, wallet clusters, and behavioral tags'}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -356,9 +391,7 @@ export default function DiscoveryPanel() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground">Active Signals</p>
-              <p className="text-lg font-semibold">
-                {activeTab === 'confluence' ? confluenceSignals.filter(s => s.is_active).length : '--'}
-              </p>
+              <p className="text-lg font-semibold">{formatNumber(activeSignalCount)}</p>
             </div>
           </CardContent>
         </Card>
@@ -378,39 +411,41 @@ export default function DiscoveryPanel() {
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <div className="flex items-center gap-2">
-        {tabDefs.map(tab => {
-          const Icon = tab.icon
-          const isActive = activeTab === tab.id
-          const colorMap: Record<string, string> = {
-            yellow: isActive
-              ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border',
-            cyan: isActive
-              ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border',
-            purple: isActive
-              ? 'bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border',
-            blue: isActive
-              ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border',
-          }
-          return (
-            <Button
-              key={tab.id}
-              variant="outline"
-              size="sm"
-              onClick={() => setActiveTab(tab.id)}
-              className={cn("flex items-center gap-2", colorMap[tab.color])}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </Button>
-          )
-        })}
-      </div>
+      {/* Tab Navigation - only show sub-tabs in discover mode */}
+      {parentTab === 'discover' && (
+        <div className="flex items-center gap-2">
+          {tabDefs.filter(tab => tab.id !== 'leaderboard').map(tab => {
+            const Icon = tab.icon
+            const isActive = activeTab === tab.id
+            const colorMap: Record<string, string> = {
+              yellow: isActive
+                ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30 hover:text-yellow-400'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border',
+              cyan: isActive
+                ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border',
+              purple: isActive
+                ? 'bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border',
+              blue: isActive
+                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400'
+                : 'bg-card text-muted-foreground hover:text-foreground border-border',
+            }
+            return (
+              <Button
+                key={tab.id}
+                variant="outline"
+                size="sm"
+                onClick={() => setDiscoverSubTab(tab.id as 'confluence' | 'tags' | 'clusters')}
+                className={cn("flex items-center gap-2", colorMap[tab.color])}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </Button>
+            )
+          })}
+        </div>
+      )}
 
       {/* ==================== LEADERBOARD TAB ==================== */}
       {activeTab === 'leaderboard' && (
@@ -535,6 +570,7 @@ export default function DiscoveryPanel() {
                       </TableHead>
                       <TableHead>Tags</TableHead>
                       <TableHead>Rec.</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -545,6 +581,9 @@ export default function DiscoveryPanel() {
                         rank={currentPage * ITEMS_PER_PAGE + idx + 1}
                         copiedAddress={copiedAddress}
                         onCopyAddress={handleCopyAddress}
+                        onAnalyze={onAnalyzeWallet}
+                        onTrack={(address, username) => trackWalletMutation.mutate({ address, username })}
+                        isTracking={trackWalletMutation.isPending}
                       />
                     ))}
                   </TableBody>
@@ -915,11 +954,17 @@ function LeaderboardRow({
   rank,
   copiedAddress,
   onCopyAddress,
+  onAnalyze,
+  onTrack,
+  isTracking,
 }: {
   wallet: DiscoveredWallet
   rank: number
   copiedAddress: string | null
   onCopyAddress: (address: string) => void
+  onAnalyze?: (address: string, username?: string) => void
+  onTrack?: (address: string, username?: string | null) => void
+  isTracking?: boolean
 }) {
   const rankDisplay = wallet.rank_position || rank
 
@@ -1042,6 +1087,52 @@ function LeaderboardRow({
       {/* Recommendation */}
       <TableCell>
         <RecommendationBadge recommendation={wallet.recommendation} />
+      </TableCell>
+
+      {/* Actions */}
+      <TableCell>
+        <div className="flex items-center gap-1">
+          {onAnalyze && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onAnalyze(wallet.address, wallet.username || undefined)}
+                  className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Analyze wallet</TooltipContent>
+            </Tooltip>
+          )}
+          {onTrack && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onTrack(wallet.address, wallet.username)}
+                  disabled={isTracking}
+                  className="p-1.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Track wallet</TooltipContent>
+            </Tooltip>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={`https://polymarket.com/profile/${wallet.address}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent>View on Polymarket</TooltipContent>
+          </Tooltip>
+        </div>
       </TableCell>
     </TableRow>
   )
