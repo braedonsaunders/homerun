@@ -3,19 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, List
 
 from config import settings
-
-
-def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
-    """Ensure a datetime is timezone-aware (UTC). Returns None for None input."""
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 from models import ArbitrageOpportunity, OpportunityFilter
-from models.opportunity import AIAnalysis
+from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
 from services.polymarket import polymarket_client
 from services.kalshi_client import kalshi_client
@@ -39,9 +28,17 @@ from services.strategies import (
     MarketMakingStrategy,
     StatArbStrategy,
 )
-from models.opportunity import MispricingType
 from services.pause_state import global_pause_state
 from sqlalchemy import select
+
+
+def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure a datetime is timezone-aware (UTC). Returns None for None input."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class ArbitrageScanner:
