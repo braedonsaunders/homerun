@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Optional
 
 from models import Market, Event, ArbitrageOpportunity, StrategyType
+from config import settings as _cfg
 from .base import BaseStrategy
 from utils.logger import get_logger
 
@@ -77,7 +78,6 @@ _SLUG_REGEX = re.compile(
 )
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
-from config import settings as _cfg
 
 def _pure_arb_max_combined():
     return _cfg.BTC_ETH_HF_PURE_ARB_MAX_COMBINED
