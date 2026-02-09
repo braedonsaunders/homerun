@@ -115,7 +115,9 @@ _STOP_WORDS = frozenset(
 )
 
 
-def _pearson_correlation(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
+def _pearson_correlation(
+    xs: list[float], ys: list[float]
+) -> tuple[float, float, float]:
     """
     Calculate Pearson correlation coefficient between two lists.
 
