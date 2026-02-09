@@ -26,6 +26,7 @@ import uuid
 from config import settings
 from services.trading import trading_service, OrderStatus
 from services.scanner import scanner
+from services.pause_state import global_pause_state
 from services.depth_analyzer import depth_analyzer
 from services.token_circuit_breaker import token_circuit_breaker
 from services.execution_tiers import execution_tier_service
@@ -1293,6 +1294,9 @@ class AutoTrader:
     async def _on_scan_complete(self, opportunities: list[ArbitrageOpportunity]):
         """Callback when scanner completes a scan"""
         if not self._running:
+            return
+
+        if global_pause_state.is_paused:
             return
 
         if self.config.mode == AutoTraderMode.DISABLED:

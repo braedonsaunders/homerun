@@ -28,6 +28,7 @@ from models.database import (
     AsyncSessionLocal,
 )
 from services.polymarket import polymarket_client
+from services.pause_state import global_pause_state
 from utils.logger import get_logger
 
 logger = get_logger("wallet_intelligence")
@@ -1441,10 +1442,11 @@ class WalletIntelligence:
             interval_minutes=interval_minutes,
         )
         while self._running:
-            try:
-                await self.run_full_analysis()
-            except Exception as e:
-                logger.error("Intelligence analysis failed", error=str(e))
+            if not global_pause_state.is_paused:
+                try:
+                    await self.run_full_analysis()
+                except Exception as e:
+                    logger.error("Intelligence analysis failed", error=str(e))
             await asyncio.sleep(interval_minutes * 60)
 
     def stop(self):
