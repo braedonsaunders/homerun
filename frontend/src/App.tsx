@@ -77,6 +77,7 @@ import AICommandBar from './components/AICommandBar'
 import DataFreshnessIndicator from './components/DataFreshnessIndicator'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
+import DiscoveryPanel from './components/DiscoveryPanel'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type AccountsSubTab = 'paper' | 'live'
@@ -996,11 +997,8 @@ function App() {
               <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
                 <WalletTracker section="tracked" onAnalyzeWallet={handleAnalyzeWallet} />
               </div>
-              <div className={tradersSubTab === 'leaderboard' ? '' : 'hidden'}>
-                <WalletTracker section="discover" discoverMode="leaderboard" onAnalyzeWallet={handleAnalyzeWallet} />
-              </div>
-              <div className={tradersSubTab === 'discover' ? '' : 'hidden'}>
-                <WalletTracker section="discover" discoverMode="winrate" onAnalyzeWallet={handleAnalyzeWallet} />
+              <div className={tradersSubTab === 'leaderboard' || tradersSubTab === 'discover' ? '' : 'hidden'}>
+                <DiscoveryPanel />
               </div>
               <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
                 <WalletAnalysisPanel
