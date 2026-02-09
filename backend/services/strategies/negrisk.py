@@ -208,6 +208,10 @@ class NegRiskStrategy(BaseStrategy):
         - Exactly N-1 outcomes resolve to NO, each paying $1
         - Total payout = N - 1
         - Profit = (N - 1) - total_no_cost
+
+        Routes through create_opportunity so that shared hard filters
+        (min liquidity, min position size, min absolute profit, max plausible
+        ROI, max resolution window, fee-model adjustments) are applied.
         """
         n = len(active_markets)
         if n < 2:
@@ -239,58 +243,22 @@ class NegRiskStrategy(BaseStrategy):
             )
 
         expected_payout = float(n - 1)  # N-1 NOs win
-        gross_profit = expected_payout - total_no
 
-        if gross_profit <= 0:
+        if expected_payout - total_no <= 0:
             return None
 
-        # Calculate metrics manually since payout != $1
-        fee = expected_payout * self.fee
-        net_profit = gross_profit - fee
-        roi = (net_profit / total_no) * 100 if total_no > 0 else 0
-
-        if roi < self.min_profit * 100:
-            return None
-
-        # Calculate risk
-        risk_score, risk_factors = self.calculate_risk_score(active_markets)
-        risk_factors.insert(0, f"Short NegRisk: buying NO on all {n} outcomes")
-
-        min_liquidity = min((m.liquidity for m in active_markets), default=0)
-        max_position = min_liquidity * 0.1
-
-        opp = ArbitrageOpportunity(
-            strategy=self.strategy_type,
+        opp = self.create_opportunity(
             title=f"NegRisk Short: {event.title[:50]}...",
             description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
+            markets=active_markets,
+            positions=positions,
+            event=event,
             expected_payout=expected_payout,
-            gross_profit=gross_profit,
-            fee=fee,
-            net_profit=net_profit,
-            roi_percent=roi,
-            risk_score=risk_score,
-            risk_factors=risk_factors,
-            markets=[
-                {
-                    "id": m.id,
-                    "slug": m.slug,
-                    "question": m.question,
-                    "yes_price": m.yes_price,
-                    "no_price": m.no_price,
-                    "liquidity": m.liquidity,
-                }
-                for m in active_markets
-            ],
-            event_id=event.id,
-            event_slug=event.slug,
-            event_title=event.title,
-            category=event.category,
-            min_liquidity=min_liquidity,
-            max_position_size=max_position,
-            resolution_date=active_markets[0].end_date if active_markets else None,
-            positions_to_take=positions,
         )
+
+        if opp:
+            opp.risk_factors.insert(0, f"Short NegRisk: buying NO on all {n} outcomes")
 
         return opp
 
@@ -623,6 +591,10 @@ class NegRiskStrategy(BaseStrategy):
         - Exactly N-1 outcomes resolve to NO, each paying $1
         - Total payout = N - 1
         - Profit = (N - 1) - total_no_cost
+
+        Routes through create_opportunity so that shared hard filters
+        (min liquidity, min position size, min absolute profit, max plausible
+        ROI, max resolution window, fee-model adjustments) are applied.
         """
         n = len(exclusive_markets)
         if n < 3:
@@ -654,62 +626,24 @@ class NegRiskStrategy(BaseStrategy):
             )
 
         expected_payout = float(n - 1)  # N-1 NOs win
-        gross_profit = expected_payout - total_no
 
-        if gross_profit <= 0:
+        if expected_payout - total_no <= 0:
             return None
 
-        # Calculate metrics manually since payout != $1
-        fee = expected_payout * self.fee
-        net_profit = gross_profit - fee
-        roi = (net_profit / total_no) * 100 if total_no > 0 else 0
-
-        if roi < self.min_profit * 100:
-            return None
-
-        # Calculate risk
-        risk_score, risk_factors = self.calculate_risk_score(exclusive_markets)
-        risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
-        risk_factors.insert(
-            1, "Verify manually: ensure all possible outcomes are listed"
-        )
-
-        min_liquidity = min((m.liquidity for m in exclusive_markets), default=0)
-        max_position = min_liquidity * 0.1
-
-        opp = ArbitrageOpportunity(
-            strategy=self.strategy_type,
+        opp = self.create_opportunity(
             title=f"Multi-Outcome Short: {event.title[:40]}...",
             description=f"Buy NO on all {n} outcomes for ${total_no:.3f}, {n - 1} win = ${expected_payout:.0f} payout",
             total_cost=total_no,
+            markets=exclusive_markets,
+            positions=positions,
+            event=event,
             expected_payout=expected_payout,
-            gross_profit=gross_profit,
-            fee=fee,
-            net_profit=net_profit,
-            roi_percent=roi,
-            risk_score=risk_score,
-            risk_factors=risk_factors,
-            markets=[
-                {
-                    "id": m.id,
-                    "slug": m.slug,
-                    "question": m.question,
-                    "yes_price": m.yes_price,
-                    "no_price": m.no_price,
-                    "liquidity": m.liquidity,
-                }
-                for m in exclusive_markets
-            ],
-            event_id=event.id,
-            event_slug=event.slug,
-            event_title=event.title,
-            category=event.category,
-            min_liquidity=min_liquidity,
-            max_position_size=max_position,
-            resolution_date=exclusive_markets[0].end_date
-            if exclusive_markets
-            else None,
-            positions_to_take=positions,
         )
+
+        if opp:
+            opp.risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
+            opp.risk_factors.insert(
+                1, "Verify manually: ensure all possible outcomes are listed"
+            )
 
         return opp

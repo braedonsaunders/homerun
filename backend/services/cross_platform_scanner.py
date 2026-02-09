@@ -1151,7 +1151,7 @@ class CrossPlatformScanner:
             return None
 
         # Adjust Kalshi fee based on market volume if available
-        if hasattr(kalshi_market, "volume") and kalshi_market.volume > 0:
+        if hasattr(kalshi_market, 'volume'):
             kalshi_fee = kalshi_fee_for_volume(kalshi_market.volume)
 
         best_opportunity: Optional[ArbitrageOpportunity] = None
