@@ -7,6 +7,7 @@ from .miracle import MiracleStrategy
 from .combinatorial import CombinatorialStrategy
 from .settlement_lag import SettlementLagStrategy
 from .btc_eth_highfreq import BtcEthHighFreqStrategy
+from .news_edge import NewsEdgeStrategy
 
 __all__ = [
     "BasicArbStrategy",
@@ -18,4 +19,5 @@ __all__ = [
     "CombinatorialStrategy",
     "SettlementLagStrategy",
     "BtcEthHighFreqStrategy",
+    "NewsEdgeStrategy",
 ]

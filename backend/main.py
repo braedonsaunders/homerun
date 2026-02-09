@@ -18,6 +18,7 @@ from api.routes_auto_trader import router as auto_trader_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from api.routes_ai import router as ai_router
+from api.routes_news import router as news_router
 from services import scanner, wallet_tracker, polymarket_client
 from services.copy_trader import copy_trader
 from services.trading import trading_service
@@ -171,6 +172,24 @@ async def lifespan(app: FastAPI):
             tasks.append(cleanup_task)
             logger.info("Background database cleanup enabled")
 
+        # Start news intelligence layer (background news fetching + semantic matcher)
+        try:
+            from services.news.feed_service import news_feed_service
+            from services.news.semantic_matcher import semantic_matcher
+
+            semantic_matcher.initialize()
+            if settings.NEWS_EDGE_ENABLED:
+                await news_feed_service.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
+                logger.info(
+                    "News intelligence layer started",
+                    ml_mode=semantic_matcher.is_ml_mode,
+                    interval=settings.NEWS_SCAN_INTERVAL_SECONDS,
+                )
+            else:
+                logger.info("News intelligence layer initialized (scanning disabled)")
+        except Exception as e:
+            logger.warning(f"News intelligence init failed (non-critical): {e}")
+
         # Start Telegram notifier (hooks into scanner + auto_trader callbacks)
         await notifier.start()
 
@@ -205,6 +224,11 @@ async def lifespan(app: FastAPI):
             pass
         notifier.stop()
         opportunity_recorder.stop()
+        try:
+            from services.news.feed_service import news_feed_service
+            news_feed_service.stop()
+        except Exception:
+            pass
 
         for task in tasks:
             task.cancel()
@@ -263,6 +287,7 @@ app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
+app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 
 
 # WebSocket endpoint
@@ -300,6 +325,22 @@ async def readiness_check():
         "checks": checks,
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+def _get_news_status() -> dict:
+    """Get news intelligence status for health check."""
+    try:
+        from services.news.feed_service import news_feed_service
+        from services.news.semantic_matcher import semantic_matcher
+
+        return {
+            "enabled": settings.NEWS_EDGE_ENABLED,
+            "articles": news_feed_service.article_count,
+            "running": news_feed_service._running,
+            "matcher": semantic_matcher.get_status(),
+        }
+    except Exception:
+        return {"enabled": False}
 
 
 def _get_ai_status() -> dict:
@@ -353,6 +394,7 @@ async def detailed_health_check():
                 else None,
             },
             "ai_intelligence": _get_ai_status(),
+            "news_intelligence": _get_news_status(),
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {

@@ -161,6 +161,18 @@ class Settings(BaseSettings):
     COMBINATORIAL_HIGH_CONFIDENCE: float = 0.90  # High confidence threshold
     COMBINATORIAL_MIN_ACCURACY: float = 0.70  # Auto-raise threshold if below
 
+    # News Edge Strategy
+    NEWS_EDGE_ENABLED: bool = True  # Enable news-driven edge scanning
+    NEWS_SCAN_INTERVAL_SECONDS: int = 180  # Poll news sources every 3 minutes
+    NEWS_MIN_EDGE_PERCENT: float = 8.0  # Minimum edge to generate opportunity
+    NEWS_MIN_CONFIDENCE: float = 0.6  # Minimum model confidence
+    NEWS_MAX_ARTICLES_PER_SCAN: int = 50  # Max articles to process per scan
+    NEWS_SIMILARITY_THRESHOLD: float = 0.45  # Cosine similarity threshold for matching
+    NEWS_ARTICLE_TTL_HOURS: int = 24  # Discard articles older than this
+    NEWS_MAX_OPPORTUNITIES_PER_SCAN: int = 20  # Cap opportunities per scan
+    NEWS_GDELT_ENABLED: bool = True  # Enable GDELT as additional news source
+    NEWS_RSS_FEEDS: list[str] = []  # Additional custom RSS feed URLs
+
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
     CLEANUP_INTERVAL_HOURS: int = 24  # Run cleanup every X hours
