@@ -24,8 +24,9 @@ This strategy:
 from __future__ import annotations
 
 import re
+import threading
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import Optional
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from .base import BaseStrategy
@@ -310,6 +311,9 @@ class DependencyAccuracyTracker:
         except Exception as e:
             logger.warning(f"Failed to save accuracy data: {e}")
 
+    # Maximum number of records to keep in memory
+    _MAX_RECORDS = 500
+
     def record_dependency(
         self, market_a_id: str, market_b_id: str, dep_type: str, acted_on: bool = True
     ) -> str:
@@ -323,6 +327,9 @@ class DependencyAccuracyTracker:
                 "timestamp": time.time(),
             }
         )
+        # Cap in-memory records to prevent unbounded growth
+        if len(self._records) > self._MAX_RECORDS:
+            self._records = self._records[-self._MAX_RECORDS:]
         self._accuracy_cache = None
         self._save_to_disk()
         return dep_key
@@ -836,10 +843,13 @@ class CombinatorialStrategy(BaseStrategy):
     name = "Combinatorial Arbitrage"
     description = "Cross-market arbitrage via integer programming"
 
+    # Maximum entries in the dependency cache before LRU eviction
+    _MAX_DEPENDENCY_CACHE = 2000
+
     def __init__(self):
         super().__init__()
-        self._dependency_cache: dict[tuple, list] = {}
-        self._pair_cache: dict[str, bool] = {}
+        self._dependency_cache: OrderedDict[tuple, list] = OrderedDict()
+        self._lock = threading.Lock()
 
         # Persist accuracy data across restarts
         from pathlib import Path
@@ -902,13 +912,19 @@ class CombinatorialStrategy(BaseStrategy):
         if not prices_a or not prices_b:
             return None
 
-        # Detect dependencies (cached)
+        # Detect dependencies (cached with LRU eviction)
         cache_key = (market_a.id, market_b.id)
-        if cache_key not in self._dependency_cache:
-            deps = self._detect_dependencies_sync(market_a, market_b)
-            self._dependency_cache[cache_key] = deps
-
-        dependencies = self._dependency_cache[cache_key]
+        with self._lock:
+            if cache_key in self._dependency_cache:
+                self._dependency_cache.move_to_end(cache_key)
+                dependencies = self._dependency_cache[cache_key]
+            else:
+                deps = self._detect_dependencies_sync(market_a, market_b)
+                self._dependency_cache[cache_key] = deps
+                # Evict oldest entries when cache exceeds limit
+                while len(self._dependency_cache) > self._MAX_DEPENDENCY_CACHE:
+                    self._dependency_cache.popitem(last=False)
+                dependencies = deps
 
         if not dependencies:
             return None  # Independent markets, no combinatorial arb
