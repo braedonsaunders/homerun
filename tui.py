@@ -388,6 +388,7 @@ class HomerunApp(App):
         Binding("h", "show_tab('home')", "Home", show=True),
         Binding("l", "show_tab('logs')", "Logs", show=True),
         Binding("d", "toggle_dark", "Dark/Light"),
+        Binding("ctrl+c", "copy_to_clip", "Copy", show=False, priority=True),
     ]
 
     # Process handles
@@ -533,6 +534,17 @@ class HomerunApp(App):
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
+    def action_copy_to_clip(self) -> None:
+        """Copy selected text from the log viewer to the system clipboard."""
+        try:
+            ta = self.query_one("#log-output", TextArea)
+            text = ta.selected_text
+            if text:
+                self.copy_to_clipboard(text)
+                self.notify("Copied to clipboard", timeout=2)
+        except Exception:
+            pass
+
     # ---- Log buffer: thread-safe batched writes ----
     def _enqueue_log(self, text: str) -> None:
         """Called from worker threads. Appends to buffer; main-thread timer flushes."""
@@ -553,12 +565,13 @@ class HomerunApp(App):
         except Exception:
             return
 
-        # Snapshot scroll state BEFORE any mutation.
+        # Snapshot scroll state and selection BEFORE any mutation.
         # insert() moves the cursor to the end of inserted text which
         # triggers an automatic viewport scroll -- we must undo that
         # when the user has scrolled up (not following).
         at_bottom = self._log_follow
         saved_scroll_y = ta.scroll_y
+        saved_selection = ta.selection
 
         # Build the chunk to insert
         chunk = "\n".join(lines)
@@ -570,6 +583,10 @@ class HomerunApp(App):
         ta.insert(chunk, location=end)
         self._log_line_count += len(lines)
 
+        # Restore selection after insert -- insert at end moved cursor
+        # but didn't change line numbers for existing text.
+        ta.selection = saved_selection
+
         # Trim from the top if we've exceeded the cap
         trimmed = 0
         if self._log_line_count > LOG_MAX_LINES:
@@ -577,7 +594,7 @@ class HomerunApp(App):
             actual_lines = ta.document.line_count
             trim = min(trim, actual_lines - 1)
             if trim > 0:
-                ta.delete((0, 0), (trim, 0), maintain_selection_offset=False)
+                ta.delete((0, 0), (trim, 0), maintain_selection_offset=True)
                 trimmed = trim
                 self._log_line_count = ta.document.line_count
 
