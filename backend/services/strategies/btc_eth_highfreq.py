@@ -461,9 +461,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             # Dynamic strategy selection
             selected, all_scores = self._select_sub_strategy(candidate)
             if selected is None:
+                reasons = " | ".join(f"{s.strategy.value}: {s.reason}" for s in all_scores)
                 logger.debug(
                     f"BtcEthHighFreq: no viable sub-strategy for market "
-                    f"{candidate.market.id} ({candidate.asset} {candidate.timeframe})"
+                    f"{candidate.market.id} ({candidate.asset} {candidate.timeframe}, "
+                    f"yes={candidate.yes_price:.3f} no={candidate.no_price:.3f} "
+                    f"liq=${candidate.market.liquidity:.0f}) — {reasons}"
                 )
                 continue
 
@@ -739,19 +742,25 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         Triggered when one side drops > 5% in the recent window. Buy the dumped
         side (now cheap), wait for partial recovery, then hedge with the other
         side. If the combined cost after hedge < target, there is profit.
+
+        For high-frequency up/down markets that open at 0.50/0.50, any
+        deviation from 0.50 on first observation represents a dump from
+        the opening price — we don't need historical snapshots to detect it.
         """
         history = self._get_history(c.market.id)
-        if history is None or not history.has_data:
-            return SubStrategyScore(
-                strategy=SubStrategy.DUMP_HEDGE,
-                score=0.0,
-                reason="No price history available yet",
-            )
 
-        yes_drop = history.max_drop_yes()
-        no_drop = history.max_drop_no()
-        max_drop = max(yes_drop, no_drop)
-        dumped_side = "YES" if yes_drop >= no_drop else "NO"
+        # For 15-min/1-hr up-or-down markets, the opening price is always 0.50.
+        # If we have no history yet, infer the "dump" from deviation off 0.50.
+        if history is None or not history.has_data:
+            yes_dev = 0.50 - c.yes_price  # positive if YES dropped below 0.50
+            no_dev = 0.50 - c.no_price    # positive if NO dropped below 0.50
+            max_drop = max(yes_dev, no_dev, 0.0)
+            dumped_side = "YES" if yes_dev >= no_dev else "NO"
+        else:
+            yes_drop = history.max_drop_yes()
+            no_drop = history.max_drop_no()
+            max_drop = max(yes_drop, no_drop)
+            dumped_side = "YES" if yes_drop >= no_drop else "NO"
 
         if max_drop < _dump_hedge_drop_pct():
             return SubStrategyScore(
@@ -763,26 +772,36 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 ),
             )
 
-        # Estimate combined cost if we buy the dumped side now and hedge
+        # Profit model for up-or-down markets: these are ~50/50 binary
+        # outcomes, so the fair value of each side is ~$0.50.  When one
+        # side dumps to e.g. $0.40, expected value = 0.50 - 0.40 = $0.10
+        # minus fees.  We can also attempt to hedge with the other side
+        # if combined < $1.00.
+        dumped_price = c.yes_price if dumped_side == "YES" else c.no_price
+        fair_value = 0.50  # up-or-down markets are coin flips
+        ev_profit = fair_value - dumped_price - self.fee
+
         combined = c.yes_price + c.no_price
-        if combined >= _DUMP_HEDGE_MAX_COMBINED:
+        # If combined < $1.00 there's also a guaranteed arb component
+        guaranteed_component = max(1.0 - combined - self.fee, 0.0)
+
+        if ev_profit <= 0 and guaranteed_component <= 0:
             return SubStrategyScore(
                 strategy=SubStrategy.DUMP_HEDGE,
                 score=0.0,
                 reason=(
-                    f"Combined {combined:.4f} too high for dump-hedge "
-                    f"(target < {_DUMP_HEDGE_MAX_COMBINED})"
+                    f"No profit after fees: dumped={dumped_side}@{dumped_price:.4f}, "
+                    f"EV profit={ev_profit:.4f}, combined={combined:.4f}"
                 ),
             )
 
-        net_profit = 1.0 - combined - self.fee
-
-        # Score: larger drop and larger profit = better
+        # Score: larger drop and larger EV profit = better
         base_score = max_drop * 200.0  # 5% drop -> 10 pts, 10% drop -> 20 pts
-        base_score += max(net_profit, 0) * 500.0  # reward profitable combined
+        base_score += max(ev_profit, 0) * 500.0  # reward EV-profitable dumps
+        base_score += guaranteed_component * 1000.0  # strongly reward guaranteed arb
 
         # Volatility bonus: higher volatility means more dump-hedge opportunities
-        volatility = history.recent_volatility()
+        volatility = history.recent_volatility() if (history and history.has_data) else 0.0
         base_score += volatility * 50.0
 
         # Liquidity matters: need to be able to fill quickly
@@ -795,14 +814,17 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             strategy=SubStrategy.DUMP_HEDGE,
             score=base_score,
             reason=(
-                f"Dump-hedge: {dumped_side} dropped {max_drop:.4f}, "
+                f"Dump-hedge: {dumped_side} dropped {max_drop:.4f} "
+                f"(price={dumped_price:.4f}), EV profit={ev_profit:.4f}, "
                 f"combined={combined:.4f}, volatility={volatility:.4f}"
             ),
             params={
                 "dumped_side": dumped_side,
                 "drop_amount": max_drop,
+                "dumped_price": dumped_price,
+                "ev_profit": ev_profit,
                 "combined_cost": combined,
-                "net_profit": net_profit,
+                "guaranteed_component": guaranteed_component,
                 "volatility": volatility,
                 "yes_price": c.yes_price,
                 "no_price": c.no_price,
@@ -1008,6 +1030,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         market = c.market
         dumped_side = params["dumped_side"]
         drop_amount = params["drop_amount"]
+        dumped_price = params.get("dumped_price", params["yes_price"] if dumped_side == "YES" else params["no_price"])
+        ev_profit = params.get("ev_profit", 0)
         yes_price = params["yes_price"]
         no_price = params["no_price"]
         combined = params["combined_cost"]
@@ -1020,7 +1044,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         for pos in positions:
             if pos["outcome"] == dumped_side:
                 pos["role"] = "primary"
-                pos["note"] = f"Dumped side (dropped {drop_amount:.4f})"
+                pos["note"] = f"Dumped side (dropped {drop_amount:.4f} to {dumped_price:.4f})"
             else:
                 pos["role"] = "hedge"
                 pos["note"] = "Hedge after partial recovery of primary"
@@ -1028,12 +1052,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         opp = self.create_opportunity(
             title=(
                 f"BTC/ETH HF Dump-Hedge: {c.asset} {c.timeframe} "
-                f"({dumped_side} dropped)"
+                f"({dumped_side} dropped to {dumped_price:.2f})"
             ),
             description=(
                 f"Dump-hedge on {c.asset} {c.timeframe} market. "
-                f"{dumped_side} dropped {drop_amount:.4f} — buy dumped side, "
-                f"then hedge. Combined=${combined:.4f}."
+                f"{dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f} — "
+                f"buy dumped side (EV profit ~${ev_profit:.4f}). "
+                f"Combined=${combined:.4f}."
             ),
             total_cost=combined,
             markets=[market],
