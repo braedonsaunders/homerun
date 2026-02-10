@@ -49,13 +49,13 @@ _ASSET_PATTERNS: dict[str, list[str]] = {
 
 _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
     "15min": [
-        "updown-15m",       # actual Polymarket slug pattern
-        "updown-15m-",      # with trailing timestamp
-        "15m-",             # short form in slugs (e.g. "btc…15m-17707…")
+        "updown-15m",  # actual Polymarket slug pattern
+        "updown-15m-",  # with trailing timestamp
+        "15m-",  # short form in slugs (e.g. "btc…15m-17707…")
         "15 min",
         "15-min",
         "15min",
-        "15m",              # bare short form
+        "15m",  # bare short form
         "fifteen min",
         "15 minute",
         "15-minute",
@@ -65,17 +65,17 @@ _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
         "quarter-hour",
     ],
     "1hr": [
-        "updown-1h",        # actual Polymarket slug pattern
-        "updown-1h-",       # with trailing timestamp
+        "updown-1h",  # actual Polymarket slug pattern
+        "updown-1h-",  # with trailing timestamp
         "1 hour",
         "1-hour",
         "1hr",
-        "1h-",              # short form in slugs
-        "1h",               # bare short form
+        "1h-",  # short form in slugs
+        "1h",  # bare short form
         "one hour",
         "60 min",
         "60-min",
-        "60m",              # short form
+        "60m",  # short form
         "60 minute",
         "60-minute",
         "60 minutes",
@@ -108,7 +108,7 @@ _SLUG_REGEX = re.compile(
     r"(btc|eth|sol|xrp|bitcoin|ethereum|solana|ripple)"
     r".*?"  # allow intervening words (non-greedy)
     r"(15[\s_-]?m(?:in(?:ute)?s?)?"  # "15m", "15min", "15-minute", "15 minutes", …
-    r"|1[\s_-]?h(?:(?:ou)?r)?"       # "1h", "1hr", "1hour", "1-h", …
+    r"|1[\s_-]?h(?:(?:ou)?r)?"  # "1h", "1hr", "1hour", "1-h", …
     r"|60[\s_-]?m(?:in(?:ute)?s?)?"
     r"|quarter[\s_-]?hour|hourly)",
     re.IGNORECASE,
@@ -467,7 +467,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 )
                 continue
 
-            scores_str = ", ".join(f"{s.strategy.value}={s.score:.1f}" for s in all_scores)
+            scores_str = ", ".join(
+                f"{s.strategy.value}={s.score:.1f}" for s in all_scores
+            )
             logger.info(
                 f"BtcEthHighFreq: market {candidate.market.id} "
                 f"({candidate.asset} {candidate.timeframe}) — "
