@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from config import settings
@@ -34,6 +35,11 @@ from services.news.semantic_matcher import MarketInfo, semantic_matcher
 from services.strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
+
+# Single-thread executor so all semantic_matcher + FAISS native calls run on
+# the same OS thread.  PyTorch / FAISS use thread-local state; dispatching
+# to arbitrary pool threads via the default executor causes segfaults.
+_MATCHER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="semantic")
 
 
 class NewsEdgeStrategy(BaseStrategy):
@@ -84,16 +90,23 @@ class NewsEdgeStrategy(BaseStrategy):
             if not market_infos:
                 return []
 
-            if not semantic_matcher._initialized:
-                await asyncio.to_thread(semantic_matcher.initialize)
+            loop = asyncio.get_running_loop()
 
-            await asyncio.to_thread(semantic_matcher.update_market_index, market_infos)
+            if not semantic_matcher._initialized:
+                await loop.run_in_executor(_MATCHER_EXECUTOR, semantic_matcher.initialize)
+
+            await loop.run_in_executor(
+                _MATCHER_EXECUTOR, semantic_matcher.update_market_index, market_infos
+            )
 
             # Step 3: Embed new articles
-            await asyncio.to_thread(semantic_matcher.embed_articles, all_articles)
+            await loop.run_in_executor(
+                _MATCHER_EXECUTOR, semantic_matcher.embed_articles, all_articles
+            )
 
             # Step 4: Match articles to markets
-            matches = await asyncio.to_thread(
+            matches = await loop.run_in_executor(
+                _MATCHER_EXECUTOR,
                 semantic_matcher.match_articles_to_markets,
                 all_articles,
                 3,
