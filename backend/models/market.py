@@ -48,6 +48,16 @@ class Market(BaseModel):
                 outcome_prices = [float(p) for p in json.loads(data["outcomePrices"])]
             except (json.JSONDecodeError, TypeError):
                 pass
+        # Binary markets (Up/Down, Yes/No) sometimes omit outcomePrices in API
+        if not outcome_prices and data.get("outcomes"):
+            outcomes_raw = data["outcomes"]
+            if isinstance(outcomes_raw, str):
+                try:
+                    outcomes_raw = json.loads(outcomes_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if isinstance(outcomes_raw, list) and len(outcomes_raw) == 2:
+                outcome_prices = [0.5, 0.5]  # Default for binary
 
         # Build tokens list
         tokens = []
@@ -68,8 +78,12 @@ class Market(BaseModel):
             active=data.get("active", True),
             closed=data.get("closed", False),
             neg_risk=data.get("negRisk", data.get("neg_risk", False)),
-            volume=float(data.get("volume", 0) or 0),
-            liquidity=float(data.get("liquidity", 0) or 0),
+            volume=float(
+                data.get("volume") or data.get("volumeNum") or 0
+            ),
+            liquidity=float(
+                data.get("liquidity") or data.get("liquidityNum") or 0
+            ),
             end_date=data.get("endDate"),
         )
 

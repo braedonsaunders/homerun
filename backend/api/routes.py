@@ -4,11 +4,50 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from typing import Optional
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
+from models.database import AsyncSessionLocal, StrategyPlugin
 from services import scanner, wallet_tracker, polymarket_client
 from services.kalshi_client import kalshi_client
+from services.plugin_loader import plugin_loader
 
 router = APIRouter()
+
+
+async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str]:
+    """Resolve strategy param to list of strategy type strings.
+
+    Accepts:
+        - Built-in strategy type: "basic", "negrisk", etc.
+        - Plugin slug: "plugin_<slug>" -> resolves to [slug]
+    """
+    if not strategy_param:
+        return []
+    strategy_param = strategy_param.strip().lower()
+
+    # Plugin strategy: "plugin_<slug>"
+    if strategy_param.startswith("plugin_"):
+        slug = strategy_param[7:]  # len("plugin_")
+        # Verify plugin exists and is enabled
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(StrategyPlugin).where(
+                    StrategyPlugin.slug == slug, StrategyPlugin.enabled == True
+                )
+            )
+            plugin = result.scalar_one_or_none()
+        if plugin:
+            return [slug]
+        return []
+
+    # Built-in strategy type
+    try:
+        return [StrategyType(strategy_param).value]
+    except ValueError:
+        # Could be a plugin slug used directly (without prefix)
+        if plugin_loader.get_plugin(strategy_param):
+            return [strategy_param]
+        return []
 
 
 # ==================== OPPORTUNITIES ====================
@@ -19,8 +58,9 @@ async def get_opportunities(
     response: Response,
     min_profit: float = Query(0.0, description="Minimum profit percentage"),
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
-    strategy: Optional[StrategyType] = Query(
-        None, description="Filter by strategy type"
+    strategy: Optional[str] = Query(
+        None,
+        description="Filter by strategy type (e.g. basic, negrisk) or plugin (plugin_<id>)",
     ),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
@@ -36,10 +76,11 @@ async def get_opportunities(
     offset: int = Query(0, description="Number of results to skip"),
 ):
     """Get current arbitrage opportunities"""
+    strategies = await _resolve_strategy_to_filter(strategy)
     filter = OpportunityFilter(
         min_profit=min_profit / 100,  # Convert from percentage
         max_risk=max_risk,
-        strategies=[strategy] if strategy else [],
+        strategies=strategies,
         min_liquidity=min_liquidity,
         category=category,
     )
@@ -117,109 +158,116 @@ async def search_polymarket_opportunities(
     q: str = Query(
         ..., min_length=1, description="Search query for Polymarket and Kalshi markets"
     ),
-    limit: int = Query(20, ge=1, le=50, description="Maximum results to return"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum results to return"),
 ):
     """
-    Search Polymarket and Kalshi for markets matching a keyword, then run
-    arbitrage detection strategies on the results. Returns opportunities
-    in the same format as the main /opportunities endpoint.
+    Fast keyword search across Polymarket and Kalshi.
+
+    Returns matching markets as lightweight opportunity-shaped objects
+    so the frontend can display them immediately.  Skips the expensive
+    price-fetching and full arbitrage-detection pipeline to keep the
+    response time under a few seconds.
     """
     import asyncio
 
     try:
-        # Search both platforms concurrently
-        poly_task = polymarket_client.search_events(q, limit=limit)
+        # Search Polymarket markets directly (fastest) and Kalshi concurrently
+        poly_task = polymarket_client.search_markets(q, limit=limit)
         kalshi_task = kalshi_client.search_events(q, limit=limit)
-        poly_events, kalshi_events = await asyncio.gather(
+        poly_markets, kalshi_events = await asyncio.gather(
             poly_task, kalshi_task, return_exceptions=True
         )
 
-        # Handle errors gracefully - use empty list if a platform fails
-        if isinstance(poly_events, BaseException):
-            poly_events = []
+        # Handle errors gracefully
+        if isinstance(poly_markets, BaseException):
+            poly_markets = []
         if isinstance(kalshi_events, BaseException):
             kalshi_events = []
 
-        events = list(poly_events) + list(kalshi_events)
+        # Collect Kalshi markets from events
+        kalshi_markets = []
+        for event in (kalshi_events or []):
+            kalshi_markets.extend(event.markets)
 
-        if not events:
+        all_markets = list(poly_markets) + kalshi_markets
+
+        # Filter out expired markets
+        now = datetime.now(timezone.utc)
+        all_markets = [
+            m for m in all_markets
+            if m.end_date is None or m.end_date > now
+        ]
+
+        if not all_markets:
             from fastapi.responses import JSONResponse
 
             response = JSONResponse(content=[])
             response.headers["X-Total-Count"] = "0"
             return response
 
-        # Collect all markets from events and filter out expired ones
-        now = datetime.now(timezone.utc)
-        all_markets = []
-        for event in events:
-            event.markets = [
-                m for m in event.markets if m.end_date is None or m.end_date > now
-            ]
-            all_markets.extend(event.markets)
-
-        # Separate markets by platform for price fetching
-        poly_token_ids = []
-        kalshi_token_ids = []
+        # Build lightweight opportunity objects from matched markets
+        # so the frontend can render them with the existing UI.
+        results: list[dict] = []
+        seen: set[str] = set()
         for market in all_markets:
-            if getattr(market, "platform", None) == "kalshi":
-                kalshi_token_ids.extend(market.clob_token_ids)
-            else:
-                poly_token_ids.extend(market.clob_token_ids)
+            mid = market.condition_id or market.question[:80]
+            if mid in seen:
+                continue
+            seen.add(mid)
 
-        # Fetch live prices from both platforms concurrently
-        prices = {}
-        price_tasks = []
-        if poly_token_ids:
-            price_tasks.append(polymarket_client.get_prices_batch(poly_token_ids[:200]))
-        if kalshi_token_ids:
-            price_tasks.append(kalshi_client.get_prices_batch(kalshi_token_ids[:200]))
+            platform = getattr(market, "platform", "polymarket") or "polymarket"
 
-        if price_tasks:
-            price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
-            for result in price_results:
-                if isinstance(result, dict):
-                    prices.update(result)
+            # Best-effort price from the market's own outcome data
+            yes_price = market.yes_price
+            no_price = market.no_price
 
-        # Run arbitrage detection strategies
-        all_opportunities: list[ArbitrageOpportunity] = []
-        for strategy in scanner.strategies:
-            try:
-                opps = strategy.detect(events, all_markets, prices)
-                all_opportunities.extend(opps)
-            except Exception:
-                pass
+            slug = market.slug or ""
+            category = ""
 
-        # Deduplicate and sort by ROI
-        seen_fingerprints: dict[str, ArbitrageOpportunity] = {}
-        for opp in all_opportunities:
-            market_ids = sorted(m.get("id", "") for m in opp.markets)
-            fingerprint = "|".join(market_ids)
-            if (
-                fingerprint not in seen_fingerprints
-                or opp.roi_percent > seen_fingerprints[fingerprint].roi_percent
-            ):
-                seen_fingerprints[fingerprint] = opp
-        all_opportunities = list(seen_fingerprints.values())
-        all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
+            results.append({
+                "id": f"search-{mid}",
+                "stable_id": f"search-{mid}",
+                "title": market.question,
+                "description": f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}",
+                "event_title": market.question,
+                "strategy": "search",
+                "total_cost": 0.0,
+                "expected_payout": 0.0,
+                "gross_profit": 0.0,
+                "fee": 0.0,
+                "net_profit": 0.0,
+                "roi_percent": 0.0,
+                "risk_score": 0.0,
+                "risk_factors": [],
+                "min_liquidity": float(market.volume or 0),
+                "max_position_size": 0.0,
+                "category": category,
+                "detected_at": datetime.utcnow().isoformat(),
+                "expires_at": market.end_date.isoformat() if market.end_date else None,
+                "resolution_date": market.end_date.isoformat() if market.end_date else None,
+                "platform": platform,
+                "positions_to_take": [],
+                "markets": [
+                    {
+                        "id": market.condition_id or "",
+                        "question": market.question,
+                        "slug": slug,
+                        "event_slug": "",
+                        "platform": platform,
+                        "yes_price": yes_price,
+                        "no_price": no_price,
+                        "volume": float(market.volume or 0),
+                    }
+                ],
+                "ai_analysis": None,
+            })
 
-        # Kick off AI scoring in background (non-blocking)
-        try:
-            from services.ai import get_llm_manager
+        results = results[:limit]
 
-            manager = get_llm_manager()
-            if manager.is_available():
-                asyncio.create_task(scanner._ai_score_opportunities(all_opportunities))
-        except Exception:
-            pass
-
-        total = len(all_opportunities)
         from fastapi.responses import JSONResponse
 
-        response = JSONResponse(
-            content=[o.model_dump(mode="json") for o in all_opportunities[:limit]]
-        )
-        response.headers["X-Total-Count"] = str(total)
+        response = JSONResponse(content=results)
+        response.headers["X-Total-Count"] = str(len(results))
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -260,7 +308,7 @@ async def get_opportunity_counts(
     strategy_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
     for opp in opportunities:
-        s = opp.strategy.value if hasattr(opp.strategy, "value") else str(opp.strategy)
+        s = opp.strategy
         strategy_counts[s] = strategy_counts.get(s, 0) + 1
         if opp.category:
             cat = opp.category.lower()
@@ -591,11 +639,40 @@ async def get_events(closed: bool = False, limit: int = 100, offset: int = 0):
 
 @router.get("/strategies")
 async def get_strategies():
-    """Get information about available strategies"""
-    return [
-        {"type": s.strategy_type.value, "name": s.name, "description": s.description}
+    """Get information about available strategies and plugins."""
+    builtin = [
+        {
+            "type": s.strategy_type if isinstance(s.strategy_type, str) else s.strategy_type.value,
+            "name": s.name,
+            "description": s.description,
+            "is_plugin": False,
+        }
         for s in scanner.strategies
     ]
+
+    # Append enabled plugins as real strategies
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(StrategyPlugin)
+            .where(StrategyPlugin.enabled == True)
+            .order_by(StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc())
+        )
+        plugins = result.scalars().all()
+
+    plugin_entries = [
+        {
+            "type": f"plugin_{p.slug}",
+            "name": p.name,
+            "description": p.description or f"Plugin strategy: {p.slug}",
+            "is_plugin": True,
+            "plugin_id": p.id,
+            "plugin_slug": p.slug,
+            "status": p.status,
+        }
+        for p in plugins
+    ]
+
+    return builtin + plugin_entries
 
 
 # ==================== TRADER DISCOVERY ====================

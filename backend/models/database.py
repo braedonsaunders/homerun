@@ -373,6 +373,32 @@ class OpportunityLifetime(Base):
     )
 
 
+# ==================== NEWS INTELLIGENCE ====================
+
+
+class NewsArticleCache(Base):
+    """Persisted news article cache for matching/search."""
+
+    __tablename__ = "news_article_cache"
+
+    article_id = Column(String, primary_key=True)
+    url = Column(Text, nullable=False)
+    title = Column(Text, nullable=False)
+    source = Column(String, nullable=True)
+    feed_source = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    summary = Column(Text, nullable=True)
+    published = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    embedding = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_news_cache_fetched_at", "fetched_at"),
+        Index("idx_news_cache_feed_source", "feed_source"),
+        Index("idx_news_cache_category", "category"),
+    )
+
+
 # ==================== ANOMALIES ====================
 
 
@@ -652,6 +678,40 @@ class AppSettings(Base):
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ==================== STRATEGY PLUGINS ====================
+
+
+class StrategyPlugin(Base):
+    """User-defined strategy plugins — full Python strategy implementations.
+
+    Each plugin is a complete strategy file defining a BaseStrategy subclass
+    with its own detect() method. Plugins run alongside built-in strategies
+    during each scan cycle, receiving the same events/markets/prices data.
+    """
+
+    __tablename__ = "strategy_plugins"
+
+    id = Column(String, primary_key=True)  # UUID
+    slug = Column(String, unique=True, nullable=False)  # Unique identifier e.g. "whale_follower"
+    name = Column(String, nullable=False)  # Display name (extracted from class or user-set)
+    description = Column(Text, nullable=True)  # Strategy description
+    source_code = Column(Text, nullable=False)  # Full Python source code
+    class_name = Column(String, nullable=True)  # Extracted strategy class name
+    enabled = Column(Boolean, default=True)
+    status = Column(String, default="unloaded")  # unloaded, loaded, error
+    error_message = Column(Text, nullable=True)  # Last load/validation error
+    config = Column(JSON, default=dict)  # User config overrides passed to plugin
+    version = Column(Integer, default=1)  # Bumped on each code edit
+    sort_order = Column(Integer, default=0)  # Display order
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_strategy_plugin_enabled", "enabled"),
+        Index("idx_strategy_plugin_slug", "slug"),
+    )
 
 
 # ==================== LLM MODELS CACHE ====================

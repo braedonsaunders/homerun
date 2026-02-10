@@ -126,6 +126,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'crypto_markets'>('arbitrage')
+  const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -160,6 +161,16 @@ function App() {
   const handleNavigateToAI = useCallback((section: string) => {
     setActiveTab('ai')
     window.dispatchEvent(new CustomEvent('navigate-ai-section', { detail: section }))
+  }, [])
+
+  // Navigate to news tab with a keyword search from an opportunity
+  const handleSearchNewsForOpportunity = useCallback((opp: Opportunity) => {
+    // Extract first meaningful keyword from title (skip strategy prefix)
+    const title = opp.event_title || opp.title || ''
+    // Take first 3-5 words as search keywords
+    const keywords = title.replace(/^(News Edge:|Basic Arb:|NegRisk:)\s*/i, '').split(/\s+/).slice(0, 4).join(' ')
+    setNewsSearchQuery(keywords)
+    setOpportunitiesView('news')
   }, [])
 
   // Callback for navigating to wallet analysis from WalletTracker
@@ -320,13 +331,22 @@ function App() {
   const polymarketResults = polymarketSearchData?.opportunities || []
   const polymarketTotal = polymarketSearchData?.total || 0
 
+  // Resolve strategy filter: plugins are their own strategy type
+  const strategyFilterSet = useMemo(() => {
+    if (!selectedStrategy) return null
+    // For plugins, the type is "plugin_<slug>" and the strategy on opportunities is the slug
+    const plugin = strategies.find((s) => s.type === selectedStrategy && s.is_plugin)
+    if (plugin?.plugin_slug) return new Set([plugin.plugin_slug])
+    return new Set([selectedStrategy])
+  }, [selectedStrategy, strategies])
+
   // Client-side sorting and filtering for polymarket search results
   const processedPolymarketResults = useMemo(() => {
     let results = [...polymarketResults]
 
-    // Apply strategy filter
-    if (selectedStrategy) {
-      results = results.filter(r => r.strategy === selectedStrategy)
+    // Apply strategy filter (plugins = any of underlying strategies)
+    if (strategyFilterSet) {
+      results = results.filter((r) => strategyFilterSet.has(r.strategy))
     }
 
     // Apply category filter
@@ -360,7 +380,7 @@ function App() {
     }
 
     return results
-  }, [polymarketResults, selectedStrategy, selectedCategory, sortBy, sortDir])
+  }, [polymarketResults, strategyFilterSet, selectedCategory, sortBy, sortDir])
 
   const polymarketTotalFiltered = processedPolymarketResults.length
   const polymarketTotalPages = Math.ceil(polymarketTotalFiltered / ITEMS_PER_PAGE)
@@ -667,7 +687,7 @@ function App() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setOpportunitiesView('arbitrage')}
+                      onClick={() => { setOpportunitiesView('arbitrage'); setNewsSearchQuery('') }}
                       className={cn(
                         "gap-1.5 text-xs h-8",
                         opportunitiesView === 'arbitrage'
@@ -797,7 +817,7 @@ function App() {
                       onOpenCopilot={handleOpenCopilotForOpportunity}
                     />
                   ) : opportunitiesView === 'news' ? (
-                    <NewsIntelligencePanel />
+                    <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} />
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
                       onNavigateToWallet={(address) => {
@@ -847,12 +867,12 @@ function App() {
                           {polySearchLoading ? (
                             <div className="flex items-center justify-center py-12">
                               <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
-                              <span className="ml-3 text-muted-foreground">Searching Polymarket & Kalshi and analyzing opportunities...</span>
+                              <span className="ml-3 text-muted-foreground">Searching Polymarket & Kalshi...</span>
                             </div>
                           ) : polymarketResults.length === 0 ? (
                             <div className="text-center py-12">
                               <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                              <p className="text-muted-foreground">No opportunities found for &quot;{polymarketSearchSubmitted}&quot;</p>
+                              <p className="text-muted-foreground">No markets found for &quot;{polymarketSearchSubmitted}&quot;</p>
                               <p className="text-sm text-muted-foreground/70 mt-1">
                                 Try different keywords or broader search terms
                               </p>
@@ -1224,6 +1244,7 @@ function App() {
                                       opportunity={opp}
                                       onExecute={setExecutingOpportunity}
                                       onOpenCopilot={handleOpenCopilotForOpportunity}
+                                      onSearchNews={handleSearchNewsForOpportunity}
                                     />
                                   ))}
                                 </div>
@@ -1513,6 +1534,11 @@ function App() {
         <SearchFiltersFlyout
           isOpen={searchFiltersOpen}
           onClose={() => setSearchFiltersOpen(false)}
+          onManagePlugins={() => {
+            setSearchFiltersOpen(false)
+            setActiveTab('settings')
+            window.dispatchEvent(new CustomEvent('navigate-settings-section', { detail: 'plugins' }))
+          }}
         />
       </div>
     </TooltipProvider>

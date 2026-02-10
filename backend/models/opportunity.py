@@ -85,7 +85,7 @@ class ArbitrageOpportunity(BaseModel):
     stable_id: str = Field(
         default_factory=lambda: ""
     )  # Persists across scans (no timestamp)
-    strategy: StrategyType
+    strategy: str  # StrategyType value for built-ins, plugin slug for plugins
     title: str
     description: str
 
@@ -139,7 +139,7 @@ class ArbitrageOpportunity(BaseModel):
         all_market_ids = sorted(m.get("id", "") for m in self.markets)
         market_fingerprint = "|".join(all_market_ids)
         market_hash = hashlib.sha256(market_fingerprint.encode()).hexdigest()[:16]
-        strategy_name = self.strategy.value
+        strategy_name = self.strategy
         if not self.stable_id:
             self.stable_id = f"{strategy_name}_{market_hash}"
         if not self.id:
@@ -153,6 +153,6 @@ class OpportunityFilter(BaseModel):
 
     min_profit: float = 0.0
     max_risk: float = 1.0
-    strategies: list[StrategyType] = []
+    strategies: list[str] = []  # StrategyType values or plugin slugs
     min_liquidity: float = 0.0
     category: Optional[str] = None

@@ -92,7 +92,7 @@ class OpportunityRecorder:
 
                     record = OpportunityHistory(
                         id=opp.id,
-                        strategy_type=opp.strategy.value,
+                        strategy_type=opp.strategy,
                         event_id=opp.event_id,
                         title=opp.title,
                         total_cost=opp.total_cost,

@@ -5,82 +5,156 @@ interface WebSocketMessage {
   data: any
 }
 
-export function useWebSocket(url: string) {
-  const [isConnected, setIsConnected] = useState(false)
-  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const intentionalCloseRef = useRef(false)
+// ─── Shared singleton so multiple hook consumers reuse one connection ───
 
-  const connect = useCallback(() => {
-    const readyState = wsRef.current?.readyState
-    if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return
+let sharedWs: WebSocket | null = null
+let sharedConnected = false
+let sharedReconnectTimeout: ReturnType<typeof setTimeout> | null = null
+let sharedReconnectAttempts = 0
+const MAX_RECONNECT_DELAY = 30_000
+const BASE_RECONNECT_DELAY = 2_000
+const listeners = new Set<(msg: WebSocketMessage) => void>()
+const statusListeners = new Set<(connected: boolean) => void>()
+let mountedCount = 0
+let disposed = false
 
-    intentionalCloseRef.current = false
+function notifyStatus(connected: boolean) {
+  sharedConnected = connected
+  statusListeners.forEach((fn) => fn(connected))
+}
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = url.startsWith('ws') ? url : `${protocol}//${window.location.host}${url}`
+function sharedConnect(url: string) {
+  if (disposed) return
+  if (sharedWs) {
+    const state = sharedWs.readyState
+    if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return
+  }
 
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = url.startsWith('ws') ? url : `${protocol}//${window.location.host}${url}`
+
+  try {
     const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      setIsConnected(true)
-      console.log('WebSocket connected')
+      if (disposed) {
+        ws.close()
+        return
+      }
+      sharedReconnectAttempts = 0
+      notifyStatus(true)
     }
 
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-        setLastMessage(message)
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e)
+        listeners.forEach((fn) => fn(message))
+      } catch {
+        // ignore malformed messages
       }
     }
 
     ws.onclose = () => {
-      setIsConnected(false)
-      console.log('WebSocket disconnected')
-
-      // Only reconnect if this was not an intentional close
-      if (!intentionalCloseRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connect()
-        }, 3000)
-      }
+      notifyStatus(false)
+      // Don't reconnect if all consumers have unmounted
+      if (disposed || mountedCount <= 0) return
+      scheduleReconnect(url)
     }
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
+    ws.onerror = () => {
+      // onerror is always followed by onclose — no action needed here
     }
 
-    wsRef.current = ws
-  }, [url])
+    sharedWs = ws
+  } catch {
+    // WebSocket constructor can throw on invalid URL etc.
+    scheduleReconnect(url)
+  }
+}
 
-  const disconnect = useCallback(() => {
-    intentionalCloseRef.current = true
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
-      reconnectTimeoutRef.current = null
-    }
-    wsRef.current?.close()
-    wsRef.current = null
-  }, [])
+function scheduleReconnect(url: string) {
+  if (sharedReconnectTimeout) clearTimeout(sharedReconnectTimeout)
+  if (disposed || mountedCount <= 0) return
 
-  const sendMessage = useCallback((message: object) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message))
-    }
-  }, [])
+  const delay = Math.min(
+    BASE_RECONNECT_DELAY * Math.pow(2, sharedReconnectAttempts),
+    MAX_RECONNECT_DELAY,
+  )
+  sharedReconnectAttempts++
+  sharedReconnectTimeout = setTimeout(() => {
+    sharedReconnectTimeout = null
+    sharedConnect(url)
+  }, delay)
+}
+
+function sharedDisconnect() {
+  disposed = true
+  if (sharedReconnectTimeout) {
+    clearTimeout(sharedReconnectTimeout)
+    sharedReconnectTimeout = null
+  }
+  if (sharedWs) {
+    try { sharedWs.close() } catch { /* ignore */ }
+    sharedWs = null
+  }
+  notifyStatus(false)
+}
+
+// ─── Hook ────────────────────────────────────────────────
+
+export function useWebSocket(url: string) {
+  const [isConnected, setIsConnected] = useState(sharedConnected)
+  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
+  const urlRef = useRef(url)
+  urlRef.current = url
 
   useEffect(() => {
-    connect()
-    return () => disconnect()
-  }, [connect, disconnect])
+    mountedCount++
+    disposed = false
+
+    // Register listeners
+    const onMsg = (msg: WebSocketMessage) => setLastMessage(msg)
+    const onStatus = (connected: boolean) => setIsConnected(connected)
+    listeners.add(onMsg)
+    statusListeners.add(onStatus)
+
+    // Start connection if not already connected
+    sharedConnect(urlRef.current)
+
+    return () => {
+      listeners.delete(onMsg)
+      statusListeners.delete(onStatus)
+      mountedCount--
+
+      // Tear down the shared connection when the last consumer unmounts
+      if (mountedCount <= 0) {
+        sharedDisconnect()
+        sharedReconnectAttempts = 0
+      }
+    }
+  }, []) // empty deps — url is read from ref
+
+  const sendMessage = useCallback((message: object) => {
+    if (sharedWs?.readyState === WebSocket.OPEN) {
+      sharedWs.send(JSON.stringify(message))
+    }
+  }, [])
+
+  const reconnect = useCallback(() => {
+    // Force a fresh connection
+    if (sharedWs) {
+      try { sharedWs.close() } catch { /* ignore */ }
+      sharedWs = null
+    }
+    sharedReconnectAttempts = 0
+    disposed = false
+    sharedConnect(urlRef.current)
+  }, [])
 
   return {
     isConnected,
     lastMessage,
     sendMessage,
-    reconnect: connect,
+    reconnect,
   }
 }

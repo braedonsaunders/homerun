@@ -296,8 +296,9 @@ class PolymarketClient:
     ) -> list[Event]:
         """Search events on Polymarket by keyword using Gamma API text search.
 
-        Searches by slug, title, and tag concurrently, then merges and
-        deduplicates results.
+        Uses the Strapi ``_q`` full-text search parameter for fast, broad
+        matching, supplemented by a ``slug_contains`` lookup.  Both requests
+        run concurrently and results are merged/deduplicated.
         """
         base_params = {
             "closed": str(closed).lower(),
@@ -318,23 +319,62 @@ class PolymarketClient:
             except Exception:
                 return []
 
-        # Search by slug, title, and tag concurrently
-        slug_results, title_results, tag_results = await asyncio.gather(
-            _fetch({"slug": slug_query}),
-            _fetch({"title": query}),
-            _fetch({"tag": query}),
+        # Use Strapi's _q full-text search AND slug_contains concurrently
+        text_results, slug_results = await asyncio.gather(
+            _fetch({"_q": query}),
+            _fetch({"slug_contains": slug_query}),
         )
 
         # Merge and deduplicate
         seen_ids: set[str] = set()
         combined: list[dict] = []
-        for item in slug_results + title_results + tag_results:
+        for item in text_results + slug_results:
             eid = str(item.get("id", ""))
             if eid and eid not in seen_ids:
                 seen_ids.add(eid)
                 combined.append(item)
 
         return [Event.from_gamma_response(e) for e in combined[:limit]]
+
+    async def search_markets(
+        self, query: str, limit: int = 50, closed: bool = False
+    ) -> list[Market]:
+        """Search markets directly by keyword using Gamma API full-text search.
+
+        Faster than searching events when the caller only needs market-level
+        data (e.g. for a quick search results page).
+        """
+        slug_query = query.lower().replace(" ", "-")
+
+        async def _fetch(extra_params: dict) -> list[dict]:
+            try:
+                resp = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets",
+                    params={
+                        "closed": str(closed).lower(),
+                        "active": "true",
+                        "limit": limit,
+                        **extra_params,
+                    },
+                )
+                return resp.json() if resp.status_code == 200 else []
+            except Exception:
+                return []
+
+        text_results, slug_results = await asyncio.gather(
+            _fetch({"_q": query}),
+            _fetch({"slug_contains": slug_query}),
+        )
+
+        seen_ids: set[str] = set()
+        combined: list[dict] = []
+        for item in text_results + slug_results:
+            mid = str(item.get("id", "") or item.get("condition_id", ""))
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                combined.append(item)
+
+        return [Market.from_gamma_response(m) for m in combined[:limit]]
 
     async def get_event_by_slug(self, slug: str) -> Optional[Event]:
         """Get a specific event by slug"""
@@ -536,17 +576,24 @@ class PolymarketClient:
                     market_info = self._market_cache.get(f"token:{asset_id}")
 
             enriched_trade = {**trade}
+            # Prefer Data API native fields (title, slug, eventSlug) - they match the trade.
+            # Only use Gamma lookup to fill in gaps; Gamma can return wrong/archived markets.
+            api_title = trade.get("title", "")
+            api_slug = trade.get("slug", "")
+            api_event_slug = trade.get("eventSlug", trade.get("event_slug", ""))
             if market_info:
-                enriched_trade["market_title"] = market_info.get("question", "")
-                enriched_trade["market_slug"] = market_info.get("slug", "")
-                enriched_trade["event_slug"] = market_info.get("event_slug", "")
-                # Use groupItemTitle if available (for multi-outcome markets)
-                if market_info.get("groupItemTitle"):
-                    enriched_trade["market_title"] = market_info["groupItemTitle"]
+                enriched_trade["market_title"] = (
+                    api_title
+                    or (market_info.get("groupItemTitle") or market_info.get("question", ""))
+                )
+                enriched_trade["market_slug"] = api_slug or market_info.get("slug", "")
+                enriched_trade["event_slug"] = api_event_slug or market_info.get(
+                    "event_slug", ""
+                )
             else:
-                enriched_trade["market_title"] = ""
-                enriched_trade["market_slug"] = ""
-                enriched_trade["event_slug"] = ""
+                enriched_trade["market_title"] = api_title
+                enriched_trade["market_slug"] = api_slug
+                enriched_trade["event_slug"] = api_event_slug
 
             # Normalize timestamp to ISO format
             ts = (

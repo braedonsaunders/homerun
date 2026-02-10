@@ -21,6 +21,9 @@ import {
   BarChart,
   ChevronDown,
   ChevronRight,
+  Puzzle,
+  Settings,
+  ExternalLink,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -31,6 +34,9 @@ import { Switch } from './ui/switch'
 import {
   getSettings,
   updateSettings,
+  getPlugins,
+  updatePlugin,
+  type StrategyPlugin,
 } from '../services/api'
 
 // ==================== TYPES ====================
@@ -219,7 +225,15 @@ function CollapsibleSection({
 
 // ==================== MAIN COMPONENT ====================
 
-export default function SearchFiltersFlyout({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+export default function SearchFiltersFlyout({
+  isOpen,
+  onClose,
+  onManagePlugins,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  onManagePlugins?: () => void
+}) {
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [form, setForm] = useState(DEFAULTS)
 
@@ -229,6 +243,25 @@ export default function SearchFiltersFlyout({ isOpen, onClose }: { isOpen: boole
     queryKey: ['settings'],
     queryFn: getSettings,
   })
+
+  const { data: plugins = [] } = useQuery({
+    queryKey: ['plugins'],
+    queryFn: getPlugins,
+    enabled: isOpen,
+  })
+
+  const updatePluginMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      updatePlugin(id, { enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      queryClient.invalidateQueries({ queryKey: ['strategies'] })
+    },
+  })
+
+  const togglePlugin = (plugin: StrategyPlugin) => {
+    updatePluginMutation.mutate({ id: plugin.id, enabled: !plugin.enabled })
+  }
 
   useEffect(() => {
     if (settings?.search_filters) {
@@ -272,7 +305,9 @@ export default function SearchFiltersFlyout({ isOpen, onClose }: { isOpen: boole
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-orange-500" />
             <h3 className="text-sm font-semibold">Opportunity Filters</h3>
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">18 strategies</span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+              {18 + plugins.length} strategies
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending} className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white">
@@ -684,6 +719,80 @@ export default function SearchFiltersFlyout({ isOpen, onClose }: { isOpen: boole
                 <NumericField label="Min Edge" help="Min fair-value edge to trade" value={form.stat_arb_min_edge} onChange={(v) => set('stat_arb_min_edge', v)} min={0} max={1} step={0.01} disabled={!form.stat_arb_enabled} />
               </div>
             </div>
+          </CollapsibleSection>
+
+          {/* ============================================================ */}
+          {/* SECTION 9: STRATEGY PLUGINS */}
+          {/* ============================================================ */}
+          <CollapsibleSection
+            title="Strategy Plugins"
+            icon={Puzzle}
+            color="text-violet-500"
+            count={plugins.length}
+            defaultOpen={plugins.length > 0}
+          >
+            <p className="text-[10px] text-muted-foreground/60 -mt-1">
+              User-defined strategy groups appear in the Strategy filter on the Opportunities page. Enable plugins to combine multiple strategies into one filter.
+            </p>
+            {plugins.length === 0 ? (
+              <div className="rounded-lg bg-muted/20 p-4 text-center">
+                <Puzzle className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+                <p className="text-xs text-muted-foreground">No plugins yet</p>
+                <p className="text-[10px] text-muted-foreground/70 mt-1">Create strategy groups in Settings</p>
+                {onManagePlugins && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onManagePlugins}
+                    className="mt-3 gap-1.5 text-[10px]"
+                  >
+                    <Settings className="w-3 h-3" />
+                    Manage Plugins
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {plugins.map((plugin) => (
+                  <div
+                    key={plugin.id}
+                    className="rounded-lg bg-muted/20 p-2.5 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <Puzzle className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                        <span className="text-[11px] font-medium truncate">{plugin.name}</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/10 text-violet-400 shrink-0">
+                          {plugin.slug}
+                        </span>
+                      </div>
+                      {plugin.description && (
+                        <p className="text-[10px] text-muted-foreground/60 mt-0.5 line-clamp-2">
+                          {plugin.description}
+                        </p>
+                      )}
+                    </div>
+                    <Switch
+                      checked={plugin.enabled}
+                      onCheckedChange={() => togglePlugin(plugin)}
+                      className="scale-75 shrink-0"
+                      disabled={updatePluginMutation.isPending}
+                    />
+                  </div>
+                ))}
+                {onManagePlugins && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={onManagePlugins}
+                    className="w-full gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Manage Plugins in Settings
+                  </Button>
+                )}
+              </div>
+            )}
           </CollapsibleSection>
 
           {/* Bottom Save */}

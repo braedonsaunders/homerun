@@ -142,7 +142,7 @@ class DecayAnalyzer:
                 db_id = str(uuid.uuid4())
                 tracked = _TrackedOpportunity(
                     opportunity_id=oid,
-                    strategy_type=opp.strategy.value,
+                    strategy_type=opp.strategy,
                     roi_at_detection=opp.roi_percent,
                     liquidity_at_detection=opp.min_liquidity,
                     first_seen=now,
@@ -252,7 +252,7 @@ class DecayAnalyzer:
         Each factor produces a sub-score in ``[0, 1]``; the final score is
         a weighted combination clamped to ``[0, 1]``.
         """
-        strategy_key = opportunity.strategy.value
+        strategy_key = opportunity.strategy
         stats = await self.get_decay_stats(strategy_key)
 
         # --- Factor 1: strategy-based decay speed ---

@@ -162,7 +162,7 @@ def extract_features(opp: ArbitrageOpportunity) -> dict[str, float]:
     features["day_of_week"] = float(now.weekday())
 
     # --- One-hot: strategy -------------------------------------------------
-    strategy_val = opp.strategy.value if opp.strategy else ""
+    strategy_val = opp.strategy if opp.strategy else ""
     for s in _STRATEGY_TYPES:
         features[f"strategy_{s}"] = 1.0 if strategy_val == s else 0.0
 
@@ -771,7 +771,7 @@ class MLClassifier:
                 log_entry = MLPredictionLog(
                     id=str(uuid.uuid4()),
                     opportunity_id=opp.id,
-                    strategy_type=opp.strategy.value if opp.strategy else "unknown",
+                    strategy_type=opp.strategy if opp.strategy else "unknown",
                     features=features,
                     probability=result["probability"],
                     recommendation=result["recommendation"],

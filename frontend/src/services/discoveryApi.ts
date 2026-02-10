@@ -19,6 +19,8 @@ export interface DiscoveredWallet {
   rolling_pnl: Record<string, number> | null
   rolling_roi: Record<string, number> | null
   rolling_win_rate: Record<string, number> | null
+  rolling_trade_count: Record<string, number> | null
+  rolling_sharpe: Record<string, number | null> | null
   anomaly_score: number
   is_bot: boolean
   is_profitable: boolean
@@ -32,6 +34,12 @@ export interface DiscoveredWallet {
   trades_per_day: number
   unique_markets: number
   last_analyzed_at: string | null
+  // Period-specific metrics (populated when time_period filter is active)
+  period_pnl?: number
+  period_roi?: number
+  period_win_rate?: number
+  period_trades?: number
+  period_sharpe?: number | null
 }
 
 export interface ConfluenceSignal {
@@ -89,6 +97,7 @@ export const discoveryApi = {
     sort_dir?: string
     tags?: string
     recommendation?: string
+    time_period?: string
   } = {}) => {
     const { data } = await axios.get(`${API_BASE}/leaderboard`, { params })
     return data

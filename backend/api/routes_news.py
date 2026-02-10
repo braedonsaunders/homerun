@@ -158,9 +158,9 @@ async def trigger_news_fetch():
 
 @router.get("/news/feed/articles")
 async def get_articles(
-    max_age_hours: int = Query(24, ge=1, le=168),
+    max_age_hours: int = Query(168, ge=1, le=336),
     source: Optional[str] = Query(None, description="Filter by feed source"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=500),
 ):
     """Get articles currently in the news feed store."""
     from services.news.feed_service import news_feed_service
@@ -188,6 +188,39 @@ async def get_articles(
                 "fetched_at": a.fetched_at.isoformat(),
             }
             for a in articles[:limit]
+        ],
+    }
+
+
+@router.get("/news/feed/search")
+async def search_articles(
+    q: str = Query(..., min_length=1, description="Keyword to search"),
+    max_age_hours: int = Query(168, ge=1, le=336),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Search news articles by keyword in title, summary, or category."""
+    from services.news.feed_service import news_feed_service
+
+    results = news_feed_service.search_articles(
+        query=q, max_age_hours=max_age_hours, limit=limit
+    )
+    return {
+        "query": q,
+        "total": len(results),
+        "articles": [
+            {
+                "article_id": a.article_id,
+                "title": a.title,
+                "source": a.source,
+                "feed_source": a.feed_source,
+                "url": a.url,
+                "published": a.published.isoformat() if a.published else None,
+                "category": a.category,
+                "summary": a.summary[:200] if a.summary else "",
+                "has_embedding": a.embedding is not None,
+                "fetched_at": a.fetched_at.isoformat(),
+            }
+            for a in results
         ],
     }
 

@@ -20,6 +20,7 @@ import {
   UserPlus,
   DollarSign,
   ArrowUpRight,
+  Clock,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -54,7 +55,17 @@ type SortDir = 'asc' | 'desc'
 
 type RecommendationFilter = '' | 'copy_candidate' | 'monitor' | 'avoid'
 
+type TimePeriod = '24h' | '7d' | '30d' | '90d' | 'all'
+
 // ==================== CONSTANTS ====================
+
+const TIME_PERIODS: { value: TimePeriod; label: string; description: string }[] = [
+  { value: '24h', label: '24H', description: 'last 24 hours' },
+  { value: '7d', label: '7D', description: 'last 7 days' },
+  { value: '30d', label: '1M', description: 'last 30 days' },
+  { value: '90d', label: '3M', description: 'last 90 days' },
+  { value: 'all', label: 'All', description: 'all time' },
+]
 
 const RECOMMENDATION_COLORS: Record<string, string> = {
   copy_candidate: 'bg-green-500/15 text-green-400 border-green-500/20',
@@ -134,6 +145,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
   const [tagSortBy, setTagSortBy] = useState<SortField>('rank_score')
   const [tagSortDir, setTagSortDir] = useState<SortDir>('desc')
   const [tagPage, setTagPage] = useState(0)
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>('all')
+  const [tagTimePeriod, setTagTimePeriod] = useState<TimePeriod>('all')
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [confluenceMinStrength, setConfluenceMinStrength] = useState(0)
   const queryClient = useQueryClient()
@@ -156,7 +169,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
   // Reset page on filter changes
   useEffect(() => {
     setCurrentPage(0)
-  }, [sortBy, sortDir, minTrades, minPnl, recommendationFilter, tagFilter])
+  }, [sortBy, sortDir, minTrades, minPnl, recommendationFilter, tagFilter, timePeriod])
 
   // ==================== QUERIES ====================
 
@@ -167,7 +180,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
   })
 
   const { data: leaderboardData, isLoading: leaderboardLoading } = useQuery({
-    queryKey: ['discovery-leaderboard', sortBy, sortDir, currentPage, minTrades, minPnl, recommendationFilter, tagFilter],
+    queryKey: ['discovery-leaderboard', sortBy, sortDir, currentPage, minTrades, minPnl, recommendationFilter, tagFilter, timePeriod],
     queryFn: () => discoveryApi.getLeaderboard({
       sort_by: sortBy,
       sort_dir: sortDir,
@@ -177,12 +190,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
       min_pnl: minPnl || undefined,
       recommendation: recommendationFilter || undefined,
       tags: tagFilter || undefined,
+      time_period: timePeriod !== 'all' ? timePeriod : undefined,
     }),
     enabled: activeTab === 'leaderboard',
   })
 
   const wallets: DiscoveredWallet[] = leaderboardData?.wallets || leaderboardData || []
   const totalWallets: number = leaderboardData?.total || wallets.length
+  const isWindowActive = timePeriod !== 'all' && leaderboardData?.window_key
 
   const { data: confluenceSignals = [], isLoading: confluenceLoading } = useQuery<ConfluenceSignal[]>({
     queryKey: ['discovery-confluence', confluenceMinStrength],
@@ -199,7 +214,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
   const tagFilterString = tagFilters.join(',')
 
   const { data: tagLeaderboardData, isLoading: tagWalletsLoading } = useQuery({
-    queryKey: ['discovery-tags-leaderboard', tagSortBy, tagSortDir, tagPage, tagFilterString],
+    queryKey: ['discovery-tags-leaderboard', tagSortBy, tagSortDir, tagPage, tagFilterString, tagTimePeriod],
     queryFn: () => discoveryApi.getLeaderboard({
       sort_by: tagSortBy,
       sort_dir: tagSortDir,
@@ -207,12 +222,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
       offset: tagPage * ITEMS_PER_PAGE,
       min_trades: 0,
       tags: tagFilterString || undefined,
+      time_period: tagTimePeriod !== 'all' ? tagTimePeriod : undefined,
     }),
     enabled: activeTab === 'tags',
   })
 
   const tagWallets: DiscoveredWallet[] = tagLeaderboardData?.wallets || tagLeaderboardData || []
   const tagTotalWallets: number = tagLeaderboardData?.total || tagWallets.length
+  const isTagWindowActive = tagTimePeriod !== 'all' && tagLeaderboardData?.window_key
 
   // ==================== MUTATIONS ====================
 
@@ -461,6 +478,35 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
       {/* ==================== LEADERBOARD TAB ==================== */}
       {activeTab === 'leaderboard' && (
         <div className="space-y-4">
+          {/* Time Period Filter */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Period</span>
+            </div>
+            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 border border-border">
+              {TIME_PERIODS.map(tp => (
+                <button
+                  key={tp.value}
+                  onClick={() => setTimePeriod(tp.value)}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-all',
+                    timePeriod === tp.value
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  )}
+                >
+                  {tp.label}
+                </button>
+              ))}
+            </div>
+            {timePeriod !== 'all' && (
+              <span className="text-[10px] text-muted-foreground/70">
+                Ranked by trading performance in the {TIME_PERIODS.find(p => p.value === timePeriod)?.description}
+              </span>
+            )}
+          </div>
+
           {/* Filters */}
           <div className="flex items-center gap-4 flex-wrap">
             <div className="w-36">
@@ -537,7 +583,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead>
                         <SortButton
                           field="total_pnl"
-                          label="PnL"
+                          label={isWindowActive ? 'Period PnL' : 'PnL'}
                           currentSort={sortBy}
                           currentDir={sortDir}
                           onSort={handleSort}
@@ -546,7 +592,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead>
                         <SortButton
                           field="win_rate"
-                          label="Win Rate"
+                          label={isWindowActive ? 'Period WR' : 'Win Rate'}
                           currentSort={sortBy}
                           currentDir={sortDir}
                           onSort={handleSort}
@@ -555,7 +601,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead>
                         <SortButton
                           field="sharpe_ratio"
-                          label="Sharpe"
+                          label={isWindowActive ? 'Period Sharpe' : 'Sharpe'}
                           currentSort={sortBy}
                           currentDir={sortDir}
                           onSort={handleSort}
@@ -564,7 +610,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead>
                         <SortButton
                           field="total_trades"
-                          label="Trades"
+                          label={isWindowActive ? 'Period Trades' : 'Trades'}
                           currentSort={sortBy}
                           currentDir={sortDir}
                           onSort={handleSort}
@@ -573,7 +619,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead>
                         <SortButton
                           field="avg_roi"
-                          label="Avg ROI"
+                          label={isWindowActive ? 'Period ROI' : 'Avg ROI'}
                           currentSort={sortBy}
                           currentDir={sortDir}
                           onSort={handleSort}
@@ -595,6 +641,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                         onAnalyze={onAnalyzeWallet}
                         onTrack={(address, username) => trackWalletMutation.mutate({ address, username })}
                         isTracking={trackWalletMutation.isPending}
+                        useWindowMetrics={!!isWindowActive}
                       />
                     ))}
                   </TableBody>
@@ -705,6 +752,35 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
       {/* ==================== TAGS TAB ==================== */}
       {activeTab === 'tags' && (
         <div className="space-y-4">
+          {/* Time Period Filter for Tags */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Period</span>
+            </div>
+            <div className="flex items-center bg-muted/50 rounded-lg p-0.5 border border-border">
+              {TIME_PERIODS.map(tp => (
+                <button
+                  key={tp.value}
+                  onClick={() => { setTagTimePeriod(tp.value); setTagPage(0) }}
+                  className={cn(
+                    'px-3 py-1.5 rounded-md text-xs font-medium transition-all',
+                    tagTimePeriod === tp.value
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  )}
+                >
+                  {tp.label}
+                </button>
+              ))}
+            </div>
+            {tagTimePeriod !== 'all' && (
+              <span className="text-[10px] text-muted-foreground/70">
+                Ranked by trading performance in the {TIME_PERIODS.find(p => p.value === tagTimePeriod)?.description}
+              </span>
+            )}
+          </div>
+
           {/* Tag Filters */}
           {tagsLoading ? (
             <div className="flex items-center justify-center py-4">
@@ -780,19 +856,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead className="w-12">#</TableHead>
                       <TableHead className="min-w-[180px]">Trader</TableHead>
                       <TableHead>
-                        <SortButton field="total_pnl" label="PnL" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                        <SortButton field="total_pnl" label={isTagWindowActive ? 'Period PnL' : 'PnL'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>
-                        <SortButton field="win_rate" label="Win Rate" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                        <SortButton field="win_rate" label={isTagWindowActive ? 'Period WR' : 'Win Rate'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>
-                        <SortButton field="sharpe_ratio" label="Sharpe" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                        <SortButton field="sharpe_ratio" label={isTagWindowActive ? 'Period Sharpe' : 'Sharpe'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>
-                        <SortButton field="total_trades" label="Trades" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                        <SortButton field="total_trades" label={isTagWindowActive ? 'Period Trades' : 'Trades'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>
-                        <SortButton field="avg_roi" label="Avg ROI" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                        <SortButton field="avg_roi" label={isTagWindowActive ? 'Period ROI' : 'Avg ROI'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>Tags</TableHead>
                       <TableHead>Rec.</TableHead>
@@ -810,6 +886,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                         onAnalyze={onAnalyzeWallet}
                         onTrack={(address, username) => trackWalletMutation.mutate({ address, username })}
                         isTracking={trackWalletMutation.isPending}
+                        useWindowMetrics={!!isTagWindowActive}
                       />
                     ))}
                   </TableBody>
@@ -965,6 +1042,7 @@ function LeaderboardRow({
   onAnalyze,
   onTrack,
   isTracking,
+  useWindowMetrics,
 }: {
   wallet: DiscoveredWallet
   rank: number
@@ -973,8 +1051,16 @@ function LeaderboardRow({
   onAnalyze?: (address: string, username?: string) => void
   onTrack?: (address: string, username?: string | null) => void
   isTracking?: boolean
+  useWindowMetrics?: boolean
 }) {
-  const rankDisplay = wallet.rank_position || rank
+  const rankDisplay = useWindowMetrics ? rank : (wallet.rank_position || rank)
+
+  // Use period-specific metrics when a rolling window is active
+  const pnl = useWindowMetrics && wallet.period_pnl != null ? wallet.period_pnl : wallet.total_pnl
+  const winRate = useWindowMetrics && wallet.period_win_rate != null ? wallet.period_win_rate : wallet.win_rate
+  const sharpe = useWindowMetrics ? (wallet.period_sharpe ?? wallet.sharpe_ratio) : wallet.sharpe_ratio
+  const trades = useWindowMetrics && wallet.period_trades != null ? wallet.period_trades : wallet.total_trades
+  const roi = useWindowMetrics && wallet.period_roi != null ? wallet.period_roi : wallet.avg_roi
 
   return (
     <TableRow>
@@ -1021,7 +1107,14 @@ function LeaderboardRow({
 
       {/* PnL */}
       <TableCell>
-        <PnlDisplay value={wallet.total_pnl} />
+        <div>
+          <PnlDisplay value={pnl} />
+          {useWindowMetrics && wallet.period_pnl != null && (
+            <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+              All: ${formatPnl(wallet.total_pnl)}
+            </div>
+          )}
+        </div>
       </TableCell>
 
       {/* Win Rate */}
@@ -1029,24 +1122,26 @@ function LeaderboardRow({
         <div className="flex items-center gap-2">
           <span className={cn(
             'font-medium text-sm',
-            wallet.win_rate >= 60 ? 'text-green-400' : wallet.win_rate >= 45 ? 'text-yellow-400' : 'text-red-400'
+            winRate >= 60 ? 'text-green-400' : winRate >= 45 ? 'text-yellow-400' : 'text-red-400'
           )}>
-            {formatPercent(wallet.win_rate)}
+            {formatPercent(winRate)}
           </span>
-          <span className="text-[10px] text-muted-foreground">
-            {wallet.wins}W/{wallet.losses}L
-          </span>
+          {!useWindowMetrics && (
+            <span className="text-[10px] text-muted-foreground">
+              {wallet.wins}W/{wallet.losses}L
+            </span>
+          )}
         </div>
       </TableCell>
 
       {/* Sharpe */}
       <TableCell>
-        {wallet.sharpe_ratio != null ? (
+        {sharpe != null ? (
           <span className={cn(
             'font-mono text-sm',
-            wallet.sharpe_ratio >= 2 ? 'text-green-400' : wallet.sharpe_ratio >= 1 ? 'text-yellow-400' : 'text-muted-foreground'
+            sharpe >= 2 ? 'text-green-400' : sharpe >= 1 ? 'text-yellow-400' : 'text-muted-foreground'
           )}>
-            {wallet.sharpe_ratio.toFixed(2)}
+            {sharpe.toFixed(2)}
           </span>
         ) : (
           <span className="text-muted-foreground text-xs">--</span>
@@ -1055,19 +1150,21 @@ function LeaderboardRow({
 
       {/* Trades */}
       <TableCell className="text-muted-foreground text-sm">
-        {wallet.total_trades}
-        <span className="text-[10px] text-muted-foreground/70 ml-1">
-          ({wallet.trades_per_day.toFixed(1)}/d)
-        </span>
+        {trades}
+        {!useWindowMetrics && (
+          <span className="text-[10px] text-muted-foreground/70 ml-1">
+            ({wallet.trades_per_day.toFixed(1)}/d)
+          </span>
+        )}
       </TableCell>
 
       {/* Avg ROI */}
       <TableCell>
         <span className={cn(
           'font-mono text-sm',
-          wallet.avg_roi >= 0 ? 'text-green-400' : 'text-red-400'
+          roi >= 0 ? 'text-green-400' : 'text-red-400'
         )}>
-          {wallet.avg_roi >= 0 ? '+' : ''}{formatPercent(wallet.avg_roi)}
+          {roi >= 0 ? '+' : ''}{formatPercent(roi)}
         </span>
       </TableCell>
 

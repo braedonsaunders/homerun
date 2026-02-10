@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 from datetime import datetime, timezone
 
-from models import Market, Event, ArbitrageOpportunity, StrategyType
+from models import Market, Event, ArbitrageOpportunity
 from config import settings
 from services.fee_model import fee_model
 
@@ -22,9 +22,13 @@ def make_aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 class BaseStrategy(ABC):
-    """Base class for arbitrage detection strategies"""
+    """Base class for arbitrage detection strategies.
 
-    strategy_type: StrategyType
+    Built-in strategies set strategy_type to a StrategyType enum value.
+    Plugin strategies set strategy_type to their unique slug string.
+    """
+
+    strategy_type: str  # StrategyType value or plugin slug
     name: str
     description: str
 
@@ -134,14 +138,18 @@ class BaseStrategy(ABC):
         vwap_total_cost: Optional[float] = None,  # Realistic cost from order book
         spread_bps: Optional[float] = None,  # Actual spread in basis points
         fill_probability: Optional[float] = None,  # Probability all legs fill
+        # Strategy-specific threshold overrides (high-freq crypto uses thinner books)
+        min_liquidity_hard: Optional[float] = None,
+        min_position_size: Optional[float] = None,
+        min_absolute_profit: Optional[float] = None,
     ) -> Optional[ArbitrageOpportunity]:
         """Create an ArbitrageOpportunity if profitable.
 
         Applies hard rejection filters:
         1. ROI must exceed MIN_PROFIT_THRESHOLD
-        2. Min liquidity must exceed MIN_LIQUIDITY_HARD
-        3. Max position size must exceed MIN_POSITION_SIZE
-        4. Absolute profit on max position must exceed MIN_ABSOLUTE_PROFIT
+        2. Min liquidity must exceed MIN_LIQUIDITY_HARD (or min_liquidity_hard override)
+        3. Max position size must exceed MIN_POSITION_SIZE (or min_position_size override)
+        4. Absolute profit on max position must exceed MIN_ABSOLUTE_PROFIT (or override)
         5. Annualized ROI must exceed MIN_ANNUALIZED_ROI (if resolution date known)
         6. Resolution must be within MAX_RESOLUTION_MONTHS
         """
@@ -207,12 +215,27 @@ class BaseStrategy(ABC):
         min_liquidity = min((m.liquidity for m in markets), default=0)
         max_position = min_liquidity * 0.1  # Don't exceed 10% of liquidity
 
+        # Resolve thresholds (allow strategy-specific overrides for thin-book markets)
+        eff_min_liquidity = (
+            min_liquidity_hard
+            if min_liquidity_hard is not None
+            else settings.MIN_LIQUIDITY_HARD
+        )
+        eff_min_position = (
+            min_position_size if min_position_size is not None else settings.MIN_POSITION_SIZE
+        )
+        eff_min_absolute = (
+            min_absolute_profit
+            if min_absolute_profit is not None
+            else settings.MIN_ABSOLUTE_PROFIT
+        )
+
         # --- Hard filter: minimum liquidity ---
-        if min_liquidity < settings.MIN_LIQUIDITY_HARD:
+        if min_liquidity < eff_min_liquidity:
             return None
 
         # --- Hard filter: minimum position size ---
-        if max_position < settings.MIN_POSITION_SIZE:
+        if max_position < eff_min_position:
             return None
 
         # --- Hard filter: minimum absolute profit ---
@@ -222,7 +245,7 @@ class BaseStrategy(ABC):
         absolute_profit = (
             max_position * (effective_net / effective_cost) if effective_cost > 0 else 0
         )
-        if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
+        if absolute_profit < eff_min_absolute:
             return None
 
         # Calculate risk

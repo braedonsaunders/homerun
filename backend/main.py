@@ -22,6 +22,7 @@ from api.routes_ai import router as ai_router
 from api.routes_news import router as news_router
 from api.routes_discovery import discovery_router
 from api.routes_kalshi import router as kalshi_router
+from api.routes_plugins import router as plugins_router
 from services import scanner, wallet_tracker
 from services.copy_trader import copy_trader
 from services.trading import trading_service
@@ -249,6 +250,10 @@ async def lifespan(app: FastAPI):
             from services.news.feed_service import news_feed_service
             from services.news.semantic_matcher import semantic_matcher
 
+            # Load previously-cached articles from DB so they're available
+            # immediately for matching and search.
+            await news_feed_service.load_from_db()
+
             await asyncio.to_thread(semantic_matcher.initialize)
             if settings.NEWS_EDGE_ENABLED:
                 await news_feed_service.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
@@ -256,6 +261,7 @@ async def lifespan(app: FastAPI):
                     "News intelligence layer started",
                     ml_mode=semantic_matcher.is_ml_mode,
                     interval=settings.NEWS_SCAN_INTERVAL_SECONDS,
+                    cached_articles=news_feed_service.article_count,
                 )
             else:
                 logger.info("News intelligence layer initialized (scanning disabled)")
@@ -375,6 +381,7 @@ app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
 app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
 app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
+app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
 
 
 # WebSocket endpoint

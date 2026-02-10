@@ -270,11 +270,15 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
             raise HTTPException(status_code=400, detail=f"Invalid mode: {config.mode}")
 
     if config.enabled_strategies is not None:
-        try:
-            strategies = [StrategyType(s.lower()) for s in config.enabled_strategies]
-            updates["enabled_strategies"] = strategies
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid strategy: {e}")
+        strategies = []
+        for s in config.enabled_strategies:
+            s_lower = s.lower()
+            try:
+                strategies.append(StrategyType(s_lower))
+            except ValueError:
+                # Accept plugin slugs as plain strings
+                strategies.append(s_lower)
+        updates["enabled_strategies"] = strategies
 
     if config.min_roi_percent is not None:
         updates["min_roi_percent"] = config.min_roi_percent

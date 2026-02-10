@@ -13,6 +13,7 @@ import {
   MessageCircle,
   Clock,
   Layers,
+  Newspaper,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Opportunity, judgeOpportunity } from '../services/api'
@@ -139,7 +140,14 @@ export function timeAgo(dateStr: string): string {
   return `${Math.floor(hr / 24)}d`
 }
 
-export function formatCompact(n: number): string {
+/** Safely format a number with toFixed, returning a fallback for null/undefined/NaN */
+function safeFixed(n: number | null | undefined, digits: number, fallback = '—'): string {
+  if (n == null || Number.isNaN(n)) return fallback
+  return n.toFixed(digits)
+}
+
+export function formatCompact(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return '$—'
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`
   if (n >= 10_000) return `$${(n / 1000).toFixed(1)}K`
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`
@@ -154,11 +162,12 @@ interface Props {
   opportunity: Opportunity
   onExecute?: (opportunity: Opportunity) => void
   onOpenCopilot?: (opportunity: Opportunity) => void
+  onSearchNews?: (opportunity: Opportunity) => void
 }
 
 // ─── Main Component ───────────────────────────────────────
 
-export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot }: Props) {
+export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot, onSearchNews }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [aiExpanded, setAiExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -261,7 +270,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                 "text-base font-bold font-data leading-none",
                 roiPositive ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
               )}>
-                {roiPositive ? '+' : ''}{opportunity.roi_percent.toFixed(2)}%
+                {roiPositive ? '+' : ''}{safeFixed(opportunity.roi_percent, 2, '0.00')}%
               </span>
             </div>
             <p className="text-[10px] text-muted-foreground font-data mt-0.5">
@@ -291,8 +300,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                 showDots
               />
               <div className="flex justify-between text-[9px] text-muted-foreground font-data mt-0.5 px-0.5">
-                <span className="text-green-400/70">Y {market.yes_price.toFixed(2)}</span>
-                <span className="text-red-400/70">N {market.no_price.toFixed(2)}</span>
+                <span className="text-green-400/70">Y {safeFixed(market.yes_price, 2)}</span>
+                <span className="text-red-400/70">N {safeFixed(market.no_price, 2)}</span>
               </div>
             </div>
           )}
@@ -303,7 +312,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
             <MiniMetric
               label="Risk"
-              value={`${(opportunity.risk_score * 100).toFixed(0)}%`}
+              value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
               valueClass={riskColor}
               bar={opportunity.risk_score}
               barClass={riskBarColor}
@@ -323,14 +332,14 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               />
             </div>
             <span className="text-[10px] font-data font-bold text-purple-300 shrink-0">
-              {(judgment.overall_score * 100).toFixed(0)}
+              {safeFixed((judgment.overall_score ?? 0) * 100, 0)}
             </span>
             <Separator orientation="vertical" className="h-3 bg-purple-500/20" />
             <div className="flex gap-1.5 text-[9px] font-data text-muted-foreground shrink-0">
-              <span title="Profit">P{(judgment.profit_viability * 100).toFixed(0)}</span>
-              <span title="Resolution">R{(judgment.resolution_safety * 100).toFixed(0)}</span>
-              <span title="Execution">E{(judgment.execution_feasibility * 100).toFixed(0)}</span>
-              <span title="Efficiency">M{(judgment.market_efficiency * 100).toFixed(0)}</span>
+              <span title="Profit">P{safeFixed((judgment.profit_viability ?? 0) * 100, 0)}</span>
+              <span title="Resolution">R{safeFixed((judgment.resolution_safety ?? 0) * 100, 0)}</span>
+              <span title="Execution">E{safeFixed((judgment.execution_feasibility ?? 0) * 100, 0)}</span>
+              <span title="Efficiency">M{safeFixed((judgment.market_efficiency ?? 0) * 100, 0)}</span>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); judgeMutation.mutate() }}
@@ -380,7 +389,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                 )}>
                   {pos.action} {pos.outcome}
                 </span>
-                <span className="font-data">@{pos.price.toFixed(2)}</span>
+                <span className="font-data">@{safeFixed(pos.price, 2)}</span>
               </span>
             ))}
             {opportunity.positions_to_take.length > 3 && (
@@ -432,6 +441,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
             >
               <MessageCircle className="w-2.5 h-2.5" />
               AI
+            </button>
+          )}
+          {onSearchNews && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSearchNews(opportunity) }}
+              className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20 transition-colors font-medium"
+              title="Search related news articles"
+            >
+              <Newspaper className="w-2.5 h-2.5" />
+              News
             </button>
           )}
           <div
@@ -489,7 +508,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                         )}
                         <span className="text-[11px] text-foreground/70 truncate">{pos.market}</span>
                       </div>
-                      <span className="font-data text-xs text-foreground">${pos.price.toFixed(4)}</span>
+                      <span className="font-data text-xs text-foreground">${safeFixed(pos.price, 4)}</span>
                     </div>
                   )
                 })}
@@ -502,27 +521,27 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
               <div className="grid grid-cols-3 gap-3 text-xs">
                 <div>
                   <p className="text-[10px] text-muted-foreground">Cost</p>
-                  <p className="font-data text-foreground">${opportunity.total_cost.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${safeFixed(opportunity.total_cost, 4)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Payout</p>
-                  <p className="font-data text-foreground">${opportunity.expected_payout.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${safeFixed(opportunity.expected_payout, 4)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Gross</p>
-                  <p className="font-data text-foreground">${opportunity.gross_profit.toFixed(4)}</p>
+                  <p className="font-data text-foreground">${safeFixed(opportunity.gross_profit, 4)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Fee (2%)</p>
-                  <p className="font-data text-red-400">-${opportunity.fee.toFixed(4)}</p>
+                  <p className="font-data text-red-400">-${safeFixed(opportunity.fee, 4)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">Net</p>
-                  <p className="font-data text-green-400">${opportunity.net_profit.toFixed(4)}</p>
+                  <p className="font-data text-green-400">${safeFixed(opportunity.net_profit, 4)}</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-muted-foreground">ROI</p>
-                  <p className="font-data text-green-400">{opportunity.roi_percent.toFixed(2)}%</p>
+                  <p className="font-data text-green-400">{safeFixed(opportunity.roi_percent, 2)}%</p>
                 </div>
               </div>
             </div>
@@ -543,7 +562,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                         <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                          Y:{mkt.yes_price.toFixed(3)} N:{mkt.no_price.toFixed(3)} Liq:{formatCompact(mkt.liquidity)}
+                          Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Liq:{formatCompact(mkt.liquidity)}
                         </p>
                       </div>
                       <a
@@ -588,7 +607,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
                         {r.recommendation}
                       </Badge>
                       <span className="text-[9px] text-muted-foreground/60 font-data">
-                        C:{(r.clarity_score * 100).toFixed(0)} R:{(r.risk_score * 100).toFixed(0)}
+                        C:{safeFixed((r.clarity_score ?? 0) * 100, 0)} R:{safeFixed((r.risk_score ?? 0) * 100, 0)}
                       </span>
                     </div>
                     {r.summary && <p className="text-[10px] text-muted-foreground">{r.summary}</p>}

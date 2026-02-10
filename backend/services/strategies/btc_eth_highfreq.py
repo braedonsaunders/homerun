@@ -48,6 +48,13 @@ _ASSET_PATTERNS: dict[str, list[str]] = {
 }
 
 _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
+    "5min": [
+        "updown-5m",
+        "5m-",
+        "5m",
+        "5 min",
+        "5-minute",
+    ],
     "15min": [
         "updown-15m",  # actual Polymarket slug pattern
         "updown-15m-",  # with trailing timestamp
@@ -107,27 +114,26 @@ _DIRECTION_KEYWORDS: list[str] = [
 _SLUG_REGEX = re.compile(
     r"(btc|eth|sol|xrp|bitcoin|ethereum|solana|ripple)"
     r".*?"  # allow intervening words (non-greedy)
-    r"(15[\s_-]?m(?:in(?:ute)?s?)?"  # "15m", "15min", "15-minute", "15 minutes", …
+    r"(5[\s_-]?m(?:in(?:ute)?s?)?"
+    r"|15[\s_-]?m(?:in(?:ute)?s?)?"  # "15m", "15min", "15-minute", …
     r"|1[\s_-]?h(?:(?:ou)?r)?"  # "1h", "1hr", "1hour", "1-h", …
     r"|60[\s_-]?m(?:in(?:ute)?s?)?"
     r"|quarter[\s_-]?hour|hourly)",
     re.IGNORECASE,
 )
 
-# Gamma API crypto tags to search for high-freq markets.
-# Actual Polymarket tags on BTC/ETH 15m markets:
-#   "Crypto Prices", "Bitcoin", "15M", "Up or Down", "Recurring", "Crypto"
-_GAMMA_CRYPTO_TAGS = [
-    "Crypto Prices",
-    "Up or Down",
-    "15M",
-    "Recurring",
-    "crypto",
-    "btc",
-    "bitcoin",
-    "eth",
-    "ethereum",
+# Polymarket Gamma API uses tag_id (numeric), not tag (string slug).
+# These IDs are from GET /tags - verified against Polymarket's API.
+# See: https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide
+_GAMMA_CRYPTO_TAG_IDS = [
+    21,      # Crypto (slug: crypto)
+    235,     # Bitcoin (slug: bitcoin)
+    1312,    # Crypto Prices (slug: crypto-prices)
+    102127,  # Up or Down (slug: up-or-down)
+    102467,  # 15M (slug: 15M)
+    101757,  # Recurring (slug: recurring)
 ]
+
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
 
@@ -193,82 +199,122 @@ class _CryptoMarketFetcher:
         return self._markets
 
     def _fetch(self) -> list[Market]:
-        """Fetch crypto markets from Gamma API by tag and slug patterns."""
+        """Fetch crypto markets from Gamma API using tag_id, slug path, and series.
+
+        Polymarket Gamma API requires:
+          - tag_id (numeric), NOT tag (string) for filtering
+          - GET /events/slug/{slug} for event-by-slug (path, not query param)
+          - Series events contain recurring BTC/ETH/SOL/XRP up-or-down markets
+        """
         import httpx
 
         all_markets: list[Market] = []
         seen_ids: set[str] = set()
 
+        def _market_id(mkt: dict) -> str:
+            """Extract canonical market ID (conditionId preferred)."""
+            return str(
+                mkt.get("conditionId")
+                or mkt.get("condition_id")
+                or mkt.get("id", "")
+            )
+
+        def add_markets_from_events(events: list | dict) -> None:
+            """Extract markets from events (list or single event dict)."""
+            for event_data in [events] if isinstance(events, dict) else (events or []):
+                for mkt_data in event_data.get("markets", []):
+                    mid = _market_id(mkt_data)
+                    if mid and mid not in seen_ids:
+                        try:
+                            m = Market.from_gamma_response(mkt_data)
+                            all_markets.append(m)
+                            seen_ids.add(mid)
+                        except Exception:
+                            pass
+
         try:
             with httpx.Client(timeout=15.0) as client:
-                # Strategy 1: Search by crypto tags
-                for tag in _GAMMA_CRYPTO_TAGS:
+                # Strategy 1: Events by tag_id (Gamma API uses tag_id, NOT tag)
+                for tag_id in _GAMMA_CRYPTO_TAG_IDS:
                     try:
                         resp = client.get(
                             f"{self._gamma_url}/events",
-                            params={"tag": tag, "closed": "false", "limit": 50},
+                            params={
+                                "tag_id": tag_id,
+                                "closed": "false",
+                                "limit": 100,
+                            },
                         )
                         if resp.status_code == 200:
-                            for event_data in resp.json():
-                                for mkt_data in event_data.get("markets", []):
-                                    mid = mkt_data.get("condition_id") or mkt_data.get(
-                                        "id", ""
-                                    )
-                                    if mid and mid not in seen_ids:
-                                        try:
-                                            m = Market.from_gamma_response(mkt_data)
-                                            all_markets.append(m)
-                                            seen_ids.add(mid)
-                                        except Exception:
-                                            pass
-                        time.sleep(0.1)  # Rate limit
+                            add_markets_from_events(resp.json())
+                        time.sleep(0.08)  # Rate limit
                     except Exception:
                         pass
 
-                # Strategy 2: Compute expected event slugs for current/upcoming
-                # 15-min and 1-hr windows.  Real Polymarket slug format is
-                # "{asset}-updown-{tf}-{unix_ts}", e.g. "btc-updown-15m-1770779700".
+                # Strategy 2: Event-by-slug via path (GET /events/slug/{slug})
+                # Polymarket slug format: btc-updown-15m-{unix_ts} (primary)
+                # Some bots use btc-up-or-down-15m - we try both.
                 now_ts = int(time.time())
-                computed_slugs: list[str] = []
-                for asset_slug in ("btc", "eth", "sol", "xrp"):
-                    # 15-minute windows (900 s): current, next 2, previous 1
-                    base_15 = now_ts - (now_ts % 900)
-                    for offset in (-900, 0, 900, 1800):
-                        computed_slugs.append(
-                            f"{asset_slug}-updown-15m-{base_15 + offset}"
-                        )
-                    # 1-hour windows (3600 s)
-                    base_1h = now_ts - (now_ts % 3600)
-                    for offset in (-3600, 0, 3600):
-                        computed_slugs.append(
-                            f"{asset_slug}-updown-1h-{base_1h + offset}"
-                        )
+                slug_configs = [
+                    ("btc", "updown", "5m", 300),
+                    ("btc", "updown", "15m", 900),
+                    ("eth", "updown", "15m", 900),
+                    ("sol", "updown", "15m", 900),
+                    ("xrp", "updown", "15m", 900),
+                    ("btc", "updown", "1h", 3600),
+                    ("eth", "updown", "1h", 3600),
+                ]
+                for asset, style, tf, interval in slug_configs:
+                    base = now_ts - (now_ts % interval)
+                    for offset in (-interval, 0, interval, interval * 2):
+                        ts = base + offset
+                        # Try primary format (updown) and alternate (up-or-down)
+                        for evt_slug in [
+                            f"{asset}-{style}-{tf}-{ts}",
+                            f"{asset}-up-or-down-{tf}-{ts}",
+                        ]:
+                            try:
+                                resp = client.get(
+                                    f"{self._gamma_url}/events/slug/{evt_slug}",
+                                )
+                                if resp.status_code == 200:
+                                    add_markets_from_events(resp.json())
+                                    break  # Found with this slug, skip alternate
+                                time.sleep(0.02)
+                            except Exception:
+                                pass
 
-                for evt_slug in computed_slugs:
+                # Strategy 3: Markets endpoint with tag_id (broader coverage)
+                for tag_id in [21, 235]:  # Crypto, Bitcoin
                     try:
                         resp = client.get(
-                            f"{self._gamma_url}/events",
-                            params={"slug": evt_slug, "limit": 1},
+                            f"{self._gamma_url}/markets",
+                            params={
+                                "tag_id": tag_id,
+                                "closed": "false",
+                                "limit": 100,
+                            },
                         )
                         if resp.status_code == 200:
-                            for event_data in resp.json():
-                                for mkt_data in event_data.get("markets", []):
-                                    mid = mkt_data.get("condition_id") or mkt_data.get(
-                                        "id", ""
-                                    )
-                                    if mid and mid not in seen_ids:
-                                        try:
-                                            m = Market.from_gamma_response(mkt_data)
-                                            all_markets.append(m)
-                                            seen_ids.add(mid)
-                                        except Exception:
-                                            pass
-                        time.sleep(0.01)  # Light rate-limit
+                            for mkt_data in resp.json():
+                                mid = _market_id(mkt_data)
+                                if mid and mid not in seen_ids:
+                                    try:
+                                        m = Market.from_gamma_response(mkt_data)
+                                        all_markets.append(m)
+                                        seen_ids.add(mid)
+                                    except Exception:
+                                        pass
+                        time.sleep(0.08)
                     except Exception:
                         pass
 
         except Exception as exc:
-            logger.warning("Crypto market fetch failed", error=str(exc))
+            logger.warning(
+                "Crypto market fetch failed: %s",
+                str(exc),
+                exc_info=True,
+            )
 
         if all_markets:
             logger.info(
@@ -376,8 +422,8 @@ class HighFreqCandidate:
     """A market identified as a BTC/ETH high-frequency binary market."""
 
     market: Market
-    asset: str  # "BTC" or "ETH"
-    timeframe: str  # "15min" or "1hr"
+    asset: str  # "BTC", "ETH", "SOL", or "XRP"
+    timeframe: str  # "5min", "15min", or "1hr"
     yes_price: float
     no_price: float
 
@@ -491,6 +537,15 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     f"ROI {opp.roi_percent:.2f}% | sub-strategy={selected.strategy.value} | "
                     f"market={candidate.market.id}"
                 )
+            else:
+                logger.debug(
+                    f"BtcEthHighFreq: create_opportunity rejected market "
+                    f"{candidate.market.id} ({candidate.asset} {candidate.timeframe}, "
+                    f"sub={selected.strategy.value}, score={selected.score:.1f}) — "
+                    f"hard filters in base strategy blocked it "
+                    f"(yes={candidate.yes_price:.3f} no={candidate.no_price:.3f} "
+                    f"liq=${candidate.market.liquidity:.0f})"
+                )
 
         logger.info(
             f"BtcEthHighFreq: scan complete — {len(opportunities)} opportunity(ies) found"
@@ -591,13 +646,18 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         slug_match = _SLUG_REGEX.search(slug_text)
         if slug_match:
             raw_tf = slug_match.group(2).lower().replace("-", "").replace("_", "")
+            # Check 15m before 5m (15m contains "5m" substring)
             if "15" in raw_tf or "quarter" in raw_tf:
                 return "15min"
+            if "5m" in raw_tf or (raw_tf.startswith("5") and "15" not in raw_tf):
+                return "5min"
             if "1h" in raw_tf or "60" in raw_tf or "hourly" in raw_tf:
                 return "1hr"
 
         # Fallback: question-text keyword matching (broadened patterns)
-        for tf_key, patterns in _TIMEFRAME_PATTERNS.items():
+        # Check 15m before 5m (15m contains "5m" substring)
+        for tf_key in ("15min", "5min", "1hr"):
+            patterns = _TIMEFRAME_PATTERNS.get(tf_key, [])
             if any(p in text for p in patterns):
                 return tf_key
 
@@ -638,11 +698,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         """Record the latest prices into the rolling window for this market."""
         mid = candidate.market.id
         if mid not in self._price_histories:
-            window = (
-                _1HR_HISTORY_WINDOW_SEC
-                if candidate.timeframe == "1hr"
-                else _DEFAULT_HISTORY_WINDOW_SEC
-            )
+            if candidate.timeframe == "1hr":
+                window = _1HR_HISTORY_WINDOW_SEC
+            elif candidate.timeframe == "5min":
+                window = 120  # 2 min for 5-min markets
+            else:
+                window = _DEFAULT_HISTORY_WINDOW_SEC
             self._price_histories[mid] = MarketPriceHistory(window_seconds=window)
 
         self._price_histories[mid].record(
@@ -780,6 +841,20 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # minus fees.  We can also attempt to hedge with the other side
         # if combined < $1.00.
         dumped_price = c.yes_price if dumped_side == "YES" else c.no_price
+
+        # Skip near-resolved markets: if the dumped side is below $0.05,
+        # the market has effectively resolved (one outcome is ~certain)
+        # and this is NOT a temporary dump worth trading.
+        if dumped_price < 0.05:
+            return SubStrategyScore(
+                strategy=SubStrategy.DUMP_HEDGE,
+                score=0.0,
+                reason=(
+                    f"Market effectively resolved ({dumped_side} at "
+                    f"${dumped_price:.4f} < $0.05 threshold)"
+                ),
+            )
+
         fair_value = 0.50  # up-or-down markets are coin flips
         ev_profit = fair_value - dumped_price - self.fee
 
@@ -1019,6 +1094,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             total_cost=combined,
             markets=[market],
             positions=positions,
+            min_liquidity_hard=200.0,
+            min_position_size=10.0,
+            min_absolute_profit=2.0,
         )
 
         if opp is not None:
@@ -1030,7 +1108,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         c: HighFreqCandidate,
         params: dict,
     ) -> Optional[ArbitrageOpportunity]:
-        """Generate opportunity for sub-strategy B: Dump-Hedge."""
+        """Generate opportunity for sub-strategy B: Dump-Hedge.
+
+        Modeled as a directional bet: buy only the dumped side at a price
+        below fair value ($0.50 for 50/50 binary markets).  The hedge
+        (buying the opposite side) is an optional follow-up, not part of
+        the initial cost.
+        """
         market = c.market
         dumped_side = params["dumped_side"]
         drop_amount = params["drop_amount"]
@@ -1043,20 +1127,24 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         no_price = params["no_price"]
         combined = params["combined_cost"]
 
-        # Primary position: buy the dumped side
-        # Hedge position: buy the opposite side
-        positions = self._build_both_sides_positions(market, yes_price, no_price)
-
-        # Mark which side was dumped for execution ordering
-        for pos in positions:
-            if pos["outcome"] == dumped_side:
-                pos["role"] = "primary"
-                pos["note"] = (
-                    f"Dumped side (dropped {drop_amount:.4f} to {dumped_price:.4f})"
-                )
-            else:
-                pos["role"] = "hedge"
-                pos["note"] = "Hedge after partial recovery of primary"
+        # Build position for the dumped side only (directional bet).
+        # The "hedge" is a potential follow-up, not an immediate action.
+        positions = []
+        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
+            token_idx = 0 if dumped_side == "YES" else 1
+            positions = [
+                {
+                    "action": "BUY",
+                    "outcome": dumped_side,
+                    "price": dumped_price,
+                    "token_id": market.clob_token_ids[token_idx],
+                    "role": "primary",
+                    "note": (
+                        f"Buy dumped side ({dumped_side} dropped "
+                        f"{drop_amount:.4f} to {dumped_price:.4f})"
+                    ),
+                },
+            ]
 
         opp = self.create_opportunity(
             title=(
@@ -1067,19 +1155,26 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 f"Dump-hedge on {c.asset} {c.timeframe} market. "
                 f"{dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f} — "
                 f"buy dumped side (EV profit ~${ev_profit:.4f}). "
-                f"Combined=${combined:.4f}."
+                f"Fair value $0.50 for 50/50 binary. "
+                f"Optional hedge: buy {('NO' if dumped_side == 'YES' else 'YES')} "
+                f"if combined (${combined:.4f}) drops below $1.00."
             ),
-            total_cost=combined,
+            total_cost=dumped_price,
+            expected_payout=0.50,  # EV: 50% probability * $1.00 payout
+            is_guaranteed=False,
             markets=[market],
             positions=positions,
+            min_liquidity_hard=200.0,
+            min_position_size=5.0,
+            min_absolute_profit=1.0,
         )
 
         if opp is not None:
             self._attach_highfreq_metadata(opp, c, SubStrategy.DUMP_HEDGE, params)
             opp.risk_factors.insert(
                 0,
-                f"Dump-hedge requires fast execution: {dumped_side} may recover "
-                f"before hedge is placed",
+                f"Directional bet: profit depends on {dumped_side} recovering "
+                f"toward fair value ($0.50)",
             )
         return opp
 
@@ -1088,7 +1183,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         c: HighFreqCandidate,
         params: dict,
     ) -> Optional[ArbitrageOpportunity]:
-        """Generate opportunity for sub-strategy C: Pre-Placed Limits."""
+        """Generate opportunity for sub-strategy C: Pre-Placed Limits.
+
+        Hard filters are relaxed because these are LIMIT orders on newly
+        opened / thin-book markets.  Current liquidity may be very low
+        (or zero), but the orders will fill as liquidity arrives.
+        """
         market = c.market
         target_yes = params["target_yes_price"]
         target_no = params["target_no_price"]
@@ -1113,6 +1213,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 },
             ]
 
+        # Relax hard filters: limit orders on new/thin markets don't
+        # depend on current liquidity for execution — they fill when
+        # liquidity arrives.  Zero-liquidity markets are expected.
         opp = self.create_opportunity(
             title=(f"BTC/ETH HF Pre-Limits: {c.asset} {c.timeframe} (thin book)"),
             description=(
@@ -1124,9 +1227,16 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             total_cost=target_combined,
             markets=[market],
             positions=positions,
+            min_liquidity_hard=0.0,   # New markets may have $0 liquidity
+            min_position_size=0.0,    # Limit orders, not market orders
+            min_absolute_profit=0.0,  # Profit realized on fill, not now
         )
 
         if opp is not None:
+            # Set a reasonable position size for limit orders (not
+            # constrained by current liquidity like market orders).
+            opp.max_position_size = max(opp.max_position_size, 50.0)
+
             self._attach_highfreq_metadata(
                 opp,
                 c,

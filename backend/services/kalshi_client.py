@@ -385,13 +385,13 @@ class KalshiClient:
         """Search Kalshi events by keyword.
 
         Kalshi's API does not provide native text search, so we fetch
-        events in pages and filter by title match on the client side.
-        For each matching event we also fetch its markets.
+        a small number of pages and filter by title match on the client
+        side.  Capped to 2 pages (400 events) for speed.
         """
         query_lower = query.lower()
         matching_events: list[Event] = []
         cursor: Optional[str] = None
-        max_pages = 10  # safety cap
+        max_pages = 2  # keep it fast — 2 pages × 200 = 400 events
 
         for _ in range(max_pages):
             events, next_cursor = await self.get_events(
@@ -414,12 +414,18 @@ class KalshiClient:
                 break
 
         # For events with no nested markets, fetch markets by event_ticker
-        for event in matching_events:
+        # Use concurrency to speed this up
+        sem = asyncio.Semaphore(5)
+
+        async def _fill_markets(event: Event):
             if not event.markets:
-                markets, _ = await self.get_markets_page(
-                    limit=200, event_ticker=event.id, status="open"
-                )
-                event.markets = markets
+                async with sem:
+                    markets, _ = await self.get_markets_page(
+                        limit=200, event_ticker=event.id, status="open"
+                    )
+                    event.markets = markets
+
+        await asyncio.gather(*[_fill_markets(e) for e in matching_events])
 
         logger.info(
             "Kalshi search complete",

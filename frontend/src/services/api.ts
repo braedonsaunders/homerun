@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 15000,
+  timeout: 30000,
 })
 
 // Debug interceptor — logs every response so issues are visible in browser console
@@ -104,6 +104,10 @@ export interface Strategy {
   type: string
   name: string
   description: string
+  is_plugin?: boolean
+  plugin_id?: string
+  plugin_slug?: string
+  status?: string  // For plugins: loaded, error, unloaded
 }
 
 export interface Wallet {
@@ -330,6 +334,7 @@ export interface WalletPosition {
   market: string
   title: string
   market_slug: string
+  event_slug?: string
   outcome: string
   size: number
   avg_price: number
@@ -403,7 +408,7 @@ export const searchPolymarketOpportunities = async (params: {
   q: string
   limit?: number
 }): Promise<OpportunitiesResponse> => {
-  const response = await api.get('/opportunities/search-polymarket', { params })
+  const response = await api.get('/opportunities/search-polymarket', { params, timeout: 60_000 })
   const total = parseInt(response.headers['x-total-count'] || '0', 10)
   return {
     opportunities: response.data,
@@ -442,6 +447,111 @@ export const setScannerInterval = async (intervalSeconds: number): Promise<Scann
 
 export const getStrategies = async (): Promise<Strategy[]> => {
   const { data } = await api.get('/strategies')
+  return data
+}
+
+// ==================== PLUGINS ====================
+
+export interface PluginRuntime {
+  slug: string
+  class_name: string
+  name: string
+  description: string
+  loaded_at: string
+  source_hash: string
+  run_count: number
+  error_count: number
+  total_opportunities: number
+  last_run: string | null
+  last_error: string | null
+}
+
+export interface StrategyPlugin {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  source_code: string
+  class_name: string | null
+  enabled: boolean
+  status: 'unloaded' | 'loaded' | 'error'
+  error_message: string | null
+  config: Record<string, unknown>
+  version: number
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+  runtime: PluginRuntime | null
+}
+
+export interface PluginValidation {
+  valid: boolean
+  class_name: string | null
+  strategy_name: string | null
+  strategy_description: string | null
+  errors: string[]
+  warnings: string[]
+}
+
+export const getPlugins = async (): Promise<StrategyPlugin[]> => {
+  const { data } = await api.get('/plugins')
+  return data
+}
+
+export const createPlugin = async (plugin: {
+  slug: string
+  source_code: string
+  config?: Record<string, unknown>
+  enabled?: boolean
+}): Promise<StrategyPlugin> => {
+  const { data } = await api.post('/plugins', plugin)
+  return data
+}
+
+export const updatePlugin = async (
+  id: string,
+  updates: Partial<{
+    source_code: string
+    config: Record<string, unknown>
+    enabled: boolean
+    name: string
+    description: string
+  }>
+): Promise<StrategyPlugin> => {
+  const { data } = await api.put(`/plugins/${id}`, updates)
+  return data
+}
+
+export const deletePlugin = async (id: string): Promise<void> => {
+  await api.delete(`/plugins/${id}`)
+}
+
+export const validatePlugin = async (source_code: string): Promise<PluginValidation> => {
+  const { data } = await api.post('/plugins/validate', { source_code })
+  return data
+}
+
+export const getPluginTemplate = async (): Promise<{
+  template: string
+  instructions: string
+  available_imports: string[]
+}> => {
+  const { data } = await api.get('/plugins/template')
+  return data
+}
+
+export const reloadPlugin = async (id: string): Promise<{
+  status: string
+  message: string
+  runtime: PluginRuntime | null
+}> => {
+  const { data } = await api.post(`/plugins/${id}/reload`)
+  return data
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const getPluginDocs = async (): Promise<Record<string, any>> => {
+  const { data } = await api.get('/plugins/docs')
   return data
 }
 
@@ -1471,6 +1581,15 @@ export const getNewsArticles = async (params?: {
   return data
 }
 
+export const searchNewsArticles = async (params: {
+  q: string
+  max_age_hours?: number
+  limit?: number
+}): Promise<{ query: string; total: number; articles: NewsArticle[] }> => {
+  const { data } = await api.get('/news/feed/search', { params })
+  return data
+}
+
 export const clearNewsArticles = async (): Promise<{ cleared: number }> => {
   const { data } = await api.delete('/news/feed/clear')
   return data
@@ -1481,7 +1600,7 @@ export const runNewsMatching = async (params?: {
   top_k?: number
   threshold?: number
 }): Promise<NewsMatchResponse> => {
-  const { data } = await api.post('/news/match', params || {})
+  const { data } = await api.post('/news/match', params || {}, { timeout: 120_000 })
   return data
 }
 

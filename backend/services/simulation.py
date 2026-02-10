@@ -175,7 +175,7 @@ class SimulationService:
                 id=str(uuid.uuid4()),
                 account_id=account_id,
                 opportunity_id=opportunity.id,
-                strategy_type=opportunity.strategy.value,
+                strategy_type=opportunity.strategy,
                 positions_data=opportunity.positions_to_take,
                 total_cost=total_cost,
                 expected_profit=opportunity.net_profit * position_size,

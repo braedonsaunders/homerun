@@ -18,6 +18,16 @@ import {
   Brain,
   Shield,
   ChevronDown,
+  Puzzle,
+  Plus,
+  Trash2,
+  Code,
+  Play,
+  Loader2,
+  FileCode,
+  CircleDot,
+  XCircle,
+  RotateCcw,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -36,11 +46,19 @@ import {
   refreshLLMModels,
   getAutoTraderStatus,
   updateAutoTraderConfig,
+  getPlugins,
+  createPlugin,
+  updatePlugin,
+  deletePlugin,
+  validatePlugin,
+  getPluginTemplate,
+  reloadPlugin,
+  getPluginDocs,
   type LLMModelOption,
   type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'maintenance'
+type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'plugins' | 'maintenance'
 
 function SecretInput({
   label,
@@ -168,6 +186,23 @@ export default function SettingsPanel() {
   })
   const [autotraderAiDirty, setAutotraderAiDirty] = useState(false)
 
+  const [pluginForm, setPluginForm] = useState<{
+    slug: string
+    source_code: string
+    config: Record<string, unknown>
+  } | null>(null)
+  const [editingPluginId, setEditingPluginId] = useState<string | null>(null)
+  const [pluginValidation, setPluginValidation] = useState<{
+    valid: boolean
+    errors: string[]
+    warnings: string[]
+    class_name: string | null
+    strategy_name: string | null
+  } | null>(null)
+  const [validating, setValidating] = useState(false)
+  const [viewingPluginId, setViewingPluginId] = useState<string | null>(null)
+  const [showPluginDocs, setShowPluginDocs] = useState(false)
+
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -180,6 +215,29 @@ export default function SettingsPanel() {
     queryFn: getAutoTraderStatus,
     refetchInterval: 10000,
   })
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: pluginDocs } = useQuery<Record<string, any>>({
+    queryKey: ['plugin-docs'],
+    queryFn: getPluginDocs,
+    staleTime: Infinity, // docs don't change at runtime
+  })
+
+  const { data: plugins = [] } = useQuery({
+    queryKey: ['plugins'],
+    queryFn: getPlugins,
+  })
+
+  // Expand plugins when navigating from Search Filters flyout
+  useEffect(() => {
+    const handler = (e: CustomEvent<SettingsSection>) => {
+      if (e.detail === 'plugins') {
+        setExpandedSections((prev) => new Set(prev).add('plugins'))
+      }
+    }
+    window.addEventListener('navigate-settings-section', handler as EventListener)
+    return () => window.removeEventListener('navigate-settings-section', handler as EventListener)
+  }, [])
 
   const autoTraderConfigMutation = useMutation({
     mutationFn: (updates: Partial<AutoTraderConfig>) => updateAutoTraderConfig(updates),
@@ -311,6 +369,96 @@ export default function SettingsPanel() {
     mutationFn: testTradingProxy,
   })
 
+  const createPluginMutation = useMutation({
+    mutationFn: createPlugin,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      queryClient.invalidateQueries({ queryKey: ['strategies'] })
+      setPluginForm(null)
+      setPluginValidation(null)
+      setSaveMessage({ type: 'success', text: 'Plugin created and loaded' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      const msg = typeof detail === 'object' ? detail.errors?.join('; ') || detail.message : detail || 'Failed to create plugin'
+      setSaveMessage({ type: 'error', text: msg })
+      setTimeout(() => setSaveMessage(null), 8000)
+    },
+  })
+
+  const updatePluginMutation = useMutation({
+    mutationFn: ({ id, updates }: { id: string; updates: Parameters<typeof updatePlugin>[1] }) =>
+      updatePlugin(id, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      queryClient.invalidateQueries({ queryKey: ['strategies'] })
+      setPluginForm(null)
+      setEditingPluginId(null)
+      setPluginValidation(null)
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      const msg = typeof detail === 'object' ? detail.errors?.join('; ') || detail.message : detail || 'Failed to update plugin'
+      setSaveMessage({ type: 'error', text: msg })
+      setTimeout(() => setSaveMessage(null), 8000)
+    },
+  })
+
+  const deletePluginMutation = useMutation({
+    mutationFn: deletePlugin,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      queryClient.invalidateQueries({ queryKey: ['strategies'] })
+      setPluginForm(null)
+      setEditingPluginId(null)
+      setViewingPluginId(null)
+    },
+    onError: (err: any) => {
+      setSaveMessage({ type: 'error', text: err?.response?.data?.detail || 'Failed to delete plugin' })
+      setTimeout(() => setSaveMessage(null), 5000)
+    },
+  })
+
+  const reloadPluginMutation = useMutation({
+    mutationFn: reloadPlugin,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['plugins'] })
+      queryClient.invalidateQueries({ queryKey: ['strategies'] })
+      setSaveMessage({ type: 'success', text: 'Plugin reloaded' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      const msg = typeof detail === 'object' ? detail.error || detail.message : detail || 'Failed to reload plugin'
+      setSaveMessage({ type: 'error', text: msg })
+      setTimeout(() => setSaveMessage(null), 8000)
+    },
+  })
+
+  const handleValidatePlugin = async (code: string) => {
+    setValidating(true)
+    try {
+      const result = await validatePlugin(code)
+      setPluginValidation(result)
+    } catch {
+      setPluginValidation({ valid: false, errors: ['Validation request failed'], warnings: [], class_name: null, strategy_name: null })
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  const handleLoadTemplate = async () => {
+    try {
+      const { template } = await getPluginTemplate()
+      setPluginForm(prev => prev ? { ...prev, source_code: template } : null)
+      setPluginValidation(null)
+    } catch {
+      setSaveMessage({ type: 'error', text: 'Failed to load template' })
+      setTimeout(() => setSaveMessage(null), 3000)
+    }
+  }
+
   const handleSaveSection = (section: SettingsSection) => {
     const updates: any = {}
 
@@ -421,6 +569,8 @@ export default function SettingsPanel() {
       }
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
+      case 'plugins':
+        return `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''}`
       default:
         return ''
     }
@@ -442,6 +592,8 @@ export default function SettingsPanel() {
         return autotraderAiForm.enabled_strategies.length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
+      case 'plugins':
+        return plugins.length > 0 ? 'text-violet-400 bg-violet-500/10' : 'text-muted-foreground bg-muted'
       default:
         return 'text-muted-foreground bg-muted'
     }
@@ -454,6 +606,7 @@ export default function SettingsPanel() {
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
+    { id: 'plugins', icon: Puzzle, label: 'Strategy Plugins', description: 'Custom strategy code' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
 
@@ -1189,6 +1342,465 @@ export default function SettingsPanel() {
                           </Badge>
                         )}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Plugins Settings */}
+                  {section.id === 'plugins' && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-muted-foreground">
+                        Write custom strategy plugins — full Python strategy files with their own detection logic. Plugins run alongside built-in strategies during each scan cycle.
+                      </p>
+
+                      {/* API Reference Toggle */}
+                      <div>
+                        <button
+                          onClick={() => setShowPluginDocs(!showPluginDocs)}
+                          className="flex items-center gap-1.5 text-[11px] text-violet-400 hover:text-violet-300 transition-colors"
+                        >
+                          <FileCode className="w-3.5 h-3.5" />
+                          {showPluginDocs ? 'Hide' : 'Show'} Plugin API Reference
+                          <ChevronDown className={cn("w-3 h-3 transition-transform", showPluginDocs && "rotate-180")} />
+                        </button>
+
+                        {showPluginDocs && pluginDocs && (
+                          <div className="mt-3 space-y-3">
+                            {/* Overview */}
+                            <Card className="bg-black/30 border-violet-500/10">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-violet-400">How Plugins Work</p>
+                                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                                  {pluginDocs.overview?.description}
+                                </p>
+                              </CardContent>
+                            </Card>
+
+                            {/* Class Structure */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">Class Structure</p>
+                                <p className="text-[10px] text-muted-foreground mb-1">{pluginDocs.class_structure?.description}</p>
+                                <div className="space-y-1.5">
+                                  <p className="text-[10px] font-medium text-emerald-400/80">Required attributes:</p>
+                                  {pluginDocs.class_structure?.required_attributes && Object.entries(pluginDocs.class_structure.required_attributes).map(([key, desc]) => (
+                                    <div key={key} className="flex gap-2 text-[10px]">
+                                      <code className="text-violet-400 font-mono shrink-0">{key}</code>
+                                      <span className="text-muted-foreground">{desc as string}</span>
+                                    </div>
+                                  ))}
+                                  <p className="text-[10px] font-medium text-yellow-400/80 mt-2">Available on self:</p>
+                                  {pluginDocs.class_structure?.inherited_attributes && Object.entries(pluginDocs.class_structure.inherited_attributes).map(([key, desc]) => (
+                                    <div key={key} className="flex gap-2 text-[10px]">
+                                      <code className="text-violet-400 font-mono shrink-0">{key}</code>
+                                      <span className="text-muted-foreground">{desc as string}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            {/* detect() Method */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">detect() — Your Main Method</p>
+                                <pre className="text-[9px] font-mono text-violet-300 bg-black/40 p-2 rounded overflow-x-auto">
+                                  {pluginDocs.detect_method?.signature}
+                                </pre>
+                                <p className="text-[10px] text-muted-foreground">{pluginDocs.detect_method?.description}</p>
+
+                                {/* Parameters */}
+                                {pluginDocs.detect_method?.parameters && Object.entries(pluginDocs.detect_method.parameters).map(([param, info]: [string, any]) => (
+                                  <div key={param} className="mt-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <code className="text-[10px] font-mono text-emerald-400">{param}</code>
+                                      <span className="text-[9px] text-muted-foreground/60">{info.type}</span>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground ml-2">{info.description}</p>
+                                    {info.structure && (
+                                      <pre className="text-[9px] font-mono text-muted-foreground/80 bg-black/30 p-1.5 rounded ml-2 mt-1">{info.structure}</pre>
+                                    )}
+                                    {info.usage && (
+                                      <p className="text-[9px] text-muted-foreground/60 ml-2 mt-0.5 italic">{info.usage}</p>
+                                    )}
+                                    {info.fields && (
+                                      <div className="ml-2 mt-1 space-y-0.5">
+                                        {Object.entries(info.fields).map(([field, desc]) => (
+                                          <div key={field} className="flex gap-1.5 text-[9px]">
+                                            <code className="text-violet-400/70 font-mono shrink-0">.{field}</code>
+                                            <span className="text-muted-foreground/70">{desc as string}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </CardContent>
+                            </Card>
+
+                            {/* create_opportunity() */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">self.create_opportunity() — Build Opportunities</p>
+                                <p className="text-[10px] text-muted-foreground">{pluginDocs.create_opportunity_method?.description}</p>
+                                <div className="space-y-1 mt-1">
+                                  {pluginDocs.create_opportunity_method?.parameters && Object.entries(pluginDocs.create_opportunity_method.parameters).map(([key, desc]) => (
+                                    <div key={key} className="flex gap-2 text-[10px]">
+                                      <code className="text-violet-400 font-mono shrink-0">{key}</code>
+                                      <span className="text-muted-foreground">{desc as string}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2">
+                                  <p className="text-[10px] font-medium text-yellow-400/80">Hard filters (auto-applied):</p>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {pluginDocs.create_opportunity_method?.hard_filters_applied?.map((f: string, i: number) => (
+                                      <li key={i} className="text-[9px] text-muted-foreground/70 flex gap-1">
+                                        <span className="text-muted-foreground/40">•</span> {f}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            {/* Config System */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">Config System</p>
+                                <p className="text-[10px] text-muted-foreground">{pluginDocs.config_system?.description}</p>
+                                <pre className="text-[9px] font-mono text-muted-foreground/80 bg-black/40 p-2 rounded overflow-x-auto whitespace-pre">{pluginDocs.config_system?.example}</pre>
+                              </CardContent>
+                            </Card>
+
+                            {/* Common Patterns */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">Common Code Patterns</p>
+                                {pluginDocs.common_patterns && Object.entries(pluginDocs.common_patterns).map(([key, code]) => (
+                                  <div key={key} className="mt-1">
+                                    <p className="text-[10px] text-emerald-400/80 font-medium">{key.replace(/_/g, ' ')}</p>
+                                    <pre className="text-[9px] font-mono text-muted-foreground/80 bg-black/40 p-2 rounded overflow-x-auto whitespace-pre mt-0.5">{code as string}</pre>
+                                  </div>
+                                ))}
+                              </CardContent>
+                            </Card>
+
+                            {/* Allowed & Blocked Imports */}
+                            <Card className="bg-black/30 border-border/20">
+                              <CardContent className="p-3 space-y-2">
+                                <p className="text-[11px] font-medium text-foreground">Allowed Imports</p>
+                                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+                                  {pluginDocs.allowed_imports?.map((imp: any, i: number) => (
+                                    <div key={i} className="flex gap-1.5 text-[9px]">
+                                      <code className="text-violet-400 font-mono shrink-0">{imp.module}</code>
+                                      <span className="text-muted-foreground/60 truncate">{imp.items}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <p className="text-[10px] font-medium text-red-400/80 mt-2">Blocked (security):</p>
+                                <ul className="space-y-0.5">
+                                  {pluginDocs.blocked_imports?.map((b: string, i: number) => (
+                                    <li key={i} className="text-[9px] text-muted-foreground/60 flex gap-1">
+                                      <span className="text-red-400/40">✕</span> {b}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </CardContent>
+                            </Card>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Plugin Editor (create or edit) */}
+                      {pluginForm ? (
+                        <Card className="bg-muted/50 border-violet-500/20">
+                          <CardContent className="p-4 space-y-3">
+                            {!editingPluginId && (
+                              <div>
+                                <Label className="text-xs text-muted-foreground">Plugin Slug</Label>
+                                <Input
+                                  value={pluginForm.slug}
+                                  onChange={(e) => setPluginForm(p => p ? { ...p, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') } : null)}
+                                  placeholder="e.g. whale_follower"
+                                  className="mt-1 text-sm font-mono"
+                                />
+                                <p className="text-[10px] text-muted-foreground/60 mt-0.5">Unique identifier: lowercase letters, numbers, underscores</p>
+                              </div>
+                            )}
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <Label className="text-xs text-muted-foreground">Strategy Code</Label>
+                                <div className="flex gap-1.5">
+                                  {!editingPluginId && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-6 px-2 text-[10px] text-violet-400 hover:text-violet-300"
+                                      onClick={handleLoadTemplate}
+                                    >
+                                      <FileCode className="w-3 h-3 mr-1" />
+                                      Load Template
+                                    </Button>
+                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => handleValidatePlugin(pluginForm.source_code)}
+                                    disabled={validating || !pluginForm.source_code.trim()}
+                                  >
+                                    {validating ? (
+                                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                    ) : (
+                                      <Play className="w-3 h-3 mr-1" />
+                                    )}
+                                    Validate
+                                  </Button>
+                                </div>
+                              </div>
+                              <textarea
+                                value={pluginForm.source_code}
+                                onChange={(e) => {
+                                  setPluginForm(p => p ? { ...p, source_code: e.target.value } : null)
+                                  setPluginValidation(null) // Clear validation on edit
+                                }}
+                                placeholder="Paste your strategy code here, or click Load Template..."
+                                className="w-full h-80 bg-black/40 border border-border/40 rounded-lg p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 resize-y focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+                                spellCheck={false}
+                              />
+                              {/* Validation Results */}
+                              {pluginValidation && (
+                                <div className={cn(
+                                  "mt-2 p-2.5 rounded-lg border text-xs",
+                                  pluginValidation.valid
+                                    ? "bg-emerald-500/5 border-emerald-500/20 text-emerald-400"
+                                    : "bg-red-500/5 border-red-500/20 text-red-400"
+                                )}>
+                                  {pluginValidation.valid ? (
+                                    <div className="space-y-1">
+                                      <div className="flex items-center gap-1.5 font-medium">
+                                        <CheckCircle className="w-3.5 h-3.5" />
+                                        Valid — class "{pluginValidation.class_name}"
+                                        {pluginValidation.strategy_name && ` (${pluginValidation.strategy_name})`}
+                                      </div>
+                                      {pluginValidation.warnings.length > 0 && (
+                                        <div className="text-yellow-400/80 mt-1">
+                                          {pluginValidation.warnings.map((w, i) => (
+                                            <p key={i} className="text-[10px]">Warning: {w}</p>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      <div className="flex items-center gap-1.5 font-medium">
+                                        <XCircle className="w-3.5 h-3.5" />
+                                        Validation Failed
+                                      </div>
+                                      {pluginValidation.errors.map((e, i) => (
+                                        <p key={i} className="text-[10px] mt-0.5">{e}</p>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex gap-2 pt-2">
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  if (editingPluginId) {
+                                    updatePluginMutation.mutate({
+                                      id: editingPluginId,
+                                      updates: {
+                                        source_code: pluginForm.source_code,
+                                        config: pluginForm.config,
+                                      },
+                                    })
+                                  } else {
+                                    createPluginMutation.mutate({
+                                      slug: pluginForm.slug,
+                                      source_code: pluginForm.source_code,
+                                      config: pluginForm.config,
+                                      enabled: true,
+                                    })
+                                  }
+                                }}
+                                disabled={
+                                  (!editingPluginId && !pluginForm.slug.trim()) ||
+                                  !pluginForm.source_code.trim() ||
+                                  createPluginMutation.isPending ||
+                                  updatePluginMutation.isPending
+                                }
+                              >
+                                {(createPluginMutation.isPending || updatePluginMutation.isPending) ? (
+                                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                ) : (
+                                  <Save className="w-3.5 h-3.5 mr-1.5" />
+                                )}
+                                {editingPluginId ? 'Save & Reload' : 'Create Plugin'}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setPluginForm(null)
+                                  setEditingPluginId(null)
+                                  setPluginValidation(null)
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPluginForm({ slug: '', source_code: '', config: {} })}
+                          className="gap-1.5"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          New Plugin
+                        </Button>
+                      )}
+
+                      {/* Plugin List */}
+                      {plugins.length > 0 && (
+                        <div className="space-y-2">
+                          <Label className="text-xs text-muted-foreground">Your Plugins</Label>
+                          {plugins.map((plugin) => (
+                            <div key={plugin.id} className="space-y-0">
+                              <div
+                                className="flex items-center justify-between gap-3 p-3 rounded-lg bg-muted/30 border border-border/40 cursor-pointer hover:bg-muted/50 transition-colors"
+                                onClick={() => setViewingPluginId(viewingPluginId === plugin.id ? null : plugin.id)}
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-medium text-sm truncate">{plugin.name}</p>
+                                    <span className="text-[10px] font-mono text-muted-foreground/60">{plugin.slug}</span>
+                                    {/* Status indicator */}
+                                    {plugin.status === 'loaded' && (
+                                      <Badge className="text-[9px] bg-emerald-500/15 text-emerald-400 border-emerald-500/30 px-1.5">
+                                        <CircleDot className="w-2.5 h-2.5 mr-0.5" />
+                                        Loaded
+                                      </Badge>
+                                    )}
+                                    {plugin.status === 'error' && (
+                                      <Badge className="text-[9px] bg-red-500/15 text-red-400 border-red-500/30 px-1.5">
+                                        <XCircle className="w-2.5 h-2.5 mr-0.5" />
+                                        Error
+                                      </Badge>
+                                    )}
+                                    {plugin.status === 'unloaded' && (
+                                      <Badge variant="outline" className="text-[9px] text-muted-foreground border-muted px-1.5">
+                                        Unloaded
+                                      </Badge>
+                                    )}
+                                    {!plugin.enabled && (
+                                      <Badge variant="outline" className="text-[9px] text-muted-foreground border-muted px-1.5">
+                                        Disabled
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  {plugin.description && (
+                                    <p className="text-[11px] text-muted-foreground truncate">{plugin.description}</p>
+                                  )}
+                                  {/* Runtime stats */}
+                                  {plugin.runtime && (
+                                    <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                                      v{plugin.version} · {plugin.runtime.run_count} runs · {plugin.runtime.total_opportunities} opportunities found
+                                      {plugin.runtime.error_count > 0 && (
+                                        <span className="text-red-400/70"> · {plugin.runtime.error_count} errors</span>
+                                      )}
+                                    </p>
+                                  )}
+                                  {!plugin.runtime && (
+                                    <p className="text-[10px] text-muted-foreground/50 mt-0.5">
+                                      v{plugin.version} · {plugin.class_name || 'unknown class'}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                  <Switch
+                                    checked={plugin.enabled}
+                                    onCheckedChange={(checked) => {
+                                      updatePluginMutation.mutate({
+                                        id: plugin.id,
+                                        updates: { enabled: checked },
+                                      })
+                                    }}
+                                    className="scale-90"
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    title="Reload plugin"
+                                    onClick={() => reloadPluginMutation.mutate(plugin.id)}
+                                    disabled={!plugin.enabled || reloadPluginMutation.isPending}
+                                  >
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    title="Edit code"
+                                    onClick={() => {
+                                      setEditingPluginId(plugin.id)
+                                      setPluginForm({
+                                        slug: plugin.slug,
+                                        source_code: plugin.source_code,
+                                        config: plugin.config || {},
+                                      })
+                                      setPluginValidation(null)
+                                    }}
+                                  >
+                                    <Code className="w-3.5 h-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                                    onClick={() => {
+                                      if (window.confirm(`Delete plugin "${plugin.name}"? This will remove its code and unload it.`)) {
+                                        deletePluginMutation.mutate(plugin.id)
+                                      }
+                                    }}
+                                    disabled={deletePluginMutation.isPending}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                              {/* Expanded detail view */}
+                              {viewingPluginId === plugin.id && (
+                                <div className="ml-3 mr-3 mb-2 p-3 bg-black/30 border border-border/20 rounded-b-lg space-y-2">
+                                  {plugin.error_message && (
+                                    <div className="p-2 bg-red-500/5 border border-red-500/20 rounded text-[11px] text-red-400">
+                                      <p className="font-medium mb-0.5">Load Error:</p>
+                                      <pre className="whitespace-pre-wrap font-mono text-[10px] text-red-400/80">{plugin.error_message}</pre>
+                                    </div>
+                                  )}
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground/60 mb-1">Source code preview:</p>
+                                    <pre className="text-[10px] font-mono text-muted-foreground bg-black/40 p-2 rounded border border-border/20 max-h-32 overflow-auto whitespace-pre-wrap">
+                                      {plugin.source_code.slice(0, 600)}{plugin.source_code.length > 600 ? '\n...' : ''}
+                                    </pre>
+                                  </div>
+                                  {plugin.runtime?.last_error && (
+                                    <div className="text-[10px] text-yellow-400/70">
+                                      Last runtime error: {plugin.runtime.last_error}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 

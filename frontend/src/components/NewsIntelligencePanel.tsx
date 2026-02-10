@@ -23,6 +23,7 @@ import { cn } from '../lib/utils'
 import {
   getNewsFeedStatus,
   getNewsArticles,
+  searchNewsArticles,
   triggerNewsFetch,
   clearNewsArticles,
   getNewsEdgesCached,
@@ -399,10 +400,14 @@ function ForecastPanel({ result, onClose }: { result: ForecastResult; onClose: (
 
 // ─── Main Component ─────────────────────────────────────────
 
-export default function NewsIntelligencePanel() {
+interface NewsIntelligencePanelProps {
+  initialSearchQuery?: string
+}
+
+export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntelligencePanelProps = {}) {
   const queryClient = useQueryClient()
-  const [subView, setSubView] = useState<SubView>('matches')
-  const [searchFilter, setSearchFilter] = useState('')
+  const [subView, setSubView] = useState<SubView>(initialSearchQuery ? 'feed' : 'matches')
+  const [searchFilter, setSearchFilter] = useState(initialSearchQuery || '')
   const [edgeSortBy, setEdgeSortBy] = useState<'edge' | 'confidence' | 'similarity'>('edge')
   const [forecastResult, setForecastResult] = useState<ForecastResult | null>(null)
   const [, setForecastingEdge] = useState<string | null>(null)
@@ -419,23 +424,27 @@ export default function NewsIntelligencePanel() {
 
   const { data: articlesData, isLoading: articlesLoading } = useQuery({
     queryKey: ['news-articles'],
-    queryFn: () => getNewsArticles({ max_age_hours: 24, limit: 100 }),
-    refetchInterval: 120000, // fallback (WS push refreshes instantly)
+    queryFn: () => getNewsArticles({ max_age_hours: 168, limit: 200 }),
+    refetchInterval: 120000,
   })
 
   const { data: edgesData, isLoading: edgesLoading } = useQuery({
     queryKey: ['news-edges'],
     queryFn: getNewsEdgesCached,
-    refetchInterval: 30000, // poll cached edges (no LLM cost)
+    refetchInterval: 30000,
     staleTime: 10000,
   })
 
-  const { data: matchesData, isLoading: matchesLoading } = useQuery({
-    queryKey: ['news-matches'],
-    queryFn: () => runNewsMatching({ max_age_hours: 12, top_k: 5 }),
-    refetchInterval: 300000, // 5 min fallback (WS push refreshes instantly)
-    staleTime: 60000,
-  })
+  // Matches are NOT auto-polled — they require embedding + ML work.
+  // Users trigger via "Run Matching" button; results are cached in state.
+  const [matchesData, setMatchesData] = useState<{
+    total_articles?: number
+    total_markets?: number
+    total_matches?: number
+    matcher_mode?: string
+    matches: NewsMatch[]
+  } | null>(null)
+  const [matchesLoading, setMatchesLoading] = useState(false)
 
   // ─── Mutations ────────────────────────────────────────────
 
@@ -443,9 +452,19 @@ export default function NewsIntelligencePanel() {
     mutationFn: triggerNewsFetch,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
-      queryClient.invalidateQueries({ queryKey: ['news-matches'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
     },
+  })
+
+  // Manual matching trigger (avoids infinite spinner)
+  const runMatchingMutation = useMutation({
+    mutationFn: () => runNewsMatching({ max_age_hours: 24, top_k: 5 }),
+    onMutate: () => setMatchesLoading(true),
+    onSuccess: (data) => {
+      setMatchesData(data)
+      setMatchesLoading(false)
+    },
+    onError: () => setMatchesLoading(false),
   })
 
   const clearMutation = useMutation({
@@ -453,6 +472,7 @@ export default function NewsIntelligencePanel() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
+      setMatchesData(null)
     },
   })
 
@@ -581,6 +601,16 @@ export default function NewsIntelligencePanel() {
           >
             {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
             Fetch News
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 gap-1 text-blue-400 border-blue-500/20 hover:bg-blue-500/10 hover:text-blue-400"
+            onClick={() => runMatchingMutation.mutate()}
+            disabled={runMatchingMutation.isPending}
+          >
+            {runMatchingMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
+            Run Matching
           </Button>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -814,17 +844,29 @@ export default function NewsIntelligencePanel() {
       {/* ─── Matches View ────────────────────────────────────── */}
       {subView === 'matches' && (
         <>
-          {matchesLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
+          {matchesLoading || runMatchingMutation.isPending ? (
+            <div className="flex flex-col items-center justify-center py-16">
+              <RefreshCw className="w-8 h-8 animate-spin text-blue-400 mb-3" />
+              <p className="text-sm text-muted-foreground">Running semantic matching...</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Embedding articles and matching to markets (this may take a moment)</p>
             </div>
           ) : filteredMatches.length === 0 ? (
             <div className="text-center py-16">
               <Layers className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">No article-market matches</p>
-              <p className="text-sm text-muted-foreground/70 mt-1">
-                Matches appear automatically as articles are fetched. Click "Analyze" on any match to run LLM edge detection.
+              <p className="text-muted-foreground">No article-market matches yet</p>
+              <p className="text-sm text-muted-foreground/70 mt-1 mb-4">
+                Click "Run Matching" to embed articles and find market matches. Then click "Analyze" on any match to run LLM edge detection.
               </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-8 gap-1.5 bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-400"
+                onClick={() => runMatchingMutation.mutate()}
+                disabled={runMatchingMutation.isPending}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Run Matching
+              </Button>
             </div>
           ) : (
             <>

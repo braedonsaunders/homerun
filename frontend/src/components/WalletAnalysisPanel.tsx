@@ -1377,10 +1377,10 @@ function PositionRow({ position }: { position: WalletPosition }) {
       </div>
 
       {/* Actions */}
-      {position.market_slug && (
+      {(position.event_slug || position.market_slug) && (
         <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
           <a
-            href={`https://polymarket.com/event/${position.market_slug}`}
+            href={`https://polymarket.com/event/${position.event_slug || position.market_slug}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"

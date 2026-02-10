@@ -18,7 +18,7 @@ import logging
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from xml.etree import ElementTree
 
@@ -184,8 +184,11 @@ class NewsFeedService:
         while self._running:
             try:
                 new_articles = await self.fetch_all()
-                # Push new article count to frontend via WS
+                # Persist to DB + prune expired rows periodically
                 if new_articles:
+                    await self.persist_to_db()
+                    await self.prune_db()
+                    # Push new article count to frontend via WS
                     try:
                         from api.websocket import broadcast_news_update
 
@@ -213,7 +216,7 @@ class NewsFeedService:
         return all_articles
 
     async def _fetch_google_news_rss(
-        self, query: str, max_results: int = 15
+        self, query: str, max_results: int = 40
     ) -> list[NewsArticle]:
         """Fetch articles from Google News RSS."""
         try:
@@ -293,7 +296,7 @@ class NewsFeedService:
         return all_articles
 
     async def _fetch_gdelt_query(
-        self, query: str, max_results: int = 10
+        self, query: str, max_results: int = 30
     ) -> list[NewsArticle]:
         """Fetch from GDELT DOC 2.0 API for a single query."""
         try:
@@ -424,6 +427,132 @@ class NewsFeedService:
         except Exception as e:
             logger.debug("Custom RSS fetch failed for '%s': %s", feed_url, e)
             return []
+
+    # ------------------------------------------------------------------
+    # Database persistence
+    # ------------------------------------------------------------------
+
+    async def persist_to_db(self) -> int:
+        """Persist in-memory articles to the database for long-term retention."""
+        try:
+            from models.database import AsyncSessionLocal, NewsArticleCache
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            articles = list(self._articles.values())
+            if not articles:
+                return 0
+
+            persisted = 0
+            async with AsyncSessionLocal() as session:
+                for a in articles:
+                    stmt = sqlite_insert(NewsArticleCache).values(
+                        article_id=a.article_id,
+                        url=a.url,
+                        title=a.title,
+                        source=a.source,
+                        feed_source=a.feed_source,
+                        category=a.category,
+                        summary=a.summary or "",
+                        published=a.published,
+                        fetched_at=a.fetched_at,
+                        embedding=a.embedding,
+                    ).on_conflict_do_update(
+                        index_elements=["article_id"],
+                        set_={
+                            "embedding": a.embedding,
+                        },
+                    )
+                    await session.execute(stmt)
+                    persisted += 1
+                await session.commit()
+
+            logger.debug("Persisted %d articles to DB", persisted)
+            return persisted
+        except Exception as e:
+            logger.warning("Failed to persist articles to DB: %s", e)
+            return 0
+
+    async def load_from_db(self) -> int:
+        """Load articles from DB into in-memory store on startup."""
+        try:
+            from models.database import AsyncSessionLocal, NewsArticleCache
+            from sqlalchemy import select
+
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                hours=settings.NEWS_ARTICLE_TTL_HOURS
+            )
+            loaded = 0
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(NewsArticleCache).where(
+                        NewsArticleCache.fetched_at >= cutoff
+                    )
+                )
+                rows = result.scalars().all()
+                for row in rows:
+                    if row.article_id in self._articles:
+                        continue
+                    self._articles[row.article_id] = NewsArticle(
+                        article_id=row.article_id,
+                        title=row.title,
+                        url=row.url,
+                        source=row.source or "",
+                        published=row.published,
+                        summary=row.summary or "",
+                        feed_source=row.feed_source or "",
+                        category=row.category or "",
+                        fetched_at=row.fetched_at,
+                        embedding=row.embedding,
+                    )
+                    loaded += 1
+            logger.info("Loaded %d articles from DB", loaded)
+            return loaded
+        except Exception as e:
+            logger.warning("Failed to load articles from DB: %s", e)
+            return 0
+
+    async def prune_db(self) -> int:
+        """Remove articles older than TTL from the database."""
+        try:
+            from models.database import AsyncSessionLocal, NewsArticleCache
+            from sqlalchemy import delete
+
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                hours=settings.NEWS_ARTICLE_TTL_HOURS
+            )
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    delete(NewsArticleCache).where(
+                        NewsArticleCache.fetched_at < cutoff
+                    )
+                )
+                await session.commit()
+                count = result.rowcount
+            if count:
+                logger.info("Pruned %d expired articles from DB", count)
+            return count
+        except Exception as e:
+            logger.warning("Failed to prune DB articles: %s", e)
+            return 0
+
+    def search_articles(
+        self, query: str, max_age_hours: int = 168, limit: int = 50
+    ) -> list[NewsArticle]:
+        """Search articles by keyword in title / summary / category."""
+        q = query.lower().strip()
+        if not q:
+            return []
+        articles = self.get_articles(max_age_hours=max_age_hours)
+        matches = [
+            a
+            for a in articles
+            if q in a.title.lower()
+            or q in (a.summary or "").lower()
+            or q in (a.category or "").lower()
+            or q in (a.source or "").lower()
+        ]
+        matches.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
+        return matches[:limit]
 
     # ------------------------------------------------------------------
     # Internal helpers

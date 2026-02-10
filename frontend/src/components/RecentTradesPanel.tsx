@@ -166,9 +166,9 @@ export default function RecentTradesPanel({ onNavigateToWallet }: Props) {
   }
 
   const getPolymarketUrl = (trade: RecentTradeFromWallet) => {
-    if (trade.market_slug) return `https://polymarket.com/event/${trade.market_slug}`
-    if (trade.event_slug) return `https://polymarket.com/event/${trade.event_slug}`
-    return ''
+    // Polymarket URLs use event slug (not market slug)
+    const slug = trade.event_slug || trade.market_slug
+    return slug ? `https://polymarket.com/event/${slug}` : ''
   }
 
   const getConfluenceCount = (trade: RecentTradeFromWallet) => {

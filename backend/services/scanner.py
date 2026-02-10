@@ -29,6 +29,7 @@ from services.strategies import (
     MarketMakingStrategy,
     StatArbStrategy,
 )
+from services.plugin_loader import plugin_loader, PluginValidationError
 from services.pause_state import global_pause_state
 from services.market_prioritizer import market_prioritizer, MarketTier
 from services.ws_feeds import get_feed_manager
@@ -271,6 +272,61 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"Error saving scanner settings: {e}")
 
+    async def load_plugins(self):
+        """Load all enabled plugins from the database into the plugin loader."""
+        try:
+            from models.database import StrategyPlugin as StrategyPluginModel
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(StrategyPluginModel).where(StrategyPluginModel.enabled == True)
+                )
+                plugins = result.scalars().all()
+
+            loaded_count = 0
+            for p in plugins:
+                try:
+                    plugin_loader.load_plugin(p.slug, p.source_code, p.config or None)
+                    # Update status in DB
+                    async with AsyncSessionLocal() as session:
+                        result = await session.execute(
+                            select(StrategyPluginModel).where(
+                                StrategyPluginModel.id == p.id
+                            )
+                        )
+                        db_plugin = result.scalar_one_or_none()
+                        if db_plugin:
+                            db_plugin.status = "loaded"
+                            db_plugin.error_message = None
+                            await session.commit()
+                    loaded_count += 1
+                except PluginValidationError as e:
+                    print(f"  Plugin '{p.slug}' failed to load: {e}")
+                    # Update error status in DB
+                    async with AsyncSessionLocal() as session:
+                        result = await session.execute(
+                            select(StrategyPluginModel).where(
+                                StrategyPluginModel.id == p.id
+                            )
+                        )
+                        db_plugin = result.scalar_one_or_none()
+                        if db_plugin:
+                            db_plugin.status = "error"
+                            db_plugin.error_message = str(e)
+                            await session.commit()
+                except Exception as e:
+                    print(f"  Plugin '{p.slug}' failed to load (unexpected): {e}")
+
+            if loaded_count > 0:
+                print(f"Loaded {loaded_count} strategy plugin(s)")
+        except Exception as e:
+            print(f"Error loading plugins: {e}")
+
+    def _get_all_strategies(self) -> list:
+        """Return built-in strategies + loaded plugin strategies."""
+        plugin_strategies = plugin_loader.get_all_strategy_instances()
+        return self.strategies + plugin_strategies
+
     async def scan_once(self) -> list[ArbitrageOpportunity]:
         """Perform a single scan for arbitrage opportunities"""
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
@@ -451,8 +507,9 @@ class ArbitrageScanner:
                     None, strategy.detect, events, markets_to_evaluate, prices
                 )
 
+            all_strategies = self._get_all_strategies()
             results = await asyncio.gather(
-                *[_run_strategy(s) for s in self.strategies],
+                *[_run_strategy(s) for s in all_strategies],
                 return_exceptions=True,
             )
 
@@ -465,10 +522,14 @@ class ArbitrageScanner:
                 for opp in opps:
                     if opp.mispricing_type is None:
                         opp.mispricing_type = self._strategy_mispricing_map.get(
-                            opp.strategy.value, MispricingType.WITHIN_MARKET
+                            opp.strategy, MispricingType.WITHIN_MARKET
                         )
                 all_opportunities.extend(opps)
                 print(f"  {strategy.name}: found {len(opps)} opportunities")
+                # Record plugin run stats
+                strategy_type = getattr(strategy, "strategy_type", "")
+                if isinstance(strategy_type, str) and plugin_loader.get_plugin(strategy_type):
+                    plugin_loader.record_run(strategy_type, len(opps))
 
             # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
@@ -694,8 +755,9 @@ class ArbitrageScanner:
                     merged_prices,
                 )
 
+            all_strategies = self._get_all_strategies()
             results = await asyncio.gather(
-                *[_run_strategy(s) for s in self.strategies],
+                *[_run_strategy(s) for s in all_strategies],
                 return_exceptions=True,
             )
 
@@ -706,9 +768,13 @@ class ArbitrageScanner:
                 for opp in opps:
                     if opp.mispricing_type is None:
                         opp.mispricing_type = self._strategy_mispricing_map.get(
-                            opp.strategy.value, MispricingType.WITHIN_MARKET
+                            opp.strategy, MispricingType.WITHIN_MARKET
                         )
                 fast_opportunities.extend(opps)
+                # Record plugin run stats
+                strategy_type = getattr(strategy, "strategy_type", "")
+                if isinstance(strategy_type, str) and plugin_loader.get_plugin(strategy_type):
+                    plugin_loader.record_run(strategy_type, len(opps))
 
             fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
             fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
@@ -1178,6 +1244,9 @@ class ArbitrageScanner:
         """Start continuous scanning loop"""
         # Load persisted settings first
         await self.load_settings()
+
+        # Load strategy plugins from database
+        await self.load_plugins()
 
         if interval_seconds is not None:
             self._interval_seconds = interval_seconds

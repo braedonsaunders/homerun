@@ -1073,6 +1073,15 @@ class WalletDiscoveryEngine:
     # 12. Query Methods
     # ------------------------------------------------------------------
 
+    # Maps sort_by field names to their rolling window JSON column equivalents
+    SORT_FIELD_TO_ROLLING_COLUMN = {
+        "total_pnl": "rolling_pnl",
+        "win_rate": "rolling_win_rate",
+        "sharpe_ratio": "rolling_sharpe",
+        "total_trades": "rolling_trade_count",
+        "avg_roi": "rolling_roi",
+    }
+
     async def get_leaderboard(
         self,
         limit: int = 100,
@@ -1083,6 +1092,7 @@ class WalletDiscoveryEngine:
         sort_dir: str = "desc",
         tags: list[str] | None = None,
         recommendation: str | None = None,
+        window_key: str | None = None,
     ) -> dict:
         """
         Get the wallet leaderboard with filtering and sorting.
@@ -1096,9 +1106,11 @@ class WalletDiscoveryEngine:
             sort_dir: "asc" or "desc".
             tags: If provided, only return wallets that have ALL of these tags.
             recommendation: If provided, filter to this recommendation level.
+            window_key: Rolling window key ("1d", "7d", "30d", "90d").
+                        When set, sorts/filters use rolling window metrics for that period.
 
         Returns:
-            Dict with 'wallets' list and 'total' count.
+            Dict with 'wallets' list, 'total' count, and 'window_key' if set.
         """
         async with AsyncSessionLocal() as session:
             base_filter = [
@@ -1107,6 +1119,13 @@ class WalletDiscoveryEngine:
             ]
             if recommendation:
                 base_filter.append(DiscoveredWallet.recommendation == recommendation)
+
+            # When a rolling window is active, filter to wallets with trades in that window
+            if window_key:
+                trade_count_expr = func.json_extract(
+                    DiscoveredWallet.rolling_trade_count, f"$.{window_key}"
+                )
+                base_filter.append(trade_count_expr > 0)
 
             # Get total count for pagination
             count_query = select(func.count(DiscoveredWallet.address)).where(
@@ -1118,15 +1137,25 @@ class WalletDiscoveryEngine:
             # Build main query
             query = select(DiscoveredWallet).where(*base_filter)
 
-            # Determine sort column
-            sort_column = getattr(DiscoveredWallet, sort_by, None)
-            if sort_column is None:
-                sort_column = DiscoveredWallet.rank_score
+            # Determine sort expression
+            if window_key and sort_by in self.SORT_FIELD_TO_ROLLING_COLUMN:
+                # Sort using the rolling window JSON value for this period
+                rolling_col_name = self.SORT_FIELD_TO_ROLLING_COLUMN[sort_by]
+                rolling_col = getattr(DiscoveredWallet, rolling_col_name, None)
+                if rolling_col is not None:
+                    sort_expr = func.json_extract(rolling_col, f"$.{window_key}")
+                else:
+                    sort_expr = DiscoveredWallet.rank_score
+            else:
+                # All-time: sort by the regular column
+                sort_expr = getattr(DiscoveredWallet, sort_by, None)
+                if sort_expr is None:
+                    sort_expr = DiscoveredWallet.rank_score
 
             if sort_dir.lower() == "asc":
-                query = query.order_by(asc(sort_column))
+                query = query.order_by(asc(sort_expr))
             else:
-                query = query.order_by(desc(sort_column))
+                query = query.order_by(desc(sort_expr))
 
             query = query.offset(offset).limit(limit)
 
@@ -1137,6 +1166,14 @@ class WalletDiscoveryEngine:
             for w in wallets:
                 row = self._wallet_to_dict(w)
 
+                # Inject period-specific metrics when a rolling window is active
+                if window_key:
+                    row["period_pnl"] = (w.rolling_pnl or {}).get(window_key, 0.0)
+                    row["period_roi"] = (w.rolling_roi or {}).get(window_key, 0.0)
+                    row["period_win_rate"] = (w.rolling_win_rate or {}).get(window_key, 0.0)
+                    row["period_trades"] = (w.rolling_trade_count or {}).get(window_key, 0)
+                    row["period_sharpe"] = (w.rolling_sharpe or {}).get(window_key)
+
                 # Client-side tag filtering (JSON column)
                 if tags:
                     wallet_tags = row.get("tags") or []
@@ -1145,7 +1182,10 @@ class WalletDiscoveryEngine:
 
                 rows.append(row)
 
-            return {"wallets": rows, "total": total_count}
+            resp = {"wallets": rows, "total": total_count}
+            if window_key:
+                resp["window_key"] = window_key
+            return resp
 
     async def get_wallet_profile(self, address: str) -> dict | None:
         """

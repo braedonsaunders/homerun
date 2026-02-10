@@ -7,6 +7,14 @@ from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
 from utils.validation import validate_eth_address
 
+# Maps time_period query values to rolling window keys stored in the DB
+TIME_PERIOD_TO_WINDOW_KEY = {
+    "24h": "1d",
+    "7d": "7d",
+    "30d": "30d",
+    "90d": "90d",
+}
+
 discovery_router = APIRouter()
 
 
@@ -27,6 +35,10 @@ async def get_leaderboard(
     tags: Optional[str] = Query(default=None, description="Comma-separated tag filter"),
     recommendation: Optional[str] = Query(
         default=None, description="copy_candidate, monitor, avoid"
+    ),
+    time_period: Optional[str] = Query(
+        default=None,
+        description="Time period filter: 24h, 7d, 30d, 90d, or all (default all)",
     ),
 ):
     """
@@ -69,6 +81,17 @@ async def get_leaderboard(
                 detail=f"Invalid recommendation. Must be one of: {valid_recommendations}",
             )
 
+        # Map time_period to rolling window key
+        window_key = None
+        if time_period and time_period != "all":
+            window_key = TIME_PERIOD_TO_WINDOW_KEY.get(time_period)
+            if window_key is None:
+                valid_periods = list(TIME_PERIOD_TO_WINDOW_KEY.keys()) + ["all"]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid time_period. Must be one of: {valid_periods}",
+                )
+
         # Parse comma-separated tags
         tag_list = tags.split(",") if tags else None
 
@@ -81,6 +104,7 @@ async def get_leaderboard(
             sort_dir=sort_dir,
             tags=tag_list,
             recommendation=recommendation,
+            window_key=window_key,
         )
 
         return result

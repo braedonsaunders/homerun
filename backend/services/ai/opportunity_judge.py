@@ -625,7 +625,7 @@ class OpportunityJudge:
         # Core fields
         sections.append(f"**ID:** {opportunity.id}")
         sections.append(
-            f"**Strategy:** {opportunity.strategy.value if opportunity.strategy else 'unknown'}"
+            f"**Strategy:** {opportunity.strategy if opportunity.strategy else 'unknown'}"
         )
         sections.append(f"**Title:** {opportunity.title}")
         sections.append(f"**Description:** {opportunity.description}")
@@ -908,7 +908,7 @@ class OpportunityJudge:
                 judgment_row = OpportunityJudgment(
                     id=uuid.uuid4().hex[:16],
                     opportunity_id=opportunity.id,
-                    strategy_type=opportunity.strategy.value
+                    strategy_type=opportunity.strategy
                     if opportunity.strategy
                     else "unknown",
                     overall_score=result["overall_score"],

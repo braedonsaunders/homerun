@@ -260,7 +260,7 @@ class TelegramNotifier:
             if trade and opp:
                 self._daily_stats.opportunities_acted_on += 1
 
-                strategy_key = opp.strategy.value
+                strategy_key = opp.strategy
                 breakdown = self._daily_stats.strategy_breakdown
                 if strategy_key not in breakdown:
                     breakdown[strategy_key] = {"count": 0, "pnl": 0.0}
@@ -317,7 +317,7 @@ class TelegramNotifier:
             "\u2705" if opp.roi_percent >= 10 else "\U0001f7e1"
         )  # green check / yellow circle
 
-        strategy = _escape_md(opp.strategy.value.replace("_", " ").title())
+        strategy = _escape_md(opp.strategy.replace("_", " ").title())
         roi = _escape_md(f"{opp.roi_percent:.2f}%")
         cost = _escape_md(f"${opp.total_cost:.2f}")
         profit = _escape_md(f"${opp.net_profit:.4f}")

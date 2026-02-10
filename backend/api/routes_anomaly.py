@@ -292,8 +292,10 @@ async def get_wallet_trades(
                     ),
                 ),
                 "market_slug": trade.get("market_slug", trade.get("slug", "")),
-                "market_title": trade.get("market_title", ""),
-                "event_slug": trade.get("event_slug", ""),
+                "market_title": trade.get("market_title", trade.get("title", "")),
+                "event_slug": trade.get(
+                    "event_slug", trade.get("eventSlug", "")
+                ),
                 "outcome": trade.get("outcome", trade.get("outcome_index", "")),
                 "side": side,
                 "size": size,
@@ -389,16 +391,21 @@ async def get_wallet_positions(wallet_address: str):
                     "question", ""
                 )
         market_slug = pos.get("market_slug", pos.get("slug", ""))
-        if not market_slug and condition_id:
+        event_slug = pos.get("event_slug", pos.get("eventSlug", ""))
+        if (not market_slug or not event_slug) and condition_id:
             market_info = polymarket_client._market_cache.get(condition_id)
             if market_info:
-                market_slug = market_info.get("slug", "")
+                if not market_slug:
+                    market_slug = market_info.get("slug", "")
+                if not event_slug:
+                    event_slug = market_info.get("event_slug", "")
 
         enriched_positions.append(
             {
                 "market": condition_id,
                 "title": title,
                 "market_slug": market_slug,
+                "event_slug": event_slug,
                 "outcome": pos.get("outcome", pos.get("outcome_index", "")),
                 "size": size,
                 "avg_price": avg_price,

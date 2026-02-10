@@ -577,7 +577,7 @@ class AutoTrader:
 
         # Check strategy filter
         if opp.strategy not in self.config.enabled_strategies:
-            return False, f"Strategy {opp.strategy.value} not enabled"
+            return False, f"Strategy {opp.strategy} not enabled"
 
         # === EXCLUSION FILTERS ===
 
@@ -746,7 +746,7 @@ class AutoTrader:
             # Check if this strategy should be LLM-verified
             should_verify = (
                 not self.config.llm_verify_strategies
-                or opp.strategy.value in self.config.llm_verify_strategies
+                or opp.strategy in self.config.llm_verify_strategies
             )
 
             if should_verify:
@@ -872,7 +872,7 @@ class AutoTrader:
         tier = execution_tier_service.classify_opportunity(
             roi_percent=opp.roi_percent,
             liquidity=opp.min_liquidity,
-            strategy=opp.strategy.value,
+            strategy=opp.strategy,
             category=category,
         )
 
@@ -1016,7 +1016,7 @@ class AutoTrader:
                 tier=tier,
                 roi_percent=opp.roi_percent,
                 liquidity=opp.min_liquidity,
-                strategy=opp.strategy.value,
+                strategy=opp.strategy,
                 category=category,
                 opportunity_id=opp.id,
             )
@@ -1074,7 +1074,7 @@ class AutoTrader:
             mispricing_str = f" | Type: {opp.mispricing_type.value}"
 
         logger.info(
-            f"Executing trade: {opp.strategy.value} | "
+            f"Executing trade: {opp.strategy} | "
             f"ROI: {opp.roi_percent:.2f}% | "
             f"Size: ${position_size:.2f} | "
             f"Mode: {self.config.mode.value}"

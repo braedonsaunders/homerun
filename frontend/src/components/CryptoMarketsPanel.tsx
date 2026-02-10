@@ -40,7 +40,7 @@ import AnimatedNumber from './AnimatedNumber'
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const
 type Asset = typeof ASSETS[number]
 
-const TIMEFRAMES = ['ALL', '15min', '1hr'] as const
+const TIMEFRAMES = ['ALL', '5min', '15min', '1hr'] as const
 type Timeframe = typeof TIMEFRAMES[number]
 
 const SUB_STRATEGY_LABELS: Record<string, { label: string; color: string; desc: string }> = {
@@ -85,7 +85,9 @@ function detectAsset(title: string): string {
 
 function detectTimeframe(title: string): string {
   const t = title.toLowerCase()
+  // Check 15m before 5m since "15min" contains the substring "5m"
   if (t.includes('15m') || t.includes('15 min') || t.includes('15-min') || t.includes('quarter')) return '15min'
+  if (t.includes('5m') || t.includes('5 min') || t.includes('5-min')) return '5min'
   if (t.includes('1h') || t.includes('1 hour') || t.includes('1-hour') || t.includes('60m') || t.includes('hourly')) return '1hr'
   return '15min'
 }
@@ -309,7 +311,7 @@ function CryptoMarketCard({
             </Badge>
             {/* Timeframe */}
             <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground border-border/60 font-data">
-              {timeframe === '15min' ? '15m' : '1h'}
+              {timeframe === '5min' ? '5m' : timeframe === '15min' ? '15m' : '1h'}
             </Badge>
             {/* Sub-strategy */}
             <Tooltip delayDuration={0}>
@@ -801,7 +803,7 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
               )}
             >
-              {tf === 'ALL' ? 'All' : tf === '15min' ? '15 min' : '1 hour'}
+              {tf === 'ALL' ? 'All' : tf === '5min' ? '5 min' : tf === '15min' ? '15 min' : '1 hour'}
             </button>
           ))}
         </div>
