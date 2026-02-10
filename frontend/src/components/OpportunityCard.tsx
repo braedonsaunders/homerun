@@ -445,7 +445,9 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot 
 
         {judgeMutation.error && (
           <div className="text-[10px] text-red-400">
-            Analysis failed: {(judgeMutation.error as Error).message}
+            Analysis failed{(judgeMutation.error as any)?.code === 'ECONNABORTED'
+              ? ' (request timed out — try again)'
+              : `: ${(judgeMutation.error as Error).message}`}
           </div>
         )}
       </div>
