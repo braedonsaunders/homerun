@@ -448,7 +448,7 @@ async def detailed_health_check():
                 "opportunities_count": len(scanner.get_opportunities()),
             },
             "wallet_tracker": {
-                "tracked_wallets": len(wallet_tracker.get_all_wallets())
+                "tracked_wallets": len(await wallet_tracker.get_all_wallets())
             },
             "copy_trader": {
                 "running": copy_trader._running,
@@ -512,7 +512,7 @@ polymarket_scanner_running {1 if scanner.is_running else 0}
 
 # HELP polymarket_tracked_wallets Number of tracked wallets
 # TYPE polymarket_tracked_wallets gauge
-polymarket_tracked_wallets {len(wallet_tracker.get_all_wallets())}
+polymarket_tracked_wallets {len(await wallet_tracker.get_all_wallets())}
 
 # HELP polymarket_copy_configs Active copy trading configurations
 # TYPE polymarket_copy_configs gauge
