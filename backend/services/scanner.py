@@ -400,6 +400,7 @@ class ArbitrageScanner:
             unchanged_count = 0
             if settings.TIERED_SCANNING_ENABLED:
                 try:
+
                     def _run_prioritizer(prioritizer, mkts, ts):
                         """Run all CPU-bound prioritizer work in a thread."""
                         prioritizer.update_stability_scores()

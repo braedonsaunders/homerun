@@ -654,11 +654,25 @@ class WalletDiscoveryEngine:
                 "max_drawdown": risk_metrics["max_drawdown"],
             }
             rank_score = engine._calculate_rank_score(rank_input)
-            return stats, risk_metrics, rolling, strategies, classification, rank_score, now_inner
+            return (
+                stats,
+                risk_metrics,
+                rolling,
+                strategies,
+                classification,
+                rank_score,
+                now_inner,
+            )
 
-        stats, risk_metrics, rolling, strategies, classification, rank_score, now = (
-            await asyncio.to_thread(_compute_profile, self, trades, positions)
-        )
+        (
+            stats,
+            risk_metrics,
+            rolling,
+            strategies,
+            classification,
+            rank_score,
+            now,
+        ) = await asyncio.to_thread(_compute_profile, self, trades, positions)
 
         username = profile.get("username") if profile else None
 
@@ -961,13 +975,9 @@ class WalletDiscoveryEngine:
                     select(
                         DiscoveredWallet.address,
                         DiscoveredWallet.last_analyzed_at,
-                    ).where(
-                        DiscoveredWallet.address.in_(list(all_addresses))
-                    )
+                    ).where(DiscoveredWallet.address.in_(list(all_addresses)))
                 )
-                existing = {
-                    row.address: row.last_analyzed_at for row in result.all()
-                }
+                existing = {row.address: row.last_analyzed_at for row in result.all()}
 
             for addr in all_addresses:
                 last_analyzed = existing.get(addr)
