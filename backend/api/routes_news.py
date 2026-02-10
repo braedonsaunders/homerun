@@ -8,6 +8,8 @@ Provides endpoints for:
 - News-driven edge detection results
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -235,14 +237,20 @@ async def run_matching(request: MatchRequest):
         if not market_infos:
             return {"matches": [], "message": "No markets available from scanner"}
 
-        if not semantic_matcher._initialized:
-            semantic_matcher.initialize()
+        # ML operations (model loading, embedding, search) are CPU-bound.
+        # Run them in the thread pool so the event loop stays responsive.
+        def _run_matching(matcher, m_infos, arts, top_k, threshold):
+            if not matcher._initialized:
+                matcher.initialize()
+            matcher.update_market_index(m_infos)
+            matcher.embed_articles(arts)
+            return matcher.match_articles_to_markets(
+                arts, top_k=top_k, threshold=threshold
+            )
 
-        semantic_matcher.update_market_index(market_infos)
-        semantic_matcher.embed_articles(articles)
-
-        matches = semantic_matcher.match_articles_to_markets(
-            articles, top_k=request.top_k, threshold=request.threshold
+        matches = await asyncio.to_thread(
+            _run_matching, semantic_matcher, market_infos, articles,
+            request.top_k, request.threshold,
         )
 
         return {
@@ -252,6 +260,7 @@ async def run_matching(request: MatchRequest):
             "matcher_mode": "semantic" if semantic_matcher.is_ml_mode else "tfidf",
             "matches": [
                 {
+                    "article_id": m.article.article_id,
                     "article_title": m.article.title,
                     "article_source": m.article.source,
                     "article_url": m.article.url,
@@ -282,9 +291,45 @@ class EdgeDetectionRequest(BaseModel):
     model: Optional[str] = None
 
 
+def _serialize_edge(e):
+    """Serialize a NewsEdge to a JSON-safe dict."""
+    return {
+        "article_title": e.match.article.title,
+        "article_source": e.match.article.source,
+        "article_url": e.match.article.url,
+        "market_question": e.match.market.question,
+        "market_id": e.match.market.market_id,
+        "market_price": e.market_price,
+        "model_probability": e.model_probability,
+        "edge_percent": round(e.edge_percent, 2),
+        "direction": e.direction,
+        "confidence": round(e.confidence, 2),
+        "reasoning": e.reasoning,
+        "similarity": round(e.match.similarity, 4),
+        "estimated_at": e.estimated_at.isoformat(),
+    }
+
+
+@router.get("/news/edges")
+async def get_cached_edges():
+    """Return previously detected edges without triggering new LLM calls.
+
+    This is the safe, cost-free endpoint for polling. Edges are only
+    populated after a manual ``POST /news/edges`` or
+    ``POST /news/edges/single`` call.
+    """
+    from services.news.edge_detector import edge_detector
+
+    edges = edge_detector.get_cached_edges()
+    return {
+        "total_edges": len(edges),
+        "edges": [_serialize_edge(e) for e in edges],
+    }
+
+
 @router.post("/news/edges")
 async def detect_edges(request: EdgeDetectionRequest):
-    """Run the full news edge detection pipeline.
+    """Run the full news edge detection pipeline (manual trigger, costs money).
 
     Fetches news, matches to markets, estimates probabilities via LLM,
     and returns edges where model diverges from market.
@@ -308,13 +353,19 @@ async def detect_edges(request: EdgeDetectionRequest):
         if not market_infos:
             return {"edges": [], "message": "No markets available from scanner"}
 
-        if not semantic_matcher._initialized:
-            semantic_matcher.initialize()
-        semantic_matcher.update_market_index(market_infos)
-        semantic_matcher.embed_articles(articles)
+        # ML operations are CPU-bound — run in thread pool
+        def _run_edge_matching(matcher, m_infos, arts, top_k, threshold):
+            if not matcher._initialized:
+                matcher.initialize()
+            matcher.update_market_index(m_infos)
+            matcher.embed_articles(arts)
+            return matcher.match_articles_to_markets(
+                arts, top_k=top_k, threshold=threshold
+            )
 
-        matches = semantic_matcher.match_articles_to_markets(
-            articles, top_k=request.top_k, threshold=request.threshold
+        matches = await asyncio.to_thread(
+            _run_edge_matching, semantic_matcher, market_infos, articles,
+            request.top_k, request.threshold,
         )
 
         if not matches:
@@ -327,28 +378,99 @@ async def detect_edges(request: EdgeDetectionRequest):
             "total_markets": len(market_infos),
             "total_matches": len(matches),
             "total_edges": len(edges),
-            "edges": [
-                {
-                    "article_title": e.match.article.title,
-                    "article_source": e.match.article.source,
-                    "article_url": e.match.article.url,
-                    "market_question": e.match.market.question,
-                    "market_id": e.match.market.market_id,
-                    "market_price": e.market_price,
-                    "model_probability": e.model_probability,
-                    "edge_percent": round(e.edge_percent, 2),
-                    "direction": e.direction,
-                    "confidence": round(e.confidence, 2),
-                    "reasoning": e.reasoning,
-                    "similarity": round(e.match.similarity, 4),
-                    "estimated_at": e.estimated_at.isoformat(),
-                }
-                for e in edges
-            ],
+            "edges": [_serialize_edge(e) for e in edges],
         }
 
     except Exception as e:
         logger.error("Edge detection failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SingleEdgeRequest(BaseModel):
+    """Analyze a single article-market match via LLM."""
+
+    article_id: str
+    market_id: str
+    model: Optional[str] = None
+
+
+@router.post("/news/edges/single")
+async def analyze_single_edge(request: SingleEdgeRequest):
+    """Analyze a single article-market match with LLM (manual trigger).
+
+    Finds the match from the latest matching run and estimates the
+    probability via LLM. This is the per-item equivalent of the
+    opportunity "Analyze" button.
+    """
+    from services.news.feed_service import news_feed_service
+    from services.news.semantic_matcher import semantic_matcher
+    from services.news.edge_detector import edge_detector
+
+    try:
+        # Get articles and find the requested one
+        articles = news_feed_service.get_articles(max_age_hours=48)
+        article = next(
+            (a for a in articles if a.article_id == request.article_id), None
+        )
+        if not article:
+            raise HTTPException(status_code=404, detail="Article not found")
+
+        # Build market index if needed
+        market_infos = _build_market_infos_from_scanner()
+        market_info = next(
+            (m for m in market_infos if m.market_id == request.market_id), None
+        )
+        if not market_info:
+            raise HTTPException(status_code=404, detail="Market not found")
+
+        # Ensure matcher is ready and run matching for this pair
+        if not semantic_matcher._initialized:
+            semantic_matcher.initialize()
+        semantic_matcher.update_market_index(market_infos)
+        semantic_matcher.embed_articles([article])
+
+        matches = semantic_matcher.match_articles_to_markets(
+            [article], top_k=10
+        )
+
+        # Find the specific match for this article+market combo
+        target_match = next(
+            (
+                m
+                for m in matches
+                if m.market.market_id == request.market_id
+                and m.article.article_id == request.article_id
+            ),
+            None,
+        )
+
+        if not target_match:
+            # Create a synthetic match if semantic matcher didn't pair them
+            from services.news.semantic_matcher import NewsMarketMatch
+
+            target_match = NewsMarketMatch(
+                article=article,
+                market=market_info,
+                similarity=0.0,
+                match_method="manual",
+            )
+
+        edge = await edge_detector.analyze_single_match(
+            target_match, model=request.model
+        )
+
+        if edge is None:
+            return {
+                "edge": None,
+                "message": "No significant edge detected (low relevance or confidence)",
+            }
+
+        return {"edge": _serialize_edge(edge)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Single edge analysis failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -464,10 +586,17 @@ async def forecast_market_by_id(request: CommitteeMarketRequest):
                         category=category,
                         yes_price=market_price,
                     )
-                    semantic_matcher.update_market_index([mi])
-                    semantic_matcher.embed_articles(articles)
-                    matches = semantic_matcher.match_articles_to_markets(
-                        articles, top_k=request.max_articles
+                    # ML operations are CPU-bound — run in thread pool
+                    def _forecast_match(matcher, mi_item, arts, max_arts):
+                        matcher.update_market_index([mi_item])
+                        matcher.embed_articles(arts)
+                        return matcher.match_articles_to_markets(
+                            arts, top_k=max_arts
+                        )
+
+                    matches = await asyncio.to_thread(
+                        _forecast_match, semantic_matcher, mi, articles,
+                        request.max_articles,
                     )
 
                     if matches:

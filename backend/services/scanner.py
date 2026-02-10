@@ -275,6 +275,7 @@ class ArbitrageScanner:
         """Perform a single scan for arbitrage opportunities"""
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
         await self._set_activity("Fetching Polymarket events and markets...")
+        loop = asyncio.get_running_loop()
 
         try:
             # Fetch events and markets concurrently (they are independent)
@@ -392,22 +393,24 @@ class ArbitrageScanner:
                 except Exception as e:
                     print(f"  WS subscription failed (non-critical): {e}")
 
-            # Tiered scanning: classify markets and apply change detection
+            # Tiered scanning: classify markets and apply change detection.
+            # These are CPU-bound operations on 6000+ markets — run them
+            # in the thread pool so the event loop stays responsive.
             markets_to_evaluate = markets
             unchanged_count = 0
             if settings.TIERED_SCANNING_ENABLED:
                 try:
-                    # Update stability scores from MarketMonitor
-                    self._prioritizer.update_stability_scores()
+                    def _run_prioritizer(prioritizer, mkts, ts):
+                        """Run all CPU-bound prioritizer work in a thread."""
+                        prioritizer.update_stability_scores()
+                        t_map = prioritizer.classify_all(mkts, ts)
+                        prioritizer.compute_attention_scores(mkts)
+                        changed = prioritizer.get_changed_markets(mkts)
+                        return t_map, changed
 
-                    # Classify all markets into tiers
-                    tier_map = self._prioritizer.classify_all(markets, now)
-
-                    # Compute volume/liquidity attention scores
-                    self._prioritizer.compute_attention_scores(markets)
-
-                    # Change detection: filter out markets with identical prices
-                    changed = self._prioritizer.get_changed_markets(markets)
+                    tier_map, changed = await loop.run_in_executor(
+                        None, _run_prioritizer, self._prioritizer, markets, now
+                    )
                     unchanged_count = len(markets) - len(changed)
 
                     # For full scans, still run all markets through strategies
@@ -466,49 +469,21 @@ class ArbitrageScanner:
                 all_opportunities.extend(opps)
                 print(f"  {strategy.name}: found {len(opps)} opportunities")
 
-            # Update prioritizer state after evaluation
+            # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
                 try:
-                    self._prioritizer.update_after_evaluation(markets, now)
+                    await loop.run_in_executor(
+                        None, self._prioritizer.update_after_evaluation, markets, now
+                    )
                 except Exception:
                     pass
 
-            print(
-                f"  [SCAN] {len(all_opportunities)} opps from strategies, running news edge..."
-            )
-
-            # Run async strategies (News Edge — requires LLM calls)
-            if settings.NEWS_EDGE_ENABLED:
-                try:
-                    news_opps = await asyncio.wait_for(
-                        self._news_edge_strategy.detect_async(events, markets, prices),
-                        timeout=60,
-                    )
-                    for opp in news_opps:
-                        if opp.mispricing_type is None:
-                            opp.mispricing_type = MispricingType.NEWS_INFORMATION
-                    all_opportunities.extend(news_opps)
-                    print(
-                        f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities"
-                    )
-                except asyncio.TimeoutError:
-                    print(
-                        f"  {self._news_edge_strategy.name}: TIMED OUT after 60s, skipping"
-                    )
-                except Exception as e:
-                    print(f"  {self._news_edge_strategy.name}: error - {e}")
-
-            print(f"  [SCAN] deduplicating {len(all_opportunities)} opps...")
-
-            # Deduplicate across strategies: when the same underlying markets
-            # are detected by multiple strategies, keep only the highest-ROI one.
-            pre_dedup = len(all_opportunities)
+            # ----------------------------------------------------------
+            # STORE opportunities immediately so the API can serve them
+            # without waiting for slow LLM-based strategies (News Edge).
+            # ----------------------------------------------------------
             all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
-
-            # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
-
-            print("  [SCAN] attaching AI judgments...")
 
             # Attach existing AI judgments from the database
             try:
@@ -517,20 +492,23 @@ class ArbitrageScanner:
                     timeout=15,
                 )
             except asyncio.TimeoutError:
-                print(
-                    "  [SCAN] _attach_ai_judgments TIMED OUT after 15s, continuing without"
-                )
-            except Exception as e:
-                print(f"  [SCAN] _attach_ai_judgments error: {e}")
-
-            print(f"  [SCAN] merging {len(all_opportunities)} opps into pool...")
+                print("  AI judgment attach timed out (15s), continuing without")
+            except Exception:
+                pass
 
             self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
-            print(
-                f"  Post-merge pool: {len(self._opportunities)} opportunities "
-                f"(pre-dedup={pre_dedup}, post-dedup={len(all_opportunities)})"
-            )
+            print(f"  Stored {len(self._opportunities)} opportunities")
+
+            # News Edge: LLM-based analysis is now manual only (triggered
+            # from the UI via POST /news/edges or POST /news/edges/single)
+            # to avoid automatic spend on paid LLM providers.  We still
+            # pre-fetch articles + run semantic matching so the data is
+            # ready when the user clicks "Analyze".
+            if settings.NEWS_EDGE_ENABLED:
+                asyncio.create_task(
+                    self._prefetch_news_matches(events, markets, prices)
+                )
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
             # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
@@ -629,9 +607,16 @@ class ArbitrageScanner:
             except Exception:
                 pass
 
-            # 4. Classify all cached markets into tiers
-            self._prioritizer.update_stability_scores()
-            tier_map = self._prioritizer.classify_all(self._cached_markets, now)
+            # 4. Classify all cached markets into tiers (CPU-bound, run in thread)
+            loop = asyncio.get_running_loop()
+
+            def _classify_cached(prioritizer, mkts, ts):
+                prioritizer.update_stability_scores()
+                return prioritizer.classify_all(mkts, ts)
+
+            tier_map = await loop.run_in_executor(
+                None, _classify_cached, self._prioritizer, self._cached_markets, now
+            )
             hot_markets = tier_map[MarketTier.HOT]
 
             if not hot_markets:
@@ -660,8 +645,10 @@ class ArbitrageScanner:
             # Merge with cached prices
             merged_prices = {**self._cached_prices, **hot_prices}
 
-            # 6. Change detection: only evaluate markets whose prices moved
-            changed_markets = self._prioritizer.get_changed_markets(hot_markets)
+            # 6. Change detection: only evaluate markets whose prices moved (CPU-bound)
+            changed_markets = await loop.run_in_executor(
+                None, self._prioritizer.get_changed_markets, hot_markets
+            )
             if not changed_markets:
                 print(
                     f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies"
@@ -725,9 +712,15 @@ class ArbitrageScanner:
             fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
             fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
-            # 8. Update prioritizer state
-            unchanged = self._prioritizer.update_after_evaluation(hot_markets, now)
-            self._prioritizer.compute_attention_scores(hot_markets)
+            # 8. Update prioritizer state (CPU-bound, run in thread)
+            def _update_prioritizer_state(prioritizer, mkts, ts):
+                unch = prioritizer.update_after_evaluation(mkts, ts)
+                prioritizer.compute_attention_scores(mkts)
+                return unch
+
+            unchanged = await loop.run_in_executor(
+                None, _update_prioritizer_state, self._prioritizer, hot_markets, now
+            )
 
             # 9. Merge into main pool
             if fast_opportunities:
@@ -761,6 +754,68 @@ class ArbitrageScanner:
             print(f"[{datetime.utcnow().isoformat()}] Fast scan error: {e}")
             await self._set_activity(f"Fast scan error: {e}")
             raise
+
+    async def _prefetch_news_matches(self, events, markets, prices):
+        """Pre-fetch news articles and run semantic matching (no LLM calls).
+
+        This prepares the data so that manual edge analysis from the UI
+        is fast — articles are already fetched and matched to markets.
+        No paid LLM calls are made here.
+        """
+        try:
+            from services.news.feed_service import news_feed_service
+            from services.news.semantic_matcher import semantic_matcher, MarketInfo
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Step 1: Fetch articles (free — RSS/GDELT)
+            await news_feed_service.fetch_all()
+            all_articles = news_feed_service.get_articles(
+                max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS
+            )
+
+            if not all_articles:
+                return
+
+            # Step 2: Build market index
+            market_infos = self._news_edge_strategy._build_market_infos(
+                events, markets, prices
+            )
+            if not market_infos:
+                return
+
+            loop = asyncio.get_running_loop()
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="news_prefetch"
+            )
+
+            if not semantic_matcher._initialized:
+                await loop.run_in_executor(executor, semantic_matcher.initialize)
+
+            await loop.run_in_executor(
+                executor, semantic_matcher.update_market_index, market_infos
+            )
+
+            # Step 3: Embed articles (local ML, free)
+            await loop.run_in_executor(
+                executor, semantic_matcher.embed_articles, all_articles
+            )
+
+            # Step 4: Match articles to markets (local, free)
+            matches = await loop.run_in_executor(
+                executor,
+                semantic_matcher.match_articles_to_markets,
+                all_articles,
+                3,
+                settings.NEWS_SIMILARITY_THRESHOLD,
+            )
+
+            print(
+                f"  News prefetch: {len(all_articles)} articles, "
+                f"{len(market_infos)} markets, {len(matches)} matches "
+                f"(LLM analysis deferred to manual trigger)"
+            )
+        except Exception as e:
+            print(f"  News prefetch error: {e}")
 
     def _deduplicate_cross_strategy(
         self, opportunities: list[ArbitrageOpportunity]

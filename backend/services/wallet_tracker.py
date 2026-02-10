@@ -150,17 +150,29 @@ class WalletTracker:
         return new_trades
 
     async def check_all_wallets(self) -> list[dict]:
-        """Check all tracked wallets for new activity"""
+        """Check all tracked wallets for new activity (concurrent)."""
         all_new_trades = []
 
-        for address in list(self.tracked_wallets.keys()):
-            new_trades = await self._update_wallet(address)
-            if new_trades:
-                wallet = self.tracked_wallets[address]
-                for trade in new_trades:
-                    trade["_wallet_label"] = wallet["label"]
-                    trade["_wallet_address"] = address
-                all_new_trades.extend(new_trades)
+        # Update wallets concurrently instead of sequentially to avoid
+        # blocking the event loop for extended periods when many wallets
+        # are tracked.
+        addresses = list(self.tracked_wallets.keys())
+        if addresses:
+            results = await asyncio.gather(
+                *[self._update_wallet(addr) for addr in addresses],
+                return_exceptions=True,
+            )
+            for address, result in zip(addresses, results):
+                if isinstance(result, Exception):
+                    print(f"  Wallet update error for {address}: {result}")
+                    continue
+                if result:
+                    wallet = self.tracked_wallets.get(address)
+                    if wallet:
+                        for trade in result:
+                            trade["_wallet_label"] = wallet["label"]
+                            trade["_wallet_address"] = address
+                        all_new_trades.extend(result)
 
         # Notify callbacks
         for trade in all_new_trades:
@@ -200,13 +212,12 @@ class WalletTracker:
         return self.tracked_wallets.get(address.lower())
 
     async def get_all_wallets(self) -> list[dict]:
-        """Get all tracked wallets"""
+        """Get all tracked wallets (returns cached data).
+
+        Data is refreshed in the background by the monitoring loop. This
+        method returns immediately so API endpoints stay responsive.
+        """
         await self._ensure_initialized()
-
-        # Refresh positions and trades for all wallets
-        for address in list(self.tracked_wallets.keys()):
-            await self._update_wallet(address)
-
         return list(self.tracked_wallets.values())
 
 

@@ -1345,16 +1345,19 @@ export const testTradingProxy = async (): Promise<{ status: string; message: str
 
 // ==================== AI INTELLIGENCE ====================
 
+// AI endpoints that invoke LLM calls need a longer timeout than the default 15s
+const AI_TIMEOUT = { timeout: 120_000 }
+
 export const getAIStatus = () => api.get('/ai/status')
-export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data)
+export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data, AI_TIMEOUT)
 export const getResolutionAnalysis = (marketId: string) => api.get(`/ai/resolution/${marketId}`)
-export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data)
+export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data, AI_TIMEOUT)
 export const judgeOpportunitiesBulk = (data?: { opportunity_ids?: string[] }) =>
-  api.post('/ai/judge/opportunities/bulk', data || {})
+  api.post('/ai/judge/opportunities/bulk', data || {}, AI_TIMEOUT)
 export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history', { params })
 export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')
-export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data)
-export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data)
+export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data, AI_TIMEOUT)
+export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data, AI_TIMEOUT)
 
 // ==================== NEWS INTELLIGENCE ====================
 
@@ -1384,6 +1387,7 @@ export interface NewsFeedStatus {
 }
 
 export interface NewsMatch {
+  article_id: string
   article_title: string
   article_source: string
   article_url: string
@@ -1480,6 +1484,11 @@ export const runNewsMatching = async (params?: {
   return data
 }
 
+export const getNewsEdgesCached = async (): Promise<{ total_edges: number; edges: NewsEdge[] }> => {
+  const { data } = await api.get('/news/edges')
+  return data
+}
+
 export const detectNewsEdges = async (params?: {
   max_age_hours?: number
   top_k?: number
@@ -1487,6 +1496,15 @@ export const detectNewsEdges = async (params?: {
   model?: string
 }): Promise<NewsEdgesResponse> => {
   const { data } = await api.post('/news/edges', params || {})
+  return data
+}
+
+export const analyzeNewsEdgeSingle = async (params: {
+  article_id: string
+  market_id: string
+  model?: string
+}): Promise<{ edge: NewsEdge | null; message?: string }> => {
+  const { data } = await api.post('/news/edges/single', params)
   return data
 }
 
@@ -1508,11 +1526,11 @@ export const forecastMarketById = async (params: {
   include_news?: boolean
   max_articles?: number
 }): Promise<ForecastResult> => {
-  const { data } = await api.post('/news/forecast/market', params)
+  const { data } = await api.post('/news/forecast/market', params, AI_TIMEOUT)
   return data
 }
 export const listSkills = () => api.get('/ai/skills')
-export const executeSkill = (data: any) => api.post('/ai/skills/execute', data)
+export const executeSkill = (data: any) => api.post('/ai/skills/execute', data, AI_TIMEOUT)
 export const getResearchSessions = (params?: any) => api.get('/ai/sessions', { params })
 export const getResearchSession = (sessionId: string) => api.get(`/ai/sessions/${sessionId}`)
 export const getAIUsage = () => api.get('/ai/usage')
@@ -1579,7 +1597,7 @@ export const sendAIChat = async (params: {
   context_id?: string
   history?: AIChatMessage[]
 }): Promise<AIChatResponse> => {
-  const { data } = await api.post('/ai/chat', params)
+  const { data } = await api.post('/ai/chat', params, AI_TIMEOUT)
   return data
 }
 

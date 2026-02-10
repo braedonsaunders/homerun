@@ -439,64 +439,66 @@ class EntityClusterer:
             logger.info("Not enough wallet data for clustering")
             return
 
-        # Step 3: Compare all pairs
-        addresses = list(wallet_data.keys())
-        # Union-find for grouping
-        parent: dict[str, str] = {a: a for a in addresses}
+        # Step 3: Compare all pairs (CPU-bound O(n^2) pairwise comparison).
+        # Run in thread pool so the event loop stays free for API requests.
+        def _pairwise_cluster(clusterer, w_data):
+            addresses = list(w_data.keys())
+            parent = {a: a for a in addresses}
 
-        def find(x: str) -> str:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
 
-        def union(a: str, b: str):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
 
-        pairs_compared = 0
-        pairs_linked = 0
+            p_compared = 0
+            p_linked = 0
 
-        for i in range(len(addresses)):
-            for j in range(i + 1, len(addresses)):
-                a_addr = addresses[i]
-                b_addr = addresses[j]
-                a_data = wallet_data[a_addr]
-                b_data = wallet_data[b_addr]
+            for i in range(len(addresses)):
+                for j in range(i + 1, len(addresses)):
+                    a_addr = addresses[i]
+                    b_addr = addresses[j]
+                    a_d = w_data[a_addr]
+                    b_d = w_data[b_addr]
 
-                # Quick filter: must share enough markets
-                market_overlap = self._calculate_market_overlap(
-                    a_data["markets"], b_data["markets"]
-                )
-                shared_count = len(a_data["markets"] & b_data["markets"])
-                if shared_count < self.MIN_SHARED_MARKETS:
-                    continue
+                    shared_count = len(a_d["markets"] & b_d["markets"])
+                    if shared_count < clusterer.MIN_SHARED_MARKETS:
+                        continue
 
-                pairs_compared += 1
+                    p_compared += 1
 
-                timing_sim = self._calculate_timing_similarity(
-                    a_data["trade_timestamps"], b_data["trade_timestamps"]
-                )
-                pattern_sim = self._calculate_pattern_similarity(a_data, b_data)
+                    market_overlap = clusterer._calculate_market_overlap(
+                        a_d["markets"], b_d["markets"]
+                    )
+                    timing_sim = clusterer._calculate_timing_similarity(
+                        a_d["trade_timestamps"], b_d["trade_timestamps"]
+                    )
+                    pattern_sim = clusterer._calculate_pattern_similarity(a_d, b_d)
 
-                # Combined score: market overlap + timing + pattern
-                combined = 0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
+                    combined = 0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
 
-                if combined >= 0.5:
-                    union(a_addr, b_addr)
-                    pairs_linked += 1
+                    if combined >= 0.5:
+                        union(a_addr, b_addr)
+                        p_linked += 1
 
-        # Step 4: Build clusters from union-find
-        clusters: dict[str, list[str]] = {}
-        for addr in addresses:
-            root = find(addr)
-            if root not in clusters:
-                clusters[root] = []
-            clusters[root].append(addr)
+            clusters = {}
+            for addr in addresses:
+                root = find(addr)
+                if root not in clusters:
+                    clusters[root] = []
+                clusters[root].append(addr)
 
-        # Only keep clusters with 2+ members
-        multi_clusters = {k: v for k, v in clusters.items() if len(v) >= 2}
+            multi = {k: v for k, v in clusters.items() if len(v) >= 2}
+            return multi, p_compared, p_linked
+
+        multi_clusters, pairs_compared, pairs_linked = await asyncio.to_thread(
+            _pairwise_cluster, self, wallet_data
+        )
 
         logger.info(
             "Clustering complete",
@@ -1117,7 +1119,8 @@ class CrossPlatformTracker:
             kalshi_cache = _KalshiMarketCache(
                 api_url=settings.KALSHI_API_URL, ttl_seconds=120
             )
-            kalshi_markets = kalshi_cache.get_markets()
+            # Kalshi cache uses synchronous HTTP — run in thread pool
+            kalshi_markets = await asyncio.to_thread(kalshi_cache.get_markets)
 
             if not kalshi_markets:
                 logger.info("No Kalshi markets available, skipping cross-platform scan")
@@ -1134,47 +1137,48 @@ class CrossPlatformTracker:
                 logger.info("No Polymarket markets available")
                 return
 
-            # Build token index for Kalshi
-            kalshi_token_index: dict[str, set[str]] = {}
-            kalshi_by_id: dict[str, object] = {}
-            for km in kalshi_markets:
-                kalshi_token_index[km.id] = _tokenize(km.question)
-                kalshi_by_id[km.id] = km
+            # CPU-bound market matching: run in thread pool
+            def _match_markets(poly_mkts, kalshi_mkts, threshold):
+                kalshi_token_idx = {}
+                for km in kalshi_mkts:
+                    kalshi_token_idx[km.id] = _tokenize(km.question)
 
-            # Match Polymarket markets to Kalshi markets
-            matched_pairs: list[dict] = []
-            for pm in poly_markets:
-                if pm.closed or not pm.active:
-                    continue
-                pm_tokens = _tokenize(pm.question)
-                if not pm_tokens:
-                    continue
-
-                best_score = 0.0
-                best_kalshi = None
-                for km in kalshi_markets:
-                    km_tokens = kalshi_token_index.get(km.id)
-                    if not km_tokens:
+                pairs = []
+                for pm in poly_mkts:
+                    if pm.closed or not pm.active:
                         continue
-                    score = _jaccard_similarity(pm_tokens, km_tokens)
-                    if score > best_score:
-                        best_score = score
-                        best_kalshi = km
+                    pm_tokens = _tokenize(pm.question)
+                    if not pm_tokens:
+                        continue
 
-                if best_kalshi and best_score >= _MATCH_THRESHOLD:
-                    matched_pairs.append(
-                        {
+                    best_score = 0.0
+                    best_km = None
+                    for km in kalshi_mkts:
+                        km_tokens = kalshi_token_idx.get(km.id)
+                        if not km_tokens:
+                            continue
+                        score = _jaccard_similarity(pm_tokens, km_tokens)
+                        if score > best_score:
+                            best_score = score
+                            best_km = km
+
+                    if best_km and best_score >= threshold:
+                        pairs.append({
                             "polymarket_id": pm.id,
                             "polymarket_question": pm.question,
-                            "kalshi_id": best_kalshi.id,
-                            "kalshi_question": best_kalshi.question,
+                            "kalshi_id": best_km.id,
+                            "kalshi_question": best_km.question,
                             "similarity": best_score,
                             "pm_yes_price": pm.yes_price,
                             "pm_no_price": pm.no_price,
-                            "k_yes_price": best_kalshi.yes_price,
-                            "k_no_price": best_kalshi.no_price,
-                        }
-                    )
+                            "k_yes_price": best_km.yes_price,
+                            "k_no_price": best_km.no_price,
+                        })
+                return pairs
+
+            matched_pairs = await asyncio.to_thread(
+                _match_markets, poly_markets, kalshi_markets, _MATCH_THRESHOLD
+            )
 
             logger.info(
                 "Cross-platform market matches found",
