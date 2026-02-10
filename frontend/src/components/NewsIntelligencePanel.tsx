@@ -4,11 +4,7 @@ import {
   Newspaper,
   RefreshCw,
   ExternalLink,
-  TrendingUp,
-  TrendingDown,
-  AlertCircle,
   Zap,
-  Clock,
   Globe,
   ChevronDown,
   ChevronUp,
@@ -36,13 +32,11 @@ import {
   NewsEdge,
   NewsMatch,
   ForecastResult,
-  NewsFeedStatus,
 } from '../services/api'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Card } from './ui/card'
 import { Input } from './ui/input'
-import { Separator } from './ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 // ─── Sub-view types ─────────────────────────────────────────
@@ -397,7 +391,7 @@ export default function NewsIntelligencePanel() {
   const [searchFilter, setSearchFilter] = useState('')
   const [edgeSortBy, setEdgeSortBy] = useState<'edge' | 'confidence' | 'similarity'>('edge')
   const [forecastResult, setForecastResult] = useState<ForecastResult | null>(null)
-  const [forecastingEdge, setForecastingEdge] = useState<string | null>(null)
+  const [, setForecastingEdge] = useState<string | null>(null)
 
   // ─── Queries ──────────────────────────────────────────────
 
