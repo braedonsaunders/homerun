@@ -681,6 +681,17 @@ class KalshiWSFeed:
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
+
+                # Stop retrying on auth failures — they won't resolve
+                # without new credentials.
+                exc_str = repr(exc)
+                if "401" in exc_str or "403" in exc_str:
+                    logger.warning(
+                        f"Kalshi WS auth failure ({exc!r}), "
+                        "stopping reconnect (credentials missing or expired)"
+                    )
+                    break
+
                 attempt += 1
                 self.stats.reconnections += 1
                 delay = min(

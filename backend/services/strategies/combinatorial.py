@@ -879,6 +879,13 @@ class CombinatorialStrategy(BaseStrategy):
         # Filter active markets
         all_active = [m for m in markets if not m.closed and m.active]
 
+        # Build market→event lookup so we can skip same-event pairs
+        # (those are already handled by NegRisk / Mutual Exclusion strategies).
+        same_event: dict[str, str] = {}
+        for ev in events:
+            for m in ev.markets:
+                same_event[m.id] = ev.id
+
         # Check high-potential pairs based on keyword similarity
         checked = set()
         for market_a in all_active[:200]:  # Limit for performance
@@ -888,6 +895,14 @@ class CombinatorialStrategy(BaseStrategy):
                 if pair_key in checked:
                     continue
                 checked.add(pair_key)
+
+                # Skip markets from the same event — those within-event
+                # relationships are already covered by NegRisk / Mutual
+                # Exclusion strategies.
+                ev_a = same_event.get(market_a.id)
+                ev_b = same_event.get(market_b.id)
+                if ev_a and ev_b and ev_a == ev_b:
+                    continue
 
                 opp = self._check_pair(market_a, market_b, prices)
                 if opp:
