@@ -2,7 +2,21 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
+  timeout: 15000,
 })
+
+// Debug interceptor — logs every response so issues are visible in browser console
+api.interceptors.response.use(
+  (response) => {
+    const count = Array.isArray(response.data) ? response.data.length : '?'
+    console.debug(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status} (${count} items)`)
+    return response
+  },
+  (error) => {
+    console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`, error.response?.data)
+    return Promise.reject(error)
+  }
+)
 
 // ==================== TYPES ====================
 

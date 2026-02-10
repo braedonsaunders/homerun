@@ -453,6 +453,8 @@ class HomerunApp(App):
         self._level_filter = "all"  # "all", "debug", "info", "warning", "error"
         # Shutdown flag so reader threads can exit
         self._shutting_down = False
+        # Guard against starting frontend twice (race between worker thread and @work)
+        self._frontend_starting = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -932,9 +934,10 @@ class HomerunApp(App):
                 formatted, level = format_log_line(line, tag)
                 self._enqueue_log(formatted, source=tag, level=level)
 
-                # If backend started, kick off frontend
-                if tag == "BACKEND" and not self.frontend_proc:
+                # If backend started, kick off frontend (once only)
+                if tag == "BACKEND" and not self._frontend_starting:
                     if "Application startup complete" in line or "Uvicorn running" in line:
+                        self._frontend_starting = True
                         self._log_activity("[bold green]Backend is ready![/]")
                         self._start_frontend()
         except Exception:

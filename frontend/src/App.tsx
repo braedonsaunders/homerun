@@ -115,7 +115,7 @@ function App() {
   const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
-  const [minProfit, setMinProfit] = useState(2.5)
+  const [minProfit, setMinProfit] = useState(0)
   const [maxRisk, setMaxRisk] = useState(1.0)
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(0)
@@ -1206,20 +1206,31 @@ function App() {
                               <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
                             </div>
                           ) : displayOpportunities.length === 0 ? (
-                            status?.enabled ? (
-                              <div className="flex flex-col items-center justify-center py-12">
-                                <RefreshCw className="w-10 h-10 animate-spin text-muted-foreground mb-4" />
-                                <p className="text-muted-foreground">Scanning for opportunities...</p>
-                              </div>
-                            ) : (
-                              <div className="text-center py-12">
-                                <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                                <p className="text-muted-foreground">No opportunities found</p>
-                                <p className="text-sm text-muted-foreground/70 mt-1">
-                                  Try lowering the minimum profit threshold or start the scanner
-                                </p>
-                              </div>
-                            )
+                            <div className="flex flex-col items-center justify-center py-12">
+                              {status?.enabled ? (
+                                <>
+                                  <RefreshCw className="w-10 h-10 animate-spin text-muted-foreground mb-4" />
+                                  <p className="text-muted-foreground">
+                                    {status?.opportunities_count > 0
+                                      ? `${status.opportunities_count} opportunities found but none match current filters`
+                                      : 'Scanning for opportunities...'}
+                                  </p>
+                                  {status?.opportunities_count > 0 && (
+                                    <p className="text-sm text-muted-foreground/70 mt-1">
+                                      Try lowering the minimum profit % or adjusting filters
+                                    </p>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  <AlertCircle className="w-12 h-12 text-muted-foreground/50 mb-4" />
+                                  <p className="text-muted-foreground">No opportunities found</p>
+                                  <p className="text-sm text-muted-foreground/70 mt-1">
+                                    Try lowering the minimum profit threshold or start the scanner
+                                  </p>
+                                </>
+                              )}
+                            </div>
                           ) : (
                             <>
                               {oppsViewMode === 'terminal' ? (
