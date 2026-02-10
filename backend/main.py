@@ -290,6 +290,7 @@ async def lifespan(app: FastAPI):
         # Stop WebSocket feeds
         try:
             from services.ws_feeds import get_feed_manager
+
             feed_mgr = get_feed_manager()
             await feed_mgr.stop()
         except Exception:
@@ -425,6 +426,7 @@ def _get_ws_feeds_status() -> dict:
     """Get WebSocket feeds status for health check."""
     try:
         from services.ws_feeds import get_feed_manager
+
         mgr = get_feed_manager()
         return mgr.health_check()
     except Exception:

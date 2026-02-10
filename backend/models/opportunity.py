@@ -56,6 +56,7 @@ class MispricingType(str, Enum):
 
 class ROIType(str, Enum):
     """Distinguishes between guaranteed arbitrage spread and directional bet payout."""
+
     GUARANTEED_SPREAD = "guaranteed_spread"  # Structural arb: locked-in profit
     DIRECTIONAL_PAYOUT = "directional_payout"  # Statistical edge: payout-if-win ratio
 
