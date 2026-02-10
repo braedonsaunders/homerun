@@ -552,8 +552,12 @@ class HomerunApp(App):
         except Exception:
             return
 
-        # Detect if user is at the bottom BEFORE we insert.
+        # Snapshot scroll state BEFORE any mutation.
+        # insert() moves the cursor to the end of inserted text which
+        # triggers an automatic viewport scroll -- we must undo that
+        # when the user has scrolled up (not following).
         at_bottom = self._log_follow
+        saved_scroll_y = ta.scroll_y
 
         # Build the chunk to insert
         chunk = "\n".join(lines)
@@ -566,17 +570,24 @@ class HomerunApp(App):
         self._log_line_count += len(lines)
 
         # Trim from the top if we've exceeded the cap
+        trimmed = 0
         if self._log_line_count > LOG_MAX_LINES:
             trim = self._log_line_count - (LOG_MAX_LINES - LOG_TRIM_BATCH)
             actual_lines = ta.document.line_count
             trim = min(trim, actual_lines - 1)
             if trim > 0:
                 ta.delete((0, 0), (trim, 0), maintain_selection_offset=False)
+                trimmed = trim
                 self._log_line_count = ta.document.line_count
 
-        # Auto-scroll to bottom if the user was already at the bottom
         if at_bottom:
             ta.scroll_end(animate=False)
+        else:
+            # Force-restore the viewport to where the user was reading.
+            # If lines were trimmed from the top, content shifted up by
+            # that many rows so subtract to keep the same content visible.
+            restored = max(0, saved_scroll_y - trimmed)
+            ta.scroll_to(y=restored, animate=False)
 
         # Update header with line count & follow state
         self._update_log_header()
@@ -595,10 +606,11 @@ class HomerunApp(App):
             pass
 
     def on_idle(self) -> None:
-        """Check scroll position each idle tick to update follow state."""
+        """Detect when the user scrolls to/from the bottom to toggle follow."""
         try:
             ta = self.query_one("#log-output", TextArea)
-            # At bottom if we can't scroll further down (within 2 rows tolerance)
+            if ta.max_scroll_y <= 0:
+                return
             at_bottom = ta.scroll_y >= (ta.max_scroll_y - 2)
             if at_bottom != self._log_follow:
                 self._log_follow = at_bottom
