@@ -23,3 +23,7 @@ markdown>=3.5
 numpy>=1.24.0
 sentence-transformers>=2.2.0  # Embedding model (optional — TF-IDF fallback if missing)
 faiss-cpu>=1.7.0              # Fast vector search (optional — numpy fallback if missing)
+
+# TUI (Terminal User Interface)
+textual>=0.47.0               # Modern TUI framework
+rich>=13.7.0                  # Rich text rendering
