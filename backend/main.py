@@ -21,7 +21,7 @@ from api.routes_ai import router as ai_router
 from api.routes_news import router as news_router
 from api.routes_discovery import discovery_router
 from api.routes_kalshi import router as kalshi_router
-from services import scanner, wallet_tracker, polymarket_client
+from services import scanner, wallet_tracker
 from services.copy_trader import copy_trader
 from services.trading import trading_service
 from services.auto_trader import auto_trader

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -98,6 +99,7 @@ class SemanticMatcher:
         self._model_name = model_name
         self._model: Optional[SentenceTransformer] = None
         self._initialized = False
+        self._lock = threading.Lock()
 
         # Market index
         self._markets: list[MarketInfo] = []
@@ -110,36 +112,39 @@ class SemanticMatcher:
 
     def initialize(self) -> bool:
         """Load the embedding model. Returns True if ML mode is available."""
-        if _HAS_TRANSFORMERS:
-            try:
-                self._model = SentenceTransformer(self._model_name)
-                # Smoke-test: encode a tiny string to verify native code works
-                _test = self._model.encode(
-                    ["test"], show_progress_bar=False, normalize_embeddings=True
-                )
-                if _test is None or len(_test) == 0:
-                    raise RuntimeError("Model encode returned empty result")
-                self._initialized = True
+        with self._lock:
+            if self._initialized:
+                return self._model is not None
+            if _HAS_TRANSFORMERS:
+                try:
+                    self._model = SentenceTransformer(self._model_name)
+                    # Smoke-test: encode a tiny string to verify native code works
+                    _test = self._model.encode(
+                        ["test"], show_progress_bar=False, normalize_embeddings=True
+                    )
+                    if _test is None or len(_test) == 0:
+                        raise RuntimeError("Model encode returned empty result")
+                    self._initialized = True
+                    logger.info(
+                        "Semantic matcher initialized with model '%s'", self._model_name
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Failed to load sentence-transformers model '%s': %s. "
+                        "Falling back to TF-IDF.",
+                        self._model_name,
+                        e,
+                    )
+                    self._model = None
+            else:
                 logger.info(
-                    "Semantic matcher initialized with model '%s'", self._model_name
+                    "sentence-transformers not installed. "
+                    "Using TF-IDF fallback for news matching."
                 )
-                return True
-            except Exception as e:
-                logger.warning(
-                    "Failed to load sentence-transformers model '%s': %s. "
-                    "Falling back to TF-IDF.",
-                    self._model_name,
-                    e,
-                )
-                self._model = None
-        else:
-            logger.info(
-                "sentence-transformers not installed. "
-                "Using TF-IDF fallback for news matching."
-            )
 
-        self._initialized = True
-        return False
+            self._initialized = True
+            return False
 
     @property
     def is_ml_mode(self) -> bool:
@@ -159,41 +164,42 @@ class SemanticMatcher:
         if not self._initialized:
             self.initialize()
 
-        self._markets = markets
+        texts = [self._market_to_text(m) for m in markets] if markets else []
 
-        if not markets:
-            self._market_embeddings = None
-            self._faiss_index = None
-            return 0
+        with self._lock:
+            self._markets = markets
 
-        texts = [self._market_to_text(m) for m in markets]
-
-        if self._model is not None:
-            try:
-                embeddings = self._model.encode(
-                    texts, show_progress_bar=False, normalize_embeddings=True
-                )
-                self._market_embeddings = np.array(embeddings, dtype=np.float32)
-            except Exception as e:
-                logger.warning("Market embedding failed, disabling ML mode: %s", e)
-                self._model = None
+            if not markets:
                 self._market_embeddings = None
                 self._faiss_index = None
-                return len(markets)
+                return 0
 
-            if _HAS_FAISS:
+            if self._model is not None:
                 try:
-                    dim = self._market_embeddings.shape[1]
-                    self._faiss_index = faiss.IndexFlatIP(dim)
-                    self._faiss_index.add(self._market_embeddings)
+                    embeddings = self._model.encode(
+                        texts, show_progress_bar=False, normalize_embeddings=True
+                    )
+                    self._market_embeddings = np.array(embeddings, dtype=np.float32)
                 except Exception as e:
-                    logger.warning("FAISS index build failed, using numpy fallback: %s", e)
+                    logger.warning("Market embedding failed, disabling ML mode: %s", e)
+                    self._model = None
+                    self._market_embeddings = None
+                    self._faiss_index = None
+                    return len(markets)
+
+                if _HAS_FAISS:
+                    try:
+                        dim = self._market_embeddings.shape[1]
+                        self._faiss_index = faiss.IndexFlatIP(dim)
+                        self._faiss_index.add(self._market_embeddings)
+                    except Exception as e:
+                        logger.warning("FAISS index build failed, using numpy fallback: %s", e)
+                        self._faiss_index = None
+                else:
                     self._faiss_index = None
             else:
+                self._market_embeddings = None
                 self._faiss_index = None
-        else:
-            self._market_embeddings = None
-            self._faiss_index = None
 
         logger.debug("Market index updated: %d markets", len(markets))
         return len(markets)
@@ -215,14 +221,15 @@ class SemanticMatcher:
             return 0
 
         texts = [self._article_to_text(a) for a in unembedded]
-        try:
-            embeddings = self._model.encode(
-                texts, show_progress_bar=False, normalize_embeddings=True
-            )
-        except Exception as e:
-            logger.warning("Article embedding failed, disabling ML mode: %s", e)
-            self._model = None
-            return 0
+        with self._lock:
+            try:
+                embeddings = self._model.encode(
+                    texts, show_progress_bar=False, normalize_embeddings=True
+                )
+            except Exception as e:
+                logger.warning("Article embedding failed, disabling ML mode: %s", e)
+                self._model = None
+                return 0
 
         for article, emb in zip(unembedded, embeddings):
             article.embedding = emb.tolist()
@@ -258,10 +265,11 @@ class SemanticMatcher:
         if not self._markets:
             return []
 
-        if self._model is not None and self._market_embeddings is not None:
-            return self._match_semantic(articles, top_k, threshold)
-        else:
-            return self._match_tfidf(articles, top_k, threshold)
+        with self._lock:
+            if self._model is not None and self._market_embeddings is not None:
+                return self._match_semantic(articles, top_k, threshold)
+            else:
+                return self._match_tfidf(articles, top_k, threshold)
 
     def _match_semantic(
         self,

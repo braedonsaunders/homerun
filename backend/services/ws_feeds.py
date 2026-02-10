@@ -433,7 +433,12 @@ class PolymarketWSFeed:
                     self.stats.last_message_at = recv_time
                     try:
                         data = json.loads(raw)
-                        self._handle_message(data, recv_time)
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict):
+                                    self._handle_message(item, recv_time)
+                        elif isinstance(data, dict):
+                            self._handle_message(data, recv_time)
                         self.stats.messages_parsed += 1
                     except Exception as exc:
                         self.stats.parse_errors += 1
