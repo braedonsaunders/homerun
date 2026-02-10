@@ -429,29 +429,69 @@ class PolymarketClient:
         Batches lookups and uses cache to minimize API calls.
         Falls back to asset_id (token_id) lookup when condition_id lookup fails.
         """
-        # Collect unique condition_ids that need lookup
-        unknown_ids = set()
-        for trade in trades:
-            condition_id = trade.get("market", "")
-            if condition_id and condition_id not in self._market_cache:
-                unknown_ids.add(condition_id)
 
-        # Batch lookup unknown condition_ids with concurrency limit
-        if unknown_ids:
+        def _get_asset_id(trade: dict) -> str:
+            """Get asset/token ID, handling both camelCase and snake_case."""
+            return (
+                trade.get("asset_id", "")
+                or trade.get("assetId", "")
+                or trade.get("asset", "")
+            )
+
+        def _get_condition_id(trade: dict) -> str:
+            """Get condition_id from trade, checking multiple field names."""
+            return (
+                trade.get("condition_id", "")
+                or trade.get("conditionId", "")
+            )
+
+        def _is_hex_id(value: str) -> bool:
+            """Check if a value looks like a hex condition_id (0x-prefixed)."""
+            return value.startswith("0x")
+
+        # Stage 1: Collect hex condition_ids for batch lookup
+        unknown_cids = set()
+        for trade in trades:
+            market_val = trade.get("market", "")
+            if market_val and _is_hex_id(market_val) and market_val not in self._market_cache:
+                unknown_cids.add(market_val)
+            # Also check explicit conditionId / condition_id field
+            cid = _get_condition_id(trade)
+            if cid and _is_hex_id(cid) and cid not in self._market_cache:
+                unknown_cids.add(cid)
+
+        # Batch lookup condition_ids with concurrency limit
+        if unknown_cids:
             semaphore = asyncio.Semaphore(15)
 
             async def lookup(cid: str):
                 async with semaphore:
                     await self.get_market_by_condition_id(cid)
 
-            await asyncio.gather(*[lookup(cid) for cid in unknown_ids])
+            await asyncio.gather(*[lookup(cid) for cid in unknown_cids])
 
-        # Collect trades that still need lookup via asset_id
+        # Stage 2: Collect token IDs for trades still missing market info
         token_lookups = set()
         for trade in trades:
-            condition_id = trade.get("market", "")
-            if not self._market_cache.get(condition_id):
-                asset_id = trade.get("asset_id", "")
+            market_val = trade.get("market", "")
+            cid = _get_condition_id(trade)
+
+            # Check if already resolved via condition_id
+            resolved = False
+            if market_val and _is_hex_id(market_val) and self._market_cache.get(market_val):
+                resolved = True
+            if not resolved and cid and _is_hex_id(cid) and self._market_cache.get(cid):
+                resolved = True
+
+            if not resolved:
+                # Try market value as a token_id if it's not a hex condition_id
+                if market_val and not _is_hex_id(market_val):
+                    cache_key = f"token:{market_val}"
+                    if cache_key not in self._market_cache:
+                        token_lookups.add(market_val)
+
+                # Try explicit asset_id / assetId field
+                asset_id = _get_asset_id(trade)
                 if asset_id and f"token:{asset_id}" not in self._market_cache:
                     token_lookups.add(asset_id)
 
@@ -468,12 +508,25 @@ class PolymarketClient:
         # Enrich trades
         enriched = []
         for trade in trades:
-            condition_id = trade.get("market", "")
-            market_info = self._market_cache.get(condition_id)
+            market_val = trade.get("market", "")
+            cid = _get_condition_id(trade)
+            market_info = None
 
-            # Fallback: try asset_id lookup
+            # Try hex condition_id from market field
+            if market_val and _is_hex_id(market_val):
+                market_info = self._market_cache.get(market_val)
+
+            # Try explicit conditionId / condition_id field
+            if not market_info and cid and _is_hex_id(cid):
+                market_info = self._market_cache.get(cid)
+
+            # Try market value as token_id (numeric/non-hex)
+            if not market_info and market_val and not _is_hex_id(market_val):
+                market_info = self._market_cache.get(f"token:{market_val}")
+
+            # Fallback: try asset_id / assetId
             if not market_info:
-                asset_id = trade.get("asset_id", "")
+                asset_id = _get_asset_id(trade)
                 if asset_id:
                     market_info = self._market_cache.get(f"token:{asset_id}")
 
