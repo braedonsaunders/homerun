@@ -631,37 +631,34 @@ class WalletDiscoveryEngine:
         if len(trades) < MIN_TRADES_FOR_ANALYSIS and not positions:
             return None
 
-        # Basic stats
-        stats = self._calculate_trade_stats(trades, positions)
+        # All statistical computations are CPU-bound. Run them in the
+        # thread pool so the async event loop stays free for API requests.
+        def _compute_profile(engine, trade_list, position_list):
+            stats = engine._calculate_trade_stats(trade_list, position_list)
+            risk_metrics = engine._calculate_risk_adjusted_metrics(
+                market_rois=stats["_market_rois"],
+                market_pnls=stats["_market_pnls"],
+                days_active=stats["days_active"],
+                total_pnl=stats["total_pnl"],
+                total_invested=stats["total_invested"],
+            )
+            now_inner = datetime.utcnow()
+            rolling = engine._calculate_rolling_windows(trade_list, now_inner)
+            strategies = engine._detect_strategies(trade_list)
+            classification = engine._classify_wallet(stats, risk_metrics)
+            rank_input = {
+                "sharpe_ratio": risk_metrics["sharpe_ratio"],
+                "profit_factor": risk_metrics["profit_factor"],
+                "win_rate": stats["win_rate"],
+                "total_pnl": stats["total_pnl"],
+                "max_drawdown": risk_metrics["max_drawdown"],
+            }
+            rank_score = engine._calculate_rank_score(rank_input)
+            return stats, risk_metrics, rolling, strategies, classification, rank_score, now_inner
 
-        # Risk-adjusted metrics
-        risk_metrics = self._calculate_risk_adjusted_metrics(
-            market_rois=stats["_market_rois"],
-            market_pnls=stats["_market_pnls"],
-            days_active=stats["days_active"],
-            total_pnl=stats["total_pnl"],
-            total_invested=stats["total_invested"],
+        stats, risk_metrics, rolling, strategies, classification, rank_score, now = (
+            await asyncio.to_thread(_compute_profile, self, trades, positions)
         )
-
-        # Rolling windows
-        now = datetime.utcnow()
-        rolling = self._calculate_rolling_windows(trades, now)
-
-        # Strategy detection
-        strategies = self._detect_strategies(trades)
-
-        # Classification
-        classification = self._classify_wallet(stats, risk_metrics)
-
-        # Composite rank
-        rank_input = {
-            "sharpe_ratio": risk_metrics["sharpe_ratio"],
-            "profit_factor": risk_metrics["profit_factor"],
-            "win_rate": stats["win_rate"],
-            "total_pnl": stats["total_pnl"],
-            "max_drawdown": risk_metrics["max_drawdown"],
-        }
-        rank_score = self._calculate_rank_score(rank_input)
 
         username = profile.get("username") if profile else None
 
@@ -954,9 +951,27 @@ class WalletDiscoveryEngine:
             )
 
             # --- Step 4: Filter to new/stale wallets ---
+            # Batch the staleness check into a single DB query instead of
+            # one query per wallet, which was blocking the event loop for
+            # hundreds/thousands of sequential DB round-trips.
             addresses_to_analyze: list[str] = []
+            stale_cutoff = datetime.utcnow() - timedelta(hours=STALE_ANALYSIS_HOURS)
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(
+                        DiscoveredWallet.address,
+                        DiscoveredWallet.last_analyzed_at,
+                    ).where(
+                        DiscoveredWallet.address.in_(list(all_addresses))
+                    )
+                )
+                existing = {
+                    row.address: row.last_analyzed_at for row in result.all()
+                }
+
             for addr in all_addresses:
-                if await self._is_stale(addr):
+                last_analyzed = existing.get(addr)
+                if last_analyzed is None or last_analyzed < stale_cutoff:
                     addresses_to_analyze.append(addr)
 
             logger.info(
@@ -985,7 +1000,9 @@ class WalletDiscoveryEngine:
                             error=str(e),
                         )
 
-            # Process in batches to avoid overwhelming the API
+            # Process in batches to avoid overwhelming the API.
+            # Yield to the event loop between batches so API requests
+            # can be served while discovery is running.
             batch_size = 50
             for i in range(0, len(addresses_to_analyze), batch_size):
                 batch = addresses_to_analyze[i : i + batch_size]
@@ -996,6 +1013,8 @@ class WalletDiscoveryEngine:
                     total=len(addresses_to_analyze),
                     analyzed=analyzed_count,
                 )
+                # Yield to event loop between batches
+                await asyncio.sleep(0)
 
             # --- Step 7: Refresh leaderboard ---
             await self.refresh_leaderboard()

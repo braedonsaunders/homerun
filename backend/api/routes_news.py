@@ -8,6 +8,8 @@ Provides endpoints for:
 - News-driven edge detection results
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -235,14 +237,20 @@ async def run_matching(request: MatchRequest):
         if not market_infos:
             return {"matches": [], "message": "No markets available from scanner"}
 
-        if not semantic_matcher._initialized:
-            semantic_matcher.initialize()
+        # ML operations (model loading, embedding, search) are CPU-bound.
+        # Run them in the thread pool so the event loop stays responsive.
+        def _run_matching(matcher, m_infos, arts, top_k, threshold):
+            if not matcher._initialized:
+                matcher.initialize()
+            matcher.update_market_index(m_infos)
+            matcher.embed_articles(arts)
+            return matcher.match_articles_to_markets(
+                arts, top_k=top_k, threshold=threshold
+            )
 
-        semantic_matcher.update_market_index(market_infos)
-        semantic_matcher.embed_articles(articles)
-
-        matches = semantic_matcher.match_articles_to_markets(
-            articles, top_k=request.top_k, threshold=request.threshold
+        matches = await asyncio.to_thread(
+            _run_matching, semantic_matcher, market_infos, articles,
+            request.top_k, request.threshold,
         )
 
         return {
@@ -308,13 +316,19 @@ async def detect_edges(request: EdgeDetectionRequest):
         if not market_infos:
             return {"edges": [], "message": "No markets available from scanner"}
 
-        if not semantic_matcher._initialized:
-            semantic_matcher.initialize()
-        semantic_matcher.update_market_index(market_infos)
-        semantic_matcher.embed_articles(articles)
+        # ML operations are CPU-bound — run in thread pool
+        def _run_edge_matching(matcher, m_infos, arts, top_k, threshold):
+            if not matcher._initialized:
+                matcher.initialize()
+            matcher.update_market_index(m_infos)
+            matcher.embed_articles(arts)
+            return matcher.match_articles_to_markets(
+                arts, top_k=top_k, threshold=threshold
+            )
 
-        matches = semantic_matcher.match_articles_to_markets(
-            articles, top_k=request.top_k, threshold=request.threshold
+        matches = await asyncio.to_thread(
+            _run_edge_matching, semantic_matcher, market_infos, articles,
+            request.top_k, request.threshold,
         )
 
         if not matches:
@@ -464,10 +478,17 @@ async def forecast_market_by_id(request: CommitteeMarketRequest):
                         category=category,
                         yes_price=market_price,
                     )
-                    semantic_matcher.update_market_index([mi])
-                    semantic_matcher.embed_articles(articles)
-                    matches = semantic_matcher.match_articles_to_markets(
-                        articles, top_k=request.max_articles
+                    # ML operations are CPU-bound — run in thread pool
+                    def _forecast_match(matcher, mi_item, arts, max_arts):
+                        matcher.update_market_index([mi_item])
+                        matcher.embed_articles(arts)
+                        return matcher.match_articles_to_markets(
+                            arts, top_k=max_arts
+                        )
+
+                    matches = await asyncio.to_thread(
+                        _forecast_match, semantic_matcher, mi, articles,
+                        request.max_articles,
                     )
 
                     if matches:

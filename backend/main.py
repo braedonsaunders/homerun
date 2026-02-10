@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, Request
@@ -60,6 +61,23 @@ logger = get_logger("main")
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     logger.info("Starting Autonomous Prediction Market Trading Platform...")
+
+    # Create a shared thread pool executor for CPU-bound work so that
+    # heavy background tasks (strategy detection, ML embedding, wallet
+    # analysis) never block the async event loop that serves API requests.
+    import os
+
+    cpu_count = os.cpu_count() or 4
+    cpu_executor = ThreadPoolExecutor(
+        max_workers=max(cpu_count * 2, 8),
+        thread_name_prefix="cpu-pool",
+    )
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(cpu_executor)
+    logger.info(
+        "Thread pool executor configured",
+        max_workers=max(cpu_count * 2, 8),
+    )
 
     try:
         # Initialize database
@@ -231,7 +249,7 @@ async def lifespan(app: FastAPI):
             from services.news.feed_service import news_feed_service
             from services.news.semantic_matcher import semantic_matcher
 
-            semantic_matcher.initialize()
+            await asyncio.to_thread(semantic_matcher.initialize)
             if settings.NEWS_EDGE_ENABLED:
                 await news_feed_service.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
                 logger.info(
@@ -304,6 +322,7 @@ async def lifespan(app: FastAPI):
                 pass
 
         await polymarket_client.close()
+        cpu_executor.shutdown(wait=False)
         logger.info("Shutdown complete")
 
 
@@ -595,4 +614,13 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 8000))
     kill_port(port)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        # Keep a single worker because background tasks (scanner, wallet
+        # tracker, etc.) hold in-process state. CPU-bound work is offloaded
+        # to the thread pool executor configured in lifespan() so the event
+        # loop stays free to serve API requests.
+        timeout_keep_alive=30,
+    )

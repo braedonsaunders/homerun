@@ -275,6 +275,7 @@ class ArbitrageScanner:
         """Perform a single scan for arbitrage opportunities"""
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
         await self._set_activity("Fetching Polymarket events and markets...")
+        loop = asyncio.get_running_loop()
 
         try:
             # Fetch events and markets concurrently (they are independent)
@@ -392,22 +393,24 @@ class ArbitrageScanner:
                 except Exception as e:
                     print(f"  WS subscription failed (non-critical): {e}")
 
-            # Tiered scanning: classify markets and apply change detection
+            # Tiered scanning: classify markets and apply change detection.
+            # These are CPU-bound operations on 6000+ markets — run them
+            # in the thread pool so the event loop stays responsive.
             markets_to_evaluate = markets
             unchanged_count = 0
             if settings.TIERED_SCANNING_ENABLED:
                 try:
-                    # Update stability scores from MarketMonitor
-                    self._prioritizer.update_stability_scores()
+                    def _run_prioritizer(prioritizer, mkts, ts):
+                        """Run all CPU-bound prioritizer work in a thread."""
+                        prioritizer.update_stability_scores()
+                        t_map = prioritizer.classify_all(mkts, ts)
+                        prioritizer.compute_attention_scores(mkts)
+                        changed = prioritizer.get_changed_markets(mkts)
+                        return t_map, changed
 
-                    # Classify all markets into tiers
-                    tier_map = self._prioritizer.classify_all(markets, now)
-
-                    # Compute volume/liquidity attention scores
-                    self._prioritizer.compute_attention_scores(markets)
-
-                    # Change detection: filter out markets with identical prices
-                    changed = self._prioritizer.get_changed_markets(markets)
+                    tier_map, changed = await loop.run_in_executor(
+                        None, _run_prioritizer, self._prioritizer, markets, now
+                    )
                     unchanged_count = len(markets) - len(changed)
 
                     # For full scans, still run all markets through strategies
@@ -466,10 +469,12 @@ class ArbitrageScanner:
                 all_opportunities.extend(opps)
                 print(f"  {strategy.name}: found {len(opps)} opportunities")
 
-            # Update prioritizer state after evaluation
+            # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
                 try:
-                    self._prioritizer.update_after_evaluation(markets, now)
+                    await loop.run_in_executor(
+                        None, self._prioritizer.update_after_evaluation, markets, now
+                    )
                 except Exception:
                     pass
 
@@ -599,9 +604,16 @@ class ArbitrageScanner:
             except Exception:
                 pass
 
-            # 4. Classify all cached markets into tiers
-            self._prioritizer.update_stability_scores()
-            tier_map = self._prioritizer.classify_all(self._cached_markets, now)
+            # 4. Classify all cached markets into tiers (CPU-bound, run in thread)
+            loop = asyncio.get_running_loop()
+
+            def _classify_cached(prioritizer, mkts, ts):
+                prioritizer.update_stability_scores()
+                return prioritizer.classify_all(mkts, ts)
+
+            tier_map = await loop.run_in_executor(
+                None, _classify_cached, self._prioritizer, self._cached_markets, now
+            )
             hot_markets = tier_map[MarketTier.HOT]
 
             if not hot_markets:
@@ -630,8 +642,10 @@ class ArbitrageScanner:
             # Merge with cached prices
             merged_prices = {**self._cached_prices, **hot_prices}
 
-            # 6. Change detection: only evaluate markets whose prices moved
-            changed_markets = self._prioritizer.get_changed_markets(hot_markets)
+            # 6. Change detection: only evaluate markets whose prices moved (CPU-bound)
+            changed_markets = await loop.run_in_executor(
+                None, self._prioritizer.get_changed_markets, hot_markets
+            )
             if not changed_markets:
                 print(
                     f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies"
@@ -695,9 +709,15 @@ class ArbitrageScanner:
             fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
             fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
-            # 8. Update prioritizer state
-            unchanged = self._prioritizer.update_after_evaluation(hot_markets, now)
-            self._prioritizer.compute_attention_scores(hot_markets)
+            # 8. Update prioritizer state (CPU-bound, run in thread)
+            def _update_prioritizer_state(prioritizer, mkts, ts):
+                unch = prioritizer.update_after_evaluation(mkts, ts)
+                prioritizer.compute_attention_scores(mkts)
+                return unch
+
+            unchanged = await loop.run_in_executor(
+                None, _update_prioritizer_state, self._prioritizer, hot_markets, now
+            )
 
             # 9. Merge into main pool
             if fast_opportunities:
