@@ -216,7 +216,7 @@ function App() {
 
   // Update data when WebSocket message received — trust WS pushes as primary
   useEffect(() => {
-    if (lastMessage?.type === 'opportunities_update') {
+    if (lastMessage?.type === 'opportunities_update' || lastMessage?.type === 'init') {
       // Invalidate so React Query refetches with current filters applied
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
       queryClient.invalidateQueries({ queryKey: ['opportunity-counts'] })
@@ -264,7 +264,7 @@ function App() {
       limit: ITEMS_PER_PAGE,
       offset: currentPage * ITEMS_PER_PAGE
     }),
-    refetchInterval: isConnected ? 120000 : 15000,
+    refetchInterval: isConnected ? 30000 : 10000,
   })
 
   const opportunities = opportunitiesData?.opportunities || []
@@ -303,7 +303,7 @@ function App() {
       max_risk: maxRisk,
       search: searchQuery || undefined,
     }),
-    refetchInterval: isConnected ? 120000 : 30000,
+    refetchInterval: isConnected ? 30000 : 15000,
   })
 
   // Polymarket search query (only runs when user submits a search)
