@@ -1345,16 +1345,19 @@ export const testTradingProxy = async (): Promise<{ status: string; message: str
 
 // ==================== AI INTELLIGENCE ====================
 
+// AI endpoints that invoke LLM calls need a longer timeout than the default 15s
+const AI_TIMEOUT = { timeout: 120_000 }
+
 export const getAIStatus = () => api.get('/ai/status')
-export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data)
+export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data, AI_TIMEOUT)
 export const getResolutionAnalysis = (marketId: string) => api.get(`/ai/resolution/${marketId}`)
-export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data)
+export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data, AI_TIMEOUT)
 export const judgeOpportunitiesBulk = (data?: { opportunity_ids?: string[] }) =>
-  api.post('/ai/judge/opportunities/bulk', data || {})
+  api.post('/ai/judge/opportunities/bulk', data || {}, AI_TIMEOUT)
 export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history', { params })
 export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')
-export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data)
-export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data)
+export const analyzeMarket = (data: any) => api.post('/ai/market/analyze', data, AI_TIMEOUT)
+export const analyzeNewsSentiment = (data: any) => api.post('/ai/news/sentiment', data, AI_TIMEOUT)
 
 // ==================== NEWS INTELLIGENCE ====================
 
@@ -1508,11 +1511,11 @@ export const forecastMarketById = async (params: {
   include_news?: boolean
   max_articles?: number
 }): Promise<ForecastResult> => {
-  const { data } = await api.post('/news/forecast/market', params)
+  const { data } = await api.post('/news/forecast/market', params, AI_TIMEOUT)
   return data
 }
 export const listSkills = () => api.get('/ai/skills')
-export const executeSkill = (data: any) => api.post('/ai/skills/execute', data)
+export const executeSkill = (data: any) => api.post('/ai/skills/execute', data, AI_TIMEOUT)
 export const getResearchSessions = (params?: any) => api.get('/ai/sessions', { params })
 export const getResearchSession = (sessionId: string) => api.get(`/ai/sessions/${sessionId}`)
 export const getAIUsage = () => api.get('/ai/usage')
@@ -1579,7 +1582,7 @@ export const sendAIChat = async (params: {
   context_id?: string
   history?: AIChatMessage[]
 }): Promise<AIChatResponse> => {
-  const { data } = await api.post('/ai/chat', params)
+  const { data } = await api.post('/ai/chat', params, AI_TIMEOUT)
   return data
 }
 
