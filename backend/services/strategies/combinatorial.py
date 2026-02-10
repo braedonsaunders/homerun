@@ -329,7 +329,7 @@ class DependencyAccuracyTracker:
         )
         # Cap in-memory records to prevent unbounded growth
         if len(self._records) > self._MAX_RECORDS:
-            self._records = self._records[-self._MAX_RECORDS:]
+            self._records = self._records[-self._MAX_RECORDS :]
         self._accuracy_cache = None
         self._save_to_disk()
         return dep_key

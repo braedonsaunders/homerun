@@ -60,7 +60,8 @@ async def get_opportunities(
     # These have been analyzed by AI and determined to be trash
     # (false positives, guaranteed losses, etc.)
     opportunities = [
-        opp for opp in opportunities
+        opp
+        for opp in opportunities
         if not (
             opp.ai_analysis is not None
             and opp.ai_analysis.recommendation == "strong_skip"

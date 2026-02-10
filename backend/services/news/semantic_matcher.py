@@ -193,7 +193,9 @@ class SemanticMatcher:
                         self._faiss_index = faiss.IndexFlatIP(dim)
                         self._faiss_index.add(self._market_embeddings)
                     except Exception as e:
-                        logger.warning("FAISS index build failed, using numpy fallback: %s", e)
+                        logger.warning(
+                            "FAISS index build failed, using numpy fallback: %s", e
+                        )
                         self._faiss_index = None
                 else:
                     self._faiss_index = None

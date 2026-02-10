@@ -189,7 +189,9 @@ class ArbitrageScanner:
                             ws_hits += 1
 
             if ws_hits > 0:
-                print(f"  WS price overlay: {ws_hits}/{len(token_ids)} tokens from real-time feed")
+                print(
+                    f"  WS price overlay: {ws_hits}/{len(token_ids)} tokens from real-time feed"
+                )
             return merged
         except Exception as e:
             print(f"  WS price merge failed (using HTTP): {e}")
