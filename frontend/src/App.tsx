@@ -582,59 +582,6 @@ function App() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-1.5 ml-auto">
-            {/* Unified Status Indicator */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className={cn(
-                  "flex items-center gap-2 px-2.5 py-1 rounded-full border text-[10px] font-medium transition-all",
-                  isConnected
-                    ? status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000
-                      ? "border-green-500/30 bg-green-500/8 text-green-400"
-                      : status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 120000
-                        ? "border-yellow-500/30 bg-yellow-500/8 text-yellow-400"
-                        : "border-orange-500/30 bg-orange-500/8 text-orange-400"
-                    : "border-red-500/30 bg-red-500/8 text-red-400"
-                )}>
-                  <span className="relative flex h-1.5 w-1.5">
-                    {isConnected && status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000 && (
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 animate-ping" />
-                    )}
-                    <span className={cn(
-                      "relative inline-flex rounded-full h-1.5 w-1.5",
-                      isConnected
-                        ? status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 60000
-                          ? "bg-green-400"
-                          : status?.last_scan && (Date.now() - new Date(status.last_scan).getTime()) < 120000
-                            ? "bg-yellow-400"
-                            : "bg-orange-400"
-                        : "bg-red-400"
-                    )} />
-                  </span>
-                  <span>
-                    {!isConnected
-                      ? 'Offline'
-                      : !status?.last_scan || isNaN(new Date(status.last_scan).getTime())
-                        ? 'Waiting...'
-                        : (() => {
-                            const secs = Math.floor((Date.now() - new Date(status.last_scan).getTime()) / 1000)
-                            if (secs < 5) return 'Live'
-                            if (secs < 60) return `${secs}s`
-                            if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-                            return `${Math.floor(secs / 3600)}h ago`
-                          })()
-                    }
-                  </span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                {!isConnected
-                  ? 'WebSocket disconnected'
-                  : status?.last_scan && !isNaN(new Date(status.last_scan).getTime())
-                    ? `Connected — Last scan: ${new Date(status.last_scan).toLocaleTimeString()}`
-                    : 'Connected — No scan data yet'
-                }
-              </TooltipContent>
-            </Tooltip>
             <ThemeToggle />
 
             <Tooltip>
