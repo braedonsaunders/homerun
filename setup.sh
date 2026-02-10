@@ -53,6 +53,15 @@ echo "Installing Python dependencies..."
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
+# Check for OpenSSL/LibreSSL compatibility and attempt fix
+SSL_LIB=$(python3 -c "import ssl; print(ssl.OPENSSL_VERSION)" 2>/dev/null || echo "unknown")
+if echo "$SSL_LIB" | grep -qi "libressl"; then
+    echo ""
+    echo "Detected $SSL_LIB (macOS default)."
+    echo "Installing pyopenssl for better SSL compatibility..."
+    pip install -q pyopenssl cryptography 2>/dev/null || echo "  (pyopenssl install skipped - non-critical)"
+fi
+
 # Try to install trading dependencies (requires Python 3.10+)
 if [ "$PYTHON_MINOR" -ge 10 ]; then
     echo "Installing trading dependencies..."

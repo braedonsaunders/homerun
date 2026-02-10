@@ -60,12 +60,26 @@ uvicorn main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 cd ..
 
-# Wait for backend to start
-sleep 3
+# Wait for backend to start (retry up to 15 seconds)
+echo -e "${CYAN}Waiting for backend to be ready...${NC}"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+        echo -e "${GREEN}Backend is ready!${NC}"
+        break
+    fi
+    # Check if the backend process is still alive
+    if ! kill -0 $BACKEND_PID 2>/dev/null; then
+        echo -e "${YELLOW}Error: Backend process exited unexpectedly${NC}"
+        echo -e "${YELLOW}Check backend logs above for details${NC}"
+        break
+    fi
+    sleep 1
+done
 
-# Check if backend started successfully
 if ! curl -s http://localhost:8000/health > /dev/null 2>&1; then
-    echo -e "${YELLOW}Warning: Backend may not have started correctly${NC}"
+    if kill -0 $BACKEND_PID 2>/dev/null; then
+        echo -e "${YELLOW}Warning: Backend still starting up (this may take a moment)${NC}"
+    fi
 fi
 
 # Start frontend
