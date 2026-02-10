@@ -165,7 +165,7 @@ class ConfluenceDetector:
                     market_id
                 )
                 if market_info:
-                    market_slug = market_info.get("slug", None)
+                    market_slug = market_info.get("event_slug") or market_info.get("slug") or None
                     if not market_title and market_info.get("question"):
                         market_title = market_info["question"]
             except Exception:
