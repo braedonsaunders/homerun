@@ -473,42 +473,12 @@ class ArbitrageScanner:
                 except Exception:
                     pass
 
-            print(
-                f"  [SCAN] {len(all_opportunities)} opps from strategies, running news edge..."
-            )
-
-            # Run async strategies (News Edge — requires LLM calls)
-            if settings.NEWS_EDGE_ENABLED:
-                try:
-                    news_opps = await asyncio.wait_for(
-                        self._news_edge_strategy.detect_async(events, markets, prices),
-                        timeout=60,
-                    )
-                    for opp in news_opps:
-                        if opp.mispricing_type is None:
-                            opp.mispricing_type = MispricingType.NEWS_INFORMATION
-                    all_opportunities.extend(news_opps)
-                    print(
-                        f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities"
-                    )
-                except asyncio.TimeoutError:
-                    print(
-                        f"  {self._news_edge_strategy.name}: TIMED OUT after 60s, skipping"
-                    )
-                except Exception as e:
-                    print(f"  {self._news_edge_strategy.name}: error - {e}")
-
-            print(f"  [SCAN] deduplicating {len(all_opportunities)} opps...")
-
-            # Deduplicate across strategies: when the same underlying markets
-            # are detected by multiple strategies, keep only the highest-ROI one.
-            pre_dedup = len(all_opportunities)
+            # ----------------------------------------------------------
+            # STORE opportunities immediately so the API can serve them
+            # without waiting for slow LLM-based strategies (News Edge).
+            # ----------------------------------------------------------
             all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
-
-            # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
-
-            print("  [SCAN] attaching AI judgments...")
 
             # Attach existing AI judgments from the database
             try:
@@ -517,20 +487,22 @@ class ArbitrageScanner:
                     timeout=15,
                 )
             except asyncio.TimeoutError:
-                print(
-                    "  [SCAN] _attach_ai_judgments TIMED OUT after 15s, continuing without"
-                )
-            except Exception as e:
-                print(f"  [SCAN] _attach_ai_judgments error: {e}")
-
-            print(f"  [SCAN] merging {len(all_opportunities)} opps into pool...")
+                print("  AI judgment attach timed out (15s), continuing without")
+            except Exception:
+                pass
 
             self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
             print(
-                f"  Post-merge pool: {len(self._opportunities)} opportunities "
-                f"(pre-dedup={pre_dedup}, post-dedup={len(all_opportunities)})"
+                f"  Stored {len(self._opportunities)} opportunities"
             )
+
+            # Run News Edge strategy in background (LLM calls can take 60s+).
+            # Results are merged into the pool when they arrive.
+            if settings.NEWS_EDGE_ENABLED:
+                asyncio.create_task(
+                    self._run_news_edge_background(events, markets, prices)
+                )
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
             # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
@@ -761,6 +733,27 @@ class ArbitrageScanner:
             print(f"[{datetime.utcnow().isoformat()}] Fast scan error: {e}")
             await self._set_activity(f"Fast scan error: {e}")
             raise
+
+    async def _run_news_edge_background(self, events, markets, prices):
+        """Run News Edge strategy in background and merge results into the pool."""
+        try:
+            news_opps = await asyncio.wait_for(
+                self._news_edge_strategy.detect_async(events, markets, prices),
+                timeout=120,
+            )
+            for opp in news_opps:
+                if opp.mispricing_type is None:
+                    opp.mispricing_type = MispricingType.NEWS_INFORMATION
+            if news_opps:
+                self._opportunities = self._merge_opportunities(news_opps)
+                print(
+                    f"  {self._news_edge_strategy.name}: added {len(news_opps)} "
+                    f"opportunities (pool now {len(self._opportunities)})"
+                )
+        except asyncio.TimeoutError:
+            print(f"  {self._news_edge_strategy.name}: timed out (120s)")
+        except Exception as e:
+            print(f"  {self._news_edge_strategy.name}: error - {e}")
 
     def _deduplicate_cross_strategy(
         self, opportunities: list[ArbitrageOpportunity]
