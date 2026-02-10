@@ -33,6 +33,7 @@ import {
   LayoutGrid,
   List,
   Newspaper,
+  ArrowUpDown,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -89,6 +90,7 @@ import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
+import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
@@ -123,7 +125,7 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'crypto_markets'>('arbitrage')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -709,6 +711,20 @@ function App() {
                       <Newspaper className="w-3.5 h-3.5" />
                       News
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setOpportunitiesView('crypto_markets')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'crypto_markets'
+                          ? "bg-orange-500/20 text-orange-400 border-orange-500/30 hover:bg-orange-500/30 hover:text-orange-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <ArrowUpDown className="w-3.5 h-3.5" />
+                      Crypto Markets
+                    </Button>
 
                     {/* View Mode Switcher */}
                     {opportunitiesView === 'arbitrage' && (
@@ -775,7 +791,12 @@ function App() {
                     </div>
                   )}
 
-                  {opportunitiesView === 'news' ? (
+                  {opportunitiesView === 'crypto_markets' ? (
+                    <CryptoMarketsPanel
+                      onExecute={setExecutingOpportunity}
+                      onOpenCopilot={handleOpenCopilotForOpportunity}
+                    />
+                  ) : opportunitiesView === 'news' ? (
                     <NewsIntelligencePanel />
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
