@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,6 +29,7 @@ from textual.widgets import (
     RichLog,
     Rule,
     Sparkline,
+    TextArea,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +40,10 @@ FRONTEND_PORT = 3000
 HEALTH_URL = f"http://localhost:{BACKEND_PORT}/health/detailed"
 PROJECT_ROOT = Path(__file__).parent.resolve()
 BACKEND_DIR = PROJECT_ROOT / "backend"
+
+LOG_MAX_LINES = 5000
+LOG_TRIM_BATCH = 1000  # Remove this many lines when cap is hit
+LOG_FLUSH_MS = 150  # Flush buffered lines every N ms
 
 LOGO = r"""
  _   _  ___  __  __ _____ ____  _   _ _   _
@@ -223,17 +230,22 @@ Screen {
     height: 1fr;
 }
 
-#log-controls {
+#log-header {
     layout: horizontal;
-    height: 3;
+    height: 1;
     padding: 0 1;
     background: $boost;
-    margin: 0 1 1 1;
+    margin: 0 1 0 1;
 }
 
-.log-filter-btn {
-    margin: 0 1;
-    min-width: 12;
+#log-header-left {
+    width: 1fr;
+}
+
+#log-header-right {
+    width: auto;
+    min-width: 40;
+    text-align: right;
 }
 
 #log-output {
@@ -332,6 +344,36 @@ class ConfigCard(Static):
 
 
 # ---------------------------------------------------------------------------
+# Plain-text log formatter (no Rich markup -- TextArea is plain text)
+# ---------------------------------------------------------------------------
+def format_log_line(line: str, tag: str) -> str:
+    """Format a raw log line into readable plain text for the log viewer."""
+    prefix = f"[{tag}]"
+
+    # Try to parse structured JSON log lines from backend
+    if line.startswith("{"):
+        try:
+            data = json.loads(line)
+            level = data.get("level", "INFO")
+            msg = data.get("message", line)
+            logger_name = data.get("logger", "")
+            func = data.get("function", "")
+            ts = data.get("timestamp", "")
+            extra = data.get("data")
+
+            ts_short = ts[11:19] if len(ts) >= 19 else ts
+            parts = f"{prefix} {ts_short} {level:<8s} {logger_name}.{func}  {msg}"
+            if extra and isinstance(extra, dict):
+                kv = " ".join(f"{k}={v}" for k, v in extra.items())
+                parts += f"  {kv}"
+            return parts
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return f"{prefix} {line}"
+
+
+# ---------------------------------------------------------------------------
 # Main TUI App
 # ---------------------------------------------------------------------------
 class HomerunApp(App):
@@ -356,6 +398,16 @@ class HomerunApp(App):
     opp_history: list[float] = []
     backend_healthy: bool = False
     health_data: dict = {}
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Thread-safe log line buffer: worker threads append here,
+        # a periodic timer flushes into the TextArea on the main thread.
+        self._log_buf: collections.deque[str] = collections.deque(maxlen=2000)
+        self._log_lock = threading.Lock()
+        self._log_line_count = 0
+        # Track whether user is scrolled to the bottom (auto-follow mode).
+        self._log_follow = True
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -449,16 +501,22 @@ class HomerunApp(App):
     # ---- Logs tab layout ----
     def _compose_logs(self) -> ComposeResult:
         with Vertical(id="log-pane"):
-            with Horizontal(id="log-controls"):
+            with Horizontal(id="log-header"):
                 yield Static(
-                    "[bold]VERBOSE LOGS[/]  [dim]Backend + Frontend combined[/]",
+                    "[bold]VERBOSE LOGS[/]  [dim]Backend + Frontend combined  |  Select text + Ctrl-C to copy[/]",
+                    id="log-header-left",
                 )
-            yield RichLog(
+                yield Static(
+                    "[bold green]FOLLOWING[/]  0 lines",
+                    id="log-header-right",
+                )
+            yield TextArea(
+                "",
                 id="log-output",
-                highlight=True,
-                markup=True,
-                max_lines=10000,
-                wrap=True,
+                read_only=True,
+                show_line_numbers=True,
+                language=None,
+                soft_wrap=True,
             )
 
     # ---- Lifecycle ----
@@ -468,14 +526,89 @@ class HomerunApp(App):
         self._start_services()
         self._poll_health()
         self._update_uptime()
+        # Flush log buffer periodically (batched writes for performance)
+        self.set_interval(LOG_FLUSH_MS / 1000.0, self._flush_log_buffer)
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
+    # ---- Log buffer: thread-safe batched writes ----
+    def _enqueue_log(self, text: str) -> None:
+        """Called from worker threads. Appends to buffer; main-thread timer flushes."""
+        with self._log_lock:
+            self._log_buf.append(text)
+
+    def _flush_log_buffer(self) -> None:
+        """Called on the main thread by a periodic timer. Flushes pending lines
+        into the TextArea in one batch for performance."""
+        with self._log_lock:
+            if not self._log_buf:
+                return
+            lines = list(self._log_buf)
+            self._log_buf.clear()
+
+        try:
+            ta = self.query_one("#log-output", TextArea)
+        except Exception:
+            return
+
+        # Detect if user is at the bottom BEFORE we insert.
+        at_bottom = self._log_follow
+
+        # Build the chunk to insert
+        chunk = "\n".join(lines)
+        if self._log_line_count > 0:
+            chunk = "\n" + chunk
+
+        # Insert at the end of the document
+        end = ta.document.end
+        ta.insert(chunk, location=end)
+        self._log_line_count += len(lines)
+
+        # Trim from the top if we've exceeded the cap
+        if self._log_line_count > LOG_MAX_LINES:
+            trim = self._log_line_count - (LOG_MAX_LINES - LOG_TRIM_BATCH)
+            actual_lines = ta.document.line_count
+            trim = min(trim, actual_lines - 1)
+            if trim > 0:
+                ta.delete((0, 0), (trim, 0), maintain_selection_offset=False)
+                self._log_line_count = ta.document.line_count
+
+        # Auto-scroll to bottom if the user was already at the bottom
+        if at_bottom:
+            ta.scroll_end(animate=False)
+
+        # Update header with line count & follow state
+        self._update_log_header()
+
+    def _update_log_header(self) -> None:
+        follow_label = (
+            "[bold green]FOLLOWING[/]"
+            if self._log_follow
+            else "[bold yellow]PAUSED[/] (scroll to bottom to resume)"
+        )
+        try:
+            self.query_one("#log-header-right", Static).update(
+                f"{follow_label}  {self._log_line_count:,} lines"
+            )
+        except Exception:
+            pass
+
+    def on_idle(self) -> None:
+        """Check scroll position each idle tick to update follow state."""
+        try:
+            ta = self.query_one("#log-output", TextArea)
+            # At bottom if we can't scroll further down (within 2 rows tolerance)
+            at_bottom = ta.scroll_y >= (ta.max_scroll_y - 2)
+            if at_bottom != self._log_follow:
+                self._log_follow = at_bottom
+                self._update_log_header()
+        except Exception:
+            pass
+
     # ---- Start backend & frontend as subprocesses ----
     @work(thread=True)
     def _start_services(self) -> None:
-        log = self._get_log_widget
         self._log_activity("[bold cyan]Starting services...[/]")
 
         # Kill stale processes
@@ -485,8 +618,8 @@ class HomerunApp(App):
         # Activate venv and start backend
         venv_python = BACKEND_DIR / "venv" / "bin" / "python"
         if not venv_python.exists():
-            self._write_log(
-                "[bold red]ERROR:[/] Virtual environment not found. Run ./setup.sh first."
+            self._enqueue_log(
+                "ERROR: Virtual environment not found. Run ./setup.sh first."
             )
             return
 
@@ -499,7 +632,7 @@ class HomerunApp(App):
         # Ensure LOG_LEVEL is DEBUG for verbose logs
         env["LOG_LEVEL"] = "DEBUG"
 
-        self._write_log("[bold cyan]>>> Starting backend (uvicorn)...[/]")
+        self._enqueue_log(">>> Starting backend (uvicorn)...")
         self._log_activity("[cyan]Backend starting...[/]")
         try:
             self.backend_proc = subprocess.Popen(
@@ -519,10 +652,9 @@ class HomerunApp(App):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                bufsize=1,
             )
         except Exception as e:
-            self._write_log(f"[bold red]Failed to start backend: {e}[/]")
+            self._enqueue_log(f"FATAL: Failed to start backend: {e}")
             return
 
         # Stream backend output in a thread
@@ -535,7 +667,7 @@ class HomerunApp(App):
         env["BROWSER"] = "none"  # Don't auto-open browser
         env["FORCE_COLOR"] = "0"
 
-        self._write_log("[bold cyan]>>> Starting frontend (npm run dev)...[/]")
+        self._enqueue_log(">>> Starting frontend (npm run dev)...")
         self._log_activity("[cyan]Frontend starting...[/]")
         try:
             self.frontend_proc = subprocess.Popen(
@@ -544,17 +676,15 @@ class HomerunApp(App):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                bufsize=1,
             )
         except Exception as e:
-            self._write_log(f"[bold red]Failed to start frontend: {e}[/]")
+            self._enqueue_log(f"FATAL: Failed to start frontend: {e}")
             return
 
         self._stream_output(self.frontend_proc, "FRONTEND")
 
     def _stream_output(self, proc: subprocess.Popen, tag: str) -> None:
-        """Read process stdout line-by-line and write to log."""
-        color = "cyan" if tag == "BACKEND" else "magenta"
+        """Read process stdout line-by-line and enqueue for batched display."""
         try:
             for raw_line in iter(proc.stdout.readline, b""):
                 if proc.poll() is not None and not raw_line:
@@ -563,8 +693,8 @@ class HomerunApp(App):
                 if not line:
                     continue
 
-                styled = self._style_log_line(line, tag, color)
-                self._write_log(styled)
+                formatted = format_log_line(line, tag)
+                self._enqueue_log(formatted)
 
                 # If backend started, kick off frontend
                 if tag == "BACKEND" and not self.frontend_proc:
@@ -574,68 +704,9 @@ class HomerunApp(App):
         except Exception:
             pass
         finally:
-            self._write_log(f"[bold {color}][{tag}][/] [dim]Process exited[/]")
+            self._enqueue_log(f"[{tag}] Process exited")
 
-    def _style_log_line(self, line: str, tag: str, color: str) -> str:
-        """Apply rich markup to a log line based on content."""
-        prefix = f"[bold {color}][{tag}][/] "
-
-        # Try to parse JSON log lines from backend
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                level = data.get("level", "INFO")
-                msg = data.get("message", line)
-                logger_name = data.get("logger", "")
-                module = data.get("module", "")
-                func = data.get("function", "")
-                ts = data.get("timestamp", "")
-                extra = data.get("data", {})
-
-                # Color by level
-                level_colors = {
-                    "DEBUG": "dim white",
-                    "INFO": "green",
-                    "WARNING": "yellow",
-                    "ERROR": "red bold",
-                    "CRITICAL": "red bold reverse",
-                }
-                lc = level_colors.get(level, "white")
-
-                ts_short = ts[11:19] if len(ts) >= 19 else ts
-                parts = f"{prefix}[dim]{ts_short}[/] [{lc}]{level:8s}[/] [bold]{logger_name}[/].[dim]{func}[/] {msg}"
-                if extra:
-                    extra_str = " ".join(
-                        f"[dim]{k}[/]=[italic]{v}[/]" for k, v in extra.items()
-                    )
-                    parts += f"  {extra_str}"
-                return parts
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # Highlight keywords in plain-text lines
-        lower = line.lower()
-        if "error" in lower or "traceback" in lower or "exception" in lower:
-            return f"{prefix}[red]{line}[/]"
-        elif "warning" in lower or "warn" in lower:
-            return f"{prefix}[yellow]{line}[/]"
-        elif "started" in lower or "ready" in lower or "healthy" in lower:
-            return f"{prefix}[green]{line}[/]"
-        else:
-            return f"{prefix}{line}"
-
-    # ---- Log helpers ----
-    def _write_log(self, text: str) -> None:
-        """Thread-safe write to the log widget."""
-        self.call_from_thread(self._do_write_log, text)
-
-    def _do_write_log(self, text: str) -> None:
-        try:
-            log_widget = self.query_one("#log-output", RichLog)
-            log_widget.write(text)
-        except Exception:
-            pass
-
+    # ---- Activity feed (small, uses RichLog -- markup is fine here) ----
     def _log_activity(self, text: str) -> None:
         """Thread-safe write to the activity feed."""
         self.call_from_thread(self._do_log_activity, text)
@@ -647,13 +718,6 @@ class HomerunApp(App):
             activity.write(f"[dim]{ts}[/]  {text}")
         except Exception:
             pass
-
-    @property
-    def _get_log_widget(self):
-        try:
-            return self.query_one("#log-output", RichLog)
-        except Exception:
-            return None
 
     # ---- Periodic health polling ----
     def _poll_health(self) -> None:
@@ -683,15 +747,11 @@ class HomerunApp(App):
         rate_limits = data.get("rate_limits", {})
 
         # --- Service status bar ---
-        def svc_badge(running: bool) -> str:
-            return "[bold green]ON[/]" if running else "[bold red]OFF[/]"
-
         scanner = services.get("scanner", {})
         auto = services.get("auto_trader", {})
         ws = services.get("ws_feeds", {})
 
         self._update_status("svc-backend", "BACKEND", True)
-        # Frontend: we check if the process is alive
         frontend_alive = self.frontend_proc is not None and self.frontend_proc.poll() is None
         self._update_status("svc-frontend", "FRONTEND", frontend_alive)
         self._update_status("svc-scanner", "SCANNER", scanner.get("running", False))
@@ -722,13 +782,7 @@ class HomerunApp(App):
         self._update_stat("stat-copy", str(copy_cfg.get("active_configs", 0)))
 
         mode = auto.get("mode", "paper")
-        mode_colors = {"paper": "cyan", "live": "green", "shadow": "yellow", "mock": "dim"}
-        mc = mode_colors.get(mode, "white")
-        try:
-            w = self.query_one("#stat-mode-val", Label)
-            w.update(f"[{mc}]{mode.upper()}[/]")
-        except Exception:
-            self._update_stat("stat-mode", mode.upper())
+        self._update_stat("stat-mode", mode.upper())
 
         discovery = services.get("wallet_discovery", {})
         self._update_stat(
