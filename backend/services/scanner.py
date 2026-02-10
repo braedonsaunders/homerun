@@ -493,9 +493,7 @@ class ArbitrageScanner:
 
             self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
-            print(
-                f"  Stored {len(self._opportunities)} opportunities"
-            )
+            print(f"  Stored {len(self._opportunities)} opportunities")
 
             # Run News Edge strategy in background (LLM calls can take 60s+).
             # Results are merged into the pool when they arrive.
