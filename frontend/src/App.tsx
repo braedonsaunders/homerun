@@ -239,6 +239,7 @@ function App() {
     if (lastMessage?.type === 'news_update') {
       // New news articles arrived — refresh news panel data
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
+      queryClient.invalidateQueries({ queryKey: ['news-matches'] })
       queryClient.invalidateQueries({ queryKey: ['news-edges'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
     }

@@ -443,6 +443,7 @@ export default function NewsIntelligencePanel() {
     mutationFn: triggerNewsFetch,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
+      queryClient.invalidateQueries({ queryKey: ['news-matches'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
     },
   })
