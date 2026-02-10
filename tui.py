@@ -454,6 +454,8 @@ class HomerunApp(App):
         # Filter state
         self._source_filter = "all"  # "all", "backend", "frontend"
         self._level_filter = "all"  # "all", "debug", "info", "warning", "error"
+        # Shutdown flag so reader threads can exit
+        self._shutting_down = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -888,6 +890,8 @@ class HomerunApp(App):
         """Read process stdout line-by-line and enqueue for batched display."""
         try:
             for raw_line in iter(proc.stdout.readline, b""):
+                if self._shutting_down:
+                    break
                 if proc.poll() is not None and not raw_line:
                     break
                 line = raw_line.decode("utf-8", errors="replace").rstrip()
@@ -905,7 +909,8 @@ class HomerunApp(App):
         except Exception:
             pass
         finally:
-            self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
+            if not self._shutting_down:
+                self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
 
     # ---- Activity feed (small, uses RichLog -- markup is fine here) ----
     def _log_activity(self, text: str) -> None:
@@ -1064,26 +1069,39 @@ class HomerunApp(App):
 
     # ---- Cleanup ----
     def on_unmount(self) -> None:
+        self._shutting_down = True
         self._kill_children()
 
     def action_quit(self) -> None:
+        self._shutting_down = True
         self._kill_children()
         self.exit()
 
     def _kill_children(self) -> None:
-        for proc in (self.backend_proc, self.frontend_proc):
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-        # Clean up ports
-        kill_port(BACKEND_PORT)
-        kill_port(FRONTEND_PORT)
+        """Kill child processes and close their pipes to unblock reader threads."""
+        procs = [
+            p for p in (self.backend_proc, self.frontend_proc)
+            if p and p.poll() is None
+        ]
+        # SIGKILL all first (non-blocking)
+        for proc in procs:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        # Close stdout pipes to unblock readline() in reader threads
+        for proc in procs:
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+        # Brief wait for processes to actually die (SIGKILL is fast)
+        for proc in procs:
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
