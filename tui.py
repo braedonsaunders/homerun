@@ -21,9 +21,11 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
 from textual.reactive import reactive
 from textual.widgets import (
+    Button,
     Footer,
     Header,
     Label,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -45,6 +47,9 @@ BACKEND_DIR = PROJECT_ROOT / "backend"
 LOG_MAX_LINES = 5000
 LOG_TRIM_BATCH = 1000  # Remove this many lines when cap is hit
 LOG_FLUSH_MS = 150  # Flush buffered lines every N ms
+
+# Log level ordering for filter comparison
+LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
 
 LOGO = r"""
  _   _  ___  __  __ _____ ____  _   _ _   _
@@ -249,6 +254,24 @@ Screen {
     text-align: right;
 }
 
+#log-controls {
+    layout: horizontal;
+    height: auto;
+    max-height: 5;
+    padding: 0 1;
+    margin: 0 1 0 1;
+}
+
+#log-controls Button {
+    min-width: 12;
+    margin: 0 1 0 0;
+}
+
+#log-level-select {
+    max-width: 22;
+    margin: 0 1 0 0;
+}
+
 #log-output {
     margin: 0 1;
     border: round $primary-background;
@@ -347,15 +370,18 @@ class ConfigCard(Static):
 # ---------------------------------------------------------------------------
 # Plain-text log formatter (no Rich markup -- TextArea is plain text)
 # ---------------------------------------------------------------------------
-def format_log_line(line: str, tag: str) -> str:
-    """Format a raw log line into readable plain text for the log viewer."""
+def format_log_line(line: str, tag: str) -> tuple[str, str]:
+    """Format a raw log line into readable plain text for the log viewer.
+
+    Returns (formatted_text, level).
+    """
     prefix = f"[{tag}]"
 
     # Try to parse structured JSON log lines from backend
     if line.startswith("{"):
         try:
             data = json.loads(line)
-            level = data.get("level", "INFO")
+            level = data.get("level", "INFO").upper()
             msg = data.get("message", line)
             logger_name = data.get("logger", "")
             func = data.get("function", "")
@@ -367,11 +393,22 @@ def format_log_line(line: str, tag: str) -> str:
             if extra and isinstance(extra, dict):
                 kv = " ".join(f"{k}={v}" for k, v in extra.items())
                 parts += f"  {kv}"
-            return parts
+            return (parts, level)
         except (json.JSONDecodeError, KeyError):
             pass
 
-    return f"{prefix} {line}"
+    # Detect level from plain text
+    upper = line.upper()
+    if any(kw in upper for kw in ("ERROR", "FATAL", "CRITICAL", "TRACEBACK", "EXCEPTION")):
+        level = "ERROR"
+    elif "WARN" in upper:
+        level = "WARNING"
+    elif "DEBUG" in upper:
+        level = "DEBUG"
+    else:
+        level = "INFO"
+
+    return (f"{prefix} {line}", level)
 
 
 # ---------------------------------------------------------------------------
@@ -405,11 +442,18 @@ class HomerunApp(App):
         super().__init__()
         # Thread-safe log line buffer: worker threads append here,
         # a periodic timer flushes into the TextArea on the main thread.
-        self._log_buf: collections.deque[str] = collections.deque(maxlen=2000)
+        self._log_buf: collections.deque[tuple[str, str, str]] = collections.deque(
+            maxlen=2000
+        )
         self._log_lock = threading.Lock()
+        # Master list of all log entries for rebuilding filtered views.
+        self._log_entries: list[tuple[str, str, str]] = []  # (text, source, level)
         self._log_line_count = 0
         # Track whether user is scrolled to the bottom (auto-follow mode).
         self._log_follow = True
+        # Filter state
+        self._source_filter = "all"  # "all", "backend", "frontend"
+        self._level_filter = "all"  # "all", "debug", "info", "warning", "error"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -505,13 +549,31 @@ class HomerunApp(App):
         with Vertical(id="log-pane"):
             with Horizontal(id="log-header"):
                 yield Static(
-                    "[bold]VERBOSE LOGS[/]  [dim]Backend + Frontend combined  |  Select text + Ctrl-C to copy[/]",
+                    "[bold]LOGS[/]  [dim]Ctrl+C or Copy button to copy[/]",
                     id="log-header-left",
                 )
                 yield Static(
                     "[bold green]FOLLOWING[/]  0 lines",
                     id="log-header-right",
                 )
+            with Horizontal(id="log-controls"):
+                yield Button("All", id="src-all", variant="primary")
+                yield Button("Backend", id="src-backend", variant="default")
+                yield Button("Frontend", id="src-frontend", variant="default")
+                yield Select(
+                    [
+                        ("All Levels", "all"),
+                        ("Error", "error"),
+                        ("Warning", "warning"),
+                        ("Info", "info"),
+                        ("Debug", "debug"),
+                    ],
+                    value="all",
+                    id="log-level-select",
+                    allow_blank=False,
+                )
+                yield Button("Clear", id="log-clear-btn", variant="warning")
+                yield Button("Copy", id="log-copy-btn", variant="success")
             yield TextArea(
                 "",
                 id="log-output",
@@ -534,22 +596,69 @@ class HomerunApp(App):
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
-    def action_copy_to_clip(self) -> None:
-        """Copy selected text from the log viewer to the system clipboard."""
+    # ---- Copy action ----
+    def _do_copy(self) -> None:
+        """Copy selected text (or all text) from the log viewer to system clipboard."""
         try:
             ta = self.query_one("#log-output", TextArea)
             text = ta.selected_text
+            if not text:
+                text = ta.text
             if text:
                 self.copy_to_clipboard(text)
                 self.notify("Copied to clipboard", timeout=2)
         except Exception:
             pass
 
+    def action_copy_to_clip(self) -> None:
+        self._do_copy()
+
+    # ---- Log filter helpers ----
+    def _matches_filter(self, source: str, level: str) -> bool:
+        """Check if a log entry matches the current source and level filters."""
+        if self._source_filter != "all":
+            if source.lower() != self._source_filter:
+                return False
+        if self._level_filter != "all":
+            min_level = LOG_LEVEL_ORDER.get(self._level_filter.upper(), 0)
+            entry_level = LOG_LEVEL_ORDER.get(level.upper(), 1)
+            if entry_level < min_level:
+                return False
+        return True
+
+    def _rebuild_log_view(self) -> None:
+        """Rebuild the TextArea content from master entries based on current filters."""
+        try:
+            ta = self.query_one("#log-output", TextArea)
+        except Exception:
+            return
+
+        matching = [
+            text
+            for text, source, level in self._log_entries
+            if self._matches_filter(source, level)
+        ]
+
+        # Clear the TextArea
+        end = ta.document.end
+        if end != (0, 0):
+            ta.delete((0, 0), end)
+
+        # Insert filtered content
+        if matching:
+            content = "\n".join(matching)
+            ta.insert(content, location=(0, 0))
+
+        self._log_line_count = len(matching)
+        self._log_follow = True
+        ta.scroll_end(animate=False)
+        self._update_log_header()
+
     # ---- Log buffer: thread-safe batched writes ----
-    def _enqueue_log(self, text: str) -> None:
+    def _enqueue_log(self, text: str, source: str = "BACKEND", level: str = "INFO") -> None:
         """Called from worker threads. Appends to buffer; main-thread timer flushes."""
         with self._log_lock:
-            self._log_buf.append(text)
+            self._log_buf.append((text, source, level))
 
     def _flush_log_buffer(self) -> None:
         """Called on the main thread by a periodic timer. Flushes pending lines
@@ -557,8 +666,25 @@ class HomerunApp(App):
         with self._log_lock:
             if not self._log_buf:
                 return
-            lines = list(self._log_buf)
+            entries = list(self._log_buf)
             self._log_buf.clear()
+
+        # Store in master list
+        self._log_entries.extend(entries)
+
+        # Trim master list if it exceeds the cap
+        if len(self._log_entries) > LOG_MAX_LINES:
+            self._log_entries = self._log_entries[-(LOG_MAX_LINES - LOG_TRIM_BATCH) :]
+
+        # Filter new entries for current display
+        matching = [
+            text
+            for text, source, level in entries
+            if self._matches_filter(source, level)
+        ]
+
+        if not matching:
+            return
 
         try:
             ta = self.query_one("#log-output", TextArea)
@@ -566,22 +692,19 @@ class HomerunApp(App):
             return
 
         # Snapshot scroll state and selection BEFORE any mutation.
-        # insert() moves the cursor to the end of inserted text which
-        # triggers an automatic viewport scroll -- we must undo that
-        # when the user has scrolled up (not following).
         at_bottom = self._log_follow
         saved_scroll_y = ta.scroll_y
         saved_selection = ta.selection
 
         # Build the chunk to insert
-        chunk = "\n".join(lines)
+        chunk = "\n".join(matching)
         if self._log_line_count > 0:
             chunk = "\n" + chunk
 
         # Insert at the end of the document
         end = ta.document.end
         ta.insert(chunk, location=end)
-        self._log_line_count += len(lines)
+        self._log_line_count += len(matching)
 
         # Restore selection after insert -- insert at end moved cursor
         # but didn't change line numbers for existing text.
@@ -602,8 +725,6 @@ class HomerunApp(App):
             ta.scroll_end(animate=False)
         else:
             # Force-restore the viewport to where the user was reading.
-            # If lines were trimmed from the top, content shifted up by
-            # that many rows so subtract to keep the same content visible.
             restored = max(0, saved_scroll_y - trimmed)
             ta.scroll_to(y=restored, animate=False)
 
@@ -636,6 +757,42 @@ class HomerunApp(App):
         except Exception:
             pass
 
+    # ---- Button / Select handlers ----
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id
+
+        # Source filter buttons
+        if btn_id in ("src-all", "src-backend", "src-frontend"):
+            self._source_filter = btn_id.replace("src-", "")
+            for sid in ("src-all", "src-backend", "src-frontend"):
+                try:
+                    btn = self.query_one(f"#{sid}", Button)
+                    btn.variant = "primary" if sid == btn_id else "default"
+                except Exception:
+                    pass
+            self._rebuild_log_view()
+
+        elif btn_id == "log-clear-btn":
+            self._log_entries.clear()
+            try:
+                ta = self.query_one("#log-output", TextArea)
+                end = ta.document.end
+                if end != (0, 0):
+                    ta.delete((0, 0), end)
+            except Exception:
+                pass
+            self._log_line_count = 0
+            self._update_log_header()
+            self.notify("Logs cleared", timeout=2)
+
+        elif btn_id == "log-copy-btn":
+            self._do_copy()
+
+    @on(Select.Changed, "#log-level-select")
+    def _on_level_changed(self, event: Select.Changed) -> None:
+        self._level_filter = str(event.value)
+        self._rebuild_log_view()
+
     # ---- Start backend & frontend as subprocesses ----
     @work(thread=True)
     def _start_services(self) -> None:
@@ -649,7 +806,9 @@ class HomerunApp(App):
         venv_python = BACKEND_DIR / "venv" / "bin" / "python"
         if not venv_python.exists():
             self._enqueue_log(
-                "ERROR: Virtual environment not found. Run ./setup.sh first."
+                "ERROR: Virtual environment not found. Run ./setup.sh first.",
+                source="BACKEND",
+                level="ERROR",
             )
             return
 
@@ -662,7 +821,9 @@ class HomerunApp(App):
         # Ensure LOG_LEVEL is DEBUG for verbose logs
         env["LOG_LEVEL"] = "DEBUG"
 
-        self._enqueue_log(">>> Starting backend (uvicorn)...")
+        self._enqueue_log(
+            ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
+        )
         self._log_activity("[cyan]Backend starting...[/]")
         try:
             self.backend_proc = subprocess.Popen(
@@ -684,7 +845,11 @@ class HomerunApp(App):
                 env=env,
             )
         except Exception as e:
-            self._enqueue_log(f"FATAL: Failed to start backend: {e}")
+            self._enqueue_log(
+                f"FATAL: Failed to start backend: {e}",
+                source="BACKEND",
+                level="ERROR",
+            )
             return
 
         # Stream backend output in a thread
@@ -697,7 +862,9 @@ class HomerunApp(App):
         env["BROWSER"] = "none"  # Don't auto-open browser
         env["FORCE_COLOR"] = "0"
 
-        self._enqueue_log(">>> Starting frontend (npm run dev)...")
+        self._enqueue_log(
+            ">>> Starting frontend (npm run dev)...", source="FRONTEND", level="INFO"
+        )
         self._log_activity("[cyan]Frontend starting...[/]")
         try:
             self.frontend_proc = subprocess.Popen(
@@ -708,7 +875,11 @@ class HomerunApp(App):
                 env=env,
             )
         except Exception as e:
-            self._enqueue_log(f"FATAL: Failed to start frontend: {e}")
+            self._enqueue_log(
+                f"FATAL: Failed to start frontend: {e}",
+                source="FRONTEND",
+                level="ERROR",
+            )
             return
 
         self._stream_output(self.frontend_proc, "FRONTEND")
@@ -723,8 +894,8 @@ class HomerunApp(App):
                 if not line:
                     continue
 
-                formatted = format_log_line(line, tag)
-                self._enqueue_log(formatted)
+                formatted, level = format_log_line(line, tag)
+                self._enqueue_log(formatted, source=tag, level=level)
 
                 # If backend started, kick off frontend
                 if tag == "BACKEND" and not self.frontend_proc:
@@ -734,7 +905,7 @@ class HomerunApp(App):
         except Exception:
             pass
         finally:
-            self._enqueue_log(f"[{tag}] Process exited")
+            self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
 
     # ---- Activity feed (small, uses RichLog -- markup is fine here) ----
     def _log_activity(self, text: str) -> None:
