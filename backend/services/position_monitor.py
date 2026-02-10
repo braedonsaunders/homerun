@@ -41,7 +41,7 @@ class PositionMonitor:
 
     def __init__(self):
         self._running = False
-        self._poll_interval = 30  # seconds between price checks
+        self._poll_interval = 15  # seconds (WS cache makes this cheap)
         self._positions_checked = 0
         self._exits_triggered = 0
         self._task: Optional[asyncio.Task] = None
@@ -151,19 +151,54 @@ class PositionMonitor:
             await session.commit()
 
     async def _fetch_prices(self, token_ids: list[str]) -> dict[str, float]:
-        """Fetch current prices for a list of token IDs"""
-        try:
-            from services.polymarket import polymarket_client
+        """Fetch current prices, preferring WS cache over HTTP.
 
-            prices = await polymarket_client.get_prices_batch(token_ids)
-            # get_prices_batch returns {token_id: {"mid": float, ...}}
-            return {
-                tid: data.get("mid", 0) if isinstance(data, dict) else float(data)
-                for tid, data in prices.items()
-            }
-        except Exception as e:
-            logger.error(f"Failed to fetch prices: {e}")
-            return {}
+        Uses the real-time WS price cache for tokens that have fresh data,
+        and falls back to HTTP batch fetch only for stale/missing tokens.
+        This avoids unnecessary API calls when WS feeds are healthy.
+        """
+        prices: dict[str, float] = {}
+        stale_ids: list[str] = []
+
+        # Try WS cache first
+        try:
+            from config import settings as app_settings
+            if app_settings.WS_FEED_ENABLED:
+                from services.ws_feeds import get_feed_manager
+                feed_mgr = get_feed_manager()
+                if feed_mgr._started:
+                    for tid in token_ids:
+                        if feed_mgr.is_fresh(tid):
+                            mid = feed_mgr.cache.get_mid_price(tid)
+                            if mid is not None and mid > 0:
+                                prices[tid] = mid
+                                continue
+                        stale_ids.append(tid)
+                else:
+                    stale_ids = list(token_ids)
+            else:
+                stale_ids = list(token_ids)
+        except Exception:
+            stale_ids = list(token_ids)
+
+        # HTTP fallback for stale/missing tokens only
+        if stale_ids:
+            try:
+                from services.polymarket import polymarket_client
+                http_prices = await polymarket_client.get_prices_batch(stale_ids)
+                for tid, data in http_prices.items():
+                    prices[tid] = data.get("mid", 0) if isinstance(data, dict) else float(data)
+            except Exception as e:
+                logger.error(f"Failed to fetch prices via HTTP: {e}")
+
+        if prices and stale_ids:
+            ws_count = len(token_ids) - len(stale_ids)
+            logger.debug(
+                "Position prices: %d from WS cache, %d from HTTP",
+                ws_count, len(stale_ids),
+            )
+
+        return prices
 
     async def _exit_position(
         self,

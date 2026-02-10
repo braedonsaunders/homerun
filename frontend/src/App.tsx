@@ -214,17 +214,33 @@ function App() {
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
 
-  // Update data when WebSocket message received
+  // Update data when WebSocket message received — trust WS pushes as primary
   useEffect(() => {
     if (lastMessage?.type === 'opportunities_update') {
+      // Invalidate so React Query refetches with current filters applied
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunity-counts'] })
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
     }
     if (lastMessage?.type === 'scanner_status') {
-      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+      // Set status directly from WS push — no HTTP round-trip needed
+      if (lastMessage.data) {
+        queryClient.setQueryData(['scanner-status'], lastMessage.data)
+      }
     }
     if (lastMessage?.type === 'scanner_activity') {
       setScannerActivity(lastMessage.data?.activity || 'Idle')
+    }
+    if (lastMessage?.type === 'wallet_trade') {
+      // A tracked wallet traded — refresh copy trading and recent trades data
+      queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
+      queryClient.invalidateQueries({ queryKey: ['copy-trading-status'] })
+    }
+    if (lastMessage?.type === 'news_update') {
+      // New news articles arrived — refresh news panel data
+      queryClient.invalidateQueries({ queryKey: ['news-articles'] })
+      queryClient.invalidateQueries({ queryKey: ['news-edges'] })
+      queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
     }
   }, [lastMessage, queryClient])
 
@@ -233,7 +249,8 @@ function App() {
     setCurrentPage(0)
   }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted])
 
-  // Queries
+  // Queries — WS pushes are primary; polling is a degraded fallback.
+  // When WS is connected, polls are infrequent. When disconnected, revert to faster polling.
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
     queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
     queryFn: () => getOpportunities({
@@ -247,7 +264,7 @@ function App() {
       limit: ITEMS_PER_PAGE,
       offset: currentPage * ITEMS_PER_PAGE
     }),
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? 120000 : 15000,
   })
 
   const opportunities = opportunitiesData?.opportunities || []
@@ -256,7 +273,7 @@ function App() {
   const { data: status } = useQuery({
     queryKey: ['scanner-status'],
     queryFn: getScannerStatus,
-    refetchInterval: 5000,
+    refetchInterval: isConnected ? 30000 : 5000,
   })
 
   // Sync scanner activity from polled status as fallback
@@ -286,7 +303,7 @@ function App() {
       max_risk: maxRisk,
       search: searchQuery || undefined,
     }),
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? 120000 : 30000,
   })
 
   // Polymarket search query (only runs when user submits a search)

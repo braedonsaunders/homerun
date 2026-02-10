@@ -248,7 +248,7 @@ class Settings(BaseSettings):
 
     # News Edge Strategy
     NEWS_EDGE_ENABLED: bool = True  # Enable news-driven edge scanning
-    NEWS_SCAN_INTERVAL_SECONDS: int = 180  # Poll news sources every 3 minutes
+    NEWS_SCAN_INTERVAL_SECONDS: int = 60  # Poll news sources every 60s (was 180s)
     NEWS_MIN_EDGE_PERCENT: float = 8.0  # Minimum edge to generate opportunity
     NEWS_MIN_CONFIDENCE: float = 0.6  # Minimum model confidence
     NEWS_MAX_ARTICLES_PER_SCAN: int = 50  # Max articles to process per scan

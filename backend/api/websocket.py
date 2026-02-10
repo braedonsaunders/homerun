@@ -140,6 +140,13 @@ async def broadcast_scanner_activity(activity: str):
     )
 
 
+async def broadcast_news_update(article_count: int):
+    """Callback to broadcast new news articles arriving"""
+    await manager.broadcast(
+        {"type": "news_update", "data": {"new_count": article_count}}
+    )
+
+
 # Register callbacks
 scanner.add_callback(broadcast_opportunities)
 scanner.add_status_callback(broadcast_scanner_status)
