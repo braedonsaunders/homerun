@@ -461,7 +461,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             # Dynamic strategy selection
             selected, all_scores = self._select_sub_strategy(candidate)
             if selected is None:
-                reasons = " | ".join(f"{s.strategy.value}: {s.reason}" for s in all_scores)
+                reasons = " | ".join(
+                    f"{s.strategy.value}: {s.reason}" for s in all_scores
+                )
                 logger.debug(
                     f"BtcEthHighFreq: no viable sub-strategy for market "
                     f"{candidate.market.id} ({candidate.asset} {candidate.timeframe}, "
@@ -753,7 +755,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # If we have no history yet, infer the "dump" from deviation off 0.50.
         if history is None or not history.has_data:
             yes_dev = 0.50 - c.yes_price  # positive if YES dropped below 0.50
-            no_dev = 0.50 - c.no_price    # positive if NO dropped below 0.50
+            no_dev = 0.50 - c.no_price  # positive if NO dropped below 0.50
             max_drop = max(yes_dev, no_dev, 0.0)
             dumped_side = "YES" if yes_dev >= no_dev else "NO"
         else:
@@ -801,7 +803,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         base_score += guaranteed_component * 1000.0  # strongly reward guaranteed arb
 
         # Volatility bonus: higher volatility means more dump-hedge opportunities
-        volatility = history.recent_volatility() if (history and history.has_data) else 0.0
+        volatility = (
+            history.recent_volatility() if (history and history.has_data) else 0.0
+        )
         base_score += volatility * 50.0
 
         # Liquidity matters: need to be able to fill quickly
@@ -1030,7 +1034,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         market = c.market
         dumped_side = params["dumped_side"]
         drop_amount = params["drop_amount"]
-        dumped_price = params.get("dumped_price", params["yes_price"] if dumped_side == "YES" else params["no_price"])
+        dumped_price = params.get(
+            "dumped_price",
+            params["yes_price"] if dumped_side == "YES" else params["no_price"],
+        )
         ev_profit = params.get("ev_profit", 0)
         yes_price = params["yes_price"]
         no_price = params["no_price"]
@@ -1044,7 +1051,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         for pos in positions:
             if pos["outcome"] == dumped_side:
                 pos["role"] = "primary"
-                pos["note"] = f"Dumped side (dropped {drop_amount:.4f} to {dumped_price:.4f})"
+                pos["note"] = (
+                    f"Dumped side (dropped {drop_amount:.4f} to {dumped_price:.4f})"
+                )
             else:
                 pos["role"] = "hedge"
                 pos["note"] = "Hedge after partial recovery of primary"
