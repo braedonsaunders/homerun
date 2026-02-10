@@ -743,7 +743,19 @@ class ArbitrageScanner:
                 if opp.mispricing_type is None:
                     opp.mispricing_type = MispricingType.NEWS_INFORMATION
             if news_opps:
-                self._opportunities = self._merge_opportunities(news_opps)
+                # Deduplicate against the existing pool to avoid cross-strategy
+                # duplicates (e.g. News Edge + NegRisk flagging the same market).
+                combined = list(self._opportunities) + news_opps
+                combined = self._deduplicate_cross_strategy(combined)
+                # Attach stored AI judgments so strong_skip filtering works.
+                try:
+                    await asyncio.wait_for(
+                        self._attach_ai_judgments(news_opps),
+                        timeout=15,
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                self._opportunities = self._merge_opportunities(combined)
                 print(
                     f"  {self._news_edge_strategy.name}: added {len(news_opps)} "
                     f"opportunities (pool now {len(self._opportunities)})"
