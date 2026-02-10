@@ -594,6 +594,8 @@ class HomerunApp(App):
         self._update_uptime()
         # Flush log buffer periodically (batched writes for performance)
         self.set_interval(LOG_FLUSH_MS / 1000.0, self._flush_log_buffer)
+        # Check scroll state less frequently (not on_idle which fires constantly)
+        self.set_interval(0.5, self._check_scroll_follow)
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
@@ -746,8 +748,8 @@ class HomerunApp(App):
         except Exception:
             pass
 
-    def on_idle(self) -> None:
-        """Detect when the user scrolls to/from the bottom to toggle follow."""
+    def _check_scroll_follow(self) -> None:
+        """Periodic check: detect when the user scrolls to/from the bottom."""
         try:
             ta = self.query_one("#log-output", TextArea)
             if ta.max_scroll_y <= 0:
@@ -820,8 +822,8 @@ class HomerunApp(App):
         venv_bin = str(BACKEND_DIR / "venv" / "bin")
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
         env["VIRTUAL_ENV"] = str(BACKEND_DIR / "venv")
-        # Ensure LOG_LEVEL is DEBUG for verbose logs
-        env["LOG_LEVEL"] = "DEBUG"
+        # Default to INFO; the TUI level filter can show DEBUG if needed
+        env.setdefault("LOG_LEVEL", "INFO")
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -839,7 +841,7 @@ class HomerunApp(App):
                     "--port",
                     str(BACKEND_PORT),
                     "--log-level",
-                    "debug",
+                    "info",
                 ],
                 cwd=str(BACKEND_DIR),
                 stdout=subprocess.PIPE,
@@ -1116,6 +1118,11 @@ def main() -> None:
 
     app = HomerunApp()
     app.run()
+
+    # Force-exit to avoid hanging on background thread joins.
+    # Textual worker threads (subprocess readers) may still be blocked
+    # on I/O; Python's atexit handler would wait for them indefinitely.
+    os._exit(0)
 
 
 if __name__ == "__main__":

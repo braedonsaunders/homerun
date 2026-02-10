@@ -454,15 +454,8 @@ class WalletWebSocketMonitor:
                                 )
 
                         except json.JSONDecodeError:
-                            logger.warning(
-                                "Non-JSON WS message received",
-                                message=str(message)[:200],
-                            )
+                            self._stats["errors"] += 1
                         except Exception as e:
-                            logger.error(
-                                "Error processing WS message",
-                                error=str(e),
-                            )
                             self._stats["errors"] += 1
 
             except asyncio.CancelledError:
@@ -660,7 +653,7 @@ class WalletWebSocketMonitor:
 
         self._stats["events_detected"] += 1
 
-        logger.info(
+        logger.debug(
             "Trade detected via WS",
             wallet=matched_wallet,
             side=side,

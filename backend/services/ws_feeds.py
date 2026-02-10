@@ -489,7 +489,6 @@ class PolymarketWSFeed:
                         self.stats.messages_parsed += 1
                     except Exception as exc:
                         self.stats.parse_errors += 1
-                        logger.debug(f"Polymarket WS parse error: {exc!r}")
             finally:
                 if self._heartbeat_task and not self._heartbeat_task.done():
                     self._heartbeat_task.cancel()
@@ -804,7 +803,6 @@ class KalshiWSFeed:
                         self.stats.messages_parsed += 1
                     except Exception as exc:
                         self.stats.parse_errors += 1
-                        logger.debug(f"Kalshi WS parse error: {exc!r}")
             finally:
                 if self._heartbeat_task and not self._heartbeat_task.done():
                     self._heartbeat_task.cancel()
