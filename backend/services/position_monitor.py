@@ -163,8 +163,10 @@ class PositionMonitor:
         # Try WS cache first
         try:
             from config import settings as app_settings
+
             if app_settings.WS_FEED_ENABLED:
                 from services.ws_feeds import get_feed_manager
+
                 feed_mgr = get_feed_manager()
                 if feed_mgr._started:
                     for tid in token_ids:
@@ -185,9 +187,12 @@ class PositionMonitor:
         if stale_ids:
             try:
                 from services.polymarket import polymarket_client
+
                 http_prices = await polymarket_client.get_prices_batch(stale_ids)
                 for tid, data in http_prices.items():
-                    prices[tid] = data.get("mid", 0) if isinstance(data, dict) else float(data)
+                    prices[tid] = (
+                        data.get("mid", 0) if isinstance(data, dict) else float(data)
+                    )
             except Exception as e:
                 logger.error(f"Failed to fetch prices via HTTP: {e}")
 
@@ -195,7 +200,8 @@ class PositionMonitor:
             ws_count = len(token_ids) - len(stale_ids)
             logger.debug(
                 "Position prices: %d from WS cache, %d from HTTP",
-                ws_count, len(stale_ids),
+                ws_count,
+                len(stale_ids),
             )
 
         return prices

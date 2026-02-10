@@ -917,7 +917,9 @@ class ArbitrageScanner:
                 async def _trigger_reactive():
                     self._reactive_trigger.set()
 
-                feed_mgr.set_reactive_scan_callback(_trigger_reactive, debounce_seconds=2.0)
+                feed_mgr.set_reactive_scan_callback(
+                    _trigger_reactive, debounce_seconds=2.0
+                )
                 self._reactive_scan_registered = True
                 print("  Reactive scanning registered (WS price-change triggers)")
         except Exception as e:
