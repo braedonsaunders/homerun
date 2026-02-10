@@ -473,15 +473,15 @@ class ArbitrageScanner:
                 except Exception:
                     pass
 
-            print(f"  [SCAN] {len(all_opportunities)} opps from strategies, running news edge...")
+            print(
+                f"  [SCAN] {len(all_opportunities)} opps from strategies, running news edge..."
+            )
 
             # Run async strategies (News Edge — requires LLM calls)
             if settings.NEWS_EDGE_ENABLED:
                 try:
                     news_opps = await asyncio.wait_for(
-                        self._news_edge_strategy.detect_async(
-                            events, markets, prices
-                        ),
+                        self._news_edge_strategy.detect_async(events, markets, prices),
                         timeout=60,
                     )
                     for opp in news_opps:
@@ -492,7 +492,9 @@ class ArbitrageScanner:
                         f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities"
                     )
                 except asyncio.TimeoutError:
-                    print(f"  {self._news_edge_strategy.name}: TIMED OUT after 60s, skipping")
+                    print(
+                        f"  {self._news_edge_strategy.name}: TIMED OUT after 60s, skipping"
+                    )
                 except Exception as e:
                     print(f"  {self._news_edge_strategy.name}: error - {e}")
 
@@ -515,7 +517,9 @@ class ArbitrageScanner:
                     timeout=15,
                 )
             except asyncio.TimeoutError:
-                print("  [SCAN] _attach_ai_judgments TIMED OUT after 15s, continuing without")
+                print(
+                    "  [SCAN] _attach_ai_judgments TIMED OUT after 15s, continuing without"
+                )
             except Exception as e:
                 print(f"  [SCAN] _attach_ai_judgments error: {e}")
 
