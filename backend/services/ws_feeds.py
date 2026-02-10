@@ -84,12 +84,31 @@ class PriceCache:
 
     All public methods acquire a lock so the cache can be read safely from
     non-async threads (e.g. a synchronous health-check endpoint).
+
+    Supports registering price change callbacks that fire when a token's
+    mid-price moves by more than a configurable threshold (default 0.5%).
     """
 
-    def __init__(self, stale_ttl: float = DEFAULT_STALE_TTL) -> None:
+    def __init__(
+        self,
+        stale_ttl: float = DEFAULT_STALE_TTL,
+        change_threshold_pct: float = 0.5,
+    ) -> None:
         self._stale_ttl = stale_ttl
+        self._change_threshold_pct = change_threshold_pct
         self._lock = Lock()
         self._entries: Dict[str, CachedEntry] = {}
+        self._on_change_callbacks: List[Callable[[str, float, float], None]] = []
+
+    def add_on_change_callback(
+        self, callback: Callable[[str, float, float], None]
+    ) -> None:
+        """Register a callback invoked on significant price changes.
+
+        The callback receives ``(token_id, old_mid, new_mid)`` and is called
+        outside the lock so it must be thread-safe itself.
+        """
+        self._on_change_callbacks.append(callback)
 
     # -- mutations ----------------------------------------------------------
 
@@ -107,14 +126,42 @@ class PriceCache:
         best_bid = bids_sorted[0].price if bids_sorted else 0.0
         best_ask = asks_sorted[0].price if asks_sorted else 0.0
 
+        new_mid = (
+            (best_bid + best_ask) / 2.0
+            if best_bid > 0 and best_ask > 0
+            else best_bid or best_ask
+        )
+
         entry = CachedEntry(
             best_bid=best_bid,
             best_ask=best_ask,
             order_book=book,
             updated_at=time.monotonic(),
         )
+
+        old_mid = 0.0
         with self._lock:
+            prev = self._entries.get(token_id)
+            if prev:
+                old_mid = (
+                    (prev.best_bid + prev.best_ask) / 2.0
+                    if prev.best_bid > 0 and prev.best_ask > 0
+                    else prev.best_bid or prev.best_ask
+                )
             self._entries[token_id] = entry
+
+        # Fire change callbacks outside the lock
+        if (
+            self._on_change_callbacks
+            and old_mid > 0
+            and new_mid > 0
+            and abs(new_mid - old_mid) / old_mid * 100 >= self._change_threshold_pct
+        ):
+            for cb in self._on_change_callbacks:
+                try:
+                    cb(token_id, old_mid, new_mid)
+                except Exception:
+                    pass
 
     def remove(self, token_id: str) -> None:
         """Remove a token from the cache."""
@@ -915,6 +962,12 @@ class FeedManager:
             Callable[[str], Coroutine[Any, Any, Optional[OrderBook]]]
         ] = None
         self._started = False
+        # Reactive scan: accumulate changed tokens and debounce trigger
+        self._changed_tokens: Set[str] = set()
+        self._reactive_scan_callback: Optional[Callable[[], Coroutine]] = None
+        self._debounce_task: Optional[asyncio.Task] = None
+        self._debounce_seconds: float = 2.0  # coalesce changes over 2s window
+        self._cache.add_on_change_callback(self._on_price_change)
 
     @classmethod
     def get_instance(cls) -> "FeedManager":
@@ -966,11 +1019,56 @@ class FeedManager:
 
     async def stop(self) -> None:
         """Stop both feeds and clear cache."""
+        if self._debounce_task and not self._debounce_task.done():
+            self._debounce_task.cancel()
         await self._polymarket_feed.stop()
         await self._kalshi_feed.stop()
         self._cache.clear()
         self._started = False
         logger.info("FeedManager stopped")
+
+    # -- reactive scanning --------------------------------------------------
+
+    def set_reactive_scan_callback(
+        self,
+        callback: Callable[[], Coroutine],
+        debounce_seconds: float = 2.0,
+    ) -> None:
+        """Register an async callback to trigger when prices change significantly.
+
+        The callback is debounced: rapid price changes within *debounce_seconds*
+        are coalesced into a single invocation.
+        """
+        self._reactive_scan_callback = callback
+        self._debounce_seconds = debounce_seconds
+
+    def _on_price_change(self, token_id: str, old_mid: float, new_mid: float) -> None:
+        """Called by PriceCache when a significant price change occurs."""
+        if not self._reactive_scan_callback:
+            return
+        self._changed_tokens.add(token_id)
+        # Schedule a debounced trigger on the event loop
+        try:
+            loop = asyncio.get_running_loop()
+            if self._debounce_task is None or self._debounce_task.done():
+                self._debounce_task = loop.create_task(self._debounced_trigger())
+        except RuntimeError:
+            pass  # no running event loop (e.g. during shutdown)
+
+    async def _debounced_trigger(self) -> None:
+        """Wait for the debounce window, then fire the reactive scan callback."""
+        await asyncio.sleep(self._debounce_seconds)
+        if not self._reactive_scan_callback or not self._changed_tokens:
+            return
+        changed_count = len(self._changed_tokens)
+        self._changed_tokens.clear()
+        try:
+            logger.debug(
+                "Reactive scan triggered by %d price changes", changed_count
+            )
+            await self._reactive_scan_callback()
+        except Exception as exc:
+            logger.warning("Reactive scan callback failed: %r", exc)
 
     # -- unified queries ----------------------------------------------------
 

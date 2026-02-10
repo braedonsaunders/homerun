@@ -56,13 +56,22 @@ class FillInfo:
 
 
 class FillMonitor:
-    """Monitors own order fills in read-only mode."""
+    """Monitors own order fills using WS wallet events + HTTP polling fallback.
+
+    Primary detection: Polygon WS monitor detects OrderFilled events for our
+    wallet in real-time (<1s). When a fill is detected, ``_on_ws_fill`` triggers
+    an immediate fill check.
+
+    Fallback: HTTP polling every 30s catches any fills missed by the WS path
+    (e.g. during WS reconnection windows).
+    """
 
     def __init__(self):
         self._running = False
-        self._poll_interval = 5  # seconds
+        self._poll_interval = 30  # seconds (fallback; WS provides real-time)
         self._callbacks: list[Callable] = []
         self._known_fills: set[str] = set()  # order IDs already processed
+        self._ws_registered = False
 
     def add_callback(self, callback: Callable):
         self._callbacks.append(callback)
@@ -71,8 +80,35 @@ class FillMonitor:
         if self._running:
             return
         self._running = True
-        logger.info("Fill monitor started")
+        logger.info("Fill monitor started (WS-primary, HTTP-fallback at %ds)", self._poll_interval)
+        # Register with wallet WS monitor for real-time fill detection
+        self._register_ws_monitor()
         asyncio.create_task(self._poll_loop())
+
+    def _register_ws_monitor(self):
+        """Hook into the wallet WS monitor so fills on our wallet are instant."""
+        if self._ws_registered:
+            return
+        try:
+            from services.trading import trading_service
+            from services.wallet_ws_monitor import wallet_ws_monitor
+
+            if trading_service.is_ready():
+                wallet_addr = getattr(trading_service, '_wallet_address', None)
+                if wallet_addr:
+                    wallet_ws_monitor.add_wallet(wallet_addr)
+                    wallet_ws_monitor.add_callback(self._on_ws_fill)
+                    self._ws_registered = True
+                    logger.info("Fill monitor registered with WS wallet monitor", wallet=wallet_addr)
+        except Exception as e:
+            logger.debug("WS fill monitor registration skipped: %s", e)
+
+    async def _on_ws_fill(self, event):
+        """Callback from WS wallet monitor — triggers immediate fill check."""
+        try:
+            await self._check_fills()
+        except Exception as e:
+            logger.error("WS-triggered fill check error", error=str(e))
 
     def stop(self):
         self._running = False
@@ -81,6 +117,9 @@ class FillMonitor:
     async def _poll_loop(self):
         while self._running:
             try:
+                # Retry WS registration if not done yet
+                if not self._ws_registered:
+                    self._register_ws_monitor()
                 await self._check_fills()
             except Exception as e:
                 logger.error("Fill monitor error", error=str(e))

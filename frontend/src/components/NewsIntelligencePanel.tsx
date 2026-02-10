@@ -395,29 +395,30 @@ export default function NewsIntelligencePanel() {
 
   // ─── Queries ──────────────────────────────────────────────
 
+  // WS pushes `news_update` when new articles arrive — polling is fallback only
   const { data: feedStatus } = useQuery({
     queryKey: ['news-feed-status'],
     queryFn: getNewsFeedStatus,
-    refetchInterval: 15000,
+    refetchInterval: 60000, // fallback (WS push refreshes instantly)
   })
 
   const { data: articlesData, isLoading: articlesLoading } = useQuery({
     queryKey: ['news-articles'],
     queryFn: () => getNewsArticles({ max_age_hours: 24, limit: 100 }),
-    refetchInterval: 60000,
+    refetchInterval: 120000, // fallback (WS push refreshes instantly)
   })
 
   const { data: edgesData, isLoading: edgesLoading } = useQuery({
     queryKey: ['news-edges'],
     queryFn: () => detectNewsEdges({ max_age_hours: 12, top_k: 5 }),
-    refetchInterval: 180000, // 3 min
+    refetchInterval: 300000, // 5 min fallback (WS push refreshes instantly)
     staleTime: 60000,
   })
 
   const { data: matchesData, isLoading: matchesLoading } = useQuery({
     queryKey: ['news-matches'],
     queryFn: () => runNewsMatching({ max_age_hours: 12, top_k: 5 }),
-    refetchInterval: 120000,
+    refetchInterval: 300000, // 5 min fallback (WS push refreshes instantly)
     staleTime: 60000,
   })
 

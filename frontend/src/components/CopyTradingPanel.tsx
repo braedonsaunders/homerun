@@ -51,19 +51,19 @@ export default function CopyTradingPanel() {
   const { data: configs = [], isLoading: configsLoading } = useQuery({
     queryKey: ['copy-configs'],
     queryFn: () => getCopyConfigs(),
-    refetchInterval: 10000,
+    refetchInterval: 30000, // WS provides real-time trade detection
   })
 
   const { data: trades = [], isLoading: tradesLoading } = useQuery({
     queryKey: ['copy-trades', tradeFilter],
     queryFn: () => getCopyTrades({ status: tradeFilter || undefined, limit: 100 }),
-    refetchInterval: 15000,
+    refetchInterval: 30000, // WS monitor handles real-time
   })
 
   const { data: status } = useQuery({
     queryKey: ['copy-trading-status'],
     queryFn: getCopyTradingStatus,
-    refetchInterval: 10000,
+    refetchInterval: 30000, // WS pushes primary
   })
 
   const { data: accounts = [] } = useQuery({

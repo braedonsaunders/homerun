@@ -127,6 +127,10 @@ class ArbitrageScanner:
         self._cached_markets: list = []
         self._cached_prices: dict = {}
 
+        # Reactive scanning: event set by WS price changes to trigger immediate scan
+        self._reactive_trigger = asyncio.Event()
+        self._reactive_scan_registered = False
+
     def set_auto_ai_scoring(self, enabled: bool):
         """Enable or disable automatic AI scoring of all opportunities after each scan."""
         self._auto_ai_scoring = enabled
@@ -900,21 +904,46 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"  AI scoring error: {e}")
 
+    def _register_reactive_scanning(self):
+        """Register with WS FeedManager for reactive price-change scanning."""
+        if self._reactive_scan_registered:
+            return
+        if not settings.WS_FEED_ENABLED:
+            return
+        try:
+            feed_mgr = get_feed_manager()
+            if feed_mgr._started:
+
+                async def _trigger_reactive():
+                    self._reactive_trigger.set()
+
+                feed_mgr.set_reactive_scan_callback(_trigger_reactive, debounce_seconds=2.0)
+                self._reactive_scan_registered = True
+                print("  Reactive scanning registered (WS price-change triggers)")
+        except Exception as e:
+            print(f"  Reactive scanning registration failed: {e}")
+
     async def _scan_loop(self):
-        """Internal scan loop with tiered polling.
+        """Internal scan loop with reactive + tiered polling.
 
-        When TIERED_SCANNING_ENABLED:
-          - Full scans run every FULL_SCAN_INTERVAL_SECONDS (default 120s)
-          - Fast scans run every FAST_SCAN_INTERVAL_SECONDS (default 15s) between full scans
-          - Fast scans only fetch/evaluate HOT-tier markets + incremental new markets
-          - Crypto schedule predictions can trigger immediate fast scans
+        When WS feeds are active, scans are triggered reactively by significant
+        price changes (>0.5% move on any subscribed token).  The timer-based
+        polling is kept as a fallback with extended intervals:
+          - Full scans: every FULL_SCAN_INTERVAL_SECONDS (default 120s)
+          - Fast scans: every FAST_SCAN_INTERVAL_SECONDS (default 15s) OR
+            immediately on WS price changes (debounced to 2s)
+          - Reactive scans skip HTTP price fetching entirely (uses WS cache)
 
-        When disabled, falls back to the original fixed-interval full scan.
+        When TIERED_SCANNING_ENABLED is disabled, falls back to the original
+        fixed-interval full scan.
         """
         while self._running:
             if not self._enabled:
                 await asyncio.sleep(self._interval_seconds)
                 continue
+
+            # Register reactive scanning on first enabled iteration
+            self._register_reactive_scanning()
 
             if not settings.TIERED_SCANNING_ENABLED:
                 # Legacy mode: simple fixed-interval full scan
@@ -959,11 +988,20 @@ class ArbitrageScanner:
                     except Exception as e:
                         print(f"Full scan error (first run): {e}")
 
-            # Sleep for fast interval (the loop will decide full vs fast next iteration)
+            # Wait for either the timer OR a reactive price-change trigger
+            self._reactive_trigger.clear()
+            sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS
             await self._set_activity(
-                f"Idle — next scan in {settings.FAST_SCAN_INTERVAL_SECONDS}s"
+                f"Idle — next scan in ≤{sleep_seconds}s (or on price change)"
             )
-            await asyncio.sleep(settings.FAST_SCAN_INTERVAL_SECONDS)
+            try:
+                # Wait for reactive trigger, but time out after the normal interval
+                await asyncio.wait_for(
+                    self._reactive_trigger.wait(), timeout=sleep_seconds
+                )
+                await self._set_activity("Reactive scan triggered by WS price change")
+            except asyncio.TimeoutError:
+                pass  # Normal timer-based fallback
 
     async def _attach_ai_judgments(self, opportunities: list):
         """Attach existing AI judgments from the DB to opportunity objects.

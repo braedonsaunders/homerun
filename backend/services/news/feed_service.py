@@ -135,6 +135,31 @@ class NewsFeedService:
     def article_count(self) -> int:
         return len(self._articles)
 
+    async def fetch_for_topics(self, topics: list[str]) -> list[NewsArticle]:
+        """On-demand fetch for specific topics (e.g. triggered by scanner).
+
+        Useful for reactive news fetching when the scanner detects new markets
+        or price movements.  Only hits Google News RSS (fastest free source).
+        """
+        if not topics:
+            return []
+        new_articles: list[NewsArticle] = []
+        tasks = [self._fetch_google_news_rss(t, max_results=10) for t in topics[:5]]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, list):
+                for article in result:
+                    if article.article_id not in self._articles:
+                        self._articles[article.article_id] = article
+                        new_articles.append(article)
+        if new_articles:
+            logger.info(
+                "Reactive news fetch: %d new articles for %d topics",
+                len(new_articles),
+                len(topics),
+            )
+        return new_articles
+
     # ------------------------------------------------------------------
     # Background scanning
     # ------------------------------------------------------------------
@@ -158,7 +183,14 @@ class NewsFeedService:
     async def _scan_loop(self, interval: int) -> None:
         while self._running:
             try:
-                await self.fetch_all()
+                new_articles = await self.fetch_all()
+                # Push new article count to frontend via WS
+                if new_articles:
+                    try:
+                        from api.websocket import broadcast_news_update
+                        await broadcast_news_update(len(new_articles))
+                    except Exception:
+                        pass  # WS not available yet during startup
             except Exception as e:
                 logger.error("News scan loop error: %s", e)
             await asyncio.sleep(interval)
