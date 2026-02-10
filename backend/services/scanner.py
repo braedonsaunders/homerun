@@ -491,6 +491,7 @@ class ArbitrageScanner:
 
             # Deduplicate across strategies: when the same underlying markets
             # are detected by multiple strategies, keep only the highest-ROI one.
+            pre_dedup = len(all_opportunities)
             all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
 
             # Sort by ROI
@@ -501,6 +502,10 @@ class ArbitrageScanner:
 
             self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
+            print(
+                f"  Post-merge pool: {len(self._opportunities)} opportunities "
+                f"(pre-dedup={pre_dedup}, post-dedup={len(all_opportunities)})"
+            )
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
             # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
