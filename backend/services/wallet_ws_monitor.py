@@ -455,7 +455,7 @@ class WalletWebSocketMonitor:
 
                         except json.JSONDecodeError:
                             self._stats["errors"] += 1
-                        except Exception as e:
+                        except Exception:
                             self._stats["errors"] += 1
 
             except asyncio.CancelledError:

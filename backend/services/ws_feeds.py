@@ -487,7 +487,7 @@ class PolymarketWSFeed:
                         elif isinstance(data, dict):
                             self._handle_message(data, recv_time)
                         self.stats.messages_parsed += 1
-                    except Exception as exc:
+                    except Exception:
                         self.stats.parse_errors += 1
             finally:
                 if self._heartbeat_task and not self._heartbeat_task.done():
@@ -801,7 +801,7 @@ class KalshiWSFeed:
                         data = json.loads(raw)
                         self._handle_message(data, recv_time)
                         self.stats.messages_parsed += 1
-                    except Exception as exc:
+                    except Exception:
                         self.stats.parse_errors += 1
             finally:
                 if self._heartbeat_task and not self._heartbeat_task.done():
