@@ -473,11 +473,16 @@ class ArbitrageScanner:
                 except Exception:
                     pass
 
+            print(f"  [SCAN] {len(all_opportunities)} opps from strategies, running news edge...")
+
             # Run async strategies (News Edge — requires LLM calls)
             if settings.NEWS_EDGE_ENABLED:
                 try:
-                    news_opps = await self._news_edge_strategy.detect_async(
-                        events, markets, prices
+                    news_opps = await asyncio.wait_for(
+                        self._news_edge_strategy.detect_async(
+                            events, markets, prices
+                        ),
+                        timeout=60,
                     )
                     for opp in news_opps:
                         if opp.mispricing_type is None:
@@ -486,8 +491,12 @@ class ArbitrageScanner:
                     print(
                         f"  {self._news_edge_strategy.name}: found {len(news_opps)} opportunities"
                     )
+                except asyncio.TimeoutError:
+                    print(f"  {self._news_edge_strategy.name}: TIMED OUT after 60s, skipping")
                 except Exception as e:
                     print(f"  {self._news_edge_strategy.name}: error - {e}")
+
+            print(f"  [SCAN] deduplicating {len(all_opportunities)} opps...")
 
             # Deduplicate across strategies: when the same underlying markets
             # are detected by multiple strategies, keep only the highest-ROI one.
@@ -497,8 +506,20 @@ class ArbitrageScanner:
             # Sort by ROI
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
 
+            print("  [SCAN] attaching AI judgments...")
+
             # Attach existing AI judgments from the database
-            await self._attach_ai_judgments(all_opportunities)
+            try:
+                await asyncio.wait_for(
+                    self._attach_ai_judgments(all_opportunities),
+                    timeout=15,
+                )
+            except asyncio.TimeoutError:
+                print("  [SCAN] _attach_ai_judgments TIMED OUT after 15s, continuing without")
+            except Exception as e:
+                print(f"  [SCAN] _attach_ai_judgments error: {e}")
+
+            print(f"  [SCAN] merging {len(all_opportunities)} opps into pool...")
 
             self._opportunities = self._merge_opportunities(all_opportunities)
             self._last_scan = datetime.now(timezone.utc)
