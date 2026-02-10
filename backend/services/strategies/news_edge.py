@@ -93,7 +93,9 @@ class NewsEdgeStrategy(BaseStrategy):
             loop = asyncio.get_running_loop()
 
             if not semantic_matcher._initialized:
-                await loop.run_in_executor(_MATCHER_EXECUTOR, semantic_matcher.initialize)
+                await loop.run_in_executor(
+                    _MATCHER_EXECUTOR, semantic_matcher.initialize
+                )
 
             await loop.run_in_executor(
                 _MATCHER_EXECUTOR, semantic_matcher.update_market_index, market_infos
