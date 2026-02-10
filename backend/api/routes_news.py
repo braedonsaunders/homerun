@@ -437,9 +437,7 @@ async def analyze_single_edge(request: SingleEdgeRequest):
         semantic_matcher.update_market_index(market_infos)
         semantic_matcher.embed_articles([article])
 
-        matches = semantic_matcher.match_articles_to_markets(
-            [article], top_k=10
-        )
+        matches = semantic_matcher.match_articles_to_markets([article], top_k=10)
 
         # Find the specific match for this article+market combo
         target_match = next(

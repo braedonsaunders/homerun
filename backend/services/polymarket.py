@@ -440,10 +440,7 @@ class PolymarketClient:
 
         def _get_condition_id(trade: dict) -> str:
             """Get condition_id from trade, checking multiple field names."""
-            return (
-                trade.get("condition_id", "")
-                or trade.get("conditionId", "")
-            )
+            return trade.get("condition_id", "") or trade.get("conditionId", "")
 
         def _is_hex_id(value: str) -> bool:
             """Check if a value looks like a hex condition_id (0x-prefixed)."""
@@ -453,7 +450,11 @@ class PolymarketClient:
         unknown_cids = set()
         for trade in trades:
             market_val = trade.get("market", "")
-            if market_val and _is_hex_id(market_val) and market_val not in self._market_cache:
+            if (
+                market_val
+                and _is_hex_id(market_val)
+                and market_val not in self._market_cache
+            ):
                 unknown_cids.add(market_val)
             # Also check explicit conditionId / condition_id field
             cid = _get_condition_id(trade)
@@ -478,7 +479,11 @@ class PolymarketClient:
 
             # Check if already resolved via condition_id
             resolved = False
-            if market_val and _is_hex_id(market_val) and self._market_cache.get(market_val):
+            if (
+                market_val
+                and _is_hex_id(market_val)
+                and self._market_cache.get(market_val)
+            ):
                 resolved = True
             if not resolved and cid and _is_hex_id(cid) and self._market_cache.get(cid):
                 resolved = True
