@@ -45,12 +45,13 @@ import {
   startScanner,
   pauseScanner,
   judgeOpportunitiesBulk,
+  getSimulationAccounts,
   Opportunity
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
 import { useDataSimulation } from './hooks/useDataSimulation'
-import { shortcutsHelpOpenAtom, simulationEnabledAtom, accountModeAtom } from './store/atoms'
+import { shortcutsHelpOpenAtom, simulationEnabledAtom, accountModeAtom, selectedAccountIdAtom } from './store/atoms'
 
 // shadcn/ui components
 import { Button } from './components/ui/button'
@@ -109,6 +110,7 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [accountMode] = useAtom(accountModeAtom)
+  const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
   const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -269,6 +271,14 @@ function App() {
     queryFn: getStrategies,
   })
 
+  // Fetch simulation accounts for header stats
+  const { data: sandboxAccounts = [] } = useQuery({
+    queryKey: ['simulation-accounts'],
+    queryFn: getSimulationAccounts,
+  })
+
+  const selectedAccount = sandboxAccounts.find(a => a.id === selectedAccountId)
+
   const { data: opportunityCounts } = useQuery({
     queryKey: ['opportunity-counts', minProfit, maxRisk, searchQuery],
     queryFn: () => getOpportunityCounts({
@@ -405,12 +415,6 @@ function App() {
 
   useKeyboardShortcuts(shortcuts)
 
-  // Stats
-  const totalProfit = displayOpportunities.reduce((sum, o) => sum + o.net_profit, 0)
-  const avgROI = displayOpportunities.length > 0
-    ? displayOpportunities.reduce((sum, o) => sum + o.roi_percent, 0) / displayOpportunities.length
-    : 0
-
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
 
   return (
@@ -427,22 +431,27 @@ function App() {
 
           <AccountModeSelector />
 
-          {/* Inline Stats — Enhanced with animated numbers */}
-          <div className="hidden md:flex items-center gap-3 text-xs">
+          {/* Inline Account Stats */}
+          <div className="hidden md:flex items-center gap-3 text-xs ml-3">
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
-              <Target className="w-3 h-3 text-blue-400" />
-              <span className="text-muted-foreground">Opps</span>
-              <AnimatedNumber value={totalOpportunities} decimals={0} className="font-data font-semibold text-foreground data-glow-blue" />
+              <Wallet className="w-3 h-3 text-blue-400" />
+              <span className="text-muted-foreground">Balance</span>
+              <FlashNumber value={selectedAccount?.current_capital ?? 0} prefix="$" decimals={2} className="font-data font-semibold text-foreground data-glow-blue" />
             </div>
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <TrendingUp className="w-3 h-3 text-green-400" />
-              <span className="text-muted-foreground">ROI</span>
-              <FlashNumber value={avgROI} suffix="%" decimals={1} className={cn("font-data font-semibold", avgROI >= 0 ? "text-green-400" : "text-red-400")} />
+              <span className="text-muted-foreground">PnL</span>
+              <FlashNumber value={selectedAccount?.total_pnl ?? 0} prefix="$" decimals={2} className={cn("font-data font-semibold", (selectedAccount?.total_pnl ?? 0) >= 0 ? "text-green-400" : "text-red-400")} />
             </div>
             <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
               <DollarSign className="w-3 h-3 text-yellow-400" />
-              <span className="text-muted-foreground">Profit</span>
-              <FlashNumber value={totalProfit} prefix="$" decimals={2} className={cn("font-data font-semibold", totalProfit >= 0 ? "text-green-400" : "text-red-400")} />
+              <span className="text-muted-foreground">ROI</span>
+              <FlashNumber value={selectedAccount?.roi_percent ?? 0} suffix="%" decimals={1} className={cn("font-data font-semibold", (selectedAccount?.roi_percent ?? 0) >= 0 ? "text-green-400" : "text-red-400")} />
+            </div>
+            <div className="stat-pill flex items-center gap-1.5 px-2.5 py-1 rounded-md">
+              <Activity className="w-3 h-3 text-purple-400" />
+              <span className="text-muted-foreground">Positions</span>
+              <AnimatedNumber value={selectedAccount?.open_positions ?? 0} decimals={0} className="font-data font-semibold text-foreground" />
             </div>
           </div>
 
@@ -701,6 +710,11 @@ function App() {
                     >
                       <Zap className="w-3.5 h-3.5" />
                       Markets
+                      {totalOpportunities > 0 && (
+                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-green-500/20 text-green-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                          <AnimatedNumber value={totalOpportunities} decimals={0} className="" />
+                        </span>
+                      )}
                     </Button>
                     <Button
                       variant="outline"
