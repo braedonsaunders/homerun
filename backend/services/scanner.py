@@ -765,7 +765,7 @@ class ArbitrageScanner:
         """
         try:
             from services.news.feed_service import news_feed_service
-            from services.news.semantic_matcher import semantic_matcher, MarketInfo
+            from services.news.semantic_matcher import semantic_matcher
             from concurrent.futures import ThreadPoolExecutor
 
             # Step 1: Fetch articles (free — RSS/GDELT)
