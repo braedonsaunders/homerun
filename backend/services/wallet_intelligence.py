@@ -480,7 +480,9 @@ class EntityClusterer:
                     )
                     pattern_sim = clusterer._calculate_pattern_similarity(a_d, b_d)
 
-                    combined = 0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
+                    combined = (
+                        0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
+                    )
 
                     if combined >= 0.5:
                         union(a_addr, b_addr)
@@ -1163,17 +1165,19 @@ class CrossPlatformTracker:
                             best_km = km
 
                     if best_km and best_score >= threshold:
-                        pairs.append({
-                            "polymarket_id": pm.id,
-                            "polymarket_question": pm.question,
-                            "kalshi_id": best_km.id,
-                            "kalshi_question": best_km.question,
-                            "similarity": best_score,
-                            "pm_yes_price": pm.yes_price,
-                            "pm_no_price": pm.no_price,
-                            "k_yes_price": best_km.yes_price,
-                            "k_no_price": best_km.no_price,
-                        })
+                        pairs.append(
+                            {
+                                "polymarket_id": pm.id,
+                                "polymarket_question": pm.question,
+                                "kalshi_id": best_km.id,
+                                "kalshi_question": best_km.question,
+                                "similarity": best_score,
+                                "pm_yes_price": pm.yes_price,
+                                "pm_no_price": pm.no_price,
+                                "k_yes_price": best_km.yes_price,
+                                "k_no_price": best_km.no_price,
+                            }
+                        )
                 return pairs
 
             matched_pairs = await asyncio.to_thread(

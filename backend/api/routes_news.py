@@ -249,8 +249,12 @@ async def run_matching(request: MatchRequest):
             )
 
         matches = await asyncio.to_thread(
-            _run_matching, semantic_matcher, market_infos, articles,
-            request.top_k, request.threshold,
+            _run_matching,
+            semantic_matcher,
+            market_infos,
+            articles,
+            request.top_k,
+            request.threshold,
         )
 
         return {
@@ -364,8 +368,12 @@ async def detect_edges(request: EdgeDetectionRequest):
             )
 
         matches = await asyncio.to_thread(
-            _run_edge_matching, semantic_matcher, market_infos, articles,
-            request.top_k, request.threshold,
+            _run_edge_matching,
+            semantic_matcher,
+            market_infos,
+            articles,
+            request.top_k,
+            request.threshold,
         )
 
         if not matches:
@@ -586,16 +594,18 @@ async def forecast_market_by_id(request: CommitteeMarketRequest):
                         category=category,
                         yes_price=market_price,
                     )
+
                     # ML operations are CPU-bound — run in thread pool
                     def _forecast_match(matcher, mi_item, arts, max_arts):
                         matcher.update_market_index([mi_item])
                         matcher.embed_articles(arts)
-                        return matcher.match_articles_to_markets(
-                            arts, top_k=max_arts
-                        )
+                        return matcher.match_articles_to_markets(arts, top_k=max_arts)
 
                     matches = await asyncio.to_thread(
-                        _forecast_match, semantic_matcher, mi, articles,
+                        _forecast_match,
+                        semantic_matcher,
+                        mi,
+                        articles,
                         request.max_articles,
                     )
 
