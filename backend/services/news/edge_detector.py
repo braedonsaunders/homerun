@@ -110,6 +110,42 @@ class NewsEdgeDetector:
     # Cost control: max concurrent LLM calls
     _CONCURRENCY = 3
 
+    def __init__(self) -> None:
+        self._cached_edges: list[NewsEdge] = []
+
+    def get_cached_edges(self) -> list[NewsEdge]:
+        """Return previously detected edges without triggering LLM calls."""
+        return list(self._cached_edges)
+
+    def clear_cached_edges(self) -> int:
+        """Clear cached edges. Returns count cleared."""
+        count = len(self._cached_edges)
+        self._cached_edges = []
+        return count
+
+    async def analyze_single_match(
+        self,
+        match: NewsMarketMatch,
+        model: Optional[str] = None,
+    ) -> Optional[NewsEdge]:
+        """Analyze a single article-market match via LLM (manual trigger).
+
+        Returns a NewsEdge if an edge is detected, or None.
+        The result is added to the cache automatically.
+        """
+        edge = await self._estimate_edge(match, model=model)
+        if edge is not None:
+            # Remove any existing edge for the same market+article combo
+            key = f"{edge.match.article.article_id}:{edge.match.market.market_id}"
+            self._cached_edges = [
+                e
+                for e in self._cached_edges
+                if f"{e.match.article.article_id}:{e.match.market.market_id}" != key
+            ]
+            self._cached_edges.append(edge)
+            self._cached_edges.sort(key=lambda e: e.edge_percent, reverse=True)
+        return edge
+
     async def detect_edges(
         self,
         matches: list[NewsMarketMatch],
@@ -168,6 +204,8 @@ class NewsEdgeDetector:
             len(edges),
             len(unique_matches),
         )
+        # Cache results for retrieval without LLM calls
+        self._cached_edges = edges
         return edges
 
     async def _estimate_edge(

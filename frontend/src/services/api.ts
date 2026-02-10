@@ -1384,6 +1384,7 @@ export interface NewsFeedStatus {
 }
 
 export interface NewsMatch {
+  article_id: string
   article_title: string
   article_source: string
   article_url: string
@@ -1480,6 +1481,11 @@ export const runNewsMatching = async (params?: {
   return data
 }
 
+export const getNewsEdgesCached = async (): Promise<{ total_edges: number; edges: NewsEdge[] }> => {
+  const { data } = await api.get('/news/edges')
+  return data
+}
+
 export const detectNewsEdges = async (params?: {
   max_age_hours?: number
   top_k?: number
@@ -1487,6 +1493,15 @@ export const detectNewsEdges = async (params?: {
   model?: string
 }): Promise<NewsEdgesResponse> => {
   const { data } = await api.post('/news/edges', params || {})
+  return data
+}
+
+export const analyzeNewsEdgeSingle = async (params: {
+  article_id: string
+  market_id: string
+  model?: string
+}): Promise<{ edge: NewsEdge | null; message?: string }> => {
+  const { data } = await api.post('/news/edges/single', params)
   return data
 }
 

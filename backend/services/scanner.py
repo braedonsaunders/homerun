@@ -495,11 +495,14 @@ class ArbitrageScanner:
             self._last_scan = datetime.now(timezone.utc)
             print(f"  Stored {len(self._opportunities)} opportunities")
 
-            # Run News Edge strategy in background (LLM calls can take 60s+).
-            # Results are merged into the pool when they arrive.
+            # News Edge: LLM-based analysis is now manual only (triggered
+            # from the UI via POST /news/edges or POST /news/edges/single)
+            # to avoid automatic spend on paid LLM providers.  We still
+            # pre-fetch articles + run semantic matching so the data is
+            # ready when the user clicks "Analyze".
             if settings.NEWS_EDGE_ENABLED:
                 asyncio.create_task(
-                    self._run_news_edge_background(events, markets, prices)
+                    self._prefetch_news_matches(events, markets, prices)
                 )
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
@@ -732,38 +735,67 @@ class ArbitrageScanner:
             await self._set_activity(f"Fast scan error: {e}")
             raise
 
-    async def _run_news_edge_background(self, events, markets, prices):
-        """Run News Edge strategy in background and merge results into the pool."""
+    async def _prefetch_news_matches(self, events, markets, prices):
+        """Pre-fetch news articles and run semantic matching (no LLM calls).
+
+        This prepares the data so that manual edge analysis from the UI
+        is fast — articles are already fetched and matched to markets.
+        No paid LLM calls are made here.
+        """
         try:
-            news_opps = await asyncio.wait_for(
-                self._news_edge_strategy.detect_async(events, markets, prices),
-                timeout=120,
+            from services.news.feed_service import news_feed_service
+            from services.news.semantic_matcher import semantic_matcher, MarketInfo
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Step 1: Fetch articles (free — RSS/GDELT)
+            await news_feed_service.fetch_all()
+            all_articles = news_feed_service.get_articles(
+                max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS
             )
-            for opp in news_opps:
-                if opp.mispricing_type is None:
-                    opp.mispricing_type = MispricingType.NEWS_INFORMATION
-            if news_opps:
-                # Deduplicate against the existing pool to avoid cross-strategy
-                # duplicates (e.g. News Edge + NegRisk flagging the same market).
-                combined = list(self._opportunities) + news_opps
-                combined = self._deduplicate_cross_strategy(combined)
-                # Attach stored AI judgments so strong_skip filtering works.
-                try:
-                    await asyncio.wait_for(
-                        self._attach_ai_judgments(news_opps),
-                        timeout=15,
-                    )
-                except (asyncio.TimeoutError, Exception):
-                    pass
-                self._opportunities = self._merge_opportunities(combined)
-                print(
-                    f"  {self._news_edge_strategy.name}: added {len(news_opps)} "
-                    f"opportunities (pool now {len(self._opportunities)})"
-                )
-        except asyncio.TimeoutError:
-            print(f"  {self._news_edge_strategy.name}: timed out (120s)")
+
+            if not all_articles:
+                return
+
+            # Step 2: Build market index
+            market_infos = self._news_edge_strategy._build_market_infos(
+                events, markets, prices
+            )
+            if not market_infos:
+                return
+
+            loop = asyncio.get_running_loop()
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="news_prefetch"
+            )
+
+            if not semantic_matcher._initialized:
+                await loop.run_in_executor(executor, semantic_matcher.initialize)
+
+            await loop.run_in_executor(
+                executor, semantic_matcher.update_market_index, market_infos
+            )
+
+            # Step 3: Embed articles (local ML, free)
+            await loop.run_in_executor(
+                executor, semantic_matcher.embed_articles, all_articles
+            )
+
+            # Step 4: Match articles to markets (local, free)
+            matches = await loop.run_in_executor(
+                executor,
+                semantic_matcher.match_articles_to_markets,
+                all_articles,
+                3,
+                settings.NEWS_SIMILARITY_THRESHOLD,
+            )
+
+            print(
+                f"  News prefetch: {len(all_articles)} articles, "
+                f"{len(market_infos)} markets, {len(matches)} matches "
+                f"(LLM analysis deferred to manual trigger)"
+            )
         except Exception as e:
-            print(f"  {self._news_edge_strategy.name}: error - {e}")
+            print(f"  News prefetch error: {e}")
 
     def _deduplicate_cross_strategy(
         self, opportunities: list[ArbitrageOpportunity]
