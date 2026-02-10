@@ -25,7 +25,9 @@ import {
   getNewsArticles,
   triggerNewsFetch,
   clearNewsArticles,
+  getNewsEdgesCached,
   detectNewsEdges,
+  analyzeNewsEdgeSingle,
   runNewsMatching,
   runForecastCommittee,
   NewsArticle,
@@ -247,7 +249,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
 
 // ─── Match Row ──────────────────────────────────────────────
 
-function MatchRow({ match }: { match: NewsMatch }) {
+function MatchRow({ match, onAnalyze, isAnalyzing }: { match: NewsMatch; onAnalyze: (match: NewsMatch) => void; isAnalyzing: boolean }) {
   return (
     <div className="px-3 py-3 hover:bg-muted/30 rounded-lg transition-colors">
       <div className="flex items-start gap-3">
@@ -281,6 +283,18 @@ function MatchRow({ match }: { match: NewsMatch }) {
               {match.match_method}
             </Badge>
           </div>
+        </div>
+        <div className="shrink-0 mt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 gap-1 bg-green-500/10 text-green-400 border-green-500/20 hover:bg-green-500/20 hover:text-green-400"
+            onClick={() => onAnalyze(match)}
+            disabled={isAnalyzing}
+          >
+            {isAnalyzing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+            {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+          </Button>
         </div>
       </div>
     </div>
@@ -387,11 +401,12 @@ function ForecastPanel({ result, onClose }: { result: ForecastResult; onClose: (
 
 export default function NewsIntelligencePanel() {
   const queryClient = useQueryClient()
-  const [subView, setSubView] = useState<SubView>('edges')
+  const [subView, setSubView] = useState<SubView>('matches')
   const [searchFilter, setSearchFilter] = useState('')
   const [edgeSortBy, setEdgeSortBy] = useState<'edge' | 'confidence' | 'similarity'>('edge')
   const [forecastResult, setForecastResult] = useState<ForecastResult | null>(null)
   const [, setForecastingEdge] = useState<string | null>(null)
+  const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null)
 
   // ─── Queries ──────────────────────────────────────────────
 
@@ -410,9 +425,9 @@ export default function NewsIntelligencePanel() {
 
   const { data: edgesData, isLoading: edgesLoading } = useQuery({
     queryKey: ['news-edges'],
-    queryFn: () => detectNewsEdges({ max_age_hours: 12, top_k: 5 }),
-    refetchInterval: 300000, // 5 min fallback (WS push refreshes instantly)
-    staleTime: 60000,
+    queryFn: getNewsEdgesCached,
+    refetchInterval: 30000, // poll cached edges (no LLM cost)
+    staleTime: 10000,
   })
 
   const { data: matchesData, isLoading: matchesLoading } = useQuery({
@@ -446,6 +461,25 @@ export default function NewsIntelligencePanel() {
       queryClient.setQueryData(['news-edges'], data)
     },
   })
+
+  const singleAnalyzeMutation = useMutation({
+    mutationFn: (match: NewsMatch) => analyzeNewsEdgeSingle({
+      article_id: match.article_id,
+      market_id: match.market_id,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['news-edges'] })
+      setAnalyzingMatchId(null)
+    },
+    onError: () => {
+      setAnalyzingMatchId(null)
+    },
+  })
+
+  const handleAnalyzeMatch = (match: NewsMatch) => {
+    setAnalyzingMatchId(`${match.article_id}:${match.market_id}`)
+    singleAnalyzeMutation.mutate(match)
+  }
 
   const forecastMutation = useMutation({
     mutationFn: (edge: NewsEdge) => runForecastCommittee({
@@ -547,16 +581,21 @@ export default function NewsIntelligencePanel() {
             {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
             Fetch News
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
-            onClick={() => edgeRefreshMutation.mutate()}
-            disabled={edgeRefreshMutation.isPending}
-          >
-            {edgeRefreshMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-            Detect Edges
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
+                onClick={() => edgeRefreshMutation.mutate()}
+                disabled={edgeRefreshMutation.isPending}
+              >
+                {edgeRefreshMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                Analyze All
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="text-xs">Analyze all matches with LLM (uses configured AI provider)</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
@@ -718,16 +757,18 @@ export default function NewsIntelligencePanel() {
             <div className="flex flex-col items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-green-400 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {edgeRefreshMutation.isPending ? 'Running edge detection pipeline...' : 'Loading edges...'}
+                {edgeRefreshMutation.isPending ? 'Analyzing matches with LLM...' : 'Loading cached edges...'}
               </p>
-              <p className="text-xs text-muted-foreground/60 mt-1">Fetching news, matching markets, estimating probabilities...</p>
+              {edgeRefreshMutation.isPending && (
+                <p className="text-xs text-muted-foreground/60 mt-1">Estimating probabilities via configured AI provider...</p>
+              )}
             </div>
           ) : filteredEdges.length === 0 ? (
             <div className="text-center py-16">
               <Zap className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">No news edges detected</p>
+              <p className="text-muted-foreground">No news edges analyzed yet</p>
               <p className="text-sm text-muted-foreground/70 mt-1">
-                Click "Detect Edges" to run the full pipeline, or wait for the next automatic scan
+                Go to Matches and click "Analyze" on individual matches, or click "Analyze All" to run the full pipeline
               </p>
             </div>
           ) : (
@@ -781,7 +822,7 @@ export default function NewsIntelligencePanel() {
               <Layers className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
               <p className="text-muted-foreground">No article-market matches</p>
               <p className="text-sm text-muted-foreground/70 mt-1">
-                Matches will appear once articles are fetched and semantically matched to active markets
+                Matches appear automatically as articles are fetched. Click "Analyze" on any match to run LLM edge detection.
               </p>
             </div>
           ) : (
@@ -795,7 +836,12 @@ export default function NewsIntelligencePanel() {
               </div>
               <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
                 {filteredMatches.map((match, i) => (
-                  <MatchRow key={`${match.market_id}-${i}`} match={match} />
+                  <MatchRow
+                    key={`${match.market_id}-${i}`}
+                    match={match}
+                    onAnalyze={handleAnalyzeMatch}
+                    isAnalyzing={analyzingMatchId === `${match.article_id}:${match.market_id}`}
+                  />
                 ))}
               </div>
             </>
