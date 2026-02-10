@@ -13,6 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -390,8 +391,8 @@ class HomerunApp(App):
     ]
 
     # Process handles
-    backend_proc: subprocess.Popen | None = None
-    frontend_proc: subprocess.Popen | None = None
+    backend_proc: Optional[subprocess.Popen] = None
+    frontend_proc: Optional[subprocess.Popen] = None
 
     # State
     start_time: float = 0.0
