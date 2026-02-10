@@ -269,6 +269,14 @@ Screen {
     margin: 0 1 0 0;
 }
 
+#log-bottom-btn {
+    display: none;
+}
+
+#log-bottom-btn.visible {
+    display: block;
+}
+
 #log-output {
     margin: 0 1;
     border: round $primary-background;
@@ -575,6 +583,7 @@ class HomerunApp(App):
                 )
                 yield Button("Clear", id="log-clear-btn", variant="warning")
                 yield Button("Copy", id="log-copy-btn", variant="success")
+                yield Button("↓ Bottom", id="log-bottom-btn", variant="primary")
             yield TextArea(
                 "",
                 id="log-output",
@@ -770,12 +779,21 @@ class HomerunApp(App):
         follow_label = (
             "[bold green]FOLLOWING[/]"
             if self._log_follow
-            else "[bold yellow]PAUSED[/] (scroll to bottom to resume)"
+            else "[bold yellow]PAUSED[/]"
         )
         try:
             self.query_one("#log-header-right", Static).update(
                 f"{follow_label}  {self._log_line_count:,} lines"
             )
+        except Exception:
+            pass
+        # Show/hide the snap-to-bottom button
+        try:
+            btn = self.query_one("#log-bottom-btn", Button)
+            if self._log_follow:
+                btn.remove_class("visible")
+            else:
+                btn.add_class("visible")
         except Exception:
             pass
 
@@ -822,6 +840,15 @@ class HomerunApp(App):
 
         elif btn_id == "log-copy-btn":
             self._do_copy()
+
+        elif btn_id == "log-bottom-btn":
+            try:
+                ta = self.query_one("#log-output", TextArea)
+                ta.scroll_end(animate=False)
+                self._log_follow = True
+                self._update_log_header()
+            except Exception:
+                pass
 
     @on(Select.Changed, "#log-level-select")
     def _on_level_changed(self, event: Select.Changed) -> None:
