@@ -9,6 +9,12 @@ sqlalchemy[asyncio]==2.0.25
 aiosqlite==0.19.0
 greenlet>=3.0.0
 
+# Pin urllib3 < 2 to avoid OpenSSL compatibility issues.
+# urllib3 v2 requires OpenSSL 1.1.1+ but macOS ships with LibreSSL,
+# which is not supported.  This is pulled in transitively by
+# requests (via sentence-transformers / huggingface-hub).
+urllib3>=1.26.0,<2
+
 # AI Intelligence Layer
 pyyaml>=6.0
 markdown>=3.5
