@@ -390,7 +390,7 @@ function App() {
   })
 
   const analyzeAllMutation = useMutation({
-    mutationFn: () => judgeOpportunitiesBulk(),
+    mutationFn: () => judgeOpportunitiesBulk({ force: true }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
     },
