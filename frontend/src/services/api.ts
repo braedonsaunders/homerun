@@ -316,6 +316,7 @@ export interface WalletTrade {
   market: string
   market_slug: string
   market_title: string
+  event_slug: string
   outcome: string
   side: string
   size: number

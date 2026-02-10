@@ -285,10 +285,15 @@ async def get_wallet_trades(
             {
                 "id": trade.get("id", trade.get("transactionHash", "")),
                 "market": trade.get(
-                    "market", trade.get("condition_id", trade.get("asset", ""))
+                    "market",
+                    trade.get(
+                        "conditionId",
+                        trade.get("condition_id", trade.get("asset", "")),
+                    ),
                 ),
                 "market_slug": trade.get("market_slug", trade.get("slug", "")),
                 "market_title": trade.get("market_title", ""),
+                "event_slug": trade.get("event_slug", ""),
                 "outcome": trade.get("outcome", trade.get("outcome_index", "")),
                 "side": side,
                 "size": size,

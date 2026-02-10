@@ -1043,9 +1043,9 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
           </div>
           {/* Actions */}
           <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-            {trade.market_slug && (
+            {(trade.event_slug || trade.market_slug) && (
               <a
-                href={`https://polymarket.com/event/${trade.market_slug}`}
+                href={`https://polymarket.com/event/${trade.event_slug || trade.market_slug}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
