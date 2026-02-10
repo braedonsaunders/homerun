@@ -12,6 +12,7 @@ gracefully.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -32,6 +33,9 @@ _HAS_TRANSFORMERS = False
 _HAS_FAISS = False
 
 try:
+    # Disable tokenizer parallelism to avoid segfaults when called from
+    # multiple threads (e.g. asyncio.to_thread in news_edge + API routes).
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     from sentence_transformers import SentenceTransformer
 
     _HAS_TRANSFORMERS = True
@@ -117,7 +121,9 @@ class SemanticMatcher:
                 return self._model is not None
             if _HAS_TRANSFORMERS:
                 try:
-                    self._model = SentenceTransformer(self._model_name)
+                    # Force CPU to avoid MPS/CUDA segfaults in threaded context
+                    device = os.environ.get("EMBEDDING_DEVICE", "cpu")
+                    self._model = SentenceTransformer(self._model_name, device=device)
                     # Smoke-test: encode a tiny string to verify native code works
                     _test = self._model.encode(
                         ["test"], show_progress_bar=False, normalize_embeddings=True
@@ -187,11 +193,15 @@ class SemanticMatcher:
                     self._faiss_index = None
                     return len(markets)
 
-                if _HAS_FAISS:
+                if _HAS_FAISS and self._market_embeddings.ndim == 2:
                     try:
-                        dim = self._market_embeddings.shape[1]
+                        embs = self._market_embeddings
+                        if not embs.flags["C_CONTIGUOUS"]:
+                            embs = np.ascontiguousarray(embs, dtype=np.float32)
+                            self._market_embeddings = embs
+                        dim = embs.shape[1]
                         self._faiss_index = faiss.IndexFlatIP(dim)
-                        self._faiss_index.add(self._market_embeddings)
+                        self._faiss_index.add(embs)
                     except Exception as e:
                         logger.warning(
                             "FAISS index build failed, using numpy fallback: %s", e
@@ -287,20 +297,52 @@ class SemanticMatcher:
         if not embedded_articles:
             return []
 
-        article_embs = np.array(
-            [a.embedding for a in embedded_articles], dtype=np.float32
-        )
+        try:
+            article_embs = np.array(
+                [a.embedding for a in embedded_articles], dtype=np.float32
+            )
+        except (ValueError, TypeError) as e:
+            logger.warning("Failed to build article embedding array: %s", e)
+            return []
 
-        if self._faiss_index is not None:
-            # FAISS search (fast)
+        # Validate array shape (must be 2-D with correct embedding dim)
+        if article_embs.ndim != 2:
+            logger.warning(
+                "Article embeddings have unexpected shape %s, skipping",
+                article_embs.shape,
+            )
+            return []
+
+        if self._faiss_index is not None and self._market_embeddings is not None:
+            # Validate dimensions match the FAISS index
+            index_dim = self._market_embeddings.shape[1]
+            if article_embs.shape[1] != index_dim:
+                logger.warning(
+                    "Embedding dim mismatch: articles=%d, index=%d",
+                    article_embs.shape[1],
+                    index_dim,
+                )
+                return []
+
+            # Ensure C-contiguous layout for FAISS
+            if not article_embs.flags["C_CONTIGUOUS"]:
+                article_embs = np.ascontiguousarray(article_embs, dtype=np.float32)
+
             k = min(top_k, len(self._markets))
-            scores, indices = self._faiss_index.search(article_embs, k)
+            if k < 1:
+                return []
+
+            try:
+                scores, indices = self._faiss_index.search(article_embs, k)
+            except Exception as e:
+                logger.warning("FAISS search failed: %s", e)
+                return []
 
             for i, article in enumerate(embedded_articles):
                 for j in range(k):
                     idx = int(indices[i][j])
                     score = float(scores[i][j])
-                    if idx < 0 or score < threshold:
+                    if idx < 0 or idx >= len(self._markets) or score < threshold:
                         continue
                     matches.append(
                         NewsMarketMatch(
@@ -310,8 +352,10 @@ class SemanticMatcher:
                             match_method="semantic",
                         )
                     )
-        else:
+        elif self._market_embeddings is not None:
             # Fallback: numpy dot product (still uses embeddings)
+            if article_embs.shape[1] != self._market_embeddings.shape[1]:
+                return []
             sim_matrix = article_embs @ self._market_embeddings.T
 
             for i, article in enumerate(embedded_articles):
