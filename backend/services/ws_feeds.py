@@ -711,7 +711,7 @@ class KalshiWSFeed:
             self._ws_url,
             ping_interval=None,
             close_timeout=5,
-            additional_headers=extra_headers,
+            extra_headers=extra_headers,
         ) as ws:
             self._ws = ws
             self._state = ConnectionState.CONNECTED

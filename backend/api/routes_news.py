@@ -26,9 +26,7 @@ def _build_market_infos_from_scanner():
     exist.  Falls back to scanner.get_opportunities() as a last resort.
     """
     from services.news.semantic_matcher import MarketInfo
-    from services import scanner as scanner_mod
-
-    scanner_inst = scanner_mod.scanner
+    from services import scanner as scanner_inst
 
     # Primary source: the cached market universe from the last full scan.
     # Each item is a models.market.Market instance (Pydantic).
