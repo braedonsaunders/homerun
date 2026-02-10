@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -14,8 +14,9 @@ router = APIRouter()
 # ==================== OPPORTUNITIES ====================
 
 
-@router.get("/opportunities", response_model=list[ArbitrageOpportunity])
+@router.get("/opportunities")
 async def get_opportunities(
+    response: Response,
     min_profit: float = Query(0.0, description="Minimum profit percentage"),
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     strategy: Optional[StrategyType] = Query(
@@ -104,13 +105,11 @@ async def get_opportunities(
     total = len(opportunities)
     paginated = opportunities[offset : offset + limit]
 
-    # Return as response with total count header
-    from fastapi.responses import JSONResponse
-
-    # Use mode='json' to properly serialize datetime objects
-    response = JSONResponse(content=[o.model_dump(mode="json") for o in paginated])
+    # Set total count header and return serialised list directly.
+    # Using Response injection (not JSONResponse) lets FastAPI handle
+    # content-negotiation and CORS headers correctly.
     response.headers["X-Total-Count"] = str(total)
-    return response
+    return [o.model_dump(mode="json") for o in paginated]
 
 
 @router.get("/opportunities/search-polymarket")
