@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Homerun TUI - Beautiful terminal interface for the Homerun trading platform."""
+from __future__ import annotations
 
 import asyncio
 import json
