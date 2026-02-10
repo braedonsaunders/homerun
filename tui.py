@@ -2,7 +2,6 @@
 """Homerun TUI - Beautiful terminal interface for the Homerun trading platform."""
 from __future__ import annotations
 
-import asyncio
 import collections
 import json
 import os
@@ -11,15 +10,14 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
-from textual.reactive import reactive
+from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import (
     Button,
     Footer,
@@ -30,7 +28,6 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     RichLog,
-    Rule,
     Sparkline,
     TextArea,
 )
@@ -46,7 +43,7 @@ BACKEND_DIR = PROJECT_ROOT / "backend"
 
 LOG_MAX_LINES = 5000
 LOG_TRIM_BATCH = 1000  # Remove this many lines when cap is hit
-LOG_FLUSH_MS = 150  # Flush buffered lines every N ms
+LOG_FLUSH_MS = 500  # Flush buffered lines every N ms
 
 # Log level ordering for filter comparison
 LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
@@ -422,9 +419,9 @@ class HomerunApp(App):
     CSS = CSS
     BINDINGS = [
         Binding("q", "quit", "Quit", priority=True),
-        Binding("h", "show_tab('home')", "Home", show=True),
-        Binding("l", "show_tab('logs')", "Logs", show=True),
-        Binding("d", "toggle_dark", "Dark/Light"),
+        Binding("h", "show_tab('home')", "Home", show=True, priority=True),
+        Binding("l", "show_tab('logs')", "Logs", show=True, priority=True),
+        Binding("d", "toggle_dark", "Dark/Light", priority=True),
         Binding("ctrl+c", "copy_to_clip", "Copy", show=False, priority=True),
     ]
 
@@ -608,9 +605,41 @@ class HomerunApp(App):
             text = ta.selected_text
             if not text:
                 text = ta.text
-            if text:
+            if not text:
+                return
+            # Use system clipboard via subprocess (reliable across terminals)
+            copied = False
+            if sys.platform == "darwin":
+                try:
+                    subprocess.run(
+                        ["pbcopy"],
+                        input=text.encode("utf-8"),
+                        check=True,
+                        timeout=3,
+                    )
+                    copied = True
+                except Exception:
+                    pass
+            else:
+                for cmd in (
+                    ["xclip", "-selection", "clipboard"],
+                    ["xsel", "--clipboard", "--input"],
+                ):
+                    try:
+                        subprocess.run(
+                            cmd,
+                            input=text.encode("utf-8"),
+                            check=True,
+                            timeout=3,
+                        )
+                        copied = True
+                        break
+                    except Exception:
+                        pass
+            if not copied:
+                # Fall back to Textual's OSC 52 (terminal-dependent)
                 self.copy_to_clipboard(text)
-                self.notify("Copied to clipboard", timeout=2)
+            self.notify("Copied to clipboard", timeout=2)
         except Exception:
             pass
 
@@ -1076,6 +1105,7 @@ class HomerunApp(App):
 
     def action_quit(self) -> None:
         self._shutting_down = True
+        self.notify("Shutting down...", severity="warning", timeout=10)
         self._kill_children()
         self.exit()
 
