@@ -80,7 +80,10 @@ class FillMonitor:
         if self._running:
             return
         self._running = True
-        logger.info("Fill monitor started (WS-primary, HTTP-fallback at %ds)", self._poll_interval)
+        logger.info(
+            "Fill monitor started (WS-primary, HTTP-fallback at %ds)",
+            self._poll_interval,
+        )
         # Register with wallet WS monitor for real-time fill detection
         self._register_ws_monitor()
         asyncio.create_task(self._poll_loop())
@@ -94,12 +97,15 @@ class FillMonitor:
             from services.wallet_ws_monitor import wallet_ws_monitor
 
             if trading_service.is_ready():
-                wallet_addr = getattr(trading_service, '_wallet_address', None)
+                wallet_addr = getattr(trading_service, "_wallet_address", None)
                 if wallet_addr:
                     wallet_ws_monitor.add_wallet(wallet_addr)
                     wallet_ws_monitor.add_callback(self._on_ws_fill)
                     self._ws_registered = True
-                    logger.info("Fill monitor registered with WS wallet monitor", wallet=wallet_addr)
+                    logger.info(
+                        "Fill monitor registered with WS wallet monitor",
+                        wallet=wallet_addr,
+                    )
         except Exception as e:
             logger.debug("WS fill monitor registration skipped: %s", e)
 

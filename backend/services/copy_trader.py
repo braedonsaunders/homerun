@@ -51,7 +51,9 @@ class CopyTradingService:
 
     def __init__(self):
         self._running = False
-        self._poll_interval = 120  # seconds (fallback only; WS monitor provides real-time)
+        self._poll_interval = (
+            120  # seconds (fallback only; WS monitor provides real-time)
+        )
         self._active_configs: dict[str, CopyTradingConfig] = {}
         # In-memory cache of source wallet positions for diffing
         self._wallet_positions: dict[str, list[dict]] = {}

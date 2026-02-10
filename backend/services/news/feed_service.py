@@ -188,6 +188,7 @@ class NewsFeedService:
                 if new_articles:
                     try:
                         from api.websocket import broadcast_news_update
+
                         await broadcast_news_update(len(new_articles))
                     except Exception:
                         pass  # WS not available yet during startup

@@ -1063,9 +1063,7 @@ class FeedManager:
         changed_count = len(self._changed_tokens)
         self._changed_tokens.clear()
         try:
-            logger.debug(
-                "Reactive scan triggered by %d price changes", changed_count
-            )
+            logger.debug("Reactive scan triggered by %d price changes", changed_count)
             await self._reactive_scan_callback()
         except Exception as exc:
             logger.warning("Reactive scan callback failed: %r", exc)
