@@ -79,7 +79,8 @@ async def get_opportunities(
     if len(raw_pool) > 0 and len(opportunities) == 0:
         # Debug: show why everything was filtered
         skip_count = sum(
-            1 for o in raw_pool
+            1
+            for o in raw_pool
             if o.ai_analysis and o.ai_analysis.recommendation == "strong_skip"
         )
         print(
