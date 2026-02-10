@@ -49,9 +49,13 @@ _ASSET_PATTERNS: dict[str, list[str]] = {
 
 _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
     "15min": [
+        "updown-15m",       # actual Polymarket slug pattern
+        "updown-15m-",      # with trailing timestamp
+        "15m-",             # short form in slugs (e.g. "btc…15m-17707…")
         "15 min",
         "15-min",
         "15min",
+        "15m",              # bare short form
         "fifteen min",
         "15 minute",
         "15-minute",
@@ -61,12 +65,17 @@ _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
         "quarter-hour",
     ],
     "1hr": [
+        "updown-1h",        # actual Polymarket slug pattern
+        "updown-1h-",       # with trailing timestamp
         "1 hour",
         "1-hour",
         "1hr",
+        "1h-",              # short form in slugs
+        "1h",               # bare short form
         "one hour",
         "60 min",
         "60-min",
+        "60m",              # short form
         "60 minute",
         "60-minute",
         "60 minutes",
@@ -98,13 +107,27 @@ _DIRECTION_KEYWORDS: list[str] = [
 _SLUG_REGEX = re.compile(
     r"(btc|eth|sol|xrp|bitcoin|ethereum|solana|ripple)"
     r".*?"  # allow intervening words (non-greedy)
-    r"(15[\s_-]?min(?:ute)?s?|1[\s_-]?h(?:ou)?r|60[\s_-]?min(?:ute)?s?"
+    r"(15[\s_-]?m(?:in(?:ute)?s?)?"  # "15m", "15min", "15-minute", "15 minutes", …
+    r"|1[\s_-]?h(?:(?:ou)?r)?"       # "1h", "1hr", "1hour", "1-h", …
+    r"|60[\s_-]?m(?:in(?:ute)?s?)?"
     r"|quarter[\s_-]?hour|hourly)",
     re.IGNORECASE,
 )
 
-# Gamma API crypto tags to search for high-freq markets
-_GAMMA_CRYPTO_TAGS = ["crypto", "btc", "bitcoin", "eth", "ethereum"]
+# Gamma API crypto tags to search for high-freq markets.
+# Actual Polymarket tags on BTC/ETH 15m markets:
+#   "Crypto Prices", "Bitcoin", "15M", "Up or Down", "Recurring", "Crypto"
+_GAMMA_CRYPTO_TAGS = [
+    "Crypto Prices",
+    "Up or Down",
+    "15M",
+    "Recurring",
+    "crypto",
+    "btc",
+    "bitcoin",
+    "eth",
+    "ethereum",
+]
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
 
@@ -202,48 +225,45 @@ class _CryptoMarketFetcher:
                     except Exception:
                         pass
 
-                # Strategy 2: Search for specific slug patterns
-                slug_searches = [
-                    "bitcoin-15-minute",
-                    "btc-15-min",
-                    "btc-15min",
-                    "ethereum-15-minute",
-                    "eth-15-min",
-                    "bitcoin-1-hour",
-                    "btc-1-hour",
-                    "ethereum-1-hour",
-                    "eth-1-hour",
-                    "bitcoin-up-or-down",
-                    "ethereum-up-or-down",
-                    "btc-up-or-down",
-                    "eth-up-or-down",
-                    "bitcoin-price",
-                    "ethereum-price",
-                ]
-                for slug_query in slug_searches:
+                # Strategy 2: Compute expected event slugs for current/upcoming
+                # 15-min and 1-hr windows.  Real Polymarket slug format is
+                # "{asset}-updown-{tf}-{unix_ts}", e.g. "btc-updown-15m-1770779700".
+                now_ts = int(time.time())
+                computed_slugs: list[str] = []
+                for asset_slug in ("btc", "eth", "sol", "xrp"):
+                    # 15-minute windows (900 s): current, next 2, previous 1
+                    base_15 = now_ts - (now_ts % 900)
+                    for offset in (-900, 0, 900, 1800):
+                        computed_slugs.append(
+                            f"{asset_slug}-updown-15m-{base_15 + offset}"
+                        )
+                    # 1-hour windows (3600 s)
+                    base_1h = now_ts - (now_ts % 3600)
+                    for offset in (-3600, 0, 3600):
+                        computed_slugs.append(
+                            f"{asset_slug}-updown-1h-{base_1h + offset}"
+                        )
+
+                for evt_slug in computed_slugs:
                     try:
                         resp = client.get(
-                            f"{self._gamma_url}/markets",
-                            params={
-                                "slug": slug_query,
-                                "closed": "false",
-                                "active": "true",
-                                "limit": 20,
-                            },
+                            f"{self._gamma_url}/events",
+                            params={"slug": evt_slug, "limit": 1},
                         )
                         if resp.status_code == 200:
-                            for mkt_data in resp.json():
-                                mid = mkt_data.get("condition_id") or mkt_data.get(
-                                    "id", ""
-                                )
-                                if mid and mid not in seen_ids:
-                                    try:
-                                        m = Market.from_gamma_response(mkt_data)
-                                        all_markets.append(m)
-                                        seen_ids.add(mid)
-                                    except Exception:
-                                        pass
-                        time.sleep(0.1)
+                            for event_data in resp.json():
+                                for mkt_data in event_data.get("markets", []):
+                                    mid = mkt_data.get("condition_id") or mkt_data.get(
+                                        "id", ""
+                                    )
+                                    if mid and mid not in seen_ids:
+                                        try:
+                                            m = Market.from_gamma_response(mkt_data)
+                                            all_markets.append(m)
+                                            seen_ids.add(mid)
+                                        except Exception:
+                                            pass
+                        time.sleep(0.01)  # Light rate-limit
                     except Exception:
                         pass
 
@@ -252,8 +272,7 @@ class _CryptoMarketFetcher:
 
         if all_markets:
             logger.info(
-                "BtcEthHighFreq: fetched %d crypto markets via Gamma API",
-                len(all_markets),
+                f"BtcEthHighFreq: fetched {len(all_markets)} crypto markets via Gamma API"
             )
         return all_markets
 
@@ -432,8 +451,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             return opportunities
 
         logger.info(
-            "BtcEthHighFreq: found %d candidate market(s) — evaluating sub-strategies",
-            len(candidates),
+            f"BtcEthHighFreq: found {len(candidates)} candidate market(s) — evaluating sub-strategies"
         )
 
         for candidate in candidates:
@@ -444,22 +462,17 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             selected, all_scores = self._select_sub_strategy(candidate)
             if selected is None:
                 logger.debug(
-                    "BtcEthHighFreq: no viable sub-strategy for market %s (%s %s)",
-                    candidate.market.id,
-                    candidate.asset,
-                    candidate.timeframe,
+                    f"BtcEthHighFreq: no viable sub-strategy for market "
+                    f"{candidate.market.id} ({candidate.asset} {candidate.timeframe})"
                 )
                 continue
 
+            scores_str = ", ".join(f"{s.strategy.value}={s.score:.1f}" for s in all_scores)
             logger.info(
-                "BtcEthHighFreq: market %s (%s %s) — selected %s (score=%.1f). "
-                "All scores: %s",
-                candidate.market.id,
-                candidate.asset,
-                candidate.timeframe,
-                selected.strategy.value,
-                selected.score,
-                ", ".join(f"{s.strategy.value}={s.score:.1f}" for s in all_scores),
+                f"BtcEthHighFreq: market {candidate.market.id} "
+                f"({candidate.asset} {candidate.timeframe}) — "
+                f"selected {selected.strategy.value} (score={selected.score:.1f}). "
+                f"All scores: {scores_str}"
             )
 
             # Generate opportunity from the selected sub-strategy
@@ -467,17 +480,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             if opp is not None:
                 opportunities.append(opp)
                 logger.info(
-                    "BtcEthHighFreq: opportunity detected — %s | ROI %.2f%% | "
-                    "sub-strategy=%s | market=%s",
-                    opp.title,
-                    opp.roi_percent,
-                    selected.strategy.value,
-                    candidate.market.id,
+                    f"BtcEthHighFreq: opportunity detected — {opp.title} | "
+                    f"ROI {opp.roi_percent:.2f}% | sub-strategy={selected.strategy.value} | "
+                    f"market={candidate.market.id}"
                 )
 
         logger.info(
-            "BtcEthHighFreq: scan complete — %d opportunity(ies) found",
-            len(opportunities),
+            f"BtcEthHighFreq: scan complete — {len(opportunities)} opportunity(ies) found"
         )
         return opportunities
 
@@ -512,6 +521,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         except Exception:
             pass  # Non-fatal: fall back to scanner markets only
 
+        logger.debug(
+            f"BtcEthHighFreq: scanning {len(all_markets)} markets "
+            f"({len(markets)} from scanner, {len(all_markets) - len(markets)} from Gamma)"
+        )
+
+        asset_hit_no_tf = 0  # track markets that pass asset but fail timeframe
         for market in all_markets:
             if market.closed or not market.active:
                 continue
@@ -527,6 +542,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
             timeframe = self._detect_timeframe(market)
             if timeframe is None:
+                asset_hit_no_tf += 1
+                if asset_hit_no_tf <= 5:
+                    logger.debug(
+                        f"BtcEthHighFreq: asset={asset} but no timeframe — "
+                        f"slug={market.slug} question={market.question[:80]}"
+                    )
                 continue
 
             # Resolve live prices
