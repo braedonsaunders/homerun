@@ -10,7 +10,7 @@ const loggerError = logger.error.bind(logger)
 logger.error = (msg, options) => {
   if (
     msg.includes('ws proxy socket error') &&
-    (msg.includes('ECONNRESET') || msg.includes('EPIPE'))
+    (msg.includes('ECONNRESET') || msg.includes('EPIPE') || msg.includes('ETIMEDOUT'))
   ) {
     return
   }
@@ -22,6 +22,7 @@ export default defineConfig({
   customLogger: logger,
   server: {
     port: 3000,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
@@ -32,7 +33,7 @@ export default defineConfig({
         ws: true,
         configure: (proxy) => {
           proxy.on('error', (err) => {
-            if (err.message.includes('EPIPE') || err.message.includes('ECONNRESET')) {
+            if (err.message.includes('EPIPE') || err.message.includes('ECONNRESET') || err.message.includes('ETIMEDOUT')) {
               return
             }
             console.error('WebSocket proxy error:', err.message)
