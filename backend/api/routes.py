@@ -44,14 +44,7 @@ async def get_opportunities(
         category=category,
     )
 
-    # Debug: log pool size before any filtering
-    raw_pool = scanner.get_opportunities()
     opportunities = scanner.get_opportunities(filter)
-    print(
-        f"  [API /opportunities] pool={len(raw_pool)} "
-        f"after_filter={len(opportunities)} "
-        f"(min_profit={min_profit}, max_risk={max_risk})"
-    )
 
     # Apply search filter if provided
     if search:
@@ -75,18 +68,6 @@ async def get_opportunities(
             and opp.ai_analysis.recommendation == "strong_skip"
         )
     ]
-
-    if len(raw_pool) > 0 and len(opportunities) == 0:
-        # Debug: show why everything was filtered
-        skip_count = sum(
-            1
-            for o in raw_pool
-            if o.ai_analysis and o.ai_analysis.recommendation == "strong_skip"
-        )
-        print(
-            f"  [API /opportunities] ALL filtered out! "
-            f"strong_skip={skip_count}/{len(raw_pool)}"
-        )
 
     # Sort opportunities — uses inline ai_analysis (no DB queries needed)
     reverse = sort_dir != "asc"
