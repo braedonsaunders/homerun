@@ -479,7 +479,7 @@ class AutoTrader:
                 model=self.config.ai_resolution_model,
             )
             self._resolution_cache[cache_key] = result
-            logger.info(
+            logger.debug(
                 f"Resolution analysis for {opp.title[:40]}: "
                 f"clarity={result.get('overall_clarity', '?'):.2f}, "
                 f"risk={result.get('overall_risk', '?'):.2f}, "
@@ -513,7 +513,7 @@ class AutoTrader:
                 model=self.config.ai_judge_model,
             )
             self._judge_cache[opp.id] = result
-            logger.info(
+            logger.debug(
                 f"AI judgment for {opp.title[:40]}: "
                 f"score={result.get('overall_score', '?'):.2f}, "
                 f"rec={result.get('recommendation', '?')}"
@@ -1242,7 +1242,7 @@ class AutoTrader:
                     ann_roi = self._annualized_roi(opp.roi_percent, days)
                     score_str = f" | Ann.ROI: {ann_roi:.1f}%"
 
-                logger.info(
+                logger.debug(
                     f"Auto trading opportunity: {opp.title[:50]}...{settle_str}{score_str}"
                 )
 
