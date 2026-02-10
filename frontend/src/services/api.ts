@@ -1352,7 +1352,7 @@ export const getAIStatus = () => api.get('/ai/status')
 export const analyzeResolution = (data: any) => api.post('/ai/resolution/analyze', data, AI_TIMEOUT)
 export const getResolutionAnalysis = (marketId: string) => api.get(`/ai/resolution/${marketId}`)
 export const judgeOpportunity = (data: any) => api.post('/ai/judge/opportunity', data, AI_TIMEOUT)
-export const judgeOpportunitiesBulk = (data?: { opportunity_ids?: string[] }) =>
+export const judgeOpportunitiesBulk = (data?: { opportunity_ids?: string[]; force?: boolean }) =>
   api.post('/ai/judge/opportunities/bulk', data || {}, AI_TIMEOUT)
 export const getJudgmentHistory = (params?: any) => api.get('/ai/judge/history', { params })
 export const getAgreementStats = () => api.get('/ai/judge/agreement-stats')

@@ -130,6 +130,7 @@ async def judge_opportunity(request: JudgeOpportunityRequest):
 
 class JudgeBulkRequest(BaseModel):
     opportunity_ids: list[str] = []  # empty = all unjudged
+    force: bool = False  # if True, re-analyze even if already judged
 
 
 @router.post("/ai/judge/opportunities/bulk")
@@ -145,6 +146,9 @@ async def judge_opportunities_bulk(request: JudgeBulkRequest):
     if request.opportunity_ids:
         id_set = set(request.opportunity_ids)
         targets = [o for o in opps if o.id in id_set]
+    elif request.force:
+        # Re-analyze all opportunities regardless of existing analysis
+        targets = list(opps)
     else:
         # Judge all that don't already have a non-pending analysis
         targets = [
