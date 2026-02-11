@@ -16,6 +16,7 @@ import {
   Newspaper,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { Opportunity, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
@@ -112,26 +113,6 @@ const CARD_BG_GRADIENT: Record<string, string> = {
 
 // ─── Utilities ────────────────────────────────────────────
 
-function generatePriceHistory(id: string, currentPrice: number, points = 20): number[] {
-  let seed = 0
-  for (let i = 0; i < id.length; i++) {
-    seed = ((seed << 5) - seed + id.charCodeAt(i)) | 0
-  }
-  const next = () => {
-    seed = (seed * 16807) % 2147483647
-    return (seed & 0x7fffffff) / 2147483647
-  }
-  const data: number[] = []
-  let price = currentPrice + (next() - 0.5) * 0.12
-  for (let i = 0; i < points - 1; i++) {
-    price += (next() - 0.48) * 0.015
-    price = Math.max(0.01, Math.min(0.99, price))
-    data.push(price)
-  }
-  data.push(currentPrice)
-  return data
-}
-
 export function timeAgo(dateStr: string): string {
   if (!dateStr) return '—'
   const diffMs = Date.now() - new Date(dateStr).getTime()
@@ -225,12 +206,28 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const market = opportunity.markets[0]
   const sparkData = useMemo(() => {
     if (!market) return { yes: [], no: [] }
-    const id = opportunity.stable_id || opportunity.id
-    return {
-      yes: generatePriceHistory(id, market.yes_price),
-      no: generatePriceHistory(id + '_no', market.no_price),
+
+    const history = Array.isArray(market.price_history) ? market.price_history : []
+    const yesFromHistory = history
+      .map((p) => Number(p?.yes))
+      .filter((v) => Number.isFinite(v))
+    const noFromHistory = history
+      .map((p) => Number(p?.no))
+      .filter((v) => Number.isFinite(v))
+
+    if (yesFromHistory.length >= 2 && noFromHistory.length >= 2) {
+      return { yes: yesFromHistory, no: noFromHistory }
     }
-  }, [opportunity.stable_id, opportunity.id, market?.yes_price, market?.no_price])
+
+    // Flat fallback with current live values (real data, single-point history).
+    const yesNow = Number(market.yes_price)
+    const noNow = Number(market.no_price)
+    if (Number.isFinite(yesNow) && Number.isFinite(noNow)) {
+      return { yes: [yesNow, yesNow], no: [noNow, noNow] }
+    }
+
+    return { yes: [], no: [] }
+  }, [market?.id, market?.yes_price, market?.no_price, market?.price_history])
 
   // Accent bar color
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || 'bg-border') : 'bg-border/50'
@@ -238,23 +235,19 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
   // Platform URLs — prefer event_slug (correct Polymarket URL), fall back to market slug
   const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
-  const bestEventSlug = opportunity.event_slug
-    || (polyMarket as any)?.event_slug
-    || ''
   const polyUrl = polyMarket
-    ? (bestEventSlug
-        ? `https://polymarket.com/event/${bestEventSlug}`
-        : polyMarket.slug
-          ? `https://polymarket.com/event/${polyMarket.slug}`
-          : null)
+    ? buildPolymarketMarketUrl({
+        eventSlug: opportunity.event_slug || (polyMarket as any)?.event_slug,
+        marketSlug: (polyMarket as any)?.slug,
+        marketId: (polyMarket as any)?.id,
+      })
     : null
   const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
   const kalshiUrl = kalshiMarket
-    ? (() => {
-        const ticker = kalshiMarket.id.toLowerCase()
-        const eventTicker = ticker.split('-')[0]
-        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
-      })()
+    ? buildKalshiMarketUrl({
+        marketTicker: kalshiMarket.id,
+        eventTicker: (kalshiMarket as any).event_slug,
+      })
     : null
 
   // Search result mode (market listing, not an arbitrage opportunity)
@@ -604,18 +597,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                 {/* Market link */}
                 {opportunity.markets.map((mkt, idx) => {
                   const isKalshi = (mkt as any).platform === 'kalshi'
-                  const mktEventSlug = (mkt as any).event_slug || opportunity.event_slug || ''
                   const url = isKalshi
-                    ? (() => {
-                        const ticker = mkt.id.toLowerCase()
-                        const eventTicker = ticker.split('-')[0]
-                        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
-                      })()
-                    : mktEventSlug
-                      ? `https://polymarket.com/event/${mktEventSlug}`
-                      : mkt.slug
-                        ? `https://polymarket.com/event/${mkt.slug}`
-                        : null
+                    ? buildKalshiMarketUrl({
+                        marketTicker: mkt.id,
+                        eventTicker: (mkt as any).event_slug,
+                      })
+                    : buildPolymarketMarketUrl({
+                        eventSlug: (mkt as any).event_slug || opportunity.event_slug,
+                        marketSlug: mkt.slug,
+                        marketId: mkt.id,
+                      })
                   return (
                     <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
                       <div className="min-w-0 flex-1">
@@ -711,18 +702,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   <div className="space-y-1.5">
                     {opportunity.markets.map((mkt, idx) => {
                       const isKalshi = (mkt as any).platform === 'kalshi'
-                      const mktEventSlug = (mkt as any).event_slug || opportunity.event_slug || ''
                       const url = isKalshi
-                        ? (() => {
-                            const ticker = mkt.id.toLowerCase()
-                            const eventTicker = ticker.split('-')[0]
-                            return `https://kalshi.com/markets/${eventTicker}/${ticker}`
-                          })()
-                        : mktEventSlug
-                          ? `https://polymarket.com/event/${mktEventSlug}`
-                          : mkt.slug
-                            ? `https://polymarket.com/event/${mkt.slug}`
-                            : null
+                        ? buildKalshiMarketUrl({
+                            marketTicker: mkt.id,
+                            eventTicker: (mkt as any).event_slug,
+                          })
+                        : buildPolymarketMarketUrl({
+                            eventSlug: (mkt as any).event_slug || opportunity.event_slug,
+                            marketSlug: mkt.slug,
+                            marketId: mkt.id,
+                          })
                       return (
                         <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
                           <div className="min-w-0 flex-1">
@@ -836,4 +825,4 @@ function MiniMetric({
 
 // ─── Exports for shared use ───────────────────────────────
 
-export { STRATEGY_COLORS, STRATEGY_NAMES, STRATEGY_ABBREV, RECOMMENDATION_COLORS, ACCENT_BAR_COLORS, generatePriceHistory }
+export { STRATEGY_COLORS, STRATEGY_NAMES, STRATEGY_ABBREV, RECOMMENDATION_COLORS, ACCENT_BAR_COLORS }

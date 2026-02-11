@@ -13,6 +13,7 @@ from services.kalshi_client import kalshi_client
 from models.database import AsyncSessionLocal, AppSettings
 from sqlalchemy import select
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/kalshi", tags=["Kalshi"])
@@ -166,12 +167,15 @@ async def _try_auto_login():
             if not settings:
                 return
 
-            if settings.kalshi_api_key:
-                await kalshi_client.initialize_auth(api_key=settings.kalshi_api_key)
-            elif settings.kalshi_email and settings.kalshi_password:
+            api_key = decrypt_secret(settings.kalshi_api_key)
+            password = decrypt_secret(settings.kalshi_password)
+
+            if api_key:
+                await kalshi_client.initialize_auth(api_key=api_key)
+            elif settings.kalshi_email and password:
                 await kalshi_client.initialize_auth(
                     email=settings.kalshi_email,
-                    password=settings.kalshi_password,
+                    password=password,
                 )
     except Exception as e:
         logger.error("Kalshi auto-login failed", error=str(e))

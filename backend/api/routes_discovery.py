@@ -5,6 +5,7 @@ from typing import Optional
 
 from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
+from services.smart_wallet_pool import smart_wallet_pool
 from utils.validation import validate_eth_address
 
 # Maps time_period query values to rolling window keys stored in the DB
@@ -40,6 +41,26 @@ async def get_leaderboard(
         default=None,
         description="Time period filter: 24h, 7d, 30d, 90d, or all (default all)",
     ),
+    active_within_hours: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=720,
+        description="Only include wallets with activity within last N hours",
+    ),
+    min_activity_score: Optional[float] = Query(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Minimum activity score filter",
+    ),
+    pool_only: bool = Query(
+        default=False,
+        description="Only include wallets currently in the smart top pool",
+    ),
+    tier: Optional[str] = Query(
+        default=None,
+        description="Pool tier filter: core, rising, standby",
+    ),
 ):
     """
     Get the wallet leaderboard with comprehensive filters and sorting.
@@ -51,7 +72,13 @@ async def get_leaderboard(
         # Validate sort_by
         valid_sort_fields = [
             "rank_score",
+            "composite_score",
+            "quality_score",
+            "activity_score",
+            "stability_score",
+            "last_trade_at",
             "total_pnl",
+            "total_returned",
             "win_rate",
             "sharpe_ratio",
             "profit_factor",
@@ -105,6 +132,10 @@ async def get_leaderboard(
             tags=tag_list,
             recommendation=recommendation,
             window_key=window_key,
+            active_within_hours=active_within_hours,
+            min_activity_score=min_activity_score,
+            pool_only=pool_only,
+            tier=tier,
         )
 
         # When no discovered wallets yet, fall back to live Polymarket leaderboard so UI shows traders
@@ -245,6 +276,7 @@ async def trigger_refresh():
 @discovery_router.get("/confluence")
 async def get_confluence_signals(
     min_strength: float = Query(default=0.0, ge=0.0, le=1.0),
+    min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
     limit: int = Query(default=50, ge=1, le=200),
 ):
     """
@@ -258,6 +290,7 @@ async def get_confluence_signals(
         signals = await wallet_intelligence.confluence.get_active_signals(
             min_strength=min_strength,
             limit=limit,
+            min_tier=min_tier,
         )
         return {"signals": signals}
     except Exception as e:
@@ -279,6 +312,31 @@ async def trigger_confluence_scan():
             "message": "Confluence scan completed",
             "result": result,
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.get("/pool/stats")
+async def get_smart_pool_stats():
+    """Get near-real-time smart wallet pool health metrics."""
+    try:
+        return await smart_wallet_pool.get_pool_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.get("/opportunities/tracked-traders")
+async def get_tracked_trader_opportunities(
+    limit: int = Query(default=50, ge=1, le=200),
+    min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
+):
+    """Get signal-first tracked trader opportunities for UI/alerts."""
+    try:
+        opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
+            limit=limit,
+            min_tier=min_tier,
+        )
+        return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

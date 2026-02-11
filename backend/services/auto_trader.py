@@ -71,6 +71,7 @@ class AutoTraderConfig:
             StrategyType.CORRELATION_ARB,
             StrategyType.MARKET_MAKING,
             StrategyType.STAT_ARB,
+            StrategyType.WEATHER_EDGE,
         ]
     )
 
@@ -180,6 +181,11 @@ class AutoTraderConfig:
     news_workflow_min_edge: float = 10.0  # Min edge % to auto-trade a news intent
     news_workflow_max_age_minutes: int = 120  # Skip intents older than this
 
+    # Weather Workflow trade intent consumption
+    weather_workflow_enabled: bool = True  # Consume pending intents from weather workflow
+    weather_workflow_min_edge: float = 10.0  # Min edge % to auto-trade a weather intent
+    weather_workflow_max_age_minutes: int = 240  # Skip intents older than this
+
     # LLM verification before trading: consult AI before executing trades
     llm_verify_trades: bool = False  # When True, run LLM check before each trade
     llm_verify_strategies: list[str] = field(
@@ -252,6 +258,9 @@ class AutoTrader:
         self.config = AutoTraderConfig()
         self.stats = AutoTraderStats()
         self._running = False
+        self._snapshot_task: Optional[asyncio.Task] = None
+        self._snapshot_poll_seconds: float = 1.0
+        self._last_snapshot_sig: Optional[tuple] = None
         self._trades: dict[str, TradeRecord] = {}
         self._processed_opportunities: set[str] = set()
         self._executing_opportunities: set[str] = set()  # Currently being executed
@@ -1283,8 +1292,14 @@ class AutoTrader:
         self._running = True
         logger.info(f"Auto trader started in {self.config.mode.value} mode")
 
-        # Register callback with scanner
-        scanner.add_callback(self._on_scan_complete)
+        # Consume scanner output from the DB snapshot stream instead of
+        # in-process scanner callbacks. This keeps auto trading working
+        # when scanner runs in a separate worker process.
+        self._last_snapshot_sig = None
+        self._snapshot_task = asyncio.create_task(
+            self._snapshot_consumer_loop(),
+            name="auto-trader-snapshot-consumer",
+        )
 
         # If in live mode, initialize trading service
         if self.config.mode == AutoTraderMode.LIVE:
@@ -1296,25 +1311,63 @@ class AutoTrader:
                     )
                     self.config.mode = AutoTraderMode.PAPER
 
-    async def _on_scan_complete(self, opportunities: list[ArbitrageOpportunity]):
-        """Callback when scanner completes a scan"""
-        if not self._running:
-            return
+    async def _snapshot_consumer_loop(self):
+        """Poll scanner snapshot state and process new opportunity sets.
 
-        if global_pause_state.is_paused:
-            return
+        Scanner runs in its own worker process; this loop decouples auto trader
+        execution from scanner singleton callbacks and uses the DB as the shared
+        source of truth.
+        """
+        from models.database import AsyncSessionLocal
+        from services import shared_state
 
-        if self.config.mode == AutoTraderMode.DISABLED:
-            return
-
-        await self._process_opportunities(opportunities)
-
-        # Poll news workflow trade intents (independent pipeline)
-        if self.config.news_workflow_enabled:
+        while self._running:
             try:
-                await self._poll_news_intents()
+                if global_pause_state.is_paused:
+                    await asyncio.sleep(self._snapshot_poll_seconds)
+                    continue
+
+                if self.config.mode == AutoTraderMode.DISABLED:
+                    await asyncio.sleep(self._snapshot_poll_seconds)
+                    continue
+
+                async with AsyncSessionLocal() as session:
+                    opportunities, status = await shared_state.read_scanner_snapshot(
+                        session
+                    )
+
+                first_id = opportunities[0].id if opportunities else None
+                snapshot_sig = (
+                    status.get("last_scan"),
+                    len(opportunities),
+                    first_id,
+                )
+
+                # Only process on a genuinely new scanner snapshot.
+                if snapshot_sig != self._last_snapshot_sig:
+                    self._last_snapshot_sig = snapshot_sig
+                    await self._process_opportunities(opportunities)
+
+                # Poll news workflow trade intents (independent pipeline)
+                if self.config.news_workflow_enabled:
+                    try:
+                        await self._poll_news_intents()
+                    except Exception as e:
+                        logger.debug("News intent polling error: %s", e)
+
+                # Poll weather workflow trade intents (independent pipeline)
+                if self.config.weather_workflow_enabled:
+                    try:
+                        await self._poll_weather_intents()
+                    except Exception as e:
+                        logger.debug("Weather intent polling error: %s", e)
+
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                logger.debug("News intent polling error: %s", e)
+                logger.debug("Auto trader snapshot consumer error: %s", e)
+
+            await asyncio.sleep(self._snapshot_poll_seconds)
 
     async def _poll_news_intents(self):
         """Poll pending trade intents from the news workflow and execute them.
@@ -1346,34 +1399,86 @@ class AutoTrader:
                 return
 
             for intent in intents:
-                if intent.edge_percent < self.config.news_workflow_min_edge:
-                    await self._mark_intent(intent.id, "skipped")
+                if (intent.edge_percent or 0.0) < self.config.news_workflow_min_edge:
+                    await self._mark_news_intent(intent.id, "skipped")
                     continue
 
                 # Build synthetic ArbitrageOpportunity
-                opp = self._intent_to_opportunity(intent)
+                opp = self._news_intent_to_opportunity(intent)
                 if opp is None:
-                    await self._mark_intent(intent.id, "skipped")
+                    await self._mark_news_intent(intent.id, "skipped")
                     continue
 
                 should_trade, reason = await self._should_trade_opportunity(opp)
                 if should_trade:
-                    await self._mark_intent(intent.id, "submitted")
+                    await self._mark_news_intent(intent.id, "submitted")
                     try:
                         trade = await self._execute_trade(opp)
                         status = "executed" if trade.status in ("open", "shadow") else "skipped"
-                        await self._mark_intent(intent.id, status)
+                        await self._mark_news_intent(intent.id, status)
                     except Exception as e:
                         logger.error("News intent execution failed: %s", e)
-                        await self._mark_intent(intent.id, "skipped")
+                        await self._mark_news_intent(intent.id, "skipped")
                 else:
-                    await self._mark_intent(intent.id, "skipped")
+                    await self._mark_news_intent(intent.id, "skipped")
                     logger.debug("News intent skipped: %s", reason)
 
         except Exception as e:
             logger.debug("News intent polling error: %s", e)
 
-    def _intent_to_opportunity(self, intent) -> Optional[ArbitrageOpportunity]:
+    async def _poll_weather_intents(self):
+        """Poll pending trade intents from the weather workflow and execute them."""
+        from models.database import AsyncSessionLocal, WeatherTradeIntent
+        from sqlalchemy import select
+        from datetime import timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=self.config.weather_workflow_max_age_minutes
+        )
+
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(WeatherTradeIntent)
+                    .where(WeatherTradeIntent.status == "pending")
+                    .where(WeatherTradeIntent.created_at >= cutoff)
+                    .order_by(WeatherTradeIntent.edge_percent.desc())
+                    .limit(10)
+                )
+                intents = result.scalars().all()
+
+            if not intents:
+                return
+
+            for intent in intents:
+                if (intent.edge_percent or 0.0) < self.config.weather_workflow_min_edge:
+                    await self._mark_weather_intent(intent.id, "skipped")
+                    continue
+
+                opp = self._weather_intent_to_opportunity(intent)
+                if opp is None:
+                    await self._mark_weather_intent(intent.id, "skipped")
+                    continue
+
+                should_trade, reason = await self._should_trade_opportunity(opp)
+                if should_trade:
+                    await self._mark_weather_intent(intent.id, "submitted")
+                    try:
+                        trade = await self._execute_trade(opp)
+                        status = (
+                            "executed" if trade.status in ("open", "shadow") else "skipped"
+                        )
+                        await self._mark_weather_intent(intent.id, status)
+                    except Exception as e:
+                        logger.error("Weather intent execution failed: %s", e)
+                        await self._mark_weather_intent(intent.id, "skipped")
+                else:
+                    await self._mark_weather_intent(intent.id, "skipped")
+                    logger.debug("Weather intent skipped: %s", reason)
+        except Exception as e:
+            logger.debug("Weather intent polling error: %s", e)
+
+    def _news_intent_to_opportunity(self, intent) -> Optional[ArbitrageOpportunity]:
         """Convert a NewsTradeIntent into a synthetic ArbitrageOpportunity."""
         try:
             if intent.direction == "buy_yes":
@@ -1400,8 +1505,8 @@ class AutoTrader:
                 title=f"News Intent: {intent.market_question[:60]}",
                 description=(
                     f"News-driven {side} at ${entry_price:.2f} "
-                    f"(edge: {intent.edge_percent:.1f}%, "
-                    f"confidence: {intent.confidence:.0%})"
+                    f"(edge: {(intent.edge_percent or 0.0):.1f}%, "
+                    f"confidence: {(intent.confidence or 0.0):.0%})"
                 ),
                 total_cost=total_cost,
                 expected_payout=expected_payout,
@@ -1431,7 +1536,110 @@ class AutoTrader:
             logger.debug("Failed to convert intent to opportunity: %s", e)
             return None
 
-    async def _mark_intent(self, intent_id: str, status: str):
+    def _weather_intent_to_opportunity(self, intent) -> Optional[ArbitrageOpportunity]:
+        """Convert a WeatherTradeIntent into a synthetic ArbitrageOpportunity."""
+        try:
+            if intent.direction == "buy_yes":
+                side = "YES"
+                entry_price = intent.entry_price or 0.5
+            else:
+                side = "NO"
+                entry_price = intent.entry_price or 0.5
+
+            if entry_price <= 0 or entry_price >= 1:
+                return None
+
+            expected_payout = intent.model_probability or 0.5
+            total_cost = entry_price
+            gross_profit = expected_payout - total_cost
+            fee = expected_payout * 0.02
+            net_profit = gross_profit - fee
+            roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+
+            metadata = intent.metadata_json or {}
+            market_meta = metadata.get("market", {}) if isinstance(metadata, dict) else {}
+            weather_meta = (
+                metadata.get("weather", {}) if isinstance(metadata, dict) else {}
+            )
+            try:
+                liquidity = float(market_meta.get("liquidity", 5000.0) or 0.0)
+            except Exception:
+                liquidity = 5000.0
+            if liquidity <= 0:
+                liquidity = 5000.0
+            token_ids = market_meta.get("clob_token_ids") or []
+            token_id = None
+            if isinstance(token_ids, list) and len(token_ids) >= 2:
+                token_id = token_ids[0] if side == "YES" else token_ids[1]
+            elif isinstance(token_ids, list) and len(token_ids) == 1:
+                token_id = token_ids[0]
+
+            yes_price = (
+                entry_price if intent.direction == "buy_yes" else (1.0 - entry_price)
+            )
+            no_price = (
+                (1.0 - entry_price) if intent.direction == "buy_yes" else entry_price
+            )
+
+            position_size = intent.suggested_size_usd or 10.0
+
+            return ArbitrageOpportunity(
+                strategy=StrategyType.WEATHER_EDGE,
+                title=f"Weather Intent: {intent.market_question[:60]}",
+                description=(
+                    f"Weather-driven {side} at ${entry_price:.2f} "
+                    f"(edge: {(intent.edge_percent or 0):.1f}%, "
+                    f"confidence: {(intent.confidence or 0):.0%}, "
+                    f"agreement: {(intent.model_agreement or 0):.0%})"
+                ),
+                total_cost=total_cost,
+                expected_payout=expected_payout,
+                gross_profit=gross_profit,
+                fee=fee,
+                net_profit=net_profit,
+                roi_percent=roi,
+                is_guaranteed=False,
+                roi_type="directional_payout",
+                risk_score=max(0.0, min(1.0, 1.0 - (intent.confidence or 0.5))),
+                risk_factors=[
+                    "Weather model consensus directional bet",
+                    f"Model agreement: {(intent.model_agreement or 0):.2f}",
+                ],
+                markets=[
+                    {
+                        "id": intent.market_id,
+                        "question": intent.market_question,
+                        "yes_price": yes_price,
+                        "no_price": no_price,
+                        "liquidity": liquidity,
+                        "slug": market_meta.get("slug"),
+                        "event_slug": market_meta.get("event_slug"),
+                        "weather": weather_meta,
+                    }
+                ],
+                event_id=market_meta.get("id"),
+                event_slug=market_meta.get("event_slug"),
+                event_title=intent.market_question,
+                category="weather",
+                min_liquidity=liquidity,
+                max_position_size=position_size,
+                positions_to_take=[
+                    {
+                        "action": "BUY",
+                        "outcome": side,
+                        "market": intent.market_question,
+                        "price": entry_price,
+                        "token_id": token_id,
+                        "market_id": intent.market_id,
+                        "platform": "polymarket",
+                    }
+                ],
+            )
+        except Exception as e:
+            logger.debug("Failed to convert weather intent to opportunity: %s", e)
+            return None
+
+    async def _mark_news_intent(self, intent_id: str, status: str):
         """Update a news trade intent's status in the DB."""
         try:
             from models.database import AsyncSessionLocal, NewsTradeIntent
@@ -1448,11 +1656,36 @@ class AutoTrader:
                 )
                 await session.commit()
         except Exception as e:
-            logger.debug("Failed to mark intent %s as %s: %s", intent_id, status, e)
+            logger.debug("Failed to mark news intent %s as %s: %s", intent_id, status, e)
+
+    async def _mark_weather_intent(self, intent_id: str, status: str):
+        """Update a weather trade intent's status in the DB."""
+        try:
+            from models.database import AsyncSessionLocal, WeatherTradeIntent
+            from sqlalchemy import update
+
+            async with AsyncSessionLocal() as session:
+                await session.execute(
+                    update(WeatherTradeIntent)
+                    .where(WeatherTradeIntent.id == intent_id)
+                    .values(
+                        status=status,
+                        consumed_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+        except Exception as e:
+            logger.debug(
+                "Failed to mark weather intent %s as %s: %s", intent_id, status, e
+            )
 
     def stop(self):
         """Stop the auto trader"""
         self._running = False
+        if self._snapshot_task and not self._snapshot_task.done():
+            self._snapshot_task.cancel()
+        self._snapshot_task = None
+        self._last_snapshot_sig = None
         logger.info("Auto trader stopped")
 
     def record_trade_result(self, trade_id: str, won: bool, actual_profit: float):
@@ -1519,7 +1752,10 @@ class AutoTrader:
         """Get current configuration"""
         return {
             "mode": self.config.mode.value,
-            "enabled_strategies": [s.value for s in self.config.enabled_strategies],
+            "enabled_strategies": [
+                s.value if isinstance(s, StrategyType) else str(s)
+                for s in self.config.enabled_strategies
+            ],
             "min_roi_percent": self.config.min_roi_percent,
             "max_risk_score": self.config.max_risk_score,
             "min_liquidity_usd": self.config.min_liquidity_usd,
@@ -1576,6 +1812,10 @@ class AutoTrader:
             "news_workflow_enabled": self.config.news_workflow_enabled,
             "news_workflow_min_edge": self.config.news_workflow_min_edge,
             "news_workflow_max_age_minutes": self.config.news_workflow_max_age_minutes,
+            # Weather workflow
+            "weather_workflow_enabled": self.config.weather_workflow_enabled,
+            "weather_workflow_min_edge": self.config.weather_workflow_min_edge,
+            "weather_workflow_max_age_minutes": self.config.weather_workflow_max_age_minutes,
             # Scanner auto AI scoring (read from scanner singleton)
             "auto_ai_scoring": scanner.auto_ai_scoring,
         }

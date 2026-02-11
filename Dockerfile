@@ -75,6 +75,26 @@ stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 
+[program:scanner-worker]
+command=python -m workers.scanner_worker
+directory=/app/backend
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:weather-worker]
+command=python -m workers.weather_worker
+directory=/app/backend
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
 [program:nginx]
 command=nginx -g "daemon off;"
 autostart=true

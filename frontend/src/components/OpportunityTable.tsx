@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ExternalLink,
@@ -18,10 +18,10 @@ import {
   STRATEGY_ABBREV,
   RECOMMENDATION_COLORS,
   ACCENT_BAR_COLORS,
-  generatePriceHistory,
   timeAgo,
   formatCompact,
 } from './OpportunityCard'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 
 interface Props {
   opportunities: Opportunity[]
@@ -96,8 +96,18 @@ function TableRow({
       : 'text-red-400'
 
   const market = opportunity.markets[0]
-  const id = opportunity.stable_id || opportunity.id
-  const sparkYes = market ? generatePriceHistory(id, market.yes_price, 16) : []
+  const sparkYes = useMemo(() => {
+    if (!market) return []
+    const history = Array.isArray(market.price_history) ? market.price_history : []
+    const points = history
+      .map((p) => Number(p?.yes))
+      .filter((v) => Number.isFinite(v))
+    if (points.length >= 2) return points
+
+    const yesNow = Number(market.yes_price)
+    if (Number.isFinite(yesNow)) return [yesNow, yesNow]
+    return []
+  }, [market?.id, market?.yes_price, market?.price_history])
 
   const roiPositive = opportunity.roi_percent >= 0
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || '') : ''
@@ -105,19 +115,18 @@ function TableRow({
   // Platform URLs
   const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
   const polyUrl = polyMarket
-    ? (opportunity.event_slug
-        ? `https://polymarket.com/event/${opportunity.event_slug}`
-        : polyMarket.slug
-          ? `https://polymarket.com/event/${polyMarket.slug}`
-          : null)
+    ? buildPolymarketMarketUrl({
+        eventSlug: opportunity.event_slug || (polyMarket as any).event_slug,
+        marketSlug: (polyMarket as any).slug,
+        marketId: (polyMarket as any).id,
+      })
     : null
   const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
   const kalshiUrl = kalshiMarket
-    ? (() => {
-        const ticker = kalshiMarket.id.toLowerCase()
-        const eventTicker = ticker.split('-')[0]
-        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
-      })()
+    ? buildKalshiMarketUrl({
+        marketTicker: kalshiMarket.id,
+        eventTicker: (kalshiMarket as any).event_slug,
+      })
     : null
 
   return (

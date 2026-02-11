@@ -26,6 +26,9 @@ class StrategyType(str, Enum):
     NEWS_EDGE = (
         "news_edge"  # News-driven informational edge via LLM probability estimation
     )
+    WEATHER_EDGE = (
+        "weather_edge"  # Weather-driven informational edge via forecast model consensus
+    )
     BAYESIAN_CASCADE = "bayesian_cascade"
     LIQUIDITY_VACUUM = "liquidity_vacuum"
     ENTROPY_ARB = "entropy_arb"

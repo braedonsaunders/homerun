@@ -35,6 +35,7 @@ import {
   Percent,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
@@ -49,12 +50,13 @@ import {
   resetCircuitBreaker,
   emergencyStopAutoTrader,
   updateAutoTraderConfig,
+  getStrategies,
   getTradingStatus,
   getTradingPositions,
   getTradingBalance,
   getOrders,
 } from '../services/api'
-import type { AutoTraderConfig, TradingPosition } from '../services/api'
+import type { AutoTraderConfig, TradingPosition, Strategy } from '../services/api'
 
 type DashboardTab = 'overview' | 'holdings' | 'orders' | 'settings'
 
@@ -70,23 +72,6 @@ interface FeedEvent {
   valueColor?: string
   icon: 'trade' | 'win' | 'loss' | 'scan' | 'alert' | 'system' | 'position'
 }
-
-const ALL_STRATEGIES = [
-  { key: 'basic', label: 'Basic Arb' },
-  { key: 'negrisk', label: 'NegRisk' },
-  { key: 'mutually_exclusive', label: 'Mutually Exclusive' },
-  { key: 'contradiction', label: 'Contradiction' },
-  { key: 'must_happen', label: 'Must-Happen' },
-  { key: 'cross_platform', label: 'Cross-Platform Oracle' },
-  { key: 'bayesian_cascade', label: 'Bayesian Cascade' },
-  { key: 'liquidity_vacuum', label: 'Liquidity Vacuum' },
-  { key: 'entropy_arb', label: 'Entropy Arbitrage' },
-  { key: 'event_driven', label: 'Event-Driven' },
-  { key: 'temporal_decay', label: 'Temporal Decay' },
-  { key: 'correlation_arb', label: 'Correlation Arb' },
-  { key: 'market_making', label: 'Market Making' },
-  { key: 'stat_arb', label: 'Statistical Arb' },
-]
 
 export default function TradingPanel() {
   const [accountMode] = useAtom(accountModeAtom)
@@ -132,6 +117,26 @@ export default function TradingPanel() {
     enabled: !!tradingStatus?.initialized,
     retry: false,
   })
+
+  const { data: strategyList = [] } = useQuery({
+    queryKey: ['strategies'],
+    queryFn: getStrategies,
+    staleTime: 60000,
+  })
+
+  const strategyOptions = useMemo(() => {
+    const dedup = new Map<string, string>()
+    for (const strategy of strategyList as Strategy[]) {
+      const key =
+        strategy.is_plugin && strategy.plugin_slug
+          ? strategy.plugin_slug
+          : strategy.type
+      if (!dedup.has(key)) {
+        dedup.set(key, strategy.name)
+      }
+    }
+    return Array.from(dedup.entries()).map(([key, label]) => ({ key, label }))
+  }, [strategyList])
 
   useQuery({
     queryKey: ['trading-orders'],
@@ -803,6 +808,11 @@ export default function TradingPanel() {
                       const mktValue = pos.size * pos.current_price
                       const pnlPct = costBasis > 0 ? (pos.unrealized_pnl / costBasis) * 100 : 0
                       const isExpanded = expandedPositions.has(idx)
+                      const marketUrl = buildPolymarketMarketUrl({
+                        eventSlug: pos.event_slug,
+                        marketSlug: pos.market_slug,
+                        marketId: pos.market_id,
+                      })
                       return (
                         <Card key={idx} className="bg-card/40 border-border/40 rounded-xl shadow-none overflow-hidden transition-all">
                           <Button
@@ -854,9 +864,9 @@ export default function TradingPanel() {
                                   <p className="font-mono text-xs">${mktValue.toFixed(2)}</p>
                                 </div>
                                 <div>
-                                  {pos.market_id && (
+                                  {marketUrl && (
                                     <a
-                                      href={`https://polymarket.com/event/${pos.market_id}`}
+                                      href={marketUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 mt-2"
@@ -1604,7 +1614,7 @@ export default function TradingPanel() {
                 </h4>
                 <p className="text-[10px] text-muted-foreground mb-2">Select which strategies the auto trader should use</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {ALL_STRATEGIES.map(s => {
+                  {strategyOptions.map(s => {
                     const enabled = (configDraft.enabled_strategies || []).includes(s.key)
                     return (
                       <button
@@ -1632,7 +1642,7 @@ export default function TradingPanel() {
                 <div className="flex items-center gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={() => updateDraft('enabled_strategies', ALL_STRATEGIES.map(s => s.key))}
+                    onClick={() => updateDraft('enabled_strategies', strategyOptions.map(s => s.key))}
                     className="text-[10px] text-muted-foreground hover:text-green-400 transition-colors"
                   >
                     Select All

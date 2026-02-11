@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
 
 logger = get_logger(__name__)
 
@@ -65,7 +66,7 @@ async def _load_config_from_db() -> ProxyConfig:
 
             _cached_config = ProxyConfig(
                 enabled=bool(row.trading_proxy_enabled),
-                proxy_url=row.trading_proxy_url or None,
+                proxy_url=decrypt_secret(row.trading_proxy_url) or None,
                 verify_ssl=row.trading_proxy_verify_ssl
                 if row.trading_proxy_verify_ssl is not None
                 else True,

@@ -61,14 +61,14 @@ export default function CopyTradingPanel() {
   useEffect(() => {
     if (lastMessage?.type === 'copy_trade_detected') {
       setRealtimeEvents(prev => [{
-        type: 'detected',
+        type: 'detected' as const,
         data: lastMessage.data,
         timestamp: new Date(),
       }, ...prev].slice(0, 20))
     }
     if (lastMessage?.type === 'copy_trade_executed') {
       setRealtimeEvents(prev => [{
-        type: 'executed',
+        type: 'executed' as const,
         data: lastMessage.data,
         timestamp: new Date(),
       }, ...prev].slice(0, 20))

@@ -147,7 +147,7 @@ should score ~0.2-0.3 overall.
 ## Your Task
 
 Given the opportunity details below, score it on all dimensions. \
-Provide clear chain-of-thought reasoning. Identify specific risk \
+Provide a concise rationale for each score. Identify specific risk \
 factors. Be calibrated -- most detected opportunities in prediction \
 markets ARE false positives due to fees, slippage, or stale data. \
 A skeptical prior is appropriate.
@@ -199,7 +199,7 @@ OPPORTUNITY_JUDGMENT_SCHEMA = {
         },
         "reasoning": {
             "type": "string",
-            "description": "Chain-of-thought reasoning explaining the scores",
+            "description": "Concise rationale explaining the scores",
         },
         "risk_factors": {
             "type": "array",
@@ -758,7 +758,7 @@ class OpportunityJudge:
             "\n---\n"
             "Score this opportunity on all dimensions. Be skeptical -- "
             "most detected prediction market arbitrage opportunities are "
-            "false positives. Explain your reasoning step by step."
+            "false positives. Explain your recommendation briefly and concretely."
         )
 
         return "\n".join(sections)

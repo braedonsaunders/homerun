@@ -5,13 +5,20 @@ Scanner worker writes snapshot; API and other workers read from DB.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import ScannerControl, ScannerSnapshot
+from models.database import (
+    ScannerControl,
+    ScannerSnapshot,
+    ScannerRun,
+    OpportunityState,
+    OpportunityEvent,
+)
 from models.opportunity import ArbitrageOpportunity, OpportunityFilter
 
 logger = logging.getLogger(__name__)
@@ -20,22 +27,71 @@ SNAPSHOT_ID = "latest"
 CONTROL_ID = "default"
 
 
+def _parse_iso_datetime(value: str) -> datetime:
+    """Parse ISO datetime strings defensively, including legacy malformed UTC suffixes."""
+    text = value.strip()
+
+    # Handle legacy malformed values like "...+00:00+00:00".
+    if text.endswith("+00:00+00:00"):
+        text = text[:-6]
+
+    # Normalize trailing Z to an explicit offset for fromisoformat().
+    if text.endswith("Z"):
+        text = text[:-1]
+
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
+    """Format datetimes as canonical UTC ISO strings with a trailing Z."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(tzinfo=None).isoformat() + "Z"
+
+
 async def write_scanner_snapshot(
     session: AsyncSession,
     opportunities: list[ArbitrageOpportunity],
     status: dict[str, Any],
+    market_history: Optional[dict[str, list[dict[str, Any]]]] = None,
 ) -> None:
     """Write current opportunities and status to scanner_snapshot (worker calls this)."""
     last_scan = status.get("last_scan")
     if isinstance(last_scan, str):
-        last_scan = datetime.fromisoformat(last_scan.replace("Z", "+00:00"))
+        try:
+            last_scan = _parse_iso_datetime(last_scan)
+        except Exception as e:
+            logger.warning("Invalid last_scan timestamp in snapshot status: %s", e)
+            last_scan = datetime.utcnow()
     elif last_scan is None:
         last_scan = datetime.utcnow()
 
-    payload = [
-        o.model_dump(mode="json") if hasattr(o, "model_dump") else o
-        for o in opportunities
-    ]
+    payload: list[dict[str, Any]] = []
+    skipped = 0
+    for o in opportunities:
+        try:
+            if hasattr(o, "model_dump"):
+                payload.append(o.model_dump(mode="json"))
+            else:
+                payload.append(
+                    ArbitrageOpportunity.model_validate(o).model_dump(mode="json")
+                )
+        except Exception as e:
+            skipped += 1
+            logger.debug("Skip unserializable opportunity in snapshot write: %s", e)
+    if skipped:
+        logger.warning(
+            "Skipped %d/%d opportunities while writing scanner snapshot",
+            skipped,
+            len(opportunities),
+        )
     result = await session.execute(
         select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
     )
@@ -53,7 +109,147 @@ async def write_scanner_snapshot(
     row.strategies_json = status.get("strategies", [])
     row.tiered_scanning_json = status.get("tiered_scanning")
     row.ws_feeds_json = status.get("ws_feeds")
+    if market_history is not None:
+        row.market_history_json = market_history
+    await _persist_incremental_state(session, payload, status, last_scan)
     await session.commit()
+
+
+async def _persist_incremental_state(
+    session: AsyncSession,
+    payload: list[dict[str, Any]],
+    status: dict[str, Any],
+    completed_at: datetime,
+) -> None:
+    """Persist per-run + per-opportunity incremental state/event records."""
+    # Determine scan mode for observability.
+    scan_mode = "full"
+    activity = (status.get("current_activity") or "").lower()
+    if "fast scan" in activity:
+        scan_mode = "fast"
+    elif "requested" in activity:
+        scan_mode = "manual"
+
+    run = ScannerRun(
+        id=uuid.uuid4().hex[:16],
+        scan_mode=scan_mode,
+        success=not str(status.get("current_activity", "")).lower().startswith(
+            "last scan error"
+        ),
+        opportunity_count=len(payload),
+        started_at=completed_at,
+        completed_at=completed_at,
+    )
+    session.add(run)
+
+    # Build stable_id -> payload map; stable_id is the lifecycle key.
+    current_map: dict[str, dict[str, Any]] = {}
+    for item in payload:
+        stable_id = str(item.get("stable_id") or item.get("id") or "").strip()
+        if stable_id:
+            current_map[stable_id] = item
+
+    current_ids = set(current_map.keys())
+
+    # Pull active rows and any rows that appear in current payload.
+    if current_ids:
+        existing_rows = (
+            (
+                await session.execute(
+                    select(OpportunityState).where(
+                        or_(
+                            OpportunityState.is_active == True,  # noqa: E712
+                            OpportunityState.stable_id.in_(current_ids),
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    else:
+        existing_rows = (
+            (
+                await session.execute(
+                    select(OpportunityState).where(OpportunityState.is_active == True)  # noqa: E712
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    existing_by_id = {row.stable_id: row for row in existing_rows}
+
+    # Upsert current opportunities and emit detected/updated/reactivated events.
+    for stable_id, item in current_map.items():
+        row = existing_by_id.get(stable_id)
+        if row is None:
+            row = OpportunityState(
+                stable_id=stable_id,
+                opportunity_json=item,
+                first_seen_at=completed_at,
+                last_seen_at=completed_at,
+                is_active=True,
+                last_run_id=run.id,
+            )
+            session.add(row)
+            session.add(
+                OpportunityEvent(
+                    id=uuid.uuid4().hex[:16],
+                    stable_id=stable_id,
+                    run_id=run.id,
+                    event_type="detected",
+                    opportunity_json=item,
+                    created_at=completed_at,
+                )
+            )
+            continue
+
+        was_active = bool(row.is_active)
+        changed = row.opportunity_json != item
+        row.opportunity_json = item
+        row.last_seen_at = completed_at
+        row.last_run_id = run.id
+        row.is_active = True
+
+        if not was_active:
+            event_type = "reactivated"
+        elif changed:
+            event_type = "updated"
+        else:
+            event_type = None
+
+        if event_type:
+            session.add(
+                OpportunityEvent(
+                    id=uuid.uuid4().hex[:16],
+                    stable_id=stable_id,
+                    run_id=run.id,
+                    event_type=event_type,
+                    opportunity_json=item,
+                    created_at=completed_at,
+                )
+            )
+
+    # Any previously active row missing from current payload is now expired.
+    for stable_id, row in existing_by_id.items():
+        if not row.is_active:
+            continue
+        if stable_id in current_ids:
+            continue
+        row.is_active = False
+        row.last_seen_at = completed_at
+        row.last_run_id = run.id
+        session.add(
+            OpportunityEvent(
+                id=uuid.uuid4().hex[:16],
+                stable_id=stable_id,
+                run_id=run.id,
+                event_type="expired",
+                opportunity_json=row.opportunity_json,
+                created_at=completed_at,
+            )
+        )
 
 
 async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
@@ -73,6 +269,8 @@ async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
         )
         session.add(row)
     else:
+        if row.current_activity == activity:
+            return
         row.current_activity = activity
         row.updated_at = datetime.utcnow()
     await session.commit()
@@ -90,9 +288,17 @@ async def read_scanner_snapshot(
         return [], _default_status()
 
     opportunities: list[ArbitrageOpportunity] = []
+    market_history = (
+        row.market_history_json if isinstance(row.market_history_json, dict) else {}
+    )
     for d in row.opportunities_json or []:
         try:
-            opportunities.append(ArbitrageOpportunity.model_validate(d))
+            opp = ArbitrageOpportunity.model_validate(d)
+            for market in opp.markets:
+                mid = market.get("id", "")
+                if mid and mid in market_history:
+                    market["price_history"] = market_history.get(mid, [])
+            opportunities.append(opp)
         except Exception as e:
             logger.debug("Skip invalid opportunity row: %s", e)
 
@@ -100,7 +306,7 @@ async def read_scanner_snapshot(
         "running": row.running,
         "enabled": row.enabled,
         "interval_seconds": row.interval_seconds,
-        "last_scan": row.last_scan_at.isoformat() + "Z" if row.last_scan_at else None,
+        "last_scan": _format_iso_utc_z(row.last_scan_at),
         "opportunities_count": len(opportunities),
         "current_activity": row.current_activity,
         "strategies": row.strategies_json or [],

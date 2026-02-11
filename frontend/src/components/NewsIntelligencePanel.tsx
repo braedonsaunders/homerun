@@ -421,6 +421,15 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
   const [expanded, setExpanded] = useState(false)
   const isBuyYes = finding.direction === 'buy_yes'
   const eventGraph = finding.event_graph as Record<string, unknown> | null
+  const eventType = typeof eventGraph?.event_type === 'string' ? eventGraph.event_type : null
+  const eventAction = typeof eventGraph?.action === 'string' ? eventGraph.action : null
+  const eventRegion = typeof eventGraph?.region === 'string' ? eventGraph.region : null
+  const eventActors = Array.isArray(eventGraph?.actors)
+    ? eventGraph.actors.filter((actor): actor is string => typeof actor === 'string')
+    : []
+  const eventEntities = Array.isArray(eventGraph?.key_entities)
+    ? eventGraph.key_entities.filter((entity): entity is string => typeof entity === 'string')
+    : []
 
   return (
     <Card className="overflow-hidden border-border/40 hover:border-border/80 hover:shadow-lg hover:shadow-black/20 transition-all group">
@@ -438,9 +447,9 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
             {finding.actionable && (
               <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">Actionable</Badge>
             )}
-            {eventGraph?.event_type && (
+            {eventType && (
               <Badge variant="outline" className="text-[10px] bg-violet-500/10 text-violet-400 border-violet-500/20">
-                {String(eventGraph.event_type).replace('_', ' ')}
+                {eventType.replace('_', ' ')}
               </Badge>
             )}
           </div>
@@ -506,14 +515,14 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
               <div>
                 <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 mt-2">Event Graph</div>
                 <div className="text-[10px] text-muted-foreground/80 font-mono bg-muted/20 p-2 rounded-lg">
-                  {eventGraph.actors && Array.isArray(eventGraph.actors) && (eventGraph.actors as string[]).length > 0 && (
-                    <div>Actors: {(eventGraph.actors as string[]).join(', ')}</div>
+                  {eventActors.length > 0 && (
+                    <div>Actors: {eventActors.join(', ')}</div>
                   )}
-                  {eventGraph.action && <div>Action: {String(eventGraph.action)}</div>}
-                  {eventGraph.key_entities && Array.isArray(eventGraph.key_entities) && (eventGraph.key_entities as string[]).length > 0 && (
-                    <div>Entities: {(eventGraph.key_entities as string[]).join(', ')}</div>
+                  {eventAction && <div>Action: {eventAction}</div>}
+                  {eventEntities.length > 0 && (
+                    <div>Entities: {eventEntities.join(', ')}</div>
                   )}
-                  {eventGraph.region && <div>Region: {String(eventGraph.region)}</div>}
+                  {eventRegion && <div>Region: {eventRegion}</div>}
                 </div>
               </div>
             )}
@@ -608,7 +617,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     enabled: subView === 'workflow',
   })
 
-  const { data: workflowIntentsData, isLoading: intentsLoading } = useQuery({
+  const { data: workflowIntentsData } = useQuery({
     queryKey: ['news-workflow-intents'],
     queryFn: () => getNewsWorkflowIntents({ limit: 50 }),
     refetchInterval: 15000,

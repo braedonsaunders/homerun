@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
@@ -47,6 +47,7 @@ import {
   refreshLLMModels,
   getAutoTraderStatus,
   updateAutoTraderConfig,
+  getStrategies,
   getPlugins,
   createPlugin,
   updatePlugin,
@@ -57,6 +58,7 @@ import {
   getPluginDocs,
   type LLMModelOption,
   type AutoTraderConfig,
+  type Strategy,
 } from '../services/api'
 
 type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'validation' | 'plugins' | 'maintenance'
@@ -103,23 +105,6 @@ function SecretInput({
     </div>
   )
 }
-
-const ALL_STRATEGIES = [
-  { key: 'basic', label: 'Basic Arb' },
-  { key: 'negrisk', label: 'NegRisk' },
-  { key: 'mutually_exclusive', label: 'Mutually Exclusive' },
-  { key: 'contradiction', label: 'Contradiction' },
-  { key: 'must_happen', label: 'Must-Happen' },
-  { key: 'cross_platform', label: 'Cross-Platform Oracle' },
-  { key: 'bayesian_cascade', label: 'Bayesian Cascade' },
-  { key: 'liquidity_vacuum', label: 'Liquidity Vacuum' },
-  { key: 'entropy_arb', label: 'Entropy Arbitrage' },
-  { key: 'event_driven', label: 'Event-Driven' },
-  { key: 'temporal_decay', label: 'Temporal Decay' },
-  { key: 'correlation_arb', label: 'Correlation Arb' },
-  { key: 'market_making', label: 'Market Making' },
-  { key: 'stat_arb', label: 'Statistical Arb' },
-]
 
 export default function SettingsPanel() {
   const [expandedSections, setExpandedSections] = useState<Set<SettingsSection>>(new Set())
@@ -228,6 +213,25 @@ export default function SettingsPanel() {
     queryKey: ['plugins'],
     queryFn: getPlugins,
   })
+
+  const { data: strategyList = [] } = useQuery({
+    queryKey: ['strategies'],
+    queryFn: getStrategies,
+  })
+
+  const strategyOptions = useMemo(() => {
+    const dedup = new Map<string, string>()
+    for (const strategy of strategyList as Strategy[]) {
+      const key =
+        strategy.is_plugin && strategy.plugin_slug
+          ? strategy.plugin_slug
+          : strategy.type
+      if (!dedup.has(key)) {
+        dedup.set(key, strategy.name)
+      }
+    }
+    return Array.from(dedup.entries()).map(([key, label]) => ({ key, label }))
+  }, [strategyList])
 
   // Expand plugins when navigating from Search Filters flyout
   useEffect(() => {
@@ -1278,7 +1282,7 @@ export default function SettingsPanel() {
                           <p className="text-xs text-muted-foreground">Select which strategies the auto trader should use</p>
                         </div>
                         <div className="flex flex-wrap gap-1.5">
-                          {ALL_STRATEGIES.map(s => {
+                          {strategyOptions.map(s => {
                             const enabled = autotraderAiForm.enabled_strategies.includes(s.key)
                             return (
                               <button
@@ -1311,7 +1315,7 @@ export default function SettingsPanel() {
                             size="sm"
                             className="text-xs h-7"
                             onClick={() => {
-                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: ALL_STRATEGIES.map(s => s.key) }))
+                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: strategyOptions.map(s => s.key) }))
                               setAutotraderAiDirty(true)
                             }}
                           >

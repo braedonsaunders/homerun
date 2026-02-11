@@ -27,6 +27,7 @@ import {
   Eye
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -941,6 +942,11 @@ function TradesTab({ data, isLoading }: { data?: { wallet: string; total: number
 function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpanded: boolean; onToggle: () => void }) {
   const isBuy = trade.side === 'BUY'
   const timestamp = trade.timestamp ? new Date(trade.timestamp).toLocaleString() : 'Unknown'
+  const marketUrl = buildPolymarketMarketUrl({
+    eventSlug: trade.event_slug,
+    marketSlug: trade.market_slug,
+    marketId: trade.market,
+  })
 
   return (
     <div className={cn(
@@ -1043,9 +1049,9 @@ function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpan
           </div>
           {/* Actions */}
           <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-            {(trade.event_slug || trade.market_slug) && (
+            {marketUrl && (
               <a
-                href={`https://polymarket.com/event/${trade.event_slug || trade.market_slug}`}
+                href={marketUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
@@ -1318,6 +1324,11 @@ function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boo
 }
 
 function PositionRow({ position }: { position: WalletPosition }) {
+  const marketUrl = buildPolymarketMarketUrl({
+    eventSlug: position.event_slug,
+    marketSlug: position.market_slug,
+    marketId: position.market,
+  })
   const isProfitable = position.unrealized_pnl >= 0
   const roiColor = position.roi_percent >= 20 ? 'text-green-400' :
                    position.roi_percent >= 0 ? 'text-emerald-400' :
@@ -1377,10 +1388,10 @@ function PositionRow({ position }: { position: WalletPosition }) {
       </div>
 
       {/* Actions */}
-      {(position.event_slug || position.market_slug) && (
+      {marketUrl && (
         <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
           <a
-            href={`https://polymarket.com/event/${position.event_slug || position.market_slug}`}
+            href={marketUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"

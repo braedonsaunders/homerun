@@ -11,6 +11,7 @@ import {
   BarChart3,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { selectedAccountIdAtom } from '../store/atoms'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
@@ -358,11 +359,16 @@ function PositionsTable({ positions, platform, positionsCostBasis, positionsTota
 
   const getMarketLink = (pos: TradingPosition | KalshiPosition) => {
     if (platform === 'kalshi') {
-      const ticker = pos.market_id.toLowerCase()
-      const eventTicker = ticker.split('-')[0]
-      return `https://kalshi.com/markets/${eventTicker}/${ticker}`
+      return buildKalshiMarketUrl({
+        marketTicker: pos.market_id,
+        eventTicker: (pos as any).event_slug,
+      })
     }
-    return `https://polymarket.com/event/${pos.market_id}`
+    return buildPolymarketMarketUrl({
+      eventSlug: (pos as any).event_slug,
+      marketSlug: (pos as any).market_slug,
+      marketId: pos.market_id,
+    })
   }
 
   return (
@@ -392,9 +398,9 @@ function PositionsTable({ positions, platform, positionsCostBasis, positionsTota
               <tr key={idx} className="border-b border-border/50 hover:bg-muted transition-colors">
                 <td className="px-4 py-3">
                   <p className="font-medium text-sm line-clamp-1">{pos.market_question}</p>
-                  {pos.market_id && (
+                  {getMarketLink(pos) && (
                     <a
-                      href={getMarketLink(pos)}
+                      href={getMarketLink(pos)!}
                       target="_blank"
                       rel="noopener noreferrer"
                       className={cn(

@@ -20,6 +20,7 @@ from typing import Optional
 from sqlalchemy import Column, String, DateTime, Boolean, select
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret, encrypt_secret
 
 logger = get_logger("credential_manager")
 
@@ -243,10 +244,19 @@ class CredentialManager:
                 if row:
                     row.last_used_at = datetime.utcnow()
                     await session.commit()
+                    api_key = decrypt_secret(row.api_key)
+                    api_secret = decrypt_secret(row.api_secret)
+                    api_passphrase = decrypt_secret(row.api_passphrase)
+                    if not api_key or not api_secret or not api_passphrase:
+                        logger.warning(
+                            "Stored credentials present but could not be decrypted",
+                            address=address,
+                        )
+                        return None
                     return ClobCredentials(
-                        api_key=row.api_key,
-                        api_secret=row.api_secret,
-                        api_passphrase=row.api_passphrase,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        api_passphrase=api_passphrase,
                         wallet_address=row.wallet_address,
                     )
         except Exception as e:
@@ -269,9 +279,9 @@ class CredentialManager:
                     StoredCredential(
                         id=str(uuid.uuid4()),
                         wallet_address=creds.wallet_address,
-                        api_key=creds.api_key,
-                        api_secret=creds.api_secret,
-                        api_passphrase=creds.api_passphrase,
+                        api_key=encrypt_secret(creds.api_key) or "",
+                        api_secret=encrypt_secret(creds.api_secret) or "",
+                        api_passphrase=encrypt_secret(creds.api_passphrase) or "",
                     )
                 )
                 await session.commit()

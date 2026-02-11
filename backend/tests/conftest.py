@@ -1,8 +1,11 @@
 """Shared fixtures for Polymarket arbitrage tests."""
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/user/homerun/backend")
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 import pytest
 from datetime import datetime, timedelta
@@ -253,6 +256,9 @@ def mock_polymarket_client():
     client = AsyncMock()
     client.get_all_events = AsyncMock(return_value=[])
     client.get_all_markets = AsyncMock(return_value=[])
+    client.get_recent_markets = AsyncMock(return_value=[])
+    client.get_cross_platform_events = AsyncMock(return_value=[])
+    client.get_cross_platform_markets = AsyncMock(return_value=[])
     client.get_prices_batch = AsyncMock(return_value={})
     return client
 

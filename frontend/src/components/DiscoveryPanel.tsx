@@ -23,6 +23,7 @@ import {
   Clock,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { Card, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -42,6 +43,7 @@ import {
   type ConfluenceSignal,
   type TagInfo,
   type DiscoveryStats,
+  type PoolStats,
 } from '../services/discoveryApi'
 import { analyzeAndTrackWallet, type Opportunity, getOpportunities } from '../services/api'
 
@@ -49,7 +51,17 @@ import { analyzeAndTrackWallet, type Opportunity, getOpportunities } from '../se
 
 type DiscoveryTab = 'leaderboard' | 'confluence' | 'tags'
 
-type SortField = 'rank_score' | 'total_pnl' | 'win_rate' | 'sharpe_ratio' | 'total_trades' | 'avg_roi'
+type SortField =
+  | 'rank_score'
+  | 'composite_score'
+  | 'quality_score'
+  | 'activity_score'
+  | 'last_trade_at'
+  | 'total_pnl'
+  | 'win_rate'
+  | 'sharpe_ratio'
+  | 'total_trades'
+  | 'avg_roi'
 
 type SortDir = 'asc' | 'desc'
 
@@ -80,6 +92,9 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 }
 
 const SIGNAL_TYPE_COLORS: Record<string, string> = {
+  multi_wallet_buy: 'bg-green-500/15 text-green-400 border-green-500/20',
+  multi_wallet_sell: 'bg-red-500/15 text-red-400 border-red-500/20',
+  accumulation: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
   coordinated_buy: 'bg-green-500/15 text-green-400 border-green-500/20',
   coordinated_sell: 'bg-red-500/15 text-red-400 border-red-500/20',
   whale_movement: 'bg-purple-500/15 text-purple-400 border-purple-500/20',
@@ -176,6 +191,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
   const { data: stats } = useQuery<DiscoveryStats>({
     queryKey: ['discovery-stats'],
     queryFn: discoveryApi.getDiscoveryStats,
+    refetchInterval: 30000,
+  })
+
+  const { data: poolStats } = useQuery<PoolStats>({
+    queryKey: ['discovery-pool-stats'],
+    queryFn: discoveryApi.getPoolStats,
     refetchInterval: 30000,
   })
 
@@ -383,7 +404,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
       </div>
 
       {/* Stats Bar */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <Card className="border-border">
           <CardContent className="flex items-center gap-3 p-4">
             <div className="p-2 bg-blue-500/10 rounded-lg">
@@ -428,7 +449,50 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
             </div>
           </CardContent>
         </Card>
+        <Card className="border-border">
+          <CardContent className="flex items-center gap-3 p-4">
+            <div className="p-2 bg-cyan-500/10 rounded-lg">
+              <Users className="w-5 h-5 text-cyan-500" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Top Pool</p>
+              <p className="text-lg font-semibold">
+                {formatNumber(poolStats?.pool_size || 0)}
+                <span className="text-[11px] text-muted-foreground ml-1">/ {poolStats?.target_pool_size || 500}</span>
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
+
+      {poolStats && (
+        <div className="grid grid-cols-4 gap-4">
+          <Card className="border-border">
+            <CardContent className="p-3">
+              <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
+              <p className="text-sm font-semibold">{poolStats.active_1h} ({poolStats.active_1h_pct.toFixed(1)}%)</p>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="p-3">
+              <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
+              <p className="text-sm font-semibold">{poolStats.active_24h} ({poolStats.active_24h_pct.toFixed(1)}%)</p>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="p-3">
+              <p className="text-xs text-muted-foreground">Hourly Churn</p>
+              <p className="text-sm font-semibold">{(poolStats.churn_rate * 100).toFixed(2)}%</p>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="p-3">
+              <p className="text-xs text-muted-foreground">Pool Recompute</p>
+              <p className="text-sm font-semibold">{timeAgo(poolStats.last_pool_recompute_at)}</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Mutation Feedback */}
       {discoveryMutation.isSuccess && (
@@ -580,6 +644,42 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                     <TableRow>
                       <TableHead className="w-12">#</TableHead>
                       <TableHead className="min-w-[180px]">Trader</TableHead>
+                      <TableHead>
+                        <SortButton
+                          field="composite_score"
+                          label="Composite"
+                          currentSort={sortBy}
+                          currentDir={sortDir}
+                          onSort={handleSort}
+                        />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton
+                          field="activity_score"
+                          label="Activity"
+                          currentSort={sortBy}
+                          currentDir={sortDir}
+                          onSort={handleSort}
+                        />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton
+                          field="quality_score"
+                          label="Quality"
+                          currentSort={sortBy}
+                          currentDir={sortDir}
+                          onSort={handleSort}
+                        />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton
+                          field="last_trade_at"
+                          label="Last Trade"
+                          currentSort={sortBy}
+                          currentDir={sortDir}
+                          onSort={handleSort}
+                        />
+                      </TableHead>
                       <TableHead>
                         <SortButton
                           field="total_pnl"
@@ -856,6 +956,18 @@ export default function DiscoveryPanel({ onAnalyzeWallet, onExecuteTrade }: Disc
                       <TableHead className="w-12">#</TableHead>
                       <TableHead className="min-w-[180px]">Trader</TableHead>
                       <TableHead>
+                        <SortButton field="composite_score" label="Composite" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="activity_score" label="Activity" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="quality_score" label="Quality" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
+                        <SortButton field="last_trade_at" label="Last Trade" currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
+                      </TableHead>
+                      <TableHead>
                         <SortButton field="total_pnl" label={isTagWindowActive ? 'Period PnL' : 'PnL'} currentSort={tagSortBy} currentDir={tagSortDir} onSort={handleTagSort} />
                       </TableHead>
                       <TableHead>
@@ -1061,6 +1173,9 @@ function LeaderboardRow({
   const sharpe = useWindowMetrics ? (wallet.period_sharpe ?? wallet.sharpe_ratio) : wallet.sharpe_ratio
   const trades = useWindowMetrics && wallet.period_trades != null ? wallet.period_trades : wallet.total_trades
   const roi = useWindowMetrics && wallet.period_roi != null ? wallet.period_roi : wallet.avg_roi
+  const composite = wallet.composite_score ?? wallet.rank_score ?? 0
+  const activity = wallet.activity_score ?? 0
+  const quality = wallet.quality_score ?? wallet.rank_score ?? 0
 
   return (
     <TableRow>
@@ -1103,6 +1218,43 @@ function LeaderboardRow({
             )}
           </div>
         )}
+      </TableCell>
+
+      {/* Composite */}
+      <TableCell>
+        <span className={cn(
+          'font-mono text-sm',
+          composite >= 0.7 ? 'text-green-400' : composite >= 0.5 ? 'text-yellow-400' : 'text-muted-foreground'
+        )}>
+          {(composite * 100).toFixed(1)}
+        </span>
+      </TableCell>
+
+      {/* Activity */}
+      <TableCell>
+        <span className={cn(
+          'font-mono text-sm',
+          activity >= 0.6 ? 'text-green-400' : activity >= 0.3 ? 'text-yellow-400' : 'text-muted-foreground'
+        )}>
+          {(activity * 100).toFixed(1)}
+        </span>
+      </TableCell>
+
+      {/* Quality */}
+      <TableCell>
+        <span className={cn(
+          'font-mono text-sm',
+          quality >= 0.6 ? 'text-green-400' : quality >= 0.4 ? 'text-yellow-400' : 'text-muted-foreground'
+        )}>
+          {(quality * 100).toFixed(1)}
+        </span>
+      </TableCell>
+
+      {/* Last Trade */}
+      <TableCell>
+        <span className="text-xs text-muted-foreground">
+          {timeAgo(wallet.last_trade_at || null)}
+        </span>
       </TableCell>
 
       {/* PnL */}
@@ -1258,16 +1410,25 @@ function ConfluenceCard({
   const [searchingOpportunity, setSearchingOpportunity] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const strengthPercent = Math.round(signal.strength * 100)
+  const convictionScore = Math.round(signal.conviction_score ?? strengthPercent)
+  const tier = (signal.tier || 'WATCH').toUpperCase()
   const signalColor = SIGNAL_TYPE_COLORS[signal.signal_type] || 'bg-muted-foreground/15 text-muted-foreground border-muted-foreground/20'
+  const tierColor =
+    tier === 'EXTREME'
+      ? 'bg-red-500/15 text-red-400 border-red-500/20'
+      : tier === 'HIGH'
+        ? 'bg-orange-500/15 text-orange-400 border-orange-500/20'
+        : 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20'
 
   const strengthBarColor =
-    strengthPercent >= 80 ? 'bg-green-500' :
-    strengthPercent >= 50 ? 'bg-yellow-500' :
+    convictionScore >= 80 ? 'bg-green-500' :
+    convictionScore >= 50 ? 'bg-yellow-500' :
     'bg-red-500'
 
-  const polymarketMarketUrl = signal.market_slug
-    ? `https://polymarket.com/event/${signal.market_slug}`
-    : null
+  const polymarketMarketUrl = buildPolymarketMarketUrl({
+    eventSlug: signal.market_slug,
+    marketId: signal.market_id,
+  })
 
   const handleFindOpportunity = async () => {
     if (!onExecuteTrade) return
@@ -1300,6 +1461,9 @@ function ConfluenceCard({
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <Badge variant="outline" className={cn("text-xs", signalColor)}>
                 {signal.signal_type.replace(/_/g, ' ')}
+              </Badge>
+              <Badge variant="outline" className={cn("text-xs font-semibold", tierColor)}>
+                {tier}
               </Badge>
               {!signal.is_active && (
                 <Badge variant="outline" className="text-[10px] bg-muted-foreground/10 text-muted-foreground border-muted-foreground/20">
@@ -1342,24 +1506,45 @@ function ConfluenceCard({
         {/* Strength Bar */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] text-muted-foreground">Strength</span>
-            <span className="text-xs font-medium">{strengthPercent}%</span>
+            <span className="text-[10px] text-muted-foreground">Conviction</span>
+            <span className="text-xs font-medium">{convictionScore}/100</span>
           </div>
           <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
             <div
               className={cn("h-full rounded-full transition-all", strengthBarColor)}
-              style={{ width: `${strengthPercent}%` }}
+              style={{ width: `${Math.max(0, Math.min(convictionScore, 100))}%` }}
             />
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            Strength {strengthPercent}%{signal.window_minutes ? ` • ${signal.window_minutes}m window` : ''}
           </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-3 text-xs">
+        <div className="grid grid-cols-4 gap-3 text-xs">
           <div>
             <p className="text-muted-foreground">Wallets</p>
             <p className="font-medium text-foreground flex items-center gap-1">
               <Users className="w-3 h-3 text-muted-foreground" />
               {signal.wallet_count}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Adj. Wallets</p>
+            <p className="font-medium text-foreground">
+              {signal.cluster_adjusted_wallet_count ?? signal.wallet_count}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Core Wallets</p>
+            <p className="font-medium text-foreground">
+              {signal.unique_core_wallets ?? 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Last Seen</p>
+            <p className="font-medium text-foreground">
+              {timeAgo(signal.last_seen_at || signal.detected_at)}
             </p>
           </div>
           {signal.avg_entry_price != null && (
@@ -1515,4 +1700,3 @@ function ConfluenceCard({
     </Card>
   )
 }
-

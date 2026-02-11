@@ -4,6 +4,7 @@ import json
 
 from models.database import AsyncSessionLocal
 from services import shared_state, wallet_tracker
+from services.weather import shared_state as weather_shared_state
 
 
 class ConnectionManager:
@@ -55,16 +56,19 @@ async def handle_websocket(websocket: WebSocket):
     # Send current state (from DB snapshot)
     async with AsyncSessionLocal() as session:
         opportunities, status = await shared_state.read_scanner_snapshot(session)
+        weather_opportunities, weather_status = await weather_shared_state.read_weather_snapshot(session)
     await manager.send_personal(
         websocket,
         {
             "type": "init",
             "data": {
                 "opportunities": [o.model_dump() for o in opportunities[:20]],
+                "weather_opportunities": [o.model_dump() for o in weather_opportunities[:20]],
                 "scanner_status": {
                     "running": status.get("running", False),
                     "last_scan": status.get("last_scan"),
                 },
+                "weather_status": weather_status,
             },
         },
     )
@@ -154,16 +158,37 @@ async def broadcast_crypto_markets(markets_data: list[dict]):
 
 
 async def broadcast_copy_trade_event(message: dict):
-    """Broadcast copy trading events (detection + execution) to all clients.
+    """Broadcast real-time trading intelligence events to all clients.
 
     Message types:
     - copy_trade_detected: A tracked wallet trade was detected on-chain
     - copy_trade_executed: A copy trade was executed (or failed)
+    - tracked_trader_signal: Confluence HIGH/EXTREME signal
+    - tracked_trader_pool_update: Smart wallet pool state update
 
-    These events carry latency metrics so the frontend can display
-    real-time copy trading activity and pipeline performance.
+    These events carry near-real-time metadata so the frontend can display
+    tracked-trader intelligence and copy-trading activity.
     """
     await manager.broadcast(message)
+
+
+async def broadcast_weather_update(opportunities: list[dict], status: dict):
+    """Broadcast weather workflow opportunity updates to all clients."""
+    await manager.broadcast(
+        {
+            "type": "weather_update",
+            "data": {
+                "count": len(opportunities),
+                "opportunities": opportunities[:100],
+                "status": status,
+            },
+        }
+    )
+
+
+async def broadcast_weather_status(status: dict):
+    """Broadcast weather workflow status changes to all clients."""
+    await manager.broadcast({"type": "weather_status", "data": status})
 
 
 # Register callbacks (scanner runs in worker process; no scanner callbacks here)
@@ -174,3 +199,12 @@ wallet_tracker.add_callback(broadcast_wallet_trade)
 from services.copy_trader import copy_trader as _copy_trader_instance
 
 _copy_trader_instance.set_ws_broadcast(broadcast_copy_trade_event)
+
+# Wire smart trader pool + confluence signal broadcasts.
+from services.smart_wallet_pool import smart_wallet_pool as _smart_wallet_pool_instance
+from services.wallet_intelligence import (
+    wallet_intelligence as _wallet_intelligence_instance,
+)
+
+_smart_wallet_pool_instance.set_ws_broadcast(broadcast_copy_trade_event)
+_wallet_intelligence_instance.confluence.set_ws_broadcast(broadcast_copy_trade_event)

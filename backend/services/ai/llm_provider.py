@@ -46,6 +46,7 @@ import httpx
 from sqlalchemy import case, func, select
 
 from models.database import AppSettings, AsyncSessionLocal, LLMModelCache, LLMUsageLog
+from utils.secrets import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -1354,33 +1355,39 @@ class LLMManager:
                     return
 
                 # Initialize providers for each configured API key
-                if app_settings.openai_api_key:
+                openai_key = decrypt_secret(app_settings.openai_api_key)
+                anthropic_key = decrypt_secret(app_settings.anthropic_api_key)
+                google_key = decrypt_secret(app_settings.google_api_key)
+                xai_key = decrypt_secret(app_settings.xai_api_key)
+                deepseek_key = decrypt_secret(app_settings.deepseek_api_key)
+
+                if openai_key:
                     self._providers[LLMProvider.OPENAI] = OpenAIProvider(
-                        api_key=app_settings.openai_api_key
+                        api_key=openai_key
                     )
                     logger.info("Initialized OpenAI LLM provider")
 
-                if app_settings.anthropic_api_key:
+                if anthropic_key:
                     self._providers[LLMProvider.ANTHROPIC] = AnthropicProvider(
-                        api_key=app_settings.anthropic_api_key
+                        api_key=anthropic_key
                     )
                     logger.info("Initialized Anthropic LLM provider")
 
-                if app_settings.google_api_key:
+                if google_key:
                     self._providers[LLMProvider.GOOGLE] = GoogleProvider(
-                        api_key=app_settings.google_api_key
+                        api_key=google_key
                     )
                     logger.info("Initialized Google LLM provider")
 
-                if app_settings.xai_api_key:
+                if xai_key:
                     self._providers[LLMProvider.XAI] = XAIProvider(
-                        api_key=app_settings.xai_api_key
+                        api_key=xai_key
                     )
                     logger.info("Initialized xAI LLM provider")
 
-                if app_settings.deepseek_api_key:
+                if deepseek_key:
                     self._providers[LLMProvider.DEEPSEEK] = DeepSeekProvider(
-                        api_key=app_settings.deepseek_api_key
+                        api_key=deepseek_key
                     )
                     logger.info("Initialized DeepSeek LLM provider")
 

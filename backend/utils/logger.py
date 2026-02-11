@@ -1,5 +1,4 @@
 import logging
-import os
 import sys
 import json
 from datetime import datetime
@@ -45,40 +44,53 @@ class ContextLogger:
         new_logger._context = {**self._context, **kwargs}
         return new_logger
 
-    def _log(self, level: int, msg: str, **kwargs):
-        extra_data = {**self._context, **kwargs}
-        # Walk up the call stack to capture the actual caller's location
-        # 0 = _log, 1 = debug/info/etc, 2 = actual caller
-        frame = sys._getframe(2)
-        filename = frame.f_code.co_filename
-        record = self.logger.makeRecord(
-            self.logger.name,
+    def _log(self, level: int, msg: str, *args: Any, **kwargs: Any):
+        # Support stdlib-style logger kwargs while preserving structured context.
+        exc_info = kwargs.pop("exc_info", None)
+        stack_info = kwargs.pop("stack_info", False)
+        stacklevel = kwargs.pop("stacklevel", 1)
+        extra = kwargs.pop("extra", None)
+
+        try:
+            stacklevel_int = max(1, int(stacklevel))
+        except (TypeError, ValueError):
+            stacklevel_int = 1
+
+        extra_data: dict[str, Any] = dict(self._context)
+        if isinstance(extra, dict):
+            extra_data.update(extra)
+        elif extra is not None:
+            extra_data["extra"] = extra
+        extra_data.update(kwargs)
+
+        self.logger.log(
             level,
-            filename,
-            frame.f_lineno,
             msg,
-            (),
-            None,
-            func=frame.f_code.co_name,
+            *args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel_int + 2,  # skip ContextLogger wrappers
+            extra={"extra_data": extra_data if extra_data else None},
         )
-        record.module = os.path.splitext(os.path.basename(filename))[0]
-        record.extra_data = extra_data if extra_data else None
-        self.logger.handle(record)
 
-    def debug(self, msg: str, **kwargs):
-        self._log(logging.DEBUG, msg, **kwargs)
+    def debug(self, msg: str, *args: Any, **kwargs: Any):
+        self._log(logging.DEBUG, msg, *args, **kwargs)
 
-    def info(self, msg: str, **kwargs):
-        self._log(logging.INFO, msg, **kwargs)
+    def info(self, msg: str, *args: Any, **kwargs: Any):
+        self._log(logging.INFO, msg, *args, **kwargs)
 
-    def warning(self, msg: str, **kwargs):
-        self._log(logging.WARNING, msg, **kwargs)
+    def warning(self, msg: str, *args: Any, **kwargs: Any):
+        self._log(logging.WARNING, msg, *args, **kwargs)
 
-    def error(self, msg: str, **kwargs):
-        self._log(logging.ERROR, msg, **kwargs)
+    def error(self, msg: str, *args: Any, **kwargs: Any):
+        self._log(logging.ERROR, msg, *args, **kwargs)
 
-    def critical(self, msg: str, **kwargs):
-        self._log(logging.CRITICAL, msg, **kwargs)
+    def critical(self, msg: str, *args: Any, **kwargs: Any):
+        self._log(logging.CRITICAL, msg, *args, **kwargs)
+
+    def exception(self, msg: str, *args: Any, **kwargs: Any):
+        kwargs.setdefault("exc_info", True)
+        self._log(logging.ERROR, msg, *args, **kwargs)
 
 
 def setup_logging(level: str = "INFO", json_format: bool = True, log_file: str = None):

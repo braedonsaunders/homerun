@@ -3,11 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, List
 
 from config import settings
+from interfaces import MarketDataProvider
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
-from services.polymarket import polymarket_client
-from services.kalshi_client import kalshi_client
 from services.strategies import (
     BasicArbStrategy,
     NegRiskStrategy,
@@ -30,6 +29,7 @@ from services.strategies import (
     StatArbStrategy,
 )
 from services.plugin_loader import plugin_loader, PluginValidationError
+from services.providers import market_data_provider
 from services.pause_state import global_pause_state
 from services.market_prioritizer import market_prioritizer, MarketTier
 from services.ws_feeds import get_feed_manager
@@ -45,11 +45,19 @@ def _make_aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
+def _to_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
+    """Format datetime as canonical UTC ISO string with trailing Z."""
+    aware = _make_aware(dt)
+    if aware is None:
+        return None
+    return aware.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+
 class ArbitrageScanner:
     """Main scanner that orchestrates arbitrage detection"""
 
-    def __init__(self):
-        self.client = polymarket_client
+    def __init__(self, data_provider: Optional[MarketDataProvider] = None):
+        self.market_data = data_provider or market_data_provider
         self.strategies = [
             BasicArbStrategy(),
             NegRiskStrategy(),  # Most profitable historically
@@ -128,6 +136,12 @@ class ArbitrageScanner:
         self._cached_markets: list = []
         self._cached_prices: dict = {}
 
+        # Real yes/no price history for opportunity card sparklines.
+        # market_id -> [{t: epoch_ms, yes: float, no: float}, ...]
+        self._market_price_history: dict[str, list[dict[str, float]]] = {}
+        self._market_history_max_points: int = 120
+        self._market_history_retention_seconds: int = 3600
+
         # Reactive scanning: event set by WS price changes to trigger immediate scan
         self._reactive_trigger = asyncio.Event()
         self._reactive_scan_registered = False
@@ -201,6 +215,114 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"  WS price merge failed (using HTTP): {e}")
             return http_prices
+
+    @staticmethod
+    def _price_value(raw: Optional[dict]) -> Optional[float]:
+        """Extract a usable midpoint-like value from a price payload."""
+        if not isinstance(raw, dict):
+            return None
+        for key in ("mid", "yes", "price"):
+            val = raw.get(key)
+            if isinstance(val, (float, int)) and val > 0:
+                return float(val)
+        bid = raw.get("bid")
+        ask = raw.get("ask")
+        if isinstance(bid, (float, int)) and isinstance(ask, (float, int)):
+            if bid > 0 and ask > 0:
+                return float((bid + ask) / 2.0)
+            if bid > 0:
+                return float(bid)
+            if ask > 0:
+                return float(ask)
+        return None
+
+    def _extract_market_yes_no_prices(self, market, prices: dict) -> tuple[Optional[float], Optional[float]]:
+        """Resolve yes/no prices from token mids with model fallback."""
+        yes = None
+        no = None
+
+        token_ids = getattr(market, "clob_token_ids", None) or []
+        if len(token_ids) >= 2:
+            yes = self._price_value(prices.get(token_ids[0]))
+            no = self._price_value(prices.get(token_ids[1]))
+
+        if yes is None:
+            try:
+                yes = float(market.yes_price)
+            except Exception:
+                yes = None
+        if no is None:
+            try:
+                no = float(market.no_price)
+            except Exception:
+                no = None
+
+        if yes is None or no is None:
+            raw = getattr(market, "outcome_prices", None) or []
+            if len(raw) >= 2:
+                if yes is None:
+                    yes = float(raw[0])
+                if no is None:
+                    no = float(raw[1])
+
+        if yes is None or no is None:
+            return None, None
+        return yes, no
+
+    def _update_market_price_history(self, markets: list, prices: dict, ts: datetime) -> None:
+        """Append current real market prices to bounded in-memory history."""
+        now_ms = int(ts.timestamp() * 1000)
+        cutoff_ms = now_ms - int(self._market_history_retention_seconds * 1000)
+
+        for market in markets:
+            market_id = getattr(market, "id", "")
+            if not market_id:
+                continue
+            yes, no = self._extract_market_yes_no_prices(market, prices)
+            if yes is None or no is None:
+                continue
+            if yes <= 0 or no <= 0:
+                continue
+
+            point = {
+                "t": float(now_ms),
+                "yes": float(round(yes, 6)),
+                "no": float(round(no, 6)),
+            }
+            history = self._market_price_history.setdefault(market_id, [])
+            if history:
+                last = history[-1]
+                if (
+                    abs(last.get("yes", 0.0) - point["yes"]) < 1e-9
+                    and abs(last.get("no", 0.0) - point["no"]) < 1e-9
+                ):
+                    last["t"] = point["t"]
+                    continue
+            history.append(point)
+
+            while history and history[0].get("t", 0) < cutoff_ms:
+                history.pop(0)
+            if len(history) > self._market_history_max_points:
+                del history[: len(history) - self._market_history_max_points]
+
+    def get_market_history_for_opportunities(
+        self, opportunities: list[ArbitrageOpportunity], max_points: int = 40
+    ) -> dict[str, list[dict[str, float]]]:
+        """Return compact market history map for markets present in opportunities."""
+        market_ids: set[str] = set()
+        for opp in opportunities:
+            for market in opp.markets:
+                mid = market.get("id", "")
+                if mid:
+                    market_ids.add(mid)
+
+        out: dict[str, list[dict[str, float]]] = {}
+        limit = max(2, min(300, max_points))
+        for mid in market_ids:
+            hist = self._market_price_history.get(mid, [])
+            if hist:
+                out[mid] = hist[-limit:]
+        return out
 
     async def _notify_status_change(self):
         """Notify all status callbacks of a change"""
@@ -361,8 +483,8 @@ class ArbitrageScanner:
         try:
             # Fetch events and markets concurrently (they are independent)
             events, markets = await asyncio.gather(
-                self.client.get_all_events(closed=False),
-                self.client.get_all_markets(active=True),
+                self.market_data.get_all_events(closed=False),
+                self.market_data.get_all_markets(active=True),
             )
 
             # Filter out markets whose end_date has already passed —
@@ -398,7 +520,9 @@ class ArbitrageScanner:
             if settings.CROSS_PLATFORM_ENABLED:
                 await self._set_activity("Fetching Kalshi markets...")
                 try:
-                    kalshi_markets = await kalshi_client.get_all_markets(active=True)
+                    kalshi_markets = await self.market_data.get_cross_platform_markets(
+                        active=True
+                    )
                     kalshi_markets = [
                         m
                         for m in kalshi_markets
@@ -407,7 +531,9 @@ class ArbitrageScanner:
                     kalshi_market_count = len(kalshi_markets)
                     markets.extend(kalshi_markets)
 
-                    kalshi_events = await kalshi_client.get_all_events(closed=False)
+                    kalshi_events = await self.market_data.get_cross_platform_events(
+                        closed=False
+                    )
                     for ke in kalshi_events:
                         ke.markets = [
                             m
@@ -448,7 +574,7 @@ class ArbitrageScanner:
                 )
                 # Sample tokens if too many
                 token_sample = all_token_ids[:500]
-                prices = await self.client.get_prices_batch(token_sample)
+                prices = await self.market_data.get_prices_batch(token_sample)
                 print(f"  Fetched prices for {len(prices)} tokens")
 
             # Overlay WebSocket real-time prices where available
@@ -458,6 +584,7 @@ class ArbitrageScanner:
             self._cached_events = list(events)
             self._cached_markets = list(markets)
             self._cached_prices = dict(prices)
+            self._update_market_price_history(markets, prices, now)
 
             # Subscribe to WebSocket feeds for active market tokens
             if settings.WS_FEED_ENABLED:
@@ -490,9 +617,20 @@ class ArbitrageScanner:
                         changed = prioritizer.get_changed_markets(mkts)
                         return t_map, changed
 
-                    tier_map, changed = await loop.run_in_executor(
-                        None, _run_prioritizer, self._prioritizer, markets, now
-                    )
+                    try:
+                        tier_map, changed = await loop.run_in_executor(
+                            None, _run_prioritizer, self._prioritizer, markets, now
+                        )
+                    except RuntimeError as e:
+                        # Some monitor integrations require an active loop in the
+                        # current thread. Retry on the main loop instead of failing
+                        # the whole prioritizer pass.
+                        if "no current event loop" in str(e).lower():
+                            tier_map, changed = _run_prioritizer(
+                                self._prioritizer, markets, now
+                            )
+                        else:
+                            raise
                     unchanged_count = len(markets) - len(changed)
 
                     # For full scans, still run all markets through strategies
@@ -671,7 +809,9 @@ class ArbitrageScanner:
             new_markets: list = []
             if settings.INCREMENTAL_FETCH_ENABLED:
                 try:
-                    new_markets = await self.client.get_recent_markets(since_minutes=5)
+                    new_markets = await self.market_data.get_recent_markets(
+                        since_minutes=5
+                    )
                     if new_markets:
                         print(
                             f"  Incremental: {len(new_markets)} recently created markets"
@@ -723,7 +863,7 @@ class ArbitrageScanner:
                 await self._set_activity(
                     f"Fast scan: fetching prices for {min(len(hot_token_ids), 200)} hot-tier tokens..."
                 )
-                hot_prices = await self.client.get_prices_batch(hot_token_ids[:200])
+                hot_prices = await self.market_data.get_prices_batch(hot_token_ids[:200])
                 print(f"  Fetched prices for {len(hot_prices)} hot-tier tokens")
 
             # Overlay WebSocket real-time prices where available
@@ -731,6 +871,7 @@ class ArbitrageScanner:
 
             # Merge with cached prices
             merged_prices = {**self._cached_prices, **hot_prices}
+            self._update_market_price_history(hot_markets, merged_prices, now)
 
             # 6. Change detection: only evaluate markets whose prices moved (CPU-bound)
             changed_markets = await loop.run_in_executor(
@@ -755,18 +896,13 @@ class ArbitrageScanner:
                 f"Fast scan: running strategies on {len(changed_markets)} changed markets..."
             )
 
-            # 7. Run strategies on changed markets only
-            # Use the full cached events/markets for context, but strategies
-            # will find opportunities primarily in the changed subset
-            all_markets_for_strategies = self._cached_markets
-            events_for_strategies = self._cached_events
-
-            # Filter expired
+            # 7. Run strategies on changed markets only (full events kept for context)
             all_markets_for_strategies = [
                 m
-                for m in all_markets_for_strategies
+                for m in changed_markets
                 if m.end_date is None or _make_aware(m.end_date) > now
             ]
+            events_for_strategies = self._cached_events
 
             loop = asyncio.get_running_loop()
             fast_opportunities = []
@@ -876,30 +1012,29 @@ class ArbitrageScanner:
                 return
 
             loop = asyncio.get_running_loop()
-            executor = ThreadPoolExecutor(
+            with ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="news_prefetch"
-            )
+            ) as executor:
+                if not semantic_matcher._initialized:
+                    await loop.run_in_executor(executor, semantic_matcher.initialize)
 
-            if not semantic_matcher._initialized:
-                await loop.run_in_executor(executor, semantic_matcher.initialize)
+                await loop.run_in_executor(
+                    executor, semantic_matcher.update_market_index, market_infos
+                )
 
-            await loop.run_in_executor(
-                executor, semantic_matcher.update_market_index, market_infos
-            )
+                # Step 3: Embed articles (local ML, free)
+                await loop.run_in_executor(
+                    executor, semantic_matcher.embed_articles, all_articles
+                )
 
-            # Step 3: Embed articles (local ML, free)
-            await loop.run_in_executor(
-                executor, semantic_matcher.embed_articles, all_articles
-            )
-
-            # Step 4: Match articles to markets (local, free)
-            matches = await loop.run_in_executor(
-                executor,
-                semantic_matcher.match_articles_to_markets,
-                all_articles,
-                3,
-                settings.NEWS_SIMILARITY_THRESHOLD,
-            )
+                # Step 4: Match articles to markets (local, free)
+                matches = await loop.run_in_executor(
+                    executor,
+                    semantic_matcher.match_articles_to_markets,
+                    all_articles,
+                    3,
+                    settings.NEWS_SIMILARITY_THRESHOLD,
+                )
 
             print(
                 f"  News prefetch: {len(all_articles)} articles, "
@@ -1339,18 +1474,20 @@ class ArbitrageScanner:
             "enabled": self._enabled,
             "interval_seconds": self._interval_seconds,
             "auto_ai_scoring": self._auto_ai_scoring,
-            "last_scan": (self._last_scan.isoformat() + "Z")
-            if self._last_scan
-            else None,
+            "last_scan": _to_iso_utc_z(self._last_scan),
             "opportunities_count": len(self._opportunities),
             "current_activity": self._current_activity,
             "strategies": [
-                {"name": s.name, "type": s.strategy_type.value} for s in self.strategies
+                {
+                    "name": getattr(s, "name", self._strategy_key(s) or "Unknown"),
+                    "type": self._strategy_key(s),
+                }
+                for s in self.strategies
             ]
             + [
                 {
                     "name": self._news_edge_strategy.name,
-                    "type": self._news_edge_strategy.strategy_type.value,
+                    "type": self._strategy_key(self._news_edge_strategy),
                 }
             ],
         }
@@ -1371,12 +1508,8 @@ class ArbitrageScanner:
                 "fast_scan_interval": settings.FAST_SCAN_INTERVAL_SECONDS,
                 "full_scan_interval": settings.FULL_SCAN_INTERVAL_SECONDS,
                 "fast_scan_cycle": self._fast_scan_cycle,
-                "last_full_scan": (self._last_full_scan.isoformat() + "Z")
-                if self._last_full_scan
-                else None,
-                "last_fast_scan": (self._last_fast_scan.isoformat() + "Z")
-                if self._last_fast_scan
-                else None,
+                "last_full_scan": _to_iso_utc_z(self._last_full_scan),
+                "last_fast_scan": _to_iso_utc_z(self._last_fast_scan),
                 "cached_markets": len(self._cached_markets),
                 "cached_events": len(self._cached_events),
                 **prioritizer_stats,

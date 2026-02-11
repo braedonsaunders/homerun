@@ -7,11 +7,23 @@ Endpoints for managing application settings.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
 
 from sqlalchemy import select
 from models.database import AsyncSessionLocal, AppSettings
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
+from api.settings_helpers import (
+    apply_update_request,
+    kalshi_payload,
+    llm_payload,
+    maintenance_payload,
+    notifications_payload,
+    polymarket_payload,
+    scanner_payload,
+    search_filters_payload,
+    trading_payload,
+    trading_proxy_payload,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["Settings"])
@@ -454,18 +466,6 @@ class UpdateSettingsRequest(BaseModel):
     search_filters: Optional[SearchFilterSettings] = None
 
 
-# ==================== HELPER FUNCTIONS ====================
-
-
-def mask_secret(value: Optional[str], show_chars: int = 4) -> Optional[str]:
-    """Mask a secret value, showing only first few characters"""
-    if not value:
-        return None
-    if len(value) <= show_chars:
-        return "*" * len(value)
-    return value[:show_chars] + "*" * (len(value) - show_chars)
-
-
 async def get_or_create_settings() -> AppSettings:
     """Get existing settings or create default"""
     async with AsyncSessionLocal() as session:
@@ -497,231 +497,15 @@ async def get_settings():
         settings = await get_or_create_settings()
 
         return AllSettings(
-            polymarket=PolymarketSettings(
-                api_key=mask_secret(settings.polymarket_api_key),
-                api_secret=mask_secret(settings.polymarket_api_secret),
-                api_passphrase=mask_secret(settings.polymarket_api_passphrase),
-                private_key=mask_secret(settings.polymarket_private_key),
-            ),
-            kalshi=KalshiSettings(
-                email=settings.kalshi_email,
-                password=mask_secret(settings.kalshi_password),
-                api_key=mask_secret(settings.kalshi_api_key),
-            ),
-            llm=LLMSettings(
-                provider=settings.llm_provider or "none",
-                openai_api_key=mask_secret(settings.openai_api_key),
-                anthropic_api_key=mask_secret(settings.anthropic_api_key),
-                google_api_key=mask_secret(settings.google_api_key),
-                xai_api_key=mask_secret(settings.xai_api_key),
-                deepseek_api_key=mask_secret(settings.deepseek_api_key),
-                model=settings.llm_model,
-                max_monthly_spend=settings.ai_max_monthly_spend,
-            ),
-            notifications=NotificationSettings(
-                enabled=settings.notifications_enabled,
-                telegram_bot_token=mask_secret(settings.telegram_bot_token),
-                telegram_chat_id=settings.telegram_chat_id,
-                notify_on_opportunity=settings.notify_on_opportunity,
-                notify_on_trade=settings.notify_on_trade,
-                notify_min_roi=settings.notify_min_roi,
-            ),
-            scanner=ScannerSettingsModel(
-                scan_interval_seconds=settings.scan_interval_seconds,
-                min_profit_threshold=settings.min_profit_threshold,
-                max_markets_to_scan=settings.max_markets_to_scan,
-                min_liquidity=settings.min_liquidity,
-            ),
-            trading=TradingSettings(
-                trading_enabled=settings.trading_enabled,
-                max_trade_size_usd=settings.max_trade_size_usd,
-                max_daily_trade_volume=settings.max_daily_trade_volume,
-                max_open_positions=settings.max_open_positions,
-                max_slippage_percent=settings.max_slippage_percent,
-            ),
-            maintenance=MaintenanceSettings(
-                auto_cleanup_enabled=settings.auto_cleanup_enabled,
-                cleanup_interval_hours=settings.cleanup_interval_hours,
-                cleanup_resolved_trade_days=settings.cleanup_resolved_trade_days,
-            ),
-            trading_proxy=TradingProxySettings(
-                enabled=settings.trading_proxy_enabled or False,
-                proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
-                verify_ssl=settings.trading_proxy_verify_ssl
-                if settings.trading_proxy_verify_ssl is not None
-                else True,
-                timeout=settings.trading_proxy_timeout or 30.0,
-                require_vpn=settings.trading_proxy_require_vpn
-                if settings.trading_proxy_require_vpn is not None
-                else True,
-            ),
-            search_filters=SearchFilterSettings(
-                min_liquidity_hard=settings.min_liquidity_hard
-                if settings.min_liquidity_hard is not None
-                else 200.0,
-                min_position_size=settings.min_position_size
-                if settings.min_position_size is not None
-                else 25.0,
-                min_absolute_profit=settings.min_absolute_profit
-                if settings.min_absolute_profit is not None
-                else 5.0,
-                min_annualized_roi=settings.min_annualized_roi
-                if settings.min_annualized_roi is not None
-                else 10.0,
-                max_resolution_months=settings.max_resolution_months
-                if settings.max_resolution_months is not None
-                else 18,
-                max_plausible_roi=settings.max_plausible_roi
-                if settings.max_plausible_roi is not None
-                else 30.0,
-                max_trade_legs=settings.max_trade_legs
-                if settings.max_trade_legs is not None
-                else 8,
-                negrisk_min_total_yes=settings.negrisk_min_total_yes
-                if settings.negrisk_min_total_yes is not None
-                else 0.95,
-                negrisk_warn_total_yes=settings.negrisk_warn_total_yes
-                if settings.negrisk_warn_total_yes is not None
-                else 0.97,
-                negrisk_election_min_total_yes=settings.negrisk_election_min_total_yes
-                if settings.negrisk_election_min_total_yes is not None
-                else 0.97,
-                negrisk_max_resolution_spread_days=settings.negrisk_max_resolution_spread_days
-                if settings.negrisk_max_resolution_spread_days is not None
-                else 7,
-                settlement_lag_max_days_to_resolution=settings.settlement_lag_max_days_to_resolution
-                if settings.settlement_lag_max_days_to_resolution is not None
-                else 14,
-                settlement_lag_near_zero=settings.settlement_lag_near_zero
-                if settings.settlement_lag_near_zero is not None
-                else 0.05,
-                settlement_lag_near_one=settings.settlement_lag_near_one
-                if settings.settlement_lag_near_one is not None
-                else 0.95,
-                settlement_lag_min_sum_deviation=settings.settlement_lag_min_sum_deviation
-                if settings.settlement_lag_min_sum_deviation is not None
-                else 0.03,
-                risk_very_short_days=settings.risk_very_short_days
-                if settings.risk_very_short_days is not None
-                else 2,
-                risk_short_days=settings.risk_short_days
-                if settings.risk_short_days is not None
-                else 7,
-                risk_long_lockup_days=settings.risk_long_lockup_days
-                if settings.risk_long_lockup_days is not None
-                else 180,
-                risk_extended_lockup_days=settings.risk_extended_lockup_days
-                if settings.risk_extended_lockup_days is not None
-                else 90,
-                risk_low_liquidity=settings.risk_low_liquidity
-                if settings.risk_low_liquidity is not None
-                else 1000.0,
-                risk_moderate_liquidity=settings.risk_moderate_liquidity
-                if settings.risk_moderate_liquidity is not None
-                else 5000.0,
-                risk_complex_legs=settings.risk_complex_legs
-                if settings.risk_complex_legs is not None
-                else 5,
-                risk_multiple_legs=settings.risk_multiple_legs
-                if settings.risk_multiple_legs is not None
-                else 3,
-                btc_eth_hf_series_btc_15m=settings.btc_eth_hf_series_btc_15m
-                if settings.btc_eth_hf_series_btc_15m is not None
-                else "10192",
-                btc_eth_hf_series_eth_15m=settings.btc_eth_hf_series_eth_15m
-                if settings.btc_eth_hf_series_eth_15m is not None
-                else "10191",
-                btc_eth_hf_series_sol_15m=settings.btc_eth_hf_series_sol_15m
-                if settings.btc_eth_hf_series_sol_15m is not None
-                else "10423",
-                btc_eth_hf_series_xrp_15m=settings.btc_eth_hf_series_xrp_15m
-                if settings.btc_eth_hf_series_xrp_15m is not None
-                else "10422",
-                btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined
-                if settings.btc_eth_pure_arb_max_combined is not None
-                else 0.98,
-                btc_eth_dump_hedge_drop_pct=settings.btc_eth_dump_hedge_drop_pct
-                if settings.btc_eth_dump_hedge_drop_pct is not None
-                else 0.05,
-                btc_eth_thin_liquidity_usd=settings.btc_eth_thin_liquidity_usd
-                if settings.btc_eth_thin_liquidity_usd is not None
-                else 500.0,
-                miracle_min_no_price=settings.miracle_min_no_price
-                if settings.miracle_min_no_price is not None
-                else 0.90,
-                miracle_max_no_price=settings.miracle_max_no_price
-                if settings.miracle_max_no_price is not None
-                else 0.995,
-                miracle_min_impossibility_score=settings.miracle_min_impossibility_score
-                if settings.miracle_min_impossibility_score is not None
-                else 0.70,
-                btc_eth_hf_enabled=settings.btc_eth_hf_enabled
-                if settings.btc_eth_hf_enabled is not None
-                else True,
-                cross_platform_enabled=settings.cross_platform_enabled
-                if settings.cross_platform_enabled is not None
-                else True,
-                combinatorial_min_confidence=settings.combinatorial_min_confidence
-                if settings.combinatorial_min_confidence is not None
-                else 0.75,
-                combinatorial_high_confidence=settings.combinatorial_high_confidence
-                if settings.combinatorial_high_confidence is not None
-                else 0.90,
-                bayesian_cascade_enabled=settings.bayesian_cascade_enabled
-                if settings.bayesian_cascade_enabled is not None
-                else True,
-                bayesian_min_edge_percent=settings.bayesian_min_edge_percent
-                if settings.bayesian_min_edge_percent is not None
-                else 5.0,
-                bayesian_propagation_depth=settings.bayesian_propagation_depth
-                if settings.bayesian_propagation_depth is not None
-                else 3,
-                liquidity_vacuum_enabled=settings.liquidity_vacuum_enabled
-                if settings.liquidity_vacuum_enabled is not None
-                else True,
-                liquidity_vacuum_min_imbalance_ratio=settings.liquidity_vacuum_min_imbalance_ratio
-                if settings.liquidity_vacuum_min_imbalance_ratio is not None
-                else 5.0,
-                liquidity_vacuum_min_depth_usd=settings.liquidity_vacuum_min_depth_usd
-                if settings.liquidity_vacuum_min_depth_usd is not None
-                else 100.0,
-                entropy_arb_enabled=settings.entropy_arb_enabled
-                if settings.entropy_arb_enabled is not None
-                else True,
-                entropy_arb_min_deviation=settings.entropy_arb_min_deviation
-                if settings.entropy_arb_min_deviation is not None
-                else 0.25,
-                event_driven_enabled=settings.event_driven_enabled
-                if settings.event_driven_enabled is not None
-                else True,
-                temporal_decay_enabled=settings.temporal_decay_enabled
-                if settings.temporal_decay_enabled is not None
-                else True,
-                correlation_arb_enabled=settings.correlation_arb_enabled
-                if settings.correlation_arb_enabled is not None
-                else True,
-                correlation_arb_min_correlation=settings.correlation_arb_min_correlation
-                if settings.correlation_arb_min_correlation is not None
-                else 0.7,
-                correlation_arb_min_divergence=settings.correlation_arb_min_divergence
-                if settings.correlation_arb_min_divergence is not None
-                else 0.05,
-                market_making_enabled=settings.market_making_enabled
-                if settings.market_making_enabled is not None
-                else True,
-                market_making_spread_bps=settings.market_making_spread_bps
-                if settings.market_making_spread_bps is not None
-                else 100.0,
-                market_making_max_inventory_usd=settings.market_making_max_inventory_usd
-                if settings.market_making_max_inventory_usd is not None
-                else 500.0,
-                stat_arb_enabled=settings.stat_arb_enabled
-                if settings.stat_arb_enabled is not None
-                else True,
-                stat_arb_min_edge=settings.stat_arb_min_edge
-                if settings.stat_arb_min_edge is not None
-                else 0.05,
-            ),
+            polymarket=PolymarketSettings(**polymarket_payload(settings)),
+            kalshi=KalshiSettings(**kalshi_payload(settings)),
+            llm=LLMSettings(**llm_payload(settings)),
+            notifications=NotificationSettings(**notifications_payload(settings)),
+            scanner=ScannerSettingsModel(**scanner_payload(settings)),
+            trading=TradingSettings(**trading_payload(settings)),
+            maintenance=MaintenanceSettings(**maintenance_payload(settings)),
+            trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
+            search_filters=SearchFilterSettings(**search_filters_payload(settings)),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
     except Exception as e:
@@ -748,184 +532,12 @@ async def update_settings(request: UpdateSettingsRequest):
                 settings = AppSettings(id="default")
                 session.add(settings)
 
-            # Update Polymarket settings
-            if request.polymarket:
-                pm = request.polymarket
-                if pm.api_key is not None:
-                    settings.polymarket_api_key = pm.api_key or None
-                if pm.api_secret is not None:
-                    settings.polymarket_api_secret = pm.api_secret or None
-                if pm.api_passphrase is not None:
-                    settings.polymarket_api_passphrase = pm.api_passphrase or None
-                if pm.private_key is not None:
-                    settings.polymarket_private_key = pm.private_key or None
-
-            # Update Kalshi settings
-            if request.kalshi:
-                kal = request.kalshi
-                if kal.email is not None:
-                    settings.kalshi_email = kal.email or None
-                if kal.password is not None:
-                    settings.kalshi_password = kal.password or None
-                if kal.api_key is not None:
-                    settings.kalshi_api_key = kal.api_key or None
-
-            # Update LLM settings
-            if request.llm:
-                llm = request.llm
-                if llm.provider is not None:
-                    settings.llm_provider = llm.provider
-                if llm.openai_api_key is not None:
-                    settings.openai_api_key = llm.openai_api_key or None
-                if llm.anthropic_api_key is not None:
-                    settings.anthropic_api_key = llm.anthropic_api_key or None
-                if llm.google_api_key is not None:
-                    settings.google_api_key = llm.google_api_key or None
-                if llm.xai_api_key is not None:
-                    settings.xai_api_key = llm.xai_api_key or None
-                if llm.deepseek_api_key is not None:
-                    settings.deepseek_api_key = llm.deepseek_api_key or None
-                if llm.model is not None:
-                    settings.llm_model = llm.model or None
-                    settings.ai_default_model = llm.model or None
-                if llm.max_monthly_spend is not None:
-                    settings.ai_max_monthly_spend = llm.max_monthly_spend
-
-            # Update Notification settings
-            if request.notifications:
-                notif = request.notifications
-                settings.notifications_enabled = notif.enabled
-                if notif.telegram_bot_token is not None:
-                    settings.telegram_bot_token = notif.telegram_bot_token or None
-                if notif.telegram_chat_id is not None:
-                    settings.telegram_chat_id = notif.telegram_chat_id or None
-                settings.notify_on_opportunity = notif.notify_on_opportunity
-                settings.notify_on_trade = notif.notify_on_trade
-                settings.notify_min_roi = notif.notify_min_roi
-
-            # Update Scanner settings
-            if request.scanner:
-                scan = request.scanner
-                settings.scan_interval_seconds = scan.scan_interval_seconds
-                settings.min_profit_threshold = scan.min_profit_threshold
-                settings.max_markets_to_scan = scan.max_markets_to_scan
-                settings.min_liquidity = scan.min_liquidity
-
-            # Update Trading settings
-            if request.trading:
-                trade = request.trading
-                settings.trading_enabled = trade.trading_enabled
-                settings.max_trade_size_usd = trade.max_trade_size_usd
-                settings.max_daily_trade_volume = trade.max_daily_trade_volume
-                settings.max_open_positions = trade.max_open_positions
-                settings.max_slippage_percent = trade.max_slippage_percent
-
-            # Update Maintenance settings
-            if request.maintenance:
-                maint = request.maintenance
-                settings.auto_cleanup_enabled = maint.auto_cleanup_enabled
-                settings.cleanup_interval_hours = maint.cleanup_interval_hours
-                settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
-
-            # Update Search Filter settings
-            if request.search_filters:
-                sf = request.search_filters
-                settings.min_liquidity_hard = sf.min_liquidity_hard
-                settings.min_position_size = sf.min_position_size
-                settings.min_absolute_profit = sf.min_absolute_profit
-                settings.min_annualized_roi = sf.min_annualized_roi
-                settings.max_resolution_months = sf.max_resolution_months
-                settings.max_plausible_roi = sf.max_plausible_roi
-                settings.max_trade_legs = sf.max_trade_legs
-                settings.negrisk_min_total_yes = sf.negrisk_min_total_yes
-                settings.negrisk_warn_total_yes = sf.negrisk_warn_total_yes
-                settings.negrisk_election_min_total_yes = (
-                    sf.negrisk_election_min_total_yes
-                )
-                settings.negrisk_max_resolution_spread_days = (
-                    sf.negrisk_max_resolution_spread_days
-                )
-                settings.settlement_lag_max_days_to_resolution = (
-                    sf.settlement_lag_max_days_to_resolution
-                )
-                settings.settlement_lag_near_zero = sf.settlement_lag_near_zero
-                settings.settlement_lag_near_one = sf.settlement_lag_near_one
-                settings.settlement_lag_min_sum_deviation = (
-                    sf.settlement_lag_min_sum_deviation
-                )
-                settings.risk_very_short_days = sf.risk_very_short_days
-                settings.risk_short_days = sf.risk_short_days
-                settings.risk_long_lockup_days = sf.risk_long_lockup_days
-                settings.risk_extended_lockup_days = sf.risk_extended_lockup_days
-                settings.risk_low_liquidity = sf.risk_low_liquidity
-                settings.risk_moderate_liquidity = sf.risk_moderate_liquidity
-                settings.risk_complex_legs = sf.risk_complex_legs
-                settings.risk_multiple_legs = sf.risk_multiple_legs
-                settings.btc_eth_pure_arb_max_combined = (
-                    sf.btc_eth_pure_arb_max_combined
-                )
-                settings.btc_eth_dump_hedge_drop_pct = sf.btc_eth_dump_hedge_drop_pct
-                settings.btc_eth_thin_liquidity_usd = sf.btc_eth_thin_liquidity_usd
-                settings.btc_eth_hf_series_btc_15m = sf.btc_eth_hf_series_btc_15m
-                settings.btc_eth_hf_series_eth_15m = sf.btc_eth_hf_series_eth_15m
-                settings.btc_eth_hf_series_sol_15m = sf.btc_eth_hf_series_sol_15m
-                settings.btc_eth_hf_series_xrp_15m = sf.btc_eth_hf_series_xrp_15m
-                settings.miracle_min_no_price = sf.miracle_min_no_price
-                settings.miracle_max_no_price = sf.miracle_max_no_price
-                settings.miracle_min_impossibility_score = (
-                    sf.miracle_min_impossibility_score
-                )
-                settings.btc_eth_hf_enabled = sf.btc_eth_hf_enabled
-                settings.cross_platform_enabled = sf.cross_platform_enabled
-                settings.combinatorial_min_confidence = sf.combinatorial_min_confidence
-                settings.combinatorial_high_confidence = (
-                    sf.combinatorial_high_confidence
-                )
-                settings.bayesian_cascade_enabled = sf.bayesian_cascade_enabled
-                settings.bayesian_min_edge_percent = sf.bayesian_min_edge_percent
-                settings.bayesian_propagation_depth = sf.bayesian_propagation_depth
-                settings.liquidity_vacuum_enabled = sf.liquidity_vacuum_enabled
-                settings.liquidity_vacuum_min_imbalance_ratio = (
-                    sf.liquidity_vacuum_min_imbalance_ratio
-                )
-                settings.liquidity_vacuum_min_depth_usd = (
-                    sf.liquidity_vacuum_min_depth_usd
-                )
-                settings.entropy_arb_enabled = sf.entropy_arb_enabled
-                settings.entropy_arb_min_deviation = sf.entropy_arb_min_deviation
-                settings.event_driven_enabled = sf.event_driven_enabled
-                settings.temporal_decay_enabled = sf.temporal_decay_enabled
-                settings.correlation_arb_enabled = sf.correlation_arb_enabled
-                settings.correlation_arb_min_correlation = (
-                    sf.correlation_arb_min_correlation
-                )
-                settings.correlation_arb_min_divergence = (
-                    sf.correlation_arb_min_divergence
-                )
-                settings.market_making_enabled = sf.market_making_enabled
-                settings.market_making_spread_bps = sf.market_making_spread_bps
-                settings.market_making_max_inventory_usd = (
-                    sf.market_making_max_inventory_usd
-                )
-                settings.stat_arb_enabled = sf.stat_arb_enabled
-                settings.stat_arb_min_edge = sf.stat_arb_min_edge
-
-            # Update Trading Proxy settings
-            if request.trading_proxy:
-                proxy = request.trading_proxy
-                settings.trading_proxy_enabled = proxy.enabled
-                if proxy.proxy_url is not None:
-                    settings.trading_proxy_url = proxy.proxy_url or None
-                settings.trading_proxy_verify_ssl = proxy.verify_ssl
-                settings.trading_proxy_timeout = proxy.timeout
-                settings.trading_proxy_require_vpn = proxy.require_vpn
-
-            settings.updated_at = datetime.utcnow()
+            update_flags = apply_update_request(settings, request)
             await session.commit()
             updated_at = settings.updated_at.isoformat()
-            needs_llm_reinit = bool(request.llm)
-            needs_proxy_reinit = bool(request.trading_proxy)
-            needs_filter_reload = bool(request.search_filters)
+            needs_llm_reinit = update_flags["needs_llm_reinit"]
+            needs_proxy_reinit = update_flags["needs_proxy_reinit"]
+            needs_filter_reload = update_flags["needs_filter_reload"]
 
         # Re-initialize LLM manager OUTSIDE the DB session so the new
         # session inside initialize() can see the just-committed data
@@ -989,12 +601,7 @@ async def update_settings(request: UpdateSettingsRequest):
 async def get_polymarket_settings():
     """Get Polymarket settings only"""
     settings = await get_or_create_settings()
-    return PolymarketSettings(
-        api_key=mask_secret(settings.polymarket_api_key),
-        api_secret=mask_secret(settings.polymarket_api_secret),
-        api_passphrase=mask_secret(settings.polymarket_api_passphrase),
-        private_key=mask_secret(settings.polymarket_private_key),
-    )
+    return PolymarketSettings(**polymarket_payload(settings))
 
 
 @router.put("/polymarket")
@@ -1007,11 +614,7 @@ async def update_polymarket_settings(request: PolymarketSettings):
 async def get_kalshi_settings():
     """Get Kalshi settings only"""
     settings = await get_or_create_settings()
-    return KalshiSettings(
-        email=settings.kalshi_email,
-        password=mask_secret(settings.kalshi_password),
-        api_key=mask_secret(settings.kalshi_api_key),
-    )
+    return KalshiSettings(**kalshi_payload(settings))
 
 
 @router.put("/kalshi")
@@ -1024,15 +627,7 @@ async def update_kalshi_settings(request: KalshiSettings):
 async def get_llm_settings():
     """Get LLM settings only"""
     settings = await get_or_create_settings()
-    return LLMSettings(
-        provider=settings.llm_provider or "none",
-        openai_api_key=mask_secret(settings.openai_api_key),
-        anthropic_api_key=mask_secret(settings.anthropic_api_key),
-        google_api_key=mask_secret(settings.google_api_key),
-        xai_api_key=mask_secret(settings.xai_api_key),
-        deepseek_api_key=mask_secret(settings.deepseek_api_key),
-        model=settings.llm_model,
-    )
+    return LLMSettings(**llm_payload(settings))
 
 
 @router.put("/llm")
@@ -1045,14 +640,7 @@ async def update_llm_settings(request: LLMSettings):
 async def get_notification_settings():
     """Get notification settings only"""
     settings = await get_or_create_settings()
-    return NotificationSettings(
-        enabled=settings.notifications_enabled,
-        telegram_bot_token=mask_secret(settings.telegram_bot_token),
-        telegram_chat_id=settings.telegram_chat_id,
-        notify_on_opportunity=settings.notify_on_opportunity,
-        notify_on_trade=settings.notify_on_trade,
-        notify_min_roi=settings.notify_min_roi,
-    )
+    return NotificationSettings(**notifications_payload(settings))
 
 
 @router.put("/notifications")
@@ -1065,12 +653,7 @@ async def update_notification_settings(request: NotificationSettings):
 async def get_scanner_settings():
     """Get scanner settings only"""
     settings = await get_or_create_settings()
-    return ScannerSettingsModel(
-        scan_interval_seconds=settings.scan_interval_seconds,
-        min_profit_threshold=settings.min_profit_threshold,
-        max_markets_to_scan=settings.max_markets_to_scan,
-        min_liquidity=settings.min_liquidity,
-    )
+    return ScannerSettingsModel(**scanner_payload(settings))
 
 
 @router.put("/scanner")
@@ -1083,13 +666,7 @@ async def update_scanner_settings(request: ScannerSettingsModel):
 async def get_trading_settings():
     """Get trading settings only"""
     settings = await get_or_create_settings()
-    return TradingSettings(
-        trading_enabled=settings.trading_enabled,
-        max_trade_size_usd=settings.max_trade_size_usd,
-        max_daily_trade_volume=settings.max_daily_trade_volume,
-        max_open_positions=settings.max_open_positions,
-        max_slippage_percent=settings.max_slippage_percent,
-    )
+    return TradingSettings(**trading_payload(settings))
 
 
 @router.put("/trading")
@@ -1102,11 +679,7 @@ async def update_trading_settings(request: TradingSettings):
 async def get_maintenance_settings():
     """Get maintenance settings only"""
     settings = await get_or_create_settings()
-    return MaintenanceSettings(
-        auto_cleanup_enabled=settings.auto_cleanup_enabled,
-        cleanup_interval_hours=settings.cleanup_interval_hours,
-        cleanup_resolved_trade_days=settings.cleanup_resolved_trade_days,
-    )
+    return MaintenanceSettings(**maintenance_payload(settings))
 
 
 @router.put("/maintenance")
@@ -1119,17 +692,7 @@ async def update_maintenance_settings(request: MaintenanceSettings):
 async def get_trading_proxy_settings():
     """Get trading VPN/proxy settings only"""
     settings = await get_or_create_settings()
-    return TradingProxySettings(
-        enabled=settings.trading_proxy_enabled or False,
-        proxy_url=mask_secret(settings.trading_proxy_url, show_chars=12),
-        verify_ssl=settings.trading_proxy_verify_ssl
-        if settings.trading_proxy_verify_ssl is not None
-        else True,
-        timeout=settings.trading_proxy_timeout or 30.0,
-        require_vpn=settings.trading_proxy_require_vpn
-        if settings.trading_proxy_require_vpn is not None
-        else True,
-    )
+    return TradingProxySettings(**trading_proxy_payload(settings))
 
 
 @router.put("/trading-proxy")
@@ -1142,173 +705,7 @@ async def update_trading_proxy_settings(request: TradingProxySettings):
 async def get_search_filter_settings():
     """Get search filter settings only"""
     settings = await get_or_create_settings()
-    return SearchFilterSettings(
-        min_liquidity_hard=settings.min_liquidity_hard
-        if settings.min_liquidity_hard is not None
-        else 200.0,
-        min_position_size=settings.min_position_size
-        if settings.min_position_size is not None
-        else 25.0,
-        min_absolute_profit=settings.min_absolute_profit
-        if settings.min_absolute_profit is not None
-        else 5.0,
-        min_annualized_roi=settings.min_annualized_roi
-        if settings.min_annualized_roi is not None
-        else 10.0,
-        max_resolution_months=settings.max_resolution_months
-        if settings.max_resolution_months is not None
-        else 18,
-        max_plausible_roi=settings.max_plausible_roi
-        if settings.max_plausible_roi is not None
-        else 30.0,
-        max_trade_legs=settings.max_trade_legs
-        if settings.max_trade_legs is not None
-        else 8,
-        negrisk_min_total_yes=settings.negrisk_min_total_yes
-        if settings.negrisk_min_total_yes is not None
-        else 0.95,
-        negrisk_warn_total_yes=settings.negrisk_warn_total_yes
-        if settings.negrisk_warn_total_yes is not None
-        else 0.97,
-        negrisk_election_min_total_yes=settings.negrisk_election_min_total_yes
-        if settings.negrisk_election_min_total_yes is not None
-        else 0.97,
-        negrisk_max_resolution_spread_days=settings.negrisk_max_resolution_spread_days
-        if settings.negrisk_max_resolution_spread_days is not None
-        else 7,
-        settlement_lag_max_days_to_resolution=settings.settlement_lag_max_days_to_resolution
-        if settings.settlement_lag_max_days_to_resolution is not None
-        else 14,
-        settlement_lag_near_zero=settings.settlement_lag_near_zero
-        if settings.settlement_lag_near_zero is not None
-        else 0.05,
-        settlement_lag_near_one=settings.settlement_lag_near_one
-        if settings.settlement_lag_near_one is not None
-        else 0.95,
-        settlement_lag_min_sum_deviation=settings.settlement_lag_min_sum_deviation
-        if settings.settlement_lag_min_sum_deviation is not None
-        else 0.03,
-        risk_very_short_days=settings.risk_very_short_days
-        if settings.risk_very_short_days is not None
-        else 2,
-        risk_short_days=settings.risk_short_days
-        if settings.risk_short_days is not None
-        else 7,
-        risk_long_lockup_days=settings.risk_long_lockup_days
-        if settings.risk_long_lockup_days is not None
-        else 180,
-        risk_extended_lockup_days=settings.risk_extended_lockup_days
-        if settings.risk_extended_lockup_days is not None
-        else 90,
-        risk_low_liquidity=settings.risk_low_liquidity
-        if settings.risk_low_liquidity is not None
-        else 1000.0,
-        risk_moderate_liquidity=settings.risk_moderate_liquidity
-        if settings.risk_moderate_liquidity is not None
-        else 5000.0,
-        risk_complex_legs=settings.risk_complex_legs
-        if settings.risk_complex_legs is not None
-        else 5,
-        risk_multiple_legs=settings.risk_multiple_legs
-        if settings.risk_multiple_legs is not None
-        else 3,
-        btc_eth_hf_series_btc_15m=settings.btc_eth_hf_series_btc_15m
-        if settings.btc_eth_hf_series_btc_15m is not None
-        else "10192",
-        btc_eth_hf_series_eth_15m=settings.btc_eth_hf_series_eth_15m
-        if settings.btc_eth_hf_series_eth_15m is not None
-        else "10191",
-        btc_eth_hf_series_sol_15m=settings.btc_eth_hf_series_sol_15m
-        if settings.btc_eth_hf_series_sol_15m is not None
-        else "10423",
-        btc_eth_hf_series_xrp_15m=settings.btc_eth_hf_series_xrp_15m
-        if settings.btc_eth_hf_series_xrp_15m is not None
-        else "10422",
-        btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined
-        if settings.btc_eth_pure_arb_max_combined is not None
-        else 0.98,
-        btc_eth_dump_hedge_drop_pct=settings.btc_eth_dump_hedge_drop_pct
-        if settings.btc_eth_dump_hedge_drop_pct is not None
-        else 0.05,
-        btc_eth_thin_liquidity_usd=settings.btc_eth_thin_liquidity_usd
-        if settings.btc_eth_thin_liquidity_usd is not None
-        else 500.0,
-        miracle_min_no_price=settings.miracle_min_no_price
-        if settings.miracle_min_no_price is not None
-        else 0.90,
-        miracle_max_no_price=settings.miracle_max_no_price
-        if settings.miracle_max_no_price is not None
-        else 0.995,
-        miracle_min_impossibility_score=settings.miracle_min_impossibility_score
-        if settings.miracle_min_impossibility_score is not None
-        else 0.70,
-        btc_eth_hf_enabled=settings.btc_eth_hf_enabled
-        if settings.btc_eth_hf_enabled is not None
-        else True,
-        cross_platform_enabled=settings.cross_platform_enabled
-        if settings.cross_platform_enabled is not None
-        else True,
-        combinatorial_min_confidence=settings.combinatorial_min_confidence
-        if settings.combinatorial_min_confidence is not None
-        else 0.75,
-        combinatorial_high_confidence=settings.combinatorial_high_confidence
-        if settings.combinatorial_high_confidence is not None
-        else 0.90,
-        bayesian_cascade_enabled=settings.bayesian_cascade_enabled
-        if settings.bayesian_cascade_enabled is not None
-        else True,
-        bayesian_min_edge_percent=settings.bayesian_min_edge_percent
-        if settings.bayesian_min_edge_percent is not None
-        else 5.0,
-        bayesian_propagation_depth=settings.bayesian_propagation_depth
-        if settings.bayesian_propagation_depth is not None
-        else 3,
-        liquidity_vacuum_enabled=settings.liquidity_vacuum_enabled
-        if settings.liquidity_vacuum_enabled is not None
-        else True,
-        liquidity_vacuum_min_imbalance_ratio=settings.liquidity_vacuum_min_imbalance_ratio
-        if settings.liquidity_vacuum_min_imbalance_ratio is not None
-        else 5.0,
-        liquidity_vacuum_min_depth_usd=settings.liquidity_vacuum_min_depth_usd
-        if settings.liquidity_vacuum_min_depth_usd is not None
-        else 100.0,
-        entropy_arb_enabled=settings.entropy_arb_enabled
-        if settings.entropy_arb_enabled is not None
-        else True,
-        entropy_arb_min_deviation=settings.entropy_arb_min_deviation
-        if settings.entropy_arb_min_deviation is not None
-        else 0.25,
-        event_driven_enabled=settings.event_driven_enabled
-        if settings.event_driven_enabled is not None
-        else True,
-        temporal_decay_enabled=settings.temporal_decay_enabled
-        if settings.temporal_decay_enabled is not None
-        else True,
-        correlation_arb_enabled=settings.correlation_arb_enabled
-        if settings.correlation_arb_enabled is not None
-        else True,
-        correlation_arb_min_correlation=settings.correlation_arb_min_correlation
-        if settings.correlation_arb_min_correlation is not None
-        else 0.7,
-        correlation_arb_min_divergence=settings.correlation_arb_min_divergence
-        if settings.correlation_arb_min_divergence is not None
-        else 0.05,
-        market_making_enabled=settings.market_making_enabled
-        if settings.market_making_enabled is not None
-        else True,
-        market_making_spread_bps=settings.market_making_spread_bps
-        if settings.market_making_spread_bps is not None
-        else 100.0,
-        market_making_max_inventory_usd=settings.market_making_max_inventory_usd
-        if settings.market_making_max_inventory_usd is not None
-        else 500.0,
-        stat_arb_enabled=settings.stat_arb_enabled
-        if settings.stat_arb_enabled is not None
-        else True,
-        stat_arb_min_edge=settings.stat_arb_min_edge
-        if settings.stat_arb_min_edge is not None
-        else 0.05,
-    )
+    return SearchFilterSettings(**search_filters_payload(settings))
 
 
 @router.put("/search-filters")
@@ -1326,7 +723,7 @@ async def test_polymarket_connection():
     try:
         settings = await get_or_create_settings()
 
-        if not settings.polymarket_api_key:
+        if not decrypt_secret(settings.polymarket_api_key):
             return {"status": "error", "message": "Polymarket API key not configured"}
 
         # TODO: Implement actual API test
@@ -1344,7 +741,7 @@ async def test_telegram_connection():
     try:
         settings = await get_or_create_settings()
 
-        if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        if not decrypt_secret(settings.telegram_bot_token) or not settings.telegram_chat_id:
             return {
                 "status": "error",
                 "message": "Telegram bot token or chat ID not configured",

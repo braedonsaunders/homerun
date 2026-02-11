@@ -12,7 +12,6 @@ import {
   Bot,
   Zap,
   Target,
-  Layers,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'

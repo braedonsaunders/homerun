@@ -11,6 +11,7 @@ import {
   ExternalLink
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildPolymarketMarketUrl } from '../lib/marketUrls'
 import {
   getSimulationAccounts,
   getAccountPositions,
@@ -363,6 +364,11 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
   const currentValue = position.size * position.current_price
   const roiPercent = costBasis > 0 ? (position.unrealized_pnl / costBasis) * 100 : 0
   const isProfitable = position.unrealized_pnl >= 0
+  const marketUrl = buildPolymarketMarketUrl({
+    eventSlug: position.event_slug,
+    marketSlug: position.market_slug,
+    marketId: position.market_id,
+  })
 
   return (
     <Card className="transition-colors">
@@ -420,12 +426,12 @@ function LivePositionCard({ position }: { position: TradingPosition }) {
           </div>
         </div>
 
-        {position.market_id && (
+        {marketUrl && (
           <div className="mt-3">
             <Separator />
             <div className="pt-3">
               <a
-                href={`https://polymarket.com/event/${position.market_id}`}
+                href={marketUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"

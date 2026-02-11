@@ -34,6 +34,7 @@ import {
   List,
   Newspaper,
   ArrowUpDown,
+  CloudRain,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import {
@@ -52,8 +53,9 @@ import {
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
-import { useDataSimulation } from './hooks/useDataSimulation'
-import { shortcutsHelpOpenAtom, simulationEnabledAtom, accountModeAtom, selectedAccountIdAtom } from './store/atoms'
+import { useRealtimeInvalidation } from './hooks/useRealtimeInvalidation'
+import { shortcutsHelpOpenAtom, accountModeAtom, selectedAccountIdAtom } from './store/atoms'
+import { buildNewsSearchKeywords, processPolymarketSearchResults } from './lib/opportunitySearch'
 
 // shadcn/ui components
 import { Button } from './components/ui/button'
@@ -91,6 +93,7 @@ import SearchFiltersFlyout from './components/SearchFiltersFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
+import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
@@ -125,7 +128,7 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'crypto_markets' | 'search'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'search'>('arbitrage')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -142,7 +145,6 @@ function App() {
   const headerSearchRef = useRef<HTMLInputElement>(null)
   const headerSearchContainerRef = useRef<HTMLDivElement>(null)
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useAtom(shortcutsHelpOpenAtom)
-  const [simulationEnabled] = useAtom(simulationEnabledAtom)
   const queryClient = useQueryClient()
 
   // Open copilot with context
@@ -164,38 +166,7 @@ function App() {
 
   // Navigate to news tab with a keyword search from an opportunity
   const handleSearchNewsForOpportunity = useCallback((opp: Opportunity) => {
-    // Build meaningful search terms from the opportunity
-    // Priority: first market question (most descriptive) > event_title > cleaned title
-    let raw = ''
-
-    if (opp.markets?.length > 0 && opp.markets[0].question) {
-      raw = opp.markets[0].question
-    } else if (opp.event_title) {
-      raw = opp.event_title
-    } else {
-      raw = opp.title || ''
-    }
-
-    // Strip strategy prefixes (e.g., "Temporal Decay:", "News Edge:", "Basic Arb:")
-    raw = raw.replace(/^[A-Za-z_ ]+:\s*/i, '')
-
-    // Clean up comma-separated outcome lists:
-    //   "yes Both Teams To Score,yes Chelsea,yes Tie" → "Both Teams To Score Chelsea Tie"
-    if (raw.includes(',')) {
-      raw = raw.split(',')
-        .map(s => s.trim().replace(/^(yes|no)\s+/i, ''))
-        .filter(s => s.length > 0)
-        .slice(0, 3)
-        .join(' ')
-    }
-
-    // Remove standalone "yes"/"no" tokens
-    raw = raw.replace(/\b(yes|no)\b\s*/gi, '')
-
-    // Take first few meaningful words (skip very short fragments)
-    const keywords = raw.split(/\s+/).filter(w => w.length > 2).slice(0, 6).join(' ')
-
-    setNewsSearchQuery(keywords)
+    setNewsSearchQuery(buildNewsSearchKeywords(opp))
     setOpportunitiesView('news')
   }, [])
 
@@ -250,47 +221,7 @@ function App() {
 
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
-
-  // Update data when WebSocket message received — trust WS pushes as primary
-  useEffect(() => {
-    if (lastMessage?.type === 'opportunities_update' || lastMessage?.type === 'init') {
-      // Invalidate so React Query refetches with current filters applied
-      queryClient.invalidateQueries({ queryKey: ['opportunities'] })
-      queryClient.invalidateQueries({ queryKey: ['opportunity-counts'] })
-      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
-    }
-    if (lastMessage?.type === 'scanner_status') {
-      // Set status directly from WS push — no HTTP round-trip needed
-      if (lastMessage.data) {
-        queryClient.setQueryData(['scanner-status'], lastMessage.data)
-      }
-    }
-    if (lastMessage?.type === 'scanner_activity') {
-      setScannerActivity(lastMessage.data?.activity || 'Idle')
-    }
-    if (lastMessage?.type === 'wallet_trade') {
-      // A tracked wallet traded — refresh copy trading and recent trades data
-      queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
-      queryClient.invalidateQueries({ queryKey: ['copy-trading-status'] })
-    }
-    if (lastMessage?.type === 'copy_trade_detected' || lastMessage?.type === 'copy_trade_executed') {
-      // Real-time copy trading events from WebSocket pipeline
-      queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
-      queryClient.invalidateQueries({ queryKey: ['copy-configs'] })
-      queryClient.invalidateQueries({ queryKey: ['copy-trading-status'] })
-    }
-    if (lastMessage?.type === 'news_update') {
-      // New news articles arrived — refresh news panel data
-      queryClient.invalidateQueries({ queryKey: ['news-articles'] })
-      queryClient.invalidateQueries({ queryKey: ['news-matches'] })
-      queryClient.invalidateQueries({ queryKey: ['news-edges'] })
-      queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
-      // Also refresh workflow data
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
-    }
-  }, [lastMessage, queryClient])
+  useRealtimeInvalidation(lastMessage, queryClient, setScannerActivity)
 
   // Reset page when filters change
   useEffect(() => {
@@ -300,7 +231,7 @@ function App() {
   // Queries — WS pushes are primary; polling is a degraded fallback.
   // When WS is connected, polls are infrequent. When disconnected, revert to faster polling.
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage, 'exclude:btc_eth_highfreq'],
+    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
       category: selectedCategory || undefined,
@@ -309,11 +240,10 @@ function App() {
       search: searchQuery || undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
-      exclude_strategy: 'btc_eth_highfreq',
       limit: ITEMS_PER_PAGE,
       offset: currentPage * ITEMS_PER_PAGE
     }),
-    refetchInterval: isConnected ? 30000 : 10000,
+    refetchInterval: isConnected ? false : 10000,
   })
 
   const opportunities = opportunitiesData?.opportunities || []
@@ -322,7 +252,7 @@ function App() {
   const { data: status } = useQuery({
     queryKey: ['scanner-status'],
     queryFn: getScannerStatus,
-    refetchInterval: isConnected ? 30000 : 5000,
+    refetchInterval: isConnected ? false : 5000,
   })
 
   // Sync scanner activity from polled status as fallback
@@ -352,7 +282,7 @@ function App() {
       max_risk: maxRisk,
       search: searchQuery || undefined,
     }),
-    refetchInterval: isConnected ? 30000 : 15000,
+    refetchInterval: isConnected ? false : 15000,
   })
 
   // Polymarket search query (only runs when user submits a search)
@@ -376,44 +306,15 @@ function App() {
   }, [selectedStrategy, strategies])
 
   // Client-side sorting and filtering for polymarket search results
-  const processedPolymarketResults = useMemo(() => {
-    let results = [...polymarketResults]
-
-    // Apply strategy filter (plugins = any of underlying strategies)
-    if (strategyFilterSet) {
-      results = results.filter((r) => strategyFilterSet.has(r.strategy))
-    }
-
-    // Apply category filter
-    if (selectedCategory) {
-      results = results.filter(r => r.category?.toLowerCase() === selectedCategory.toLowerCase())
-    }
-
-    // Apply Polymarket-style sort
-    if (searchSort === 'competitive') {
-      // Most evenly-split markets (closest to 50/50)
-      results.sort((a, b) => {
-        const aComp = Math.abs((a.markets?.[0]?.yes_price ?? 0.5) - 0.5)
-        const bComp = Math.abs((b.markets?.[0]?.yes_price ?? 0.5) - 0.5)
-        return aComp - bComp
-      })
-    } else if (searchSort === 'volume') {
-      results.sort((a, b) => (b.volume ?? b.min_liquidity ?? 0) - (a.volume ?? a.min_liquidity ?? 0))
-    } else if (searchSort === 'liquidity') {
-      results.sort((a, b) => (b.min_liquidity ?? 0) - (a.min_liquidity ?? 0))
-    } else if (searchSort === 'newest') {
-      // Furthest resolution date = likely newest market
-      results.sort((a, b) => (b.resolution_date ?? '').localeCompare(a.resolution_date ?? ''))
-    } else if (searchSort === 'ending_soon') {
-      // Closest end date first, nulls last
-      results.sort((a, b) => (a.resolution_date ?? '9999').localeCompare(b.resolution_date ?? '9999'))
-    } else if (searchSort === 'trending') {
-      // High volume as proxy for trending
-      results.sort((a, b) => (b.volume ?? b.min_liquidity ?? 0) - (a.volume ?? a.min_liquidity ?? 0))
-    }
-
-    return results
-  }, [polymarketResults, strategyFilterSet, selectedCategory, searchSort])
+  const processedPolymarketResults = useMemo(
+    () => processPolymarketSearchResults(
+      polymarketResults,
+      strategyFilterSet,
+      selectedCategory,
+      searchSort
+    ),
+    [polymarketResults, strategyFilterSet, selectedCategory, searchSort]
+  )
 
   const polymarketTotalFiltered = processedPolymarketResults.length
   const polymarketTotalPages = Math.ceil(polymarketTotalFiltered / ITEMS_PER_PAGE)
@@ -470,11 +371,15 @@ function App() {
     },
   })
 
-  // Data simulation between scan cycles
-  const { simulatedData: displayOpportunities } = useDataSimulation(
-    opportunities,
-    { enabled: simulationEnabled && activeTab === 'opportunities' && opportunitiesView === 'arbitrage' }
-  )
+  // Opportunities are always rendered from real scanner data.
+  const displayOpportunities = opportunities
+
+  const hasActiveOpportunityFilters =
+    !!selectedStrategy
+    || !!selectedCategory
+    || minProfit > 0
+    || maxRisk < 1
+    || searchQuery.trim().length > 0
 
   // Keyboard shortcuts
   const shortcuts: Shortcut[] = useMemo(() => [
@@ -507,6 +412,24 @@ function App() {
   useKeyboardShortcuts(shortcuts)
 
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
+
+  // If data shrinks while user is on a later page, clamp back to the last valid page.
+  useEffect(() => {
+    if (opportunitiesView !== 'arbitrage') return
+    const maxPage = Math.max(totalPages - 1, 0)
+    if (currentPage > maxPage) {
+      setCurrentPage(maxPage)
+    }
+  }, [opportunitiesView, currentPage, totalPages])
+
+  const scannerIsSettled =
+    scannerActivity.startsWith('Idle')
+    || scannerActivity.startsWith('Scan complete')
+    || scannerActivity.startsWith('Fast scan complete')
+    || scannerActivity.includes('unchanged, skipping')
+  const scannerHasError =
+    scannerActivity.startsWith('Scan error')
+    || scannerActivity.startsWith('Fast scan error')
 
   return (
     <TooltipProvider>
@@ -784,6 +707,20 @@ function App() {
                     <Button
                       variant="outline"
                       size="sm"
+                      onClick={() => setOpportunitiesView('weather')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'weather'
+                          ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <CloudRain className="w-3.5 h-3.5" />
+                      Weather
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => setOpportunitiesView('crypto_markets')}
                       className={cn(
                         "gap-1.5 text-xs h-8",
@@ -879,14 +816,14 @@ function App() {
                   {/* Live Scanning Status Line */}
                   {status?.enabled && opportunitiesView === 'arbitrage' && (
                     <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-card/60 border border-border/30">
-                      {scannerActivity.startsWith('Idle') || scannerActivity.startsWith('Scan complete') || scannerActivity.startsWith('Fast scan complete') || scannerActivity.includes('unchanged, skipping') ? (
+                      {scannerIsSettled ? (
                         <>
                           <div className="relative flex h-2 w-2 shrink-0">
                             <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
                           </div>
                           <span className="text-xs text-muted-foreground font-data truncate">{scannerActivity}</span>
                         </>
-                      ) : scannerActivity.startsWith('Scan error') || scannerActivity.startsWith('Fast scan error') ? (
+                      ) : scannerHasError ? (
                         <>
                           <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
                           <span className="text-xs text-red-400 font-data truncate">{scannerActivity}</span>
@@ -1087,6 +1024,8 @@ function App() {
                     />
                   ) : opportunitiesView === 'news' ? (
                     <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} />
+                  ) : opportunitiesView === 'weather' ? (
+                    <WeatherOpportunitiesPanel onExecute={setExecutingOpportunity} />
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
                       onNavigateToWallet={(address) => {
@@ -1261,8 +1200,14 @@ function App() {
                                   <RefreshCw className="w-10 h-10 animate-spin text-muted-foreground mb-4" />
                                   <p className="text-muted-foreground">
                                     {status?.opportunities_count > 0
-                                      ? `${status.opportunities_count} opportunities found but none match current filters`
-                                      : 'Scanning for opportunities...'}
+                                      ? (hasActiveOpportunityFilters
+                                        ? `${status.opportunities_count} opportunities found but none match current filters`
+                                        : `${status.opportunities_count} opportunities found, but none currently pass display criteria`)
+                                      : scannerHasError
+                                        ? 'Last scan failed. Check scanner logs and retry.'
+                                        : scannerIsSettled
+                                          ? 'Scan complete, but no opportunities are currently in the pool.'
+                                          : 'Scanning for opportunities...'}
                                   </p>
                                   {status?.opportunities_count > 0 && (
                                     <p className="text-sm text-muted-foreground/70 mt-1">

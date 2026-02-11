@@ -73,11 +73,17 @@ export interface Opportunity {
 export interface Market {
   id: string
   slug?: string
+  event_slug?: string
   question: string
   yes_price: number
   no_price: number
   liquidity: number
   platform?: string  // "polymarket" | "kalshi"
+  price_history?: Array<{
+    t: number
+    yes: number
+    no: number
+  }>
 }
 
 export interface Position {
@@ -140,6 +146,8 @@ export interface SimulationAccount {
 export interface TradingPosition {
   token_id: string
   market_id: string
+  market_slug?: string
+  event_slug?: string
   market_question: string
   outcome: string
   size: number
@@ -151,6 +159,8 @@ export interface TradingPosition {
 export interface SimulationPosition {
   id: string
   market_id: string
+  market_slug?: string
+  event_slug?: string
   market_question: string
   token_id: string
   side: string
@@ -672,11 +682,57 @@ export interface RecentTradesResponse {
   hours_window: number
 }
 
+export interface TrackedTraderOpportunityDTO {
+  id: string
+  market_id: string
+  market_question: string | null
+  market_slug: string | null
+  signal_type: string
+  strength: number
+  conviction_score: number
+  tier: 'WATCH' | 'HIGH' | 'EXTREME' | string
+  window_minutes: number
+  wallet_count: number
+  cluster_adjusted_wallet_count: number
+  unique_core_wallets: number
+  weighted_wallet_score: number
+  wallets: string[]
+  outcome: string | null
+  avg_entry_price: number | null
+  total_size: number | null
+  net_notional: number | null
+  conflicting_notional: number | null
+  market_liquidity: number | null
+  market_volume_24h: number | null
+  first_seen_at: string | null
+  last_seen_at: string | null
+  detected_at: string | null
+  is_active: boolean
+  top_wallets?: Array<{
+    address: string
+    username: string | null
+    rank_score: number
+    composite_score: number
+    quality_score: number
+    activity_score: number
+  }>
+}
+
 export const getRecentTradesFromWallets = async (params?: {
   limit?: number
   hours?: number
 }): Promise<RecentTradesResponse> => {
   const { data } = await api.get('/wallets/recent-trades/all', { params })
+  return data
+}
+
+export const getTrackedTraderOpportunities = async (params?: {
+  limit?: number
+  min_tier?: 'WATCH' | 'HIGH' | 'EXTREME'
+}): Promise<{ opportunities: TrackedTraderOpportunityDTO[]; total: number }> => {
+  const { data } = await api.get('/discovery/opportunities/tracked-traders', {
+    params,
+  })
   return data
 }
 
@@ -1190,6 +1246,12 @@ export interface AutoTraderConfig {
   ai_score_boost_threshold: number
   ai_score_boost_multiplier: number
   ai_judge_model: string | null
+  news_workflow_enabled: boolean
+  news_workflow_min_edge: number
+  news_workflow_max_age_minutes: number
+  weather_workflow_enabled: boolean
+  weather_workflow_min_edge: number
+  weather_workflow_max_age_minutes: number
   llm_verify_trades: boolean
   llm_verify_strategies: string[]
   auto_ai_scoring: boolean
@@ -1973,6 +2035,7 @@ export interface AIChatMessage {
 }
 
 export interface AIChatResponse {
+  session_id: string
   response: string
   model: string
   tokens_used: Record<string, number>
@@ -1980,11 +2043,49 @@ export interface AIChatResponse {
 
 export const sendAIChat = async (params: {
   message: string
+  session_id?: string
   context_type?: string
   context_id?: string
   history?: AIChatMessage[]
 }): Promise<AIChatResponse> => {
   const { data } = await api.post('/ai/chat', params, AI_TIMEOUT)
+  return data
+}
+
+export interface AIChatSession {
+  session_id: string
+  context_type: string | null
+  context_id: string | null
+  title: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface AIChatSessionDetail extends AIChatSession {
+  messages: Array<{
+    id: string
+    role: 'user' | 'assistant' | 'system'
+    content: string
+    created_at: string | null
+  }>
+}
+
+export const listAIChatSessions = async (params?: {
+  context_type?: string
+  context_id?: string
+  limit?: number
+}): Promise<{ sessions: AIChatSession[]; total: number }> => {
+  const { data } = await api.get('/ai/chat/sessions', { params })
+  return data
+}
+
+export const getAIChatSession = async (sessionId: string): Promise<AIChatSessionDetail> => {
+  const { data } = await api.get(`/ai/chat/sessions/${sessionId}`)
+  return data
+}
+
+export const archiveAIChatSession = async (sessionId: string): Promise<{ status: string; session_id: string }> => {
+  const { data } = await api.delete(`/ai/chat/sessions/${sessionId}`)
   return data
 }
 
@@ -2008,6 +2109,7 @@ export interface KalshiAccountStatus {
 export interface KalshiPosition {
   token_id: string
   market_id: string
+  event_slug?: string
   market_question: string
   outcome: string
   size: number
@@ -2173,6 +2275,148 @@ export const updateNewsWorkflowSettings = async (
   settings: Partial<NewsWorkflowSettings>
 ): Promise<{ status: string; message: string }> => {
   const { data } = await api.put('/news-workflow/settings', settings)
+  return data
+}
+
+// ==================== WEATHER WORKFLOW (Independent Pipeline) ====================
+
+export interface WeatherWorkflowStatus {
+  running: boolean
+  enabled: boolean
+  interval_seconds: number
+  last_scan: string | null
+  opportunities_count: number
+  current_activity: string | null
+  stats: Record<string, unknown>
+  pending_intents: number
+  paused: boolean
+  requested_scan_at: string | null
+}
+
+export interface WeatherWorkflowSettings {
+  enabled: boolean
+  auto_run: boolean
+  scan_interval_seconds: number
+  entry_max_price: number
+  take_profit_price: number
+  stop_loss_pct: number
+  min_edge_percent: number
+  min_confidence: number
+  min_model_agreement: number
+  min_liquidity: number
+  max_markets_per_scan: number
+  auto_trader_enabled: boolean
+  auto_trader_min_edge: number
+  auto_trader_max_age_minutes: number
+  default_size_usd: number
+  max_size_usd: number
+  model: string | null
+}
+
+export interface WeatherTradeIntent {
+  id: string
+  market_id: string
+  market_question: string
+  direction: string
+  entry_price: number | null
+  take_profit_price: number | null
+  stop_loss_pct: number | null
+  model_probability: number | null
+  edge_percent: number | null
+  confidence: number | null
+  model_agreement: number | null
+  suggested_size_usd: number | null
+  metadata: Record<string, unknown> | null
+  status: string
+  created_at: string | null
+  consumed_at: string | null
+}
+
+export interface WeatherWorkflowPerformance {
+  lookback_days: number
+  trades_total: number
+  trades_resolved: number
+  wins: number
+  losses: number
+  win_rate: number
+  total_pnl: number
+  intents_total: number
+  pending_intents: number
+  executed_intents: number
+}
+
+export const getWeatherWorkflowStatus = async (): Promise<WeatherWorkflowStatus> => {
+  const { data } = await api.get('/weather-workflow/status')
+  return data
+}
+
+export const runWeatherWorkflow = async (): Promise<Record<string, unknown>> => {
+  const { data } = await api.post('/weather-workflow/run')
+  return data
+}
+
+export const startWeatherWorkflow = async (): Promise<WeatherWorkflowStatus> => {
+  const { data } = await api.post('/weather-workflow/start')
+  return data
+}
+
+export const pauseWeatherWorkflow = async (): Promise<WeatherWorkflowStatus> => {
+  const { data } = await api.post('/weather-workflow/pause')
+  return data
+}
+
+export const setWeatherWorkflowInterval = async (
+  intervalSeconds: number
+): Promise<WeatherWorkflowStatus> => {
+  const { data } = await api.post('/weather-workflow/interval', null, {
+    params: { interval_seconds: intervalSeconds }
+  })
+  return data
+}
+
+export const getWeatherWorkflowOpportunities = async (params?: {
+  min_edge?: number
+  direction?: string
+  max_entry?: number
+  location?: string
+  limit?: number
+  offset?: number
+}): Promise<{ total: number; offset: number; limit: number; opportunities: Opportunity[] }> => {
+  const { data } = await api.get('/weather-workflow/opportunities', { params })
+  return data
+}
+
+export const getWeatherWorkflowIntents = async (params?: {
+  status_filter?: string
+  limit?: number
+}): Promise<{ total: number; intents: WeatherTradeIntent[] }> => {
+  const { data } = await api.get('/weather-workflow/intents', { params })
+  return data
+}
+
+export const skipWeatherWorkflowIntent = async (intentId: string): Promise<{ status: string; intent_id: string }> => {
+  const { data } = await api.post(`/weather-workflow/intents/${intentId}/skip`)
+  return data
+}
+
+export const getWeatherWorkflowSettings = async (): Promise<WeatherWorkflowSettings> => {
+  const { data } = await api.get('/weather-workflow/settings')
+  return data
+}
+
+export const updateWeatherWorkflowSettings = async (
+  settings: Partial<WeatherWorkflowSettings>
+): Promise<{ status: string; settings: WeatherWorkflowSettings }> => {
+  const { data } = await api.put('/weather-workflow/settings', settings)
+  return data
+}
+
+export const getWeatherWorkflowPerformance = async (
+  lookbackDays = 90
+): Promise<WeatherWorkflowPerformance> => {
+  const { data } = await api.get('/weather-workflow/performance', {
+    params: { lookback_days: lookbackDays }
+  })
   return data
 }
 

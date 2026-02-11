@@ -4,6 +4,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { Opportunity, judgeOpportunity } from '../services/api'
 import {
   STRATEGY_ABBREV,
@@ -142,19 +143,18 @@ function TerminalEntry({
   // Platform URLs
   const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
   const polyUrl = polyMarket
-    ? (opportunity.event_slug
-        ? `https://polymarket.com/event/${opportunity.event_slug}`
-        : polyMarket.slug
-          ? `https://polymarket.com/event/${polyMarket.slug}`
-          : null)
+    ? buildPolymarketMarketUrl({
+        eventSlug: opportunity.event_slug || (polyMarket as any).event_slug,
+        marketSlug: (polyMarket as any).slug,
+        marketId: (polyMarket as any).id,
+      })
     : null
   const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
   const kalshiUrl = kalshiMarket
-    ? (() => {
-        const ticker = kalshiMarket.id.toLowerCase()
-        const eventTicker = ticker.split('-')[0]
-        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
-      })()
+    ? buildKalshiMarketUrl({
+        marketTicker: kalshiMarket.id,
+        eventTicker: (kalshiMarket as any).event_slug,
+      })
     : null
 
   return (

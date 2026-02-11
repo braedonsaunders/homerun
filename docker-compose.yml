@@ -21,6 +21,34 @@ services:
       timeout: 10s
       retries: 3
 
+  scanner-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-scanner-worker
+    command: ["python", "-m", "workers.scanner_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  weather-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-weather-worker
+    command: ["python", "-m", "workers.weather_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend

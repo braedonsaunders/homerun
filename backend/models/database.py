@@ -846,6 +846,25 @@ class AppSettings(Base):
     news_workflow_auto_trader_max_age_minutes = Column(Integer, default=120)
     news_workflow_model = Column(String, nullable=True)
 
+    # Independent Weather Workflow (forecast consensus -> opportunities/intents)
+    weather_workflow_enabled = Column(Boolean, default=True)
+    weather_workflow_auto_run = Column(Boolean, default=True)
+    weather_workflow_scan_interval_seconds = Column(Integer, default=14400)
+    weather_workflow_entry_max_price = Column(Float, default=0.25)
+    weather_workflow_take_profit_price = Column(Float, default=0.85)
+    weather_workflow_stop_loss_pct = Column(Float, default=50.0)
+    weather_workflow_min_edge_percent = Column(Float, default=8.0)
+    weather_workflow_min_confidence = Column(Float, default=0.6)
+    weather_workflow_min_model_agreement = Column(Float, default=0.75)
+    weather_workflow_min_liquidity = Column(Float, default=500.0)
+    weather_workflow_max_markets_per_scan = Column(Integer, default=200)
+    weather_workflow_auto_trader_enabled = Column(Boolean, default=True)
+    weather_workflow_auto_trader_min_edge = Column(Float, default=10.0)
+    weather_workflow_auto_trader_max_age_minutes = Column(Integer, default=240)
+    weather_workflow_default_size_usd = Column(Float, default=10.0)
+    weather_workflow_max_size_usd = Column(Float, default=50.0)
+    weather_workflow_model = Column(String, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -999,6 +1018,50 @@ class ScratchpadEntry(Base):
     )
 
 
+class AIChatSession(Base):
+    """Persistent copilot chat session."""
+
+    __tablename__ = "ai_chat_sessions"
+
+    id = Column(String, primary_key=True)
+    context_type = Column(String, nullable=True)  # opportunity | market | general
+    context_id = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    archived = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_ai_chat_context", "context_type", "context_id"),
+        Index("idx_ai_chat_updated", "updated_at"),
+        Index("idx_ai_chat_archived", "archived"),
+    )
+
+
+class AIChatMessage(Base):
+    """Message row for a persistent copilot chat session."""
+
+    __tablename__ = "ai_chat_messages"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(
+        String,
+        ForeignKey("ai_chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String, nullable=False)  # system | user | assistant
+    content = Column(Text, nullable=False)
+    model_used = Column(String, nullable=True)
+    input_tokens = Column(Integer, default=0, nullable=False)
+    output_tokens = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_ai_chat_msg_session", "session_id"),
+        Index("idx_ai_chat_msg_created", "created_at"),
+    )
+
+
 class ResolutionAnalysis(Base):
     """Cached resolution criteria analysis for a market.
 
@@ -1073,7 +1136,7 @@ class OpportunityJudgment(Base):
     )  # Is this a real inefficiency or noise?
 
     # LLM reasoning
-    reasoning = Column(Text, nullable=True)  # Full chain-of-thought
+    reasoning = Column(Text, nullable=True)  # Concise decision rationale
     recommendation = Column(
         String, nullable=False
     )  # "strong_execute", "execute", "review", "skip", "strong_skip"
@@ -1239,6 +1302,24 @@ class DiscoveredWallet(Base):
     rank_score = Column(Float, default=0.0)  # Composite score for sorting
     rank_position = Column(Integer, nullable=True)  # Position on leaderboard
 
+    # Smart pool scoring (quality + recency + stability blend)
+    quality_score = Column(Float, default=0.0)
+    activity_score = Column(Float, default=0.0)
+    stability_score = Column(Float, default=0.0)
+    composite_score = Column(Float, default=0.0)
+
+    # Near-real-time activity metrics
+    last_trade_at = Column(DateTime, nullable=True)
+    trades_1h = Column(Integer, default=0)
+    trades_24h = Column(Integer, default=0)
+    unique_markets_24h = Column(Integer, default=0)
+
+    # Smart wallet pool membership
+    in_top_pool = Column(Boolean, default=False)
+    pool_tier = Column(String, nullable=True)  # core, rising, standby
+    pool_membership_reason = Column(String, nullable=True)
+    source_flags = Column(JSON, default=dict)  # {"leaderboard": true, ...}
+
     # Tags (many-to-many via JSON for simplicity in SQLite)
     tags = Column(JSON, default=list)  # ["smart_predictor", "whale", "consistent", ...]
 
@@ -1253,6 +1334,9 @@ class DiscoveredWallet(Base):
         Index("idx_discovered_recommendation", "recommendation"),
         Index("idx_discovered_cluster", "cluster_id"),
         Index("idx_discovered_analyzed", "last_analyzed_at"),
+        Index("idx_discovered_composite", "composite_score"),
+        Index("idx_discovered_in_pool", "in_top_pool"),
+        Index("idx_discovered_last_trade", "last_trade_at"),
     )
 
 
@@ -1320,7 +1404,13 @@ class MarketConfluenceSignal(Base):
         String, nullable=False
     )  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
     strength = Column(Float, default=0.0)  # 0-1 signal strength
+    conviction_score = Column(Float, default=0.0)  # 0-100 signal conviction
+    tier = Column(String, default="WATCH")  # WATCH, HIGH, EXTREME
+    window_minutes = Column(Integer, default=60)
     wallet_count = Column(Integer, default=0)  # How many wallets are converging
+    cluster_adjusted_wallet_count = Column(Integer, default=0)
+    unique_core_wallets = Column(Integer, default=0)
+    weighted_wallet_score = Column(Float, default=0.0)
     wallets = Column(JSON, default=list)  # List of wallet addresses involved
 
     # Market context
@@ -1330,17 +1420,51 @@ class MarketConfluenceSignal(Base):
     avg_wallet_rank = Column(
         Float, nullable=True
     )  # Average rank of participating wallets
+    net_notional = Column(Float, nullable=True)
+    conflicting_notional = Column(Float, nullable=True)
+    market_liquidity = Column(Float, nullable=True)
+    market_volume_24h = Column(Float, nullable=True)
 
     # Status
     is_active = Column(Boolean, default=True)
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
     detected_at = Column(DateTime, default=datetime.utcnow)
     expired_at = Column(DateTime, nullable=True)
+    cooldown_until = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index("idx_confluence_market", "market_id"),
         Index("idx_confluence_strength", "strength"),
         Index("idx_confluence_active", "is_active"),
         Index("idx_confluence_detected", "detected_at"),
+        Index("idx_confluence_tier", "tier"),
+        Index("idx_confluence_last_seen", "last_seen_at"),
+    )
+
+
+class WalletActivityRollup(Base):
+    """Event-level wallet activity used for near-real-time recency scoring and confluence windows."""
+
+    __tablename__ = "wallet_activity_rollups"
+
+    id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    market_id = Column(String, nullable=False, index=True)
+    side = Column(String, nullable=True)  # BUY/SELL/YES/NO
+    size = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    notional = Column(Float, nullable=True)
+    tx_hash = Column(String, nullable=True)
+    source = Column(String, default="unknown")  # ws, activity_api, trades_api, holders_api
+    cluster_id = Column(String, nullable=True)
+    traded_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_war_wallet_time", "wallet_address", "traded_at"),
+        Index("idx_war_market_side_time", "market_id", "side", "traded_at"),
+        Index("idx_war_source_time", "source", "traded_at"),
     )
 
 
@@ -1383,6 +1507,67 @@ class CrossPlatformEntity(Base):
 # ==================== SHARED STATE (DB AS SINGLE SOURCE OF TRUTH) ====================
 
 
+class ScannerRun(Base):
+    """Immutable record of a scanner cycle."""
+
+    __tablename__ = "scanner_runs"
+
+    id = Column(String, primary_key=True)
+    scan_mode = Column(String, nullable=False, default="full")  # full | fast | manual
+    success = Column(Boolean, nullable=False, default=True)
+    error = Column(Text, nullable=True)
+    opportunity_count = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index("idx_scanner_runs_completed", "completed_at"),
+        Index("idx_scanner_runs_mode", "scan_mode"),
+        Index("idx_scanner_runs_success", "success"),
+    )
+
+
+class OpportunityState(Base):
+    """Current state for each opportunity stable_id (latest known value)."""
+
+    __tablename__ = "opportunity_state"
+
+    stable_id = Column(String, primary_key=True)
+    opportunity_json = Column(JSON, nullable=False)
+    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=True)
+
+    __table_args__ = (
+        Index("idx_opportunity_state_active", "is_active"),
+        Index("idx_opportunity_state_last_seen", "last_seen_at"),
+        Index("idx_opportunity_state_last_run", "last_run_id"),
+    )
+
+
+class OpportunityEvent(Base):
+    """Append-only event log of opportunity lifecycle changes."""
+
+    __tablename__ = "opportunity_events"
+
+    id = Column(String, primary_key=True)
+    stable_id = Column(String, nullable=False)
+    run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=False)
+    event_type = Column(
+        String, nullable=False
+    )  # detected | updated | expired | reactivated
+    opportunity_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_opportunity_events_created", "created_at"),
+        Index("idx_opportunity_events_stable", "stable_id"),
+        Index("idx_opportunity_events_run", "run_id"),
+        Index("idx_opportunity_events_type", "event_type"),
+    )
+
+
 class ScannerControl(Base):
     """Control flags for scanner worker (pause, request one-time scan)."""
 
@@ -1413,6 +1598,68 @@ class ScannerSnapshot(Base):
     strategies_json = Column(JSON, default=list)  # list of {name, type}
     tiered_scanning_json = Column(JSON, nullable=True)
     ws_feeds_json = Column(JSON, nullable=True)
+    # market_id -> [{t: epoch_ms, yes: float, no: float}, ...]
+    market_history_json = Column(JSON, default=dict)
+
+
+class WeatherControl(Base):
+    """Control flags for weather worker (pause, request one-time scan)."""
+
+    __tablename__ = "weather_control"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    scan_interval_seconds = Column(Integer, default=14400)
+    requested_scan_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WeatherSnapshot(Base):
+    """Latest weather workflow output: opportunities + status."""
+
+    __tablename__ = "weather_snapshot"
+
+    id = Column(String, primary_key=True, default="latest")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_scan_at = Column(DateTime, nullable=True)
+    opportunities_json = Column(JSON, default=list)
+    running = Column(Boolean, default=True)
+    enabled = Column(Boolean, default=True)
+    current_activity = Column(String, nullable=True)
+    interval_seconds = Column(Integer, default=14400)
+    stats_json = Column(JSON, default=dict)
+
+
+class WeatherTradeIntent(Base):
+    """Execution-oriented weather trade intent generated from model signals."""
+
+    __tablename__ = "weather_trade_intents"
+
+    id = Column(String, primary_key=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=False)
+    direction = Column(String, nullable=False)  # buy_yes | buy_no
+    entry_price = Column(Float, nullable=True)
+    take_profit_price = Column(Float, nullable=True)
+    stop_loss_pct = Column(Float, nullable=True)
+    model_probability = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    model_agreement = Column(Float, nullable=True)
+    suggested_size_usd = Column(Float, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_weather_intent_created", "created_at"),
+        Index("idx_weather_intent_status", "status"),
+        Index("idx_weather_intent_market", "market_id"),
+    )
 
 
 # ==================== DATABASE SETUP ====================

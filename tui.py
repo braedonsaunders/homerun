@@ -475,6 +475,7 @@ class HomerunApp(App):
 
     # Process handles
     scanner_worker_proc: Optional[subprocess.Popen] = None
+    weather_worker_proc: Optional[subprocess.Popen] = None
     backend_proc: Optional[subprocess.Popen] = None
     frontend_proc: Optional[subprocess.Popen] = None
 
@@ -542,6 +543,11 @@ class HomerunApp(App):
             yield Static(
                 "[@click=app.noop]SCANNER[/]  [bold red]OFF[/]",
                 id="svc-scanner",
+                classes="status-item",
+            )
+            yield Static(
+                "[@click=app.noop]WEATHER[/]  [bold red]OFF[/]",
+                id="svc-weather",
                 classes="status-item",
             )
             yield Static(
@@ -1098,6 +1104,15 @@ class HomerunApp(App):
         env["VIRTUAL_ENV"] = str(BACKEND_DIR / "venv")
         # Default to INFO; the TUI level filter can show DEBUG if needed
         env.setdefault("LOG_LEVEL", "INFO")
+        # Keep native ML/linear algebra threading conservative for stability.
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("OPENBLAS_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
+        env.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+        env.setdefault("NUMEXPR_NUM_THREADS", "1")
+        env.setdefault("NEWS_FAISS_THREADS", "1")
+        env.setdefault("TOKENIZERS_PARALLELISM", "false")
+        env.setdefault("EMBEDDING_DEVICE", "cpu")
 
         # Start scanner worker (writes opportunities to DB; API reads from DB)
         self._enqueue_log(
@@ -1130,6 +1145,37 @@ class HomerunApp(App):
                 level="WARNING",
             )
             self.scanner_worker_proc = None
+
+        # Start weather worker (independent weather opportunities pipeline)
+        self._enqueue_log(
+            ">>> Starting weather worker...", source="BACKEND", level="INFO"
+        )
+        try:
+            self.weather_worker_proc = subprocess.Popen(
+                [
+                    str(venv_python),
+                    "-m",
+                    "workers.weather_worker",
+                ],
+                cwd=str(BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            weather_stream = threading.Thread(
+                target=self._stream_output,
+                args=(self.weather_worker_proc, "WEATHER"),
+                daemon=True,
+                name="weather-stream",
+            )
+            weather_stream.start()
+        except Exception as e:
+            self._enqueue_log(
+                f"Weather worker failed to start (non-fatal): {e}",
+                source="BACKEND",
+                level="WARNING",
+            )
+            self.weather_worker_proc = None
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -1271,6 +1317,8 @@ class HomerunApp(App):
         frontend_alive = self.frontend_proc is not None and self.frontend_proc.poll() is None
         self._update_status("svc-frontend", "FRONTEND", frontend_alive)
         self._update_status("svc-scanner", "SCANNER", scanner.get("running", False))
+        weather_alive = self.weather_worker_proc is not None and self.weather_worker_proc.poll() is None
+        self._update_status("svc-weather", "WEATHER", weather_alive)
         self._update_status("svc-autotrader", "AUTO TRADER", auto.get("running", False))
         ws_healthy = ws.get("healthy", False) if isinstance(ws, dict) else False
         self._update_status("svc-wsfeeds", "WS FEEDS", ws_healthy)
@@ -1336,6 +1384,7 @@ class HomerunApp(App):
             self.backend_healthy = False
             self._update_status("svc-backend", "BACKEND", False)
             self._update_status("svc-scanner", "SCANNER", False)
+            self._update_status("svc-weather", "WEATHER", False)
             self._update_status("svc-autotrader", "AUTO TRADER", False)
             self._update_status("svc-wsfeeds", "WS FEEDS", False)
 
@@ -1391,7 +1440,13 @@ class HomerunApp(App):
     def _kill_children(self) -> None:
         """Kill child processes and close their pipes to unblock reader threads."""
         procs = [
-            p for p in (self.scanner_worker_proc, self.backend_proc, self.frontend_proc)
+            p
+            for p in (
+                self.scanner_worker_proc,
+                self.weather_worker_proc,
+                self.backend_proc,
+                self.frontend_proc,
+            )
             if p and p.poll() is None
         ]
         # SIGKILL all first (non-blocking)

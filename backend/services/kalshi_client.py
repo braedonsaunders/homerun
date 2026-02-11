@@ -219,10 +219,11 @@ class KalshiClient:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _parse_kalshi_market(data: dict) -> Market:
+    def _parse_kalshi_market(data: dict, event_ticker: str = "") -> Market:
         """Convert a single Kalshi market dict into the app's Market model."""
         ticker = data.get("ticker", "")
         title = data.get("title", "") or data.get("subtitle", "")
+        resolved_event_ticker = data.get("event_ticker", "") or event_ticker
 
         # Kalshi prices are in cents (0-100); normalise to 0.0-1.0
         yes_bid = (data.get("yes_bid", 0) or 0) / 100.0
@@ -268,6 +269,7 @@ class KalshiClient:
             condition_id=ticker,
             question=title,
             slug=ticker,
+            event_slug=resolved_event_ticker,
             tokens=[yes_token, no_token],
             clob_token_ids=[f"{ticker}_yes", f"{ticker}_no"],
             outcome_prices=outcome_prices,
@@ -292,7 +294,9 @@ class KalshiClient:
         markets: list[Market] = []
         for m in data.get("markets", []):
             try:
-                markets.append(KalshiClient._parse_kalshi_market(m))
+                markets.append(
+                    KalshiClient._parse_kalshi_market(m, event_ticker=event_ticker)
+                )
             except Exception:
                 pass
 
@@ -478,7 +482,9 @@ class KalshiClient:
         markets: list[Market] = []
         for m in markets_raw:
             try:
-                markets.append(self._parse_kalshi_market(m))
+                markets.append(
+                    self._parse_kalshi_market(m, event_ticker=event_ticker or "")
+                )
             except Exception as exc:
                 logger.debug("Failed to parse Kalshi market", error=str(exc))
 
@@ -540,7 +546,9 @@ class KalshiClient:
 
         market_data = data.get("market", data)
         try:
-            return self._parse_kalshi_market(market_data)
+            return self._parse_kalshi_market(
+                market_data, event_ticker=market_data.get("event_ticker", "")
+            )
         except Exception as exc:
             logger.error(
                 "Failed to parse Kalshi market", ticker=market_id, error=str(exc)

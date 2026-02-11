@@ -455,6 +455,8 @@ class PolymarketClient:
     def _extract_market_info(market_data: dict) -> dict:
         """Extract standardized market info from a Gamma API market response."""
         return {
+            "id": market_data.get("id", ""),
+            "condition_id": market_data.get("condition_id", ""),
             "question": market_data.get("question", ""),
             "slug": market_data.get("slug", ""),
             "groupItemTitle": market_data.get("groupItemTitle", ""),
@@ -890,6 +892,62 @@ class PolymarketClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def get_activity(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        activity_type: Optional[str] = None,
+    ) -> list[dict]:
+        """Fetch recent account activity from the Data API.
+
+        Uses ``/v1/activity`` when available, then falls back to ``/activity``.
+        """
+        params = {
+            "limit": min(limit, 500),
+            "offset": min(offset, 1000),
+        }
+        if activity_type:
+            params["type"] = activity_type
+
+        for endpoint in (f"{self.data_url}/v1/activity", f"{self.data_url}/activity"):
+            try:
+                response = await self._rate_limited_get(endpoint, params=params)
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("data", data.get("items", data.get("activity", [])))
+            except Exception:
+                continue
+        return []
+
+    async def get_market_holders(
+        self,
+        market_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Fetch holders for a market from the Data API."""
+        params = {
+            "market": market_id,
+            "limit": min(limit, 500),
+            "offset": min(offset, 1000),
+        }
+
+        for endpoint in (f"{self.data_url}/holders", f"{self.data_url}/v1/holders"):
+            try:
+                response = await self._rate_limited_get(endpoint, params=params)
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("data", data.get("items", data.get("holders", [])))
+            except Exception:
+                continue
+        return []
 
     # ==================== LEADERBOARD / DISCOVERY ====================
 

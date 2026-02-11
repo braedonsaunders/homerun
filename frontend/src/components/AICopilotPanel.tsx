@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import {
   X,
@@ -12,7 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { sendAIChat, AIChatMessage } from '../services/api'
+import { sendAIChat, AIChatMessage, getAIChatSession, archiveAIChatSession } from '../services/api'
 import { Button } from './ui/button'
 import { Card } from './ui/card'
 import { ScrollArea } from './ui/scroll-area'
@@ -34,10 +34,16 @@ export default function AICopilotPanel({
   contextLabel,
 }: AICopilotPanelProps) {
   const [messages, setMessages] = useState<AIChatMessage[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [isExpanded, setIsExpanded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const sessionStorageKey = useMemo(() => {
+    const ctxType = contextType || 'general'
+    const ctxId = contextId || 'default'
+    return `ai-copilot-session:${ctxType}:${ctxId}`
+  }, [contextType, contextId])
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -53,17 +59,53 @@ export default function AICopilotPanel({
     }
   }, [isOpen])
 
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    const existingSessionId = window.localStorage.getItem(sessionStorageKey)
+    if (!existingSessionId) {
+      setSessionId(null)
+      setMessages([])
+      return
+    }
+
+    setMessages([])
+    getAIChatSession(existingSessionId)
+      .then((data) => {
+        if (cancelled) return
+        setSessionId(data.session_id)
+        const restored = (data.messages || [])
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+        setMessages(restored)
+      })
+      .catch(() => {
+        if (cancelled) return
+        window.localStorage.removeItem(sessionStorageKey)
+        setSessionId(null)
+        setMessages([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, sessionStorageKey])
+
   const chatMutation = useMutation({
     mutationFn: async (message: string) => {
       const result = await sendAIChat({
         message,
+        session_id: sessionId || undefined,
         context_type: contextType,
         context_id: contextId,
-        history: messages,
       })
       return result
     },
     onSuccess: (data) => {
+      if (data.session_id) {
+        setSessionId(data.session_id)
+        window.localStorage.setItem(sessionStorageKey, data.session_id)
+      }
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', content: data.response },
@@ -129,7 +171,18 @@ export default function AICopilotPanel({
         <div className="flex items-center gap-1">
           {messages.length > 0 && (
             <Button
-              onClick={() => setMessages([])}
+              onClick={async () => {
+                if (sessionId) {
+                  try {
+                    await archiveAIChatSession(sessionId)
+                  } catch {
+                    // ignore archive failures; local clear still proceeds
+                  }
+                }
+                setMessages([])
+                setSessionId(null)
+                window.localStorage.removeItem(sessionStorageKey)
+              }}
               variant="ghost"
               size="icon"
               className="h-7 w-7"
@@ -186,7 +239,7 @@ export default function AICopilotPanel({
                       key={action.label}
                       className="cursor-pointer text-left text-xs p-2.5 rounded-xl hover:border-purple-500/30 hover:bg-purple-500/5 transition-colors text-muted-foreground hover:text-foreground shadow-none"
                       onClick={() => {
-                        setMessages([{ role: 'user', content: action.prompt }])
+                        setMessages((prev) => [...prev, { role: 'user', content: action.prompt }])
                         chatMutation.mutate(action.prompt)
                       }}
                     >

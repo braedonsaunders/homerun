@@ -125,6 +125,15 @@ class CopyTradingService:
 
             self._active_configs[config.id] = config
 
+            # Keep WS monitor membership in sync when running.
+            if self._running:
+                try:
+                    from services.wallet_ws_monitor import wallet_ws_monitor
+
+                    wallet_ws_monitor.add_wallet(source_wallet, source="copy_trader")
+                except Exception:
+                    pass
+
             logger.info(
                 "Added copy trading config",
                 config_id=config.id,
@@ -143,6 +152,21 @@ class CopyTradingService:
                 await session.delete(config)
                 await session.commit()
                 self._active_configs.pop(config_id, None)
+
+                if self._running:
+                    try:
+                        from services.wallet_ws_monitor import wallet_ws_monitor
+
+                        remaining = [
+                            c.source_wallet
+                            for c in self._active_configs.values()
+                            if c.enabled
+                        ]
+                        wallet_ws_monitor.set_wallets_for_source(
+                            "copy_trader", remaining
+                        )
+                    except Exception:
+                        pass
 
                 logger.info("Removed copy trading config", config_id=config_id)
 
@@ -202,6 +226,19 @@ class CopyTradingService:
 
             # Update in-memory cache
             self._active_configs[config_id] = config
+
+            if self._running:
+                try:
+                    from services.wallet_ws_monitor import wallet_ws_monitor
+
+                    remaining = [
+                        c.source_wallet
+                        for c in self._active_configs.values()
+                        if c.enabled
+                    ]
+                    wallet_ws_monitor.set_wallets_for_source("copy_trader", remaining)
+                except Exception:
+                    pass
 
             logger.info(
                 "Updated copy trading config",
@@ -1561,8 +1598,10 @@ class CopyTradingService:
         try:
             from services.wallet_ws_monitor import wallet_ws_monitor
 
-            for config in configs:
-                wallet_ws_monitor.add_wallet(config.source_wallet)
+            wallet_ws_monitor.set_wallets_for_source(
+                "copy_trader",
+                [config.source_wallet for config in configs if config.enabled],
+            )
             wallet_ws_monitor.add_callback(self._on_realtime_trade)
             asyncio.create_task(wallet_ws_monitor.start())
             logger.info("WebSocket wallet monitor started for copy trading")

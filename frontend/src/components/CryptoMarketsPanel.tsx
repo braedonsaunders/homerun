@@ -4,22 +4,17 @@ import {
   TrendingUp,
   TrendingDown,
   RefreshCw,
-  Clock,
-  Zap,
   ExternalLink,
   Activity,
-  DollarSign,
-  BarChart3,
   ChevronRight,
   ArrowUpDown,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { getCryptoMarkets, CryptoMarket } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
-import AnimatedNumber from './AnimatedNumber'
 import Sparkline from './Sparkline'
 
 // ─── Constants ────────────────────────────────────────────
@@ -108,7 +103,7 @@ function LiveCountdown({ endTime }: { endTime: string | null }) {
 
 // ─── Oracle Price Display ─────────────────────────────────
 
-function OraclePriceDisplay({ price, priceToBeat, asset }: { price: number | null; priceToBeat: number | null; asset: string }) {
+function OraclePriceDisplay({ price, priceToBeat }: { price: number | null; priceToBeat: number | null }) {
   if (price === null) return null
 
   const delta = (priceToBeat !== null && priceToBeat !== undefined) ? price - priceToBeat : null
@@ -167,9 +162,9 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
   const combined = market.combined ?? (upPrice + downPrice)
   const spread = 1 - combined
 
-  const polyUrl = market.event_slug
-    ? `https://polymarket.com/event/${market.event_slug}`
-    : null
+  const polyUrl = buildPolymarketMarketUrl({
+    eventSlug: market.event_slug,
+  })
 
   // Parse time window from title (e.g. "Bitcoin Up or Down - February 10, 10:45AM-11:00AM ET")
   const timeWindow = market.event_title?.match(/(\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)\s*ET/)?.[0] || ''
@@ -212,7 +207,7 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
         </div>
 
         {/* Oracle price + Price to beat */}
-        <OraclePriceDisplay price={market.oracle_price} priceToBeat={market.price_to_beat} asset={asset} />
+        <OraclePriceDisplay price={market.oracle_price} priceToBeat={market.price_to_beat} />
 
         {/* Oracle price sparkline chart */}
         <div ref={chartRef} className="relative h-14 w-full bg-muted/10 rounded-lg overflow-hidden">
@@ -344,6 +339,9 @@ interface Props {
 }
 
 export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) {
+  // Intentionally kept for interface parity with other panels and App wiring.
+  void onExecute
+  void onOpenCopilot
   const { isConnected, lastMessage } = useWebSocket('/ws')
   const [selectedAsset, setSelectedAsset] = useState<Asset>('ALL')
   const [wsMarkets, setWsMarkets] = useState<CryptoMarket[] | null>(null)

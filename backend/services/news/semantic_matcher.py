@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 _HAS_TRANSFORMERS = False
 _HAS_FAISS = False
+# FAISS remains enabled by default; set NEWS_ENABLE_FAISS=0 only for emergency fallback.
+_ENABLE_FAISS = os.environ.get("NEWS_ENABLE_FAISS", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 try:
     # Disable tokenizer parallelism to avoid segfaults when called from
@@ -42,11 +49,22 @@ try:
 except ImportError:
     SentenceTransformer = None  # type: ignore
 
-try:
-    import faiss
+if _ENABLE_FAISS:
+    try:
+        import faiss
 
-    _HAS_FAISS = True
-except ImportError:
+        try:
+            faiss_threads = int(os.environ.get("NEWS_FAISS_THREADS", "1"))
+            if hasattr(faiss, "omp_set_num_threads"):
+                faiss.omp_set_num_threads(max(1, faiss_threads))
+        except Exception:
+            # Keep FAISS available even if thread pinning is unsupported.
+            pass
+
+        _HAS_FAISS = True
+    except ImportError:
+        faiss = None  # type: ignore
+else:
     faiss = None  # type: ignore
 
 

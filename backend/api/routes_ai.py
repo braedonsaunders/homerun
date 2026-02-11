@@ -15,9 +15,10 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+import json
 import logging
 
 from models.database import get_db_session
@@ -473,12 +474,238 @@ async def get_opportunity_ai_summary(
 # === AI Chat / Copilot ===
 
 
+async def _build_context_pack(
+    session: AsyncSession,
+    context_type: Optional[str],
+    context_id: Optional[str],
+    *,
+    include_news: bool = True,
+    news_limit: int = 5,
+) -> dict[str, Any]:
+    """Build a compact context pack for AI chat and UI context inspection."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import desc, select
+    from models.database import (
+        NewsTradeIntent,
+        NewsWorkflowFinding,
+        OpportunityJudgment,
+        ResolutionAnalysis,
+    )
+
+    pack: dict[str, Any] = {
+        "context_type": context_type,
+        "context_id": context_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "opportunity": None,
+        "latest_judgment": None,
+        "resolution_analyses": [],
+        "news_findings": [],
+        "news_intents": [],
+        "market_ids": [],
+    }
+
+    market_ids: list[str] = []
+    opportunity = None
+    opps = await shared_state.get_opportunities_from_db(session, None)
+
+    if context_type == "opportunity" and context_id:
+        opportunity = next((o for o in opps if o.id == context_id), None)
+    elif context_type == "market" and context_id:
+        for o in opps:
+            if any(m.get("id", "") == context_id for m in o.markets):
+                opportunity = o
+                break
+
+    if opportunity:
+        market_ids = [m.get("id", "") for m in opportunity.markets if m.get("id", "")]
+        pack["opportunity"] = {
+            "id": opportunity.id,
+            "stable_id": opportunity.stable_id,
+            "title": opportunity.title,
+            "strategy": opportunity.strategy,
+            "roi_percent": opportunity.roi_percent,
+            "net_profit": opportunity.net_profit,
+            "risk_score": opportunity.risk_score,
+            "risk_factors": opportunity.risk_factors,
+            "event_title": opportunity.event_title,
+            "category": opportunity.category,
+            "markets": [
+                {
+                    "id": m.get("id"),
+                    "question": m.get("question"),
+                    "yes_price": m.get("yes_price"),
+                    "no_price": m.get("no_price"),
+                    "liquidity": m.get("liquidity"),
+                    "price_history": m.get("price_history", [])[-20:],
+                }
+                for m in opportunity.markets
+            ],
+        }
+
+        judgment_q = (
+            select(OpportunityJudgment)
+            .where(OpportunityJudgment.opportunity_id == opportunity.id)
+            .order_by(desc(OpportunityJudgment.judged_at))
+            .limit(1)
+        )
+        judgment_row = (await session.execute(judgment_q)).scalar_one_or_none()
+        if judgment_row:
+            pack["latest_judgment"] = {
+                "overall_score": judgment_row.overall_score,
+                "profit_viability": judgment_row.profit_viability,
+                "resolution_safety": judgment_row.resolution_safety,
+                "execution_feasibility": judgment_row.execution_feasibility,
+                "market_efficiency": judgment_row.market_efficiency,
+                "recommendation": judgment_row.recommendation,
+                "risk_factors": judgment_row.risk_factors or [],
+                "judged_at": judgment_row.judged_at.isoformat()
+                if judgment_row.judged_at
+                else None,
+            }
+
+    elif context_type == "market" and context_id:
+        market_ids = [context_id]
+
+    pack["market_ids"] = market_ids
+
+    if market_ids:
+        analysis_q = (
+            select(ResolutionAnalysis)
+            .where(ResolutionAnalysis.market_id.in_(market_ids))
+            .order_by(desc(ResolutionAnalysis.analyzed_at))
+            .limit(10)
+        )
+        analyses = (await session.execute(analysis_q)).scalars().all()
+        pack["resolution_analyses"] = [
+            {
+                "market_id": a.market_id,
+                "clarity_score": a.clarity_score,
+                "risk_score": a.risk_score,
+                "confidence": a.confidence,
+                "recommendation": a.recommendation,
+                "summary": a.summary,
+                "ambiguities": a.ambiguities or [],
+                "edge_cases": a.edge_cases or [],
+                "analyzed_at": a.analyzed_at.isoformat() if a.analyzed_at else None,
+            }
+            for a in analyses
+        ]
+
+        if include_news:
+            finding_q = (
+                select(NewsWorkflowFinding)
+                .where(
+                    NewsWorkflowFinding.market_id.in_(market_ids),
+                    NewsWorkflowFinding.created_at
+                    >= datetime.now(timezone.utc) - timedelta(hours=48),
+                )
+                .order_by(desc(NewsWorkflowFinding.created_at))
+                .limit(max(1, min(news_limit, 20)))
+            )
+            findings = (await session.execute(finding_q)).scalars().all()
+            pack["news_findings"] = [
+                {
+                    "id": f.id,
+                    "market_id": f.market_id,
+                    "article_title": f.article_title,
+                    "article_source": f.article_source,
+                    "edge_percent": f.edge_percent,
+                    "direction": f.direction,
+                    "confidence": f.confidence,
+                    "actionable": f.actionable,
+                    "created_at": f.created_at.isoformat() if f.created_at else None,
+                }
+                for f in findings
+            ]
+
+            intent_q = (
+                select(NewsTradeIntent)
+                .where(NewsTradeIntent.market_id.in_(market_ids))
+                .order_by(desc(NewsTradeIntent.created_at))
+                .limit(max(1, min(news_limit, 20)))
+            )
+            intents = (await session.execute(intent_q)).scalars().all()
+            pack["news_intents"] = [
+                {
+                    "id": i.id,
+                    "market_id": i.market_id,
+                    "direction": i.direction,
+                    "entry_price": i.entry_price,
+                    "edge_percent": i.edge_percent,
+                    "confidence": i.confidence,
+                    "status": i.status,
+                    "created_at": i.created_at.isoformat() if i.created_at else None,
+                }
+                for i in intents
+            ]
+
+    return pack
+
+
+@router.get("/ai/context-pack")
+async def get_ai_context_pack(
+    session: AsyncSession = Depends(get_db_session),
+    context_type: str = Query("general", description="opportunity | market | general"),
+    context_id: Optional[str] = Query(
+        None, description="opportunity_id or market_id for the context type"
+    ),
+    include_news: bool = Query(True, description="Include workflow findings/intents"),
+    news_limit: int = Query(5, ge=1, le=20),
+):
+    """Return a compact context bundle for AI-assisted workflows."""
+    return await _build_context_pack(
+        session,
+        context_type=context_type,
+        context_id=context_id,
+        include_news=include_news,
+        news_limit=news_limit,
+    )
+
+
 class AIChatRequest(BaseModel):
     message: str
+    session_id: Optional[str] = None
     context_type: Optional[str] = None  # "opportunity", "market", "general"
     context_id: Optional[str] = None  # opportunity_id or market_id
-    history: list[dict] = []  # prior messages [{role, content}]
+    history: list[dict] = Field(default_factory=list)  # prior messages [{role, content}]
     model: Optional[str] = None
+
+
+@router.get("/ai/chat/sessions")
+async def list_ai_chat_sessions(
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+):
+    """List recent persistent AI chat sessions."""
+    from services.ai.chat_memory import chat_memory_service
+
+    sessions = await chat_memory_service.list_sessions(
+        context_type=context_type, context_id=context_id, limit=limit
+    )
+    return {"sessions": sessions, "total": len(sessions)}
+
+
+@router.get("/ai/chat/sessions/{session_id}")
+async def get_ai_chat_session(session_id: str):
+    """Get a persistent AI chat session including messages."""
+    from services.ai.chat_memory import chat_memory_service
+
+    result = await chat_memory_service.get_session(session_id, message_limit=500)
+    if not result:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return result
+
+
+@router.delete("/ai/chat/sessions/{session_id}")
+async def archive_ai_chat_session(session_id: str):
+    """Archive a persistent AI chat session."""
+    from services.ai.chat_memory import chat_memory_service
+
+    ok = await chat_memory_service.archive_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return {"status": "archived", "session_id": session_id}
 
 
 @router.post("/ai/chat")
@@ -494,6 +721,8 @@ async def ai_chat(
     """
     try:
         from services.ai import get_llm_manager
+        from services.ai.chat_memory import chat_memory_service
+        from services.ai.llm_provider import LLMMessage
 
         manager = get_llm_manager()
         if not manager.is_available():
@@ -502,30 +731,32 @@ async def ai_chat(
                 detail="No AI provider configured. Add an API key in Settings.",
             )
 
-        # Build context
-        context_parts = []
+        chat_session = None
+        if request.session_id:
+            chat_session = await chat_memory_service.get_session(
+                request.session_id, message_limit=1
+            )
+        if chat_session is None and request.context_type and request.context_id:
+            chat_session = await chat_memory_service.find_latest_for_context(
+                request.context_type, request.context_id
+            )
+        if chat_session is None:
+            chat_session = await chat_memory_service.create_session(
+                context_type=request.context_type or "general",
+                context_id=request.context_id,
+                title=(request.message or "").strip()[:120] or "AI chat",
+            )
+        session_id = chat_session["session_id"]
 
-        if request.context_type == "opportunity" and request.context_id:
-            opps = await shared_state.get_opportunities_from_db(session, None)
-            opp = next((o for o in opps if o.id == request.context_id), None)
-            if opp:
-                context_parts.append(
-                    f"The user is currently viewing this arbitrage opportunity:\n"
-                    f"Title: {opp.title}\n"
-                    f"Strategy: {opp.strategy}\n"
-                    f"ROI: {opp.roi_percent:.2f}%\n"
-                    f"Net Profit: ${opp.net_profit:.4f}\n"
-                    f"Risk Score: {opp.risk_score:.2f}\n"
-                    f"Risk Factors: {', '.join(opp.risk_factors)}\n"
-                    f"Markets: {', '.join(m.get('question', '') for m in opp.markets)}\n"
-                    f"Event: {opp.event_title or 'N/A'}\n"
-                    f"Category: {opp.category or 'N/A'}\n"
-                    f"Total Cost: ${opp.total_cost:.4f}\n"
-                    f"Max Position Size: ${opp.max_position_size:.2f}\n"
-                )
+        persisted = await chat_memory_service.get_recent_messages(session_id, limit=20)
 
-        if request.context_type == "market" and request.context_id:
-            context_parts.append(f"The user is viewing market ID: {request.context_id}")
+        context_pack = await _build_context_pack(
+            session,
+            context_type=request.context_type,
+            context_id=request.context_id,
+            include_news=True,
+            news_limit=5,
+        )
 
         system_prompt = (
             "You are the AI copilot for Homerun, a Polymarket prediction market "
@@ -534,34 +765,64 @@ async def ai_chat(
             "Key knowledge:\n"
             "- Polymarket uses UMA's Optimistic Oracle for resolution\n"
             "- 2% fee on net winnings\n"
-            "- Strategies: basic arb, NegRisk, mutually exclusive, contradiction, "
-            "must-happen, settlement lag\n"
+            "- Strategies include: basic arb, NegRisk, mutually exclusive, contradiction, must-happen, "
+            "miracle, combinatorial, settlement lag, cross-platform, bayesian cascade, liquidity vacuum, "
+            "entropy arb, event-driven, temporal decay, correlation arb, market making, stat arb, BTC/ETH highfreq\n"
             "- Risk factors: resolution ambiguity, liquidity, correlation, timing\n\n"
             "Be concise, specific, and data-driven. When the user asks about a "
             "specific opportunity, reference its actual data. Flag risks clearly.\n"
         )
 
-        if context_parts:
-            system_prompt += "\nCurrent context:\n" + "\n".join(context_parts)
-
-        # Build messages with system prompt as first message
-        from services.ai.llm_provider import LLMMessage
+        compact_context = {
+            "context_type": context_pack.get("context_type"),
+            "context_id": context_pack.get("context_id"),
+            "opportunity": context_pack.get("opportunity"),
+            "latest_judgment": context_pack.get("latest_judgment"),
+            "resolution_analyses": context_pack.get("resolution_analyses", [])[:3],
+            "news_findings": context_pack.get("news_findings", [])[:3],
+            "news_intents": context_pack.get("news_intents", [])[:3],
+        }
+        system_prompt += (
+            "\nCurrent context pack (JSON):\n"
+            + json.dumps(compact_context, ensure_ascii=True)
+        )
 
         messages = [LLMMessage(role="system", content=system_prompt)]
-        for msg in request.history[-10:]:  # Keep last 10 messages
+        history_source = persisted if persisted else request.history[-10:]
+        for msg in history_source:
+            role = msg.get("role", "user")
+            if role not in ("user", "assistant"):
+                continue
             messages.append(
-                LLMMessage(role=msg.get("role", "user"), content=msg.get("content", ""))
+                LLMMessage(role=role, content=msg.get("content", ""))
             )
         messages.append(LLMMessage(role="user", content=request.message))
+
+        await chat_memory_service.append_message(
+            session_id=session_id,
+            role="user",
+            content=request.message,
+        )
 
         response = await manager.chat(
             messages=messages,
             model=request.model,
             max_tokens=1024,
             purpose="ai_chat",
+            session_id=session_id,
+        )
+
+        await chat_memory_service.append_message(
+            session_id=session_id,
+            role="assistant",
+            content=response.content or "",
+            model_used=response.model or request.model,
+            input_tokens=response.usage.input_tokens if response.usage else 0,
+            output_tokens=response.usage.output_tokens if response.usage else 0,
         )
 
         return {
+            "session_id": session_id,
             "response": response.content or "",
             "model": response.model or "",
             "tokens_used": {

@@ -9,11 +9,21 @@ from sqlalchemy import select
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
 from models.database import AsyncSessionLocal, StrategyPlugin, get_db_session
 from services import scanner, wallet_tracker, polymarket_client
+from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client
 from services.plugin_loader import plugin_loader
 from services import shared_state
+from utils.logger import get_logger
 
 router = APIRouter()
+logger = get_logger("routes")
+
+DISCOVER_TIME_TO_WINDOW = {
+    "DAY": "1d",
+    "WEEK": "7d",
+    "MONTH": "30d",
+    "ALL": None,
+}
 
 
 async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str]:
@@ -712,7 +722,22 @@ async def get_strategies():
         for p in plugins
     ]
 
-    return builtin + plugin_entries
+    synthetic = [
+        {
+            "type": StrategyType.NEWS_EDGE.value,
+            "name": "News Edge",
+            "description": "News workflow informational edge intents consumed by auto trader",
+            "is_plugin": False,
+        },
+        {
+            "type": StrategyType.WEATHER_EDGE.value,
+            "name": "Weather Edge",
+            "description": "Weather workflow forecast-consensus intents consumed by auto trader",
+            "is_plugin": False,
+        },
+    ]
+
+    return builtin + synthetic + plugin_entries
 
 
 # ==================== TRADER DISCOVERY ====================
@@ -730,19 +755,46 @@ async def get_leaderboard(
         description="Category: OVERALL, POLITICS, SPORTS, CRYPTO, CULTURE, WEATHER, ECONOMICS, TECH, FINANCE",
     ),
 ):
-    """
-    Get Polymarket leaderboard - top traders by profit or volume.
-
-    Filters:
-    - time_period: DAY (24h), WEEK (7d), MONTH (30d), or ALL (all time)
-    - order_by: PNL (profit/loss) or VOL (trading volume)
-    - category: Filter by market category
-    """
+    """Legacy compatibility adapter backed by /api/discovery data."""
     try:
-        leaderboard = await polymarket_client.get_leaderboard(
-            limit=limit, time_period=time_period, order_by=order_by, category=category
+        time_period = time_period.upper()
+        order_by = order_by.upper()
+        window_key = DISCOVER_TIME_TO_WINDOW.get(time_period)
+        if time_period not in DISCOVER_TIME_TO_WINDOW:
+            raise HTTPException(
+                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
+            )
+
+        sort_by = "total_pnl" if order_by == "PNL" else "total_returned"
+        data = await wallet_discovery.get_leaderboard(
+            limit=limit,
+            offset=0,
+            min_trades=0,
+            min_pnl=0.0,
+            sort_by=sort_by,
+            sort_dir="desc",
+            window_key=window_key,
+            active_within_hours=24 if time_period == "DAY" else None,
         )
-        return leaderboard
+
+        wallets = data.get("wallets", [])
+        # Legacy response shape from Polymarket leaderboard.
+        return [
+            {
+                "proxyWallet": w.get("address"),
+                "userName": w.get("username"),
+                "pnl": w.get("period_pnl", w.get("total_pnl", 0.0)),
+                "vol": w.get("total_returned", 0.0),
+                "rank": w.get("rank_position"),
+                "winRate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0)
+                * 100.0,
+                "deprecated": True,
+                "deprecation_note": "/api/discover/* now proxies /api/discovery/*",
+            }
+            for w in wallets
+        ]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -757,19 +809,50 @@ async def discover_top_traders(
     order_by: str = Query("PNL", description="Sort by: PNL or VOL"),
     category: str = Query("OVERALL", description="Market category filter"),
 ):
-    """
-    Discover top traders by analyzing recent trade activity.
-    Returns wallets sorted by trading volume or profit.
-    """
+    """Legacy compatibility adapter backed by /api/discovery leaderboard."""
     try:
-        traders = await polymarket_client.get_top_traders_from_trades(
+        time_period = time_period.upper()
+        order_by = order_by.upper()
+        window_key = DISCOVER_TIME_TO_WINDOW.get(time_period)
+        if time_period not in DISCOVER_TIME_TO_WINDOW:
+            raise HTTPException(
+                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
+            )
+
+        sort_by = "total_pnl" if order_by == "PNL" else "total_returned"
+        data = await wallet_discovery.get_leaderboard(
             limit=limit,
+            offset=0,
             min_trades=min_trades,
-            time_period=time_period,
-            order_by=order_by,
-            category=category,
+            min_pnl=0.0,
+            sort_by=sort_by,
+            sort_dir="desc",
+            window_key=window_key,
         )
-        return traders
+        wallets = data.get("wallets", [])
+
+        return [
+            {
+                "address": w.get("address"),
+                "username": w.get("username"),
+                "trades": w.get("period_trades", w.get("total_trades", 0)),
+                "volume": w.get("total_returned", 0.0),
+                "pnl": w.get("period_pnl", w.get("total_pnl", 0.0)),
+                "rank": w.get("rank_position"),
+                "buys": w.get("wins", 0),
+                "sells": w.get("losses", 0),
+                "win_rate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0)
+                * 100.0,
+                "wins": w.get("wins", 0),
+                "losses": w.get("losses", 0),
+                "total_markets": w.get("unique_markets", 0),
+                "trade_count": w.get("period_trades", w.get("total_trades", 0)),
+                "deprecated": True,
+            }
+            for w in wallets
+        ]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -798,32 +881,56 @@ async def discover_by_win_rate(
         description="Number of traders to scan per leaderboard sort (searches both PNL and VOL)",
     ),
 ):
-    """
-    Discover traders with high win rates.
-
-    This endpoint fetches traders from the leaderboard, calculates their actual
-    win rate by analyzing trade history, and returns only those meeting the threshold.
-
-    Filters:
-    - min_win_rate: Filter by minimum win rate (e.g., 99 for 99%+ win rate)
-    - min_trades: Minimum closed trades to qualify
-    - min_volume/max_volume: Filter by trading volume
-    - scan_count: How many traders to analyze (more = slower but finds more results)
-
-    Note: Higher scan_count values will take longer but may find more high win-rate traders.
-    """
+    """Legacy compatibility adapter backed by /api/discovery leaderboard."""
     try:
-        traders = await polymarket_client.discover_by_win_rate(
-            min_win_rate=min_win_rate,
+        window_key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
+        if time_period.upper() not in DISCOVER_TIME_TO_WINDOW:
+            raise HTTPException(
+                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
+            )
+
+        # We over-fetch so win-rate/volume filters still return enough rows.
+        data = await wallet_discovery.get_leaderboard(
+            limit=min(max(scan_count, limit * 4), 500),
+            offset=0,
             min_trades=min_trades,
-            limit=limit,
-            time_period=time_period,
-            category=category,
-            min_volume=min_volume,
-            max_volume=max_volume,
-            scan_count=scan_count,
+            min_pnl=0.0,
+            sort_by="win_rate",
+            sort_dir="desc",
+            window_key=window_key,
         )
-        return traders
+        wallets = data.get("wallets", [])
+
+        output = []
+        for w in wallets:
+            wr = (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0) * 100.0
+            volume = float(w.get("total_returned", 0.0) or 0.0)
+            if wr < min_win_rate:
+                continue
+            if min_volume > 0 and volume < min_volume:
+                continue
+            if max_volume > 0 and volume > max_volume:
+                continue
+            output.append(
+                {
+                    "address": w.get("address"),
+                    "username": w.get("username"),
+                    "volume": volume,
+                    "pnl": w.get("period_pnl", w.get("total_pnl", 0.0)),
+                    "rank": w.get("rank_position"),
+                    "win_rate": wr,
+                    "wins": w.get("wins", 0),
+                    "losses": w.get("losses", 0),
+                    "total_markets": w.get("unique_markets", 0),
+                    "trade_count": w.get("period_trades", w.get("total_trades", 0)),
+                    "deprecated": True,
+                }
+            )
+            if len(output) >= limit:
+                break
+        return output
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -835,16 +942,37 @@ async def get_wallet_win_rate(
         "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
     ),
 ):
-    """
-    Calculate win rate for a specific wallet.
-    Uses closed-positions data (same method as Discover page) for consistency.
-    Falls back to full trade analysis if closed-positions data is unavailable.
-    """
+    """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
-        # Primary: Use fast method (closed-positions) for consistency with discover page
-        fast_result = await polymarket_client.calculate_win_rate_fast(
-            address, min_positions=1
-        )
+        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        if profile:
+            key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
+            if key:
+                win_rate = (profile.get("rolling_win_rate", {}) or {}).get(key, 0.0)
+                trade_count = (profile.get("rolling_trade_count", {}) or {}).get(key, 0)
+            else:
+                win_rate = profile.get("win_rate", 0.0)
+                trade_count = profile.get("total_trades", 0)
+
+            wins = profile.get("wins", 0)
+            losses = profile.get("losses", 0)
+            if key and trade_count > 0 and wins + losses > 0:
+                # Approximate period wins/losses from period win rate and trade count.
+                wins = int(round((win_rate or 0.0) * trade_count))
+                losses = max(int(trade_count) - wins, 0)
+
+            return {
+                "address": address,
+                "win_rate": (win_rate or 0.0) * 100.0,
+                "wins": wins,
+                "losses": losses,
+                "total_markets": profile.get("unique_markets", 0),
+                "trade_count": trade_count,
+                "deprecated": True,
+            }
+
+        # Fallback for unknown wallets.
+        fast_result = await polymarket_client.calculate_win_rate_fast(address, min_positions=1)
         if fast_result:
             return {
                 "address": address,
@@ -853,13 +981,17 @@ async def get_wallet_win_rate(
                 "losses": fast_result["losses"],
                 "total_markets": fast_result["closed_positions"],
                 "trade_count": fast_result["closed_positions"],
+                "deprecated": True,
             }
-
-        # Fallback: Full trade analysis if no closed positions found
-        win_rate_data = await polymarket_client.calculate_wallet_win_rate(
-            address, time_period=time_period
-        )
-        return win_rate_data
+        return {
+            "address": address,
+            "win_rate": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "total_markets": 0,
+            "trade_count": 0,
+            "deprecated": True,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -871,11 +1003,37 @@ async def analyze_wallet_pnl(
         "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
     ),
 ):
-    """
-    Analyze a wallet's profit and loss, trade history, and patterns.
-    """
+    """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
+        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        if profile:
+            key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
+            if key:
+                pnl = (profile.get("rolling_pnl", {}) or {}).get(key, 0.0)
+                trade_count = (profile.get("rolling_trade_count", {}) or {}).get(key, 0)
+            else:
+                pnl = profile.get("total_pnl", 0.0)
+                trade_count = profile.get("total_trades", 0)
+
+            total_invested = float(profile.get("total_invested", 0.0) or 0.0)
+            roi_percent = (pnl / total_invested * 100.0) if total_invested > 0 else 0.0
+            return {
+                "address": address,
+                "total_trades": trade_count,
+                "open_positions": profile.get("open_positions", 0),
+                "total_invested": total_invested,
+                "total_returned": profile.get("total_returned", 0.0),
+                "position_value": 0.0,
+                "realized_pnl": profile.get("realized_pnl", 0.0),
+                "unrealized_pnl": profile.get("unrealized_pnl", 0.0),
+                "total_pnl": pnl,
+                "roi_percent": roi_percent,
+                "deprecated": True,
+            }
+
+        # Fallback for non-discovered wallets.
         pnl = await polymarket_client.get_wallet_pnl(address, time_period=time_period)
+        pnl["deprecated"] = True
         return pnl
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -896,20 +1054,48 @@ async def analyze_and_track_wallet(
     - Optionally sets up copy trading in paper mode
     """
     try:
-        # Analyze the wallet
-        pnl = await polymarket_client.get_wallet_pnl(address)
+        profile = await wallet_discovery.get_wallet_profile(address.lower())
+        if profile is None:
+            analysis = await wallet_discovery.analyze_wallet(address.lower())
+            if analysis is not None:
+                await wallet_discovery._upsert_wallet(analysis)
+                await wallet_discovery.refresh_leaderboard()
+                profile = await wallet_discovery.get_wallet_profile(address.lower())
+
+        analysis_payload = (
+            {
+                "address": address,
+                "total_trades": profile.get("total_trades", 0),
+                "open_positions": profile.get("open_positions", 0),
+                "total_invested": profile.get("total_invested", 0.0),
+                "total_returned": profile.get("total_returned", 0.0),
+                "position_value": 0.0,
+                "realized_pnl": profile.get("realized_pnl", 0.0),
+                "unrealized_pnl": profile.get("unrealized_pnl", 0.0),
+                "total_pnl": profile.get("total_pnl", 0.0),
+                "roi_percent": (
+                    (profile.get("total_pnl", 0.0) / profile.get("total_invested", 1.0))
+                    * 100.0
+                    if (profile.get("total_invested", 0.0) or 0.0) > 0
+                    else 0.0
+                ),
+            }
+            if profile
+            else await polymarket_client.get_wallet_pnl(address)
+        )
 
         # Add to tracking
-        wallet_label = label or f"Discovered ({pnl.get('roi_percent', 0):.1f}% ROI)"
+        wallet_label = label or f"Discovered ({analysis_payload.get('roi_percent', 0):.1f}% ROI)"
         await wallet_tracker.add_wallet(address, wallet_label)
 
         result = {
             "status": "success",
             "wallet": address,
             "label": wallet_label,
-            "analysis": pnl,
+            "analysis": analysis_payload,
             "tracking": True,
             "copy_trading": False,
+            "deprecated": True,
         }
 
         # Optionally set up copy trading

@@ -25,6 +25,7 @@ from sqlalchemy import select
 from config import settings
 from models.database import AsyncSessionLocal, AppSettings
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
 
 logger = get_logger("notifier")
 
@@ -196,7 +197,8 @@ class TelegramNotifier:
 
                 if row:
                     self._bot_token = (
-                        row.telegram_bot_token or settings.TELEGRAM_BOT_TOKEN
+                        decrypt_secret(row.telegram_bot_token)
+                        or settings.TELEGRAM_BOT_TOKEN
                     )
                     self._chat_id = row.telegram_chat_id or settings.TELEGRAM_CHAT_ID
                     self._notifications_enabled = bool(row.notifications_enabled)

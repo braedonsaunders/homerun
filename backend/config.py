@@ -264,6 +264,20 @@ class Settings(BaseSettings):
     NEWS_GDELT_ENABLED: bool = True  # Enable GDELT as additional news source
     NEWS_RSS_FEEDS: list[str] = []  # Additional custom RSS feed URLs
 
+    # Weather workflow defaults (DB settings override these at runtime)
+    WEATHER_WORKFLOW_ENABLED: bool = True
+    WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS: int = 14400
+    WEATHER_WORKFLOW_ENTRY_MAX_PRICE: float = 0.25
+    WEATHER_WORKFLOW_TAKE_PROFIT_PRICE: float = 0.85
+    WEATHER_WORKFLOW_STOP_LOSS_PCT: float = 50.0
+    WEATHER_WORKFLOW_MIN_EDGE_PERCENT: float = 8.0
+    WEATHER_WORKFLOW_MIN_CONFIDENCE: float = 0.6
+    WEATHER_WORKFLOW_MIN_MODEL_AGREEMENT: float = 0.75
+    WEATHER_WORKFLOW_MIN_LIQUIDITY: float = 500.0
+    WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN: int = 200
+    WEATHER_WORKFLOW_DEFAULT_SIZE_USD: float = 10.0
+    WEATHER_WORKFLOW_MAX_SIZE_USD: float = 50.0
+
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
     CLEANUP_INTERVAL_HOURS: int = 24  # Run cleanup every X hours

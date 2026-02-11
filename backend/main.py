@@ -1,3 +1,4 @@
+import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -8,6 +9,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pathlib import Path
 import traceback
+
+# Keep native ML/linear algebra threading conservative for long-running
+# backend and worker workloads on macOS.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("NEWS_FAISS_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 
 from config import settings
 from api import router, handle_websocket
@@ -25,6 +37,7 @@ from api.routes_kalshi import router as kalshi_router
 from api.routes_plugins import router as plugins_router
 from api.routes_crypto import router as crypto_router
 from api.routes_news_workflow import router as news_workflow_router
+from api.routes_weather_workflow import router as weather_workflow_router
 from api.routes_validation import router as validation_router
 from services import wallet_tracker
 from services.copy_trader import copy_trader
@@ -32,11 +45,13 @@ from services.trading import trading_service
 from services.auto_trader import auto_trader
 from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
+from services.smart_wallet_pool import smart_wallet_pool
 from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
 from services.notifier import notifier
 from services.opportunity_recorder import opportunity_recorder
 from services.validation_service import validation_service
+from services.snapshot_broadcaster import snapshot_broadcaster
 from models.database import AsyncSessionLocal, init_database
 from services import shared_state
 from utils.logger import setup_logging, get_logger
@@ -163,6 +178,9 @@ async def lifespan(app: FastAPI):
         # Background tasks (scanner runs in separate worker process; API reads from DB)
         tasks = []
 
+        # Broadcast scanner snapshot deltas from DB to connected WebSocket clients.
+        await snapshot_broadcaster.start(interval_seconds=1.0)
+
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
@@ -245,7 +263,9 @@ async def lifespan(app: FastAPI):
                 wallet_intelligence.start_background(interval_minutes=30)
             )
             tasks.append(intelligence_task)
-            logger.info("Wallet discovery and intelligence started")
+            smart_pool_task = asyncio.create_task(smart_wallet_pool.start_background())
+            tasks.append(smart_pool_task)
+            logger.info("Wallet discovery, intelligence, and smart pool started")
         except Exception as e:
             logger.warning(f"Wallet discovery startup failed (non-critical): {e}")
 
@@ -325,11 +345,13 @@ async def lifespan(app: FastAPI):
             await get_chainlink_feed().stop()
         except Exception:
             pass
+        await snapshot_broadcaster.stop()
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()
         wallet_discovery.stop()
         wallet_intelligence.stop()
+        smart_wallet_pool.stop()
         position_monitor.stop()
         maintenance_service.stop()
         try:
@@ -425,6 +447,7 @@ app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
 app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])
 app.include_router(news_workflow_router, prefix="/api", tags=["News Workflow"])
+app.include_router(weather_workflow_router, prefix="/api", tags=["Weather Workflow"])
 app.include_router(validation_router, prefix="/api", tags=["Validation"])
 
 
@@ -510,6 +533,7 @@ async def detailed_health_check():
     """Detailed health check with all system stats"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+    smart_pool_stats = await smart_wallet_pool.get_pool_stats()
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -558,6 +582,7 @@ async def detailed_health_check():
             "wallet_intelligence": {
                 "running": wallet_intelligence._running,
             },
+            "smart_wallet_pool": smart_pool_stats,
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {

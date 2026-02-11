@@ -1096,6 +1096,10 @@ class WalletDiscoveryEngine:
         tags: list[str] | None = None,
         recommendation: str | None = None,
         window_key: str | None = None,
+        active_within_hours: int | None = None,
+        min_activity_score: float | None = None,
+        pool_only: bool = False,
+        tier: str | None = None,
     ) -> dict:
         """
         Get the wallet leaderboard with filtering and sorting.
@@ -1122,6 +1126,15 @@ class WalletDiscoveryEngine:
             ]
             if recommendation:
                 base_filter.append(DiscoveredWallet.recommendation == recommendation)
+            if active_within_hours is not None:
+                cutoff = datetime.utcnow() - timedelta(hours=active_within_hours)
+                base_filter.append(DiscoveredWallet.last_trade_at >= cutoff)
+            if min_activity_score is not None:
+                base_filter.append(DiscoveredWallet.activity_score >= min_activity_score)
+            if pool_only:
+                base_filter.append(DiscoveredWallet.in_top_pool == True)  # noqa: E712
+            if tier:
+                base_filter.append(DiscoveredWallet.pool_tier == tier.lower())
 
             # When a rolling window is active, filter to wallets with trades in that window
             if window_key:
@@ -1310,6 +1323,18 @@ class WalletDiscoveryEngine:
             # Ranking
             "rank_score": w.rank_score,
             "rank_position": w.rank_position,
+            "quality_score": w.quality_score,
+            "activity_score": w.activity_score,
+            "stability_score": w.stability_score,
+            "composite_score": w.composite_score,
+            "last_trade_at": w.last_trade_at.isoformat() if w.last_trade_at else None,
+            "trades_1h": w.trades_1h,
+            "trades_24h": w.trades_24h,
+            "unique_markets_24h": w.unique_markets_24h,
+            "in_top_pool": w.in_top_pool,
+            "pool_tier": w.pool_tier,
+            "pool_membership_reason": w.pool_membership_reason,
+            "source_flags": w.source_flags or {},
             # Clustering
             "cluster_id": w.cluster_id,
         }

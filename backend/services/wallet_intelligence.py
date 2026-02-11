@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, text, update
+from sqlalchemy import select, text, update, func
 
 from models.database import (
     DiscoveredWallet,
@@ -25,6 +25,7 @@ from models.database import (
     WalletCluster,
     MarketConfluenceSignal,
     CrossPlatformEntity,
+    WalletActivityRollup,
     AsyncSessionLocal,
 )
 from services.polymarket import polymarket_client
@@ -40,160 +41,185 @@ logger = get_logger("wallet_intelligence")
 
 
 class ConfluenceDetector:
-    """Detect when multiple profitable wallets are buying/selling the same market."""
+    """Detect markets where many smart wallets enter the same side together."""
 
-    MIN_WALLETS_FOR_SIGNAL = 3  # Minimum wallets to trigger a signal
-    MIN_WALLET_RANK_SCORE = 0.3  # Only consider wallets above this rank
-    SIGNAL_DECAY_HOURS = 48  # Signals expire after this many hours
+    MIN_WALLETS_WATCH = 5
+    MIN_WALLETS_HIGH = 10
+    MIN_WALLETS_EXTREME = 15
+    MIN_WALLET_RANK_SCORE = 0.20
+    SIGNAL_DECAY_MINUTES = 90
+
+    def __init__(self):
+        self._ws_broadcast_callback = None
+
+    def set_ws_broadcast(self, callback):
+        """Set websocket broadcast callback for tracked trader signal events."""
+        self._ws_broadcast_callback = callback
+
+    async def _broadcast_signal_event(self, payload: dict):
+        if not self._ws_broadcast_callback:
+            return
+        try:
+            await self._ws_broadcast_callback(
+                {"type": "tracked_trader_signal", "data": payload}
+            )
+        except Exception:
+            pass
 
     async def scan_for_confluence(self) -> list[dict]:
-        """
-        Main confluence detection pipeline:
-        1. Get all profitable DiscoveredWallets with rank_score > MIN_WALLET_RANK_SCORE
-        2. For each wallet, fetch their current positions
-        3. Build a dict: market_id -> [list of wallet positions]
-        4. For markets with >= MIN_WALLETS_FOR_SIGNAL wallets:
-           - Calculate signal strength
-           - Determine signal type
-           - Create/update MarketConfluenceSignal in DB
-        5. Expire old signals
-        6. Return active signals
-        """
+        """Scan recent wallet activity rollups and upsert confluence signals."""
         logger.info("Starting confluence scan...")
+        now = datetime.utcnow()
+        cutoff_60m = now - timedelta(minutes=60)
+        cutoff_15m = now - timedelta(minutes=15)
 
-        # Step 1: Get high-ranking wallets
         wallets = await self._get_qualifying_wallets()
         if not wallets:
             logger.info("No qualifying wallets found for confluence scan")
             return []
 
-        logger.info(
-            "Qualifying wallets for confluence scan",
-            count=len(wallets),
-        )
+        wallet_map = {w["address"]: w for w in wallets}
+        addresses = list(wallet_map.keys())
 
-        # Step 2 & 3: Fetch positions and build market map
-        market_positions: dict[str, list[dict]] = {}
-        semaphore = asyncio.Semaphore(5)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(WalletActivityRollup)
+                .where(
+                    WalletActivityRollup.wallet_address.in_(addresses),
+                    WalletActivityRollup.traded_at >= cutoff_60m,
+                )
+                .order_by(WalletActivityRollup.traded_at.desc())
+            )
+            events = list(result.scalars().all())
 
-        async def fetch_positions(wallet: dict):
-            async with semaphore:
-                try:
-                    positions = await polymarket_client.get_wallet_positions(
-                        wallet["address"]
-                    )
-                    for pos in positions:
-                        market_id = (
-                            pos.get("market", "")
-                            or pos.get("condition_id", "")
-                            or pos.get("asset", "")
-                        )
-                        if not market_id:
-                            continue
+        if not events:
+            await self.expire_old_signals()
+            return await self.get_active_signals()
 
-                        size = float(pos.get("size", 0) or 0)
-                        if size <= 0:
-                            continue
+        grouped: dict[tuple[str, str], list[WalletActivityRollup]] = {}
+        for event in events:
+            side = self._normalize_side(event.side)
+            if side not in ("BUY", "SELL"):
+                continue
+            key = (event.market_id, side)
+            grouped.setdefault(key, []).append(event)
 
-                        entry = {
-                            "wallet_address": wallet["address"],
-                            "rank_score": wallet["rank_score"],
-                            "market_id": market_id,
-                            "size": size,
-                            "side": (
-                                pos.get("side", "") or pos.get("outcome", "")
-                            ).upper(),
-                            "price": float(
-                                pos.get("avgPrice", 0) or pos.get("price", 0) or 0
-                            ),
-                            "title": pos.get("title", ""),
-                        }
-                        if market_id not in market_positions:
-                            market_positions[market_id] = []
-                        market_positions[market_id].append(entry)
-                except Exception as e:
-                    logger.debug(
-                        "Failed to fetch positions for wallet",
-                        wallet=wallet["address"],
-                        error=str(e),
-                    )
-
-        await asyncio.gather(*[fetch_positions(w) for w in wallets])
-
-        # Step 4: Evaluate each market for confluence
         signals_created = 0
-        for market_id, positions in market_positions.items():
-            # Only unique wallets count
-            unique_wallets = {p["wallet_address"] for p in positions}
-            if len(unique_wallets) < self.MIN_WALLETS_FOR_SIGNAL:
+        for (market_id, side), side_events in grouped.items():
+            unique_wallets = {
+                e.wallet_address.lower()
+                for e in side_events
+                if e.wallet_address
+            }
+            if len(unique_wallets) < self.MIN_WALLETS_WATCH:
                 continue
 
-            wallet_count = len(unique_wallets)
-            avg_rank = sum(p["rank_score"] for p in positions) / len(positions)
-            total_size = sum(p["size"] for p in positions)
+            # Calculate adjusted wallet count by entity cluster to reduce
+            # multi-wallet inflation from the same controller.
+            cluster_groups: dict[str, set[str]] = {}
+            unclustered = 0
+            for addr in unique_wallets:
+                cluster_id = wallet_map.get(addr, {}).get("cluster_id")
+                if cluster_id:
+                    cluster_groups.setdefault(cluster_id, set()).add(addr)
+                else:
+                    unclustered += 1
+            cluster_adjusted = len(cluster_groups) + unclustered
+            if cluster_adjusted < self.MIN_WALLETS_WATCH:
+                continue
 
-            strength = self._calculate_signal_strength(
-                wallet_count, avg_rank, total_size
+            window_events = [e for e in side_events if e.traded_at and e.traded_at >= cutoff_15m]
+            window_minutes = 15 if window_events else 60
+            active_events = window_events or side_events
+
+            wallets_sorted = sorted(unique_wallets)
+            avg_rank = 0.0
+            weighted_wallet_score = 0.0
+            anomaly_avg = 0.0
+            core_wallets = 0
+            if wallets_sorted:
+                rank_vals = [wallet_map.get(w, {}).get("rank_score", 0.0) for w in wallets_sorted]
+                comp_vals = [wallet_map.get(w, {}).get("composite_score", 0.0) for w in wallets_sorted]
+                an_vals = [wallet_map.get(w, {}).get("anomaly_score", 0.0) for w in wallets_sorted]
+                avg_rank = sum(rank_vals) / len(rank_vals)
+                weighted_wallet_score = sum(comp_vals) / len(comp_vals)
+                anomaly_avg = sum(an_vals) / len(an_vals)
+                core_wallets = sum(1 for w in wallets_sorted if wallet_map.get(w, {}).get("in_top_pool"))
+
+            prices = [float(e.price or 0) for e in active_events if e.price and e.price > 0]
+            sizes = [abs(float(e.size or 0)) for e in active_events if e.size]
+            avg_entry_price = sum(prices) / len(prices) if prices else None
+            total_size = sum(sizes) if sizes else None
+
+            net_notional = sum(abs(float(e.notional or 0.0)) for e in active_events)
+            conflicting_notional = await self._conflicting_notional(
+                market_id=market_id,
+                side=side,
+                addresses=addresses,
+                cutoff=cutoff_60m,
             )
 
-            # Determine signal type from dominant side
-            buy_count = sum(1 for p in positions if p["side"] in ("BUY", "YES"))
-            sell_count = sum(1 for p in positions if p["side"] in ("SELL", "NO"))
+            timestamps = [e.traded_at for e in active_events if e.traded_at]
+            timing_tightness = self._timing_tightness(timestamps)
 
-            if buy_count > sell_count * 2:
-                signal_type = "multi_wallet_buy"
-            elif sell_count > buy_count * 2:
-                signal_type = "multi_wallet_sell"
-            else:
-                signal_type = "accumulation"
-
-            # Derive a representative outcome and avg entry price
-            outcome = "YES" if buy_count >= sell_count else "NO"
-            prices = [p["price"] for p in positions if p["price"] > 0]
-            avg_entry_price = sum(prices) / len(prices) if prices else None
-
-            market_title = ""
-            for p in positions:
-                if p.get("title"):
-                    market_title = p["title"]
-                    break
-
-            # Resolve market slug for Polymarket link
-            market_slug = None
-            try:
-                market_info = await polymarket_client.get_market_by_condition_id(
-                    market_id
-                )
-                if market_info:
-                    market_slug = (
-                        market_info.get("event_slug") or market_info.get("slug") or None
-                    )
-                    if not market_title and market_info.get("question"):
-                        market_title = market_info["question"]
-            except Exception:
-                pass
-
-            wallet_list = list(unique_wallets)
+            market_context = await self._resolve_market_context(market_id)
+            outcome = "YES" if side == "BUY" else "NO"
+            signal_type = "multi_wallet_buy" if side == "BUY" else "multi_wallet_sell"
+            tier = self._tier_for_count(cluster_adjusted)
+            conviction = self._conviction_score(
+                adjusted_wallet_count=cluster_adjusted,
+                weighted_wallet_score=weighted_wallet_score,
+                timing_tightness=timing_tightness,
+                net_notional=net_notional,
+                conflicting_notional=conflicting_notional,
+                market_liquidity=market_context.get("liquidity"),
+                market_volume_24h=market_context.get("volume_24h"),
+                anomaly_avg=anomaly_avg,
+                unique_wallet_count=len(unique_wallets),
+            )
+            strength = max(0.0, min(conviction / 100.0, 1.0))
 
             await self._upsert_signal(
                 market_id=market_id,
-                market_question=market_title,
+                market_question=market_context.get("question") or "",
                 signal_type=signal_type,
                 strength=strength,
-                wallet_count=wallet_count,
-                wallets=wallet_list,
+                conviction_score=conviction,
+                tier=tier,
+                window_minutes=window_minutes,
+                wallet_count=len(unique_wallets),
+                cluster_adjusted_wallet_count=cluster_adjusted,
+                unique_core_wallets=core_wallets,
+                weighted_wallet_score=weighted_wallet_score,
+                wallets=wallets_sorted,
                 outcome=outcome,
                 avg_entry_price=avg_entry_price,
                 total_size=total_size,
                 avg_wallet_rank=avg_rank,
-                market_slug=market_slug,
+                net_notional=net_notional,
+                conflicting_notional=conflicting_notional,
+                market_slug=market_context.get("market_slug"),
+                market_liquidity=market_context.get("liquidity"),
+                market_volume_24h=market_context.get("volume_24h"),
             )
+            if tier in ("HIGH", "EXTREME"):
+                await self._broadcast_signal_event(
+                    {
+                        "market_id": market_id,
+                        "market_question": market_context.get("question") or "",
+                        "market_slug": market_context.get("market_slug"),
+                        "outcome": outcome,
+                        "tier": tier,
+                        "conviction_score": conviction,
+                        "cluster_adjusted_wallet_count": cluster_adjusted,
+                        "wallet_count": len(unique_wallets),
+                        "window_minutes": window_minutes,
+                        "detected_at": now.isoformat(),
+                    }
+                )
             signals_created += 1
 
-        # Step 5: Expire old signals
         await self.expire_old_signals()
-
-        # Step 6: Return active signals
         active = await self.get_active_signals()
         logger.info(
             "Confluence scan complete",
@@ -203,12 +229,11 @@ class ConfluenceDetector:
         return active
 
     async def _get_qualifying_wallets(self) -> list[dict]:
-        """Get wallets with rank_score above the minimum threshold."""
+        """Get wallets eligible for confluence scoring."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(DiscoveredWallet).where(
                     DiscoveredWallet.rank_score >= self.MIN_WALLET_RANK_SCORE,
-                    DiscoveredWallet.is_profitable == True,  # noqa: E712
                 )
             )
             wallets = list(result.scalars().all())
@@ -216,36 +241,156 @@ class ConfluenceDetector:
                 {
                     "address": w.address,
                     "rank_score": w.rank_score or 0.0,
-                    "total_pnl": w.total_pnl or 0.0,
+                    "composite_score": w.composite_score or 0.0,
+                    "anomaly_score": w.anomaly_score or 0.0,
+                    "cluster_id": w.cluster_id,
+                    "in_top_pool": bool(w.in_top_pool),
                 }
                 for w in wallets
             ]
 
-    def _calculate_signal_strength(
-        self, wallet_count: int, avg_rank_score: float, total_size: float
+    def _normalize_side(self, raw: Optional[str]) -> str:
+        side = (raw or "").upper().strip()
+        if side in ("BUY", "YES"):
+            return "BUY"
+        if side in ("SELL", "NO"):
+            return "SELL"
+        return side
+
+    def _tier_for_count(self, adjusted_wallet_count: int) -> str:
+        if adjusted_wallet_count >= self.MIN_WALLETS_EXTREME:
+            return "EXTREME"
+        if adjusted_wallet_count >= self.MIN_WALLETS_HIGH:
+            return "HIGH"
+        return "WATCH"
+
+    def _timing_tightness(self, timestamps: list[datetime]) -> float:
+        """Return 0-1 timing tightness where 1 means near-simultaneous entries."""
+        if len(timestamps) < 2:
+            return 0.5
+        ts_sorted = sorted(timestamps)
+        span_seconds = (ts_sorted[-1] - ts_sorted[0]).total_seconds()
+        # <=2 minutes => 1.0, 60 minutes => 0.0
+        return max(0.0, min(1.0, 1.0 - (span_seconds / 3600.0)))
+
+    def _conviction_score(
+        self,
+        adjusted_wallet_count: int,
+        weighted_wallet_score: float,
+        timing_tightness: float,
+        net_notional: float,
+        conflicting_notional: float,
+        market_liquidity: Optional[float],
+        market_volume_24h: Optional[float],
+        anomaly_avg: float,
+        unique_wallet_count: int,
     ) -> float:
-        """
-        Signal strength 0-1 based on:
-        - Number of wallets (more = stronger, logarithmic scaling)
-        - Average rank score of participating wallets (higher = stronger)
-        - Total position size (larger = stronger, logarithmic)
+        # Count strength (30)
+        count_factor = min(adjusted_wallet_count / float(self.MIN_WALLETS_EXTREME), 1.0)
+        count_component = 30.0 * count_factor
 
-        Formula: 0.4 * wallet_factor + 0.4 * rank_factor + 0.2 * size_factor
-        """
-        # Wallet factor: log scale, 3 wallets ~= 0.5, 10 ~= 0.83, 30 ~= 1.0
-        wallet_factor = min(math.log(max(wallet_count, 1)) / math.log(30), 1.0)
+        # Wallet quality mix (25)
+        quality_component = 25.0 * max(0.0, min(weighted_wallet_score, 1.0))
 
-        # Rank factor: direct mapping (already 0-1)
-        rank_factor = min(max(avg_rank_score, 0.0), 1.0)
+        # Entry-time tightness (15)
+        timing_component = 15.0 * max(0.0, min(timing_tightness, 1.0))
 
-        # Size factor: log scale on dollar amount, $1000 ~= 0.5, $100k ~= 1.0
-        if total_size > 0:
-            size_factor = min(math.log10(max(total_size, 1)) / 5.0, 1.0)
+        # Net notional (10, log scale)
+        if net_notional > 0:
+            notional_factor = min(math.log10(net_notional + 1.0) / 5.0, 1.0)
         else:
-            size_factor = 0.0
+            notional_factor = 0.0
+        notional_component = 10.0 * notional_factor
 
-        strength = 0.4 * wallet_factor + 0.4 * rank_factor + 0.2 * size_factor
-        return round(min(max(strength, 0.0), 1.0), 4)
+        # Side consensus (10)
+        if net_notional > 0:
+            conflict_ratio = min(conflicting_notional / max(net_notional, 1.0), 1.0)
+            consensus_factor = 1.0 - conflict_ratio
+        else:
+            consensus_factor = 0.5
+        consensus_component = 10.0 * consensus_factor
+
+        # Market context (10)
+        context_factor = 0.5
+        if market_liquidity and market_liquidity > 0:
+            context_factor = max(
+                context_factor, min(math.log10(market_liquidity + 1.0) / 6.0, 1.0)
+            )
+        if market_volume_24h and market_volume_24h > 0:
+            context_factor = max(
+                context_factor, min(math.log10(market_volume_24h + 1.0) / 6.0, 1.0)
+            )
+        context_component = 10.0 * context_factor
+
+        base = (
+            count_component
+            + quality_component
+            + timing_component
+            + notional_component
+            + consensus_component
+            + context_component
+        )
+
+        # Penalties
+        concentration_penalty = 0.0
+        if unique_wallet_count > 0:
+            concentration = 1.0 - (adjusted_wallet_count / float(unique_wallet_count))
+            concentration_penalty = max(0.0, concentration) * 10.0
+        anomaly_penalty = max(0.0, min(anomaly_avg, 1.0)) * 8.0
+
+        conviction = base - concentration_penalty - anomaly_penalty
+        return round(max(0.0, min(conviction, 100.0)), 2)
+
+    async def _conflicting_notional(
+        self,
+        market_id: str,
+        side: str,
+        addresses: list[str],
+        cutoff: datetime,
+    ) -> float:
+        opposite = "SELL" if side == "BUY" else "BUY"
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(func.sum(WalletActivityRollup.notional))
+                .where(
+                    WalletActivityRollup.market_id == market_id,
+                    WalletActivityRollup.wallet_address.in_(addresses),
+                    WalletActivityRollup.traded_at >= cutoff,
+                    WalletActivityRollup.side.in_(
+                        [opposite, "YES" if opposite == "BUY" else "NO"]
+                    ),
+                )
+            )
+            value = result.scalar() or 0.0
+            return float(value or 0.0)
+
+    async def _resolve_market_context(self, market_id: str) -> dict:
+        market_slug = None
+        question = ""
+        liquidity = None
+        volume_24h = None
+
+        try:
+            if market_id.startswith("0x"):
+                info = await polymarket_client.get_market_by_condition_id(market_id)
+            else:
+                info = await polymarket_client.get_market_by_token_id(market_id)
+            if info:
+                market_slug = info.get("event_slug") or info.get("slug")
+                question = info.get("question", "")
+                if info.get("liquidity") is not None:
+                    liquidity = float(info.get("liquidity") or 0)
+                if info.get("volume") is not None:
+                    volume_24h = float(info.get("volume") or 0)
+        except Exception:
+            pass
+
+        return {
+            "market_slug": market_slug,
+            "question": question,
+            "liquidity": liquidity,
+            "volume_24h": volume_24h,
+        }
 
     async def _upsert_signal(
         self,
@@ -253,20 +398,31 @@ class ConfluenceDetector:
         market_question: str,
         signal_type: str,
         strength: float,
+        conviction_score: float,
+        tier: str,
+        window_minutes: int,
         wallet_count: int,
+        cluster_adjusted_wallet_count: int,
+        unique_core_wallets: int,
+        weighted_wallet_score: float,
         wallets: list[str],
         outcome: Optional[str],
         avg_entry_price: Optional[float],
         total_size: Optional[float],
         avg_wallet_rank: Optional[float],
+        net_notional: Optional[float],
+        conflicting_notional: Optional[float],
         market_slug: Optional[str] = None,
+        market_liquidity: Optional[float] = None,
+        market_volume_24h: Optional[float] = None,
     ):
         """Create or update a confluence signal in the database."""
+        now = datetime.utcnow()
         async with AsyncSessionLocal() as session:
-            # Check for existing active signal on this market
             result = await session.execute(
                 select(MarketConfluenceSignal).where(
                     MarketConfluenceSignal.market_id == market_id,
+                    MarketConfluenceSignal.outcome == outcome,
                     MarketConfluenceSignal.is_active == True,  # noqa: E712
                 )
             )
@@ -275,52 +431,96 @@ class ConfluenceDetector:
             if existing:
                 existing.signal_type = signal_type
                 existing.strength = strength
+                existing.conviction_score = conviction_score
+                existing.tier = tier
+                existing.window_minutes = window_minutes
                 existing.wallet_count = wallet_count
+                existing.cluster_adjusted_wallet_count = cluster_adjusted_wallet_count
+                existing.unique_core_wallets = unique_core_wallets
+                existing.weighted_wallet_score = weighted_wallet_score
                 existing.wallets = wallets
-                existing.outcome = outcome
                 existing.avg_entry_price = avg_entry_price
                 existing.total_size = total_size
                 existing.avg_wallet_rank = avg_wallet_rank
-                existing.detected_at = datetime.utcnow()
+                existing.net_notional = net_notional
+                existing.conflicting_notional = conflicting_notional
+                existing.market_liquidity = market_liquidity
+                existing.market_volume_24h = market_volume_24h
+                existing.last_seen_at = now
+                existing.detected_at = now
                 if market_slug:
                     existing.market_slug = market_slug
+                if market_question:
+                    existing.market_question = market_question
+                # Cooldown is used by downstream alerting so repeated scans
+                # do not spam notifications.
+                if conviction_score >= (existing.conviction_score or 0) + 5:
+                    existing.cooldown_until = now + timedelta(minutes=5)
             else:
-                signal = MarketConfluenceSignal(
-                    id=str(uuid.uuid4()),
-                    market_id=market_id,
-                    market_question=market_question,
-                    market_slug=market_slug,
-                    signal_type=signal_type,
-                    strength=strength,
-                    wallet_count=wallet_count,
-                    wallets=wallets,
-                    outcome=outcome,
-                    avg_entry_price=avg_entry_price,
-                    total_size=total_size,
-                    avg_wallet_rank=avg_wallet_rank,
-                    is_active=True,
-                    detected_at=datetime.utcnow(),
+                session.add(
+                    MarketConfluenceSignal(
+                        id=str(uuid.uuid4()),
+                        market_id=market_id,
+                        market_question=market_question,
+                        market_slug=market_slug,
+                        signal_type=signal_type,
+                        strength=strength,
+                        conviction_score=conviction_score,
+                        tier=tier,
+                        window_minutes=window_minutes,
+                        wallet_count=wallet_count,
+                        cluster_adjusted_wallet_count=cluster_adjusted_wallet_count,
+                        unique_core_wallets=unique_core_wallets,
+                        weighted_wallet_score=weighted_wallet_score,
+                        wallets=wallets,
+                        outcome=outcome,
+                        avg_entry_price=avg_entry_price,
+                        total_size=total_size,
+                        avg_wallet_rank=avg_wallet_rank,
+                        net_notional=net_notional,
+                        conflicting_notional=conflicting_notional,
+                        market_liquidity=market_liquidity,
+                        market_volume_24h=market_volume_24h,
+                        is_active=True,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        detected_at=now,
+                        cooldown_until=now + timedelta(minutes=5),
+                    )
                 )
-                session.add(signal)
 
             await session.commit()
 
     async def get_active_signals(
-        self, min_strength: float = 0.0, limit: int = 50
+        self,
+        min_strength: float = 0.0,
+        limit: int = 50,
+        min_tier: str = "WATCH",
     ) -> list[dict]:
-        """Get currently active confluence signals from DB, sorted by strength."""
+        """Get active confluence signals from DB, sorted by conviction."""
+        tier_rank = {"WATCH": 1, "HIGH": 2, "EXTREME": 3}
+        required_rank = tier_rank.get((min_tier or "WATCH").upper(), 1)
+
         async with AsyncSessionLocal() as session:
-            query = (
+            result = await session.execute(
                 select(MarketConfluenceSignal)
                 .where(
                     MarketConfluenceSignal.is_active == True,  # noqa: E712
                     MarketConfluenceSignal.strength >= min_strength,
                 )
-                .order_by(MarketConfluenceSignal.strength.desc())
-                .limit(limit)
+                .order_by(
+                    MarketConfluenceSignal.conviction_score.desc(),
+                    MarketConfluenceSignal.last_seen_at.desc(),
+                )
+                .limit(limit * 2)
             )
-            result = await session.execute(query)
-            signals = list(result.scalars().all())
+            raw_signals = list(result.scalars().all())
+
+            signals = [
+                s
+                for s in raw_signals
+                if tier_rank.get((s.tier or "WATCH").upper(), 1) >= required_rank
+            ][:limit]
 
             return [
                 {
@@ -329,33 +529,51 @@ class ConfluenceDetector:
                     "market_question": s.market_question or "",
                     "market_slug": s.market_slug or None,
                     "signal_type": s.signal_type,
+                    "tier": s.tier or "WATCH",
                     "strength": s.strength,
+                    "conviction_score": s.conviction_score or 0.0,
+                    "window_minutes": s.window_minutes or 60,
                     "wallet_count": s.wallet_count,
+                    "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count
+                    or 0,
+                    "unique_core_wallets": s.unique_core_wallets or 0,
+                    "weighted_wallet_score": s.weighted_wallet_score or 0.0,
                     "wallets": s.wallets or [],
                     "outcome": s.outcome,
                     "avg_entry_price": s.avg_entry_price,
                     "total_size": s.total_size,
                     "avg_wallet_rank": s.avg_wallet_rank,
+                    "net_notional": s.net_notional,
+                    "conflicting_notional": s.conflicting_notional,
+                    "market_liquidity": s.market_liquidity,
+                    "market_volume_24h": s.market_volume_24h,
                     "is_active": s.is_active,
+                    "first_seen_at": s.first_seen_at.isoformat()
+                    if s.first_seen_at
+                    else None,
+                    "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
                     "detected_at": s.detected_at.isoformat() if s.detected_at else None,
                 }
                 for s in signals
             ]
 
     async def expire_old_signals(self):
-        """Mark signals as inactive if older than SIGNAL_DECAY_HOURS."""
-        cutoff = datetime.utcnow() - timedelta(hours=self.SIGNAL_DECAY_HOURS)
+        """Mark signals inactive when not reinforced within decay window."""
+        cutoff = datetime.utcnow() - timedelta(minutes=self.SIGNAL_DECAY_MINUTES)
         async with AsyncSessionLocal() as session:
             await session.execute(
                 update(MarketConfluenceSignal)
                 .where(
                     MarketConfluenceSignal.is_active == True,  # noqa: E712
-                    MarketConfluenceSignal.detected_at < cutoff,
+                    func.coalesce(
+                        MarketConfluenceSignal.last_seen_at,
+                        MarketConfluenceSignal.detected_at,
+                    )
+                    < cutoff,
                 )
                 .values(is_active=False, expired_at=datetime.utcnow())
             )
             await session.commit()
-        logger.debug("Expired old confluence signals", cutoff=cutoff.isoformat())
 
 
 # ============================================================================

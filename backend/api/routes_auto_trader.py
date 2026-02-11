@@ -171,6 +171,18 @@ class AutoTraderConfigRequest(BaseModel):
         None, ge=1, le=1440, description="Skip intents older than this many minutes"
     )
 
+    # Weather workflow trade intents
+    weather_workflow_enabled: Optional[bool] = Field(
+        None,
+        description="Consume pending trade intents from the weather workflow pipeline",
+    )
+    weather_workflow_min_edge: Optional[float] = Field(
+        None, ge=0, le=100, description="Min edge % to auto-trade a weather intent"
+    )
+    weather_workflow_max_age_minutes: Optional[int] = Field(
+        None, ge=1, le=1440, description="Skip weather intents older than this many minutes"
+    )
+
     # LLM verification before trading
     llm_verify_trades: Optional[bool] = Field(
         None,
@@ -426,6 +438,16 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
         updates["news_workflow_min_edge"] = config.news_workflow_min_edge
     if config.news_workflow_max_age_minutes is not None:
         updates["news_workflow_max_age_minutes"] = config.news_workflow_max_age_minutes
+
+    # Weather workflow
+    if config.weather_workflow_enabled is not None:
+        updates["weather_workflow_enabled"] = config.weather_workflow_enabled
+    if config.weather_workflow_min_edge is not None:
+        updates["weather_workflow_min_edge"] = config.weather_workflow_min_edge
+    if config.weather_workflow_max_age_minutes is not None:
+        updates["weather_workflow_max_age_minutes"] = (
+            config.weather_workflow_max_age_minutes
+        )
 
     # LLM verification before trading
     if config.llm_verify_trades is not None:

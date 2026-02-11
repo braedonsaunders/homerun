@@ -221,7 +221,9 @@ class WalletWebSocketMonitor:
 
     def __init__(self):
         self._running: bool = False
-        self._tracked_addresses: set[str] = set()
+        # address -> set of logical sources that requested tracking
+        # (e.g. copy_trader, discovery_pool)
+        self._tracked_sources: dict[str, set[str]] = {}
         self._callbacks: list[Callable] = []
         self._ws_url: str = DEFAULT_WS_URL
         self._http_rpc_url: str = DEFAULT_HTTP_RPC_URL
@@ -243,32 +245,65 @@ class WalletWebSocketMonitor:
 
     # ==================== WALLET MANAGEMENT ====================
 
-    def add_wallet(self, address: str):
-        """Add a wallet address to the tracked set.
+    def _tracked_addresses(self) -> set[str]:
+        """Flatten source-scoped memberships into a set of tracked addresses."""
+        return set(self._tracked_sources.keys())
+
+    def add_wallet(self, address: str, source: str = "default"):
+        """Add a wallet address to the tracked set for a specific source.
 
         Args:
             address: Ethereum address (checksummed or lowercase).
+            source: Logical owner of this membership.
         """
         normalized = address.lower()
-        self._tracked_addresses.add(normalized)
+        memberships = self._tracked_sources.setdefault(normalized, set())
+        memberships.add(source)
         logger.info(
             "Added wallet to WS monitor",
             address=normalized,
-            total_tracked=len(self._tracked_addresses),
+            source=source,
+            total_tracked=len(self._tracked_sources),
         )
 
-    def remove_wallet(self, address: str):
-        """Remove a wallet address from the tracked set.
+    def remove_wallet(self, address: str, source: str = "default"):
+        """Remove a source membership for a wallet.
 
         Args:
             address: Ethereum address to stop tracking.
+            source: Logical owner whose membership should be removed.
         """
         normalized = address.lower()
-        self._tracked_addresses.discard(normalized)
+        memberships = self._tracked_sources.get(normalized)
+        if memberships is None:
+            return
+        memberships.discard(source)
+        if not memberships:
+            self._tracked_sources.pop(normalized, None)
         logger.info(
             "Removed wallet from WS monitor",
             address=normalized,
-            total_tracked=len(self._tracked_addresses),
+            source=source,
+            total_tracked=len(self._tracked_sources),
+        )
+
+    def set_wallets_for_source(self, source: str, addresses: list[str]):
+        """Replace all tracked wallets for a source in one operation."""
+        target = {a.lower() for a in addresses if a}
+        current = {
+            addr for addr, memberships in self._tracked_sources.items() if source in memberships
+        }
+
+        for address in current - target:
+            self.remove_wallet(address, source=source)
+        for address in target - current:
+            self.add_wallet(address, source=source)
+
+        logger.info(
+            "Updated source-scoped tracked wallets",
+            source=source,
+            total_tracked=len(self._tracked_sources),
+            source_wallets=len(target),
         )
 
     def add_callback(self, callback: Callable):
@@ -352,7 +387,7 @@ class WalletWebSocketMonitor:
         logger.info(
             "Started wallet WS monitor",
             ws_url=self._ws_url,
-            tracked_wallets=len(self._tracked_addresses),
+            tracked_wallets=len(self._tracked_sources),
         )
 
     def stop(self):
@@ -502,7 +537,7 @@ class WalletWebSocketMonitor:
             block_number: The block number to process.
             block_timestamp_hex: Hex-encoded block timestamp.
         """
-        if not self._tracked_addresses:
+        if not self._tracked_sources:
             return
 
         # Avoid processing the same block twice
@@ -615,9 +650,9 @@ class WalletWebSocketMonitor:
         taker_lower = parsed["taker"].lower()
 
         matched_wallet = None
-        if maker_lower in self._tracked_addresses:
+        if maker_lower in self._tracked_sources:
             matched_wallet = maker_lower
-        elif taker_lower in self._tracked_addresses:
+        elif taker_lower in self._tracked_sources:
             matched_wallet = taker_lower
         else:
             return  # Neither maker nor taker is tracked
@@ -816,8 +851,12 @@ class WalletWebSocketMonitor:
             "running": self._running,
             "ws_connected": self._ws_connection is not None,
             "ws_url": self._ws_url,
-            "tracked_wallets": len(self._tracked_addresses),
-            "tracked_addresses": list(self._tracked_addresses),
+            "tracked_wallets": len(self._tracked_sources),
+            "tracked_addresses": list(self._tracked_sources.keys()),
+            "tracked_sources": {
+                addr: sorted(list(sources))
+                for addr, sources in self._tracked_sources.items()
+            },
             "last_processed_block": self._last_processed_block,
             "fallback_polling": (
                 self._poll_fallback_task is not None

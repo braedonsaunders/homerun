@@ -1,8 +1,11 @@
 """Tests for ArbitrageScanner: initialisation, scan pipeline, filtering, lifecycle."""
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/user/homerun/backend")
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 import pytest
 import asyncio
@@ -31,14 +34,11 @@ def _build_scanner(
     Import ArbitrageScanner inside a mock context so the singleton
     polymarket_client and database are never touched.
     """
-    with (
-        patch("services.scanner.polymarket_client", mock_client or AsyncMock()),
-        patch("services.scanner.AsyncSessionLocal", MagicMock()),
-    ):
+    data_provider = mock_client or AsyncMock()
+    with patch("services.scanner.AsyncSessionLocal", MagicMock()):
         from services.scanner import ArbitrageScanner
 
-        scanner = ArbitrageScanner()
-        scanner.client = mock_client or scanner.client
+        scanner = ArbitrageScanner(data_provider=data_provider)
         if strategies is not None:
             scanner.strategies = strategies
         return scanner
@@ -52,9 +52,12 @@ def _build_scanner(
 class TestScannerInit:
     """Tests for ArbitrageScanner.__init__."""
 
-    def test_loads_all_eight_strategies(self):
+    def test_loads_all_enabled_sync_strategies(self):
         scanner = _build_scanner()
-        assert len(scanner.strategies) == 8
+        # NewsEdge runs as a separate async/manual path and is not in
+        # scanner.strategies, so we expect all StrategyType members except NEWS_EDGE.
+        expected_count = len([st for st in StrategyType if st != StrategyType.NEWS_EDGE])
+        assert len(scanner.strategies) == expected_count
 
     def test_strategy_names(self):
         scanner = _build_scanner()
@@ -64,8 +67,8 @@ class TestScannerInit:
     def test_strategy_types_cover_all_enums(self):
         scanner = _build_scanner()
         types = {s.strategy_type for s in scanner.strategies}
-        # cross_platform is handled by a separate scanner, not the main one
-        expected = {st for st in StrategyType if st != StrategyType.CROSS_PLATFORM}
+        # NewsEdge is handled by a separate async/manual path, not in scanner.strategies.
+        expected = {st for st in StrategyType if st != StrategyType.NEWS_EDGE}
         assert types == expected
 
     def test_initial_state(self):
@@ -606,6 +609,17 @@ class TestScannerStatus:
         for s in status["strategies"]:
             assert "name" in s
             assert "type" in s
+
+    def test_status_handles_string_strategy_type(self):
+        scanner = _build_scanner()
+        plugin_like = MagicMock()
+        plugin_like.name = "Plugin Strategy"
+        plugin_like.strategy_type = "plugin_test"
+        scanner.strategies = [plugin_like]
+
+        status = scanner.get_status()
+        assert status["strategies"][0]["name"] == "Plugin Strategy"
+        assert status["strategies"][0]["type"] == "plugin_test"
 
     def test_status_reflects_opportunity_count(self, sample_opportunity):
         scanner = _build_scanner()
