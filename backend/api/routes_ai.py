@@ -127,7 +127,7 @@ async def judge_opportunity(
         risk_factors=result.get("risk_factors", []),
         judged_at=datetime.fromisoformat(result["judged_at"])
         if result.get("judged_at")
-        else datetime.utcnow(),
+        else utcnow(),
     )
     try:
         await shared_state.update_opportunity_ai_analysis_in_snapshot(
@@ -195,7 +195,7 @@ async def judge_opportunities_bulk(
                 risk_factors=result.get("risk_factors", []),
                 judged_at=datetime.fromisoformat(result["judged_at"])
                 if result.get("judged_at")
-                else datetime.utcnow(),
+                else utcnow(),
             )
             try:
                 await shared_state.update_opportunity_ai_analysis_in_snapshot(
@@ -506,6 +506,7 @@ async def _build_context_pack(
 ) -> dict[str, Any]:
     """Build a compact context pack for AI chat and UI context inspection."""
     from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
     from sqlalchemy import desc, select
     from models.database import (
         NewsTradeIntent,

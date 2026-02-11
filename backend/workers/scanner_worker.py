@@ -29,6 +29,7 @@ os.environ.setdefault("NEWS_FAISS_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 
+from utils.utcnow import utcnow
 from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services import scanner
@@ -292,7 +293,7 @@ async def _run_scan_loop() -> None:
                     enabled=not paused,
                     current_activity=activity,
                     interval_seconds=interval,
-                    last_run_at=datetime.utcnow(),
+                    last_run_at=utcnow(),
                     last_error=str(e),
                     stats={
                         "opportunities_count": len(prev_opps),
@@ -366,7 +367,7 @@ async def _run_scan_loop() -> None:
                     enabled=not paused,
                     current_activity="Idle - waiting for next scanner cycle.",
                     interval_seconds=interval,
-                    last_run_at=datetime.utcnow(),
+                    last_run_at=utcnow(),
                     last_error=None,
                     stats={
                         "opportunities_count": len(opps),

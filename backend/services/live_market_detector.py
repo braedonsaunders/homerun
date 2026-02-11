@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, Index
 from models.database import Base, AsyncSessionLocal
@@ -44,7 +45,7 @@ class LiveMarketDetector:
     async def is_live(self, token_id: str) -> LiveStatus:
         """Check if a market is currently live. Uses TTL-differentiated cache."""
         # Check cache
-        now = datetime.utcnow()
+        now = utcnow()
         entry = self._cache.get(token_id)
         if entry and entry.expires_at > now:
             return entry.status
@@ -101,7 +102,7 @@ class LiveMarketDetector:
     def get_gtd_seconds(self, token_id: str) -> int:
         """Get recommended GTD expiration. Returns non-live default if not cached."""
         entry = self._cache.get(token_id)
-        if entry and entry.expires_at > datetime.utcnow():
+        if entry and entry.expires_at > utcnow():
             return entry.status.gtd_seconds
         return NON_LIVE_GTD_SECONDS
 
@@ -110,7 +111,7 @@ class LiveMarketDetector:
         self._cache.pop(token_id, None)
 
     def get_cache_stats(self) -> dict:
-        now = datetime.utcnow()
+        now = utcnow()
         live_count = sum(
             1 for e in self._cache.values() if e.status.is_live and e.expires_at > now
         )

@@ -1,6 +1,7 @@
 import uuid
 import math
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -637,7 +638,7 @@ class AnomalyDetector:
                 for a in analysis.anomalies
                 if a["severity"] in ["high", "critical"]
             ]
-            wallet.last_analyzed_at = datetime.utcnow()
+            wallet.last_analyzed_at = utcnow()
             wallet.analysis_data = {
                 "strategies": analysis.strategies_detected,
                 "recommendation": analysis.recommendation,

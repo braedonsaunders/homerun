@@ -3,6 +3,7 @@ import asyncio
 import random
 from typing import Optional
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow, utcfromtimestamp
 
 from config import settings
 from models import Market, Event
@@ -202,7 +203,7 @@ class PolymarketClient:
         all_markets = []
         offset = 0
         limit = 50
-        cutoff = datetime.utcnow() - timedelta(minutes=since_minutes)
+        cutoff = utcnow() - timedelta(minutes=since_minutes)
 
         while True:
             try:
@@ -240,7 +241,7 @@ class PolymarketClient:
                                 created_at_raw.replace("Z", "+00:00")
                             ).replace(tzinfo=None)
                         else:
-                            created_at = datetime.utcfromtimestamp(
+                            created_at = utcfromtimestamp(
                                 float(created_at_raw)
                             )
                         if created_at < cutoff:
@@ -610,7 +611,7 @@ class PolymarketClient:
                     if isinstance(ts, (int, float)):
                         # Unix timestamp in seconds
                         enriched_trade["timestamp_iso"] = (
-                            datetime.utcfromtimestamp(ts).isoformat() + "Z"
+                            utcfromtimestamp(ts).isoformat() + "Z"
                         )
                     elif isinstance(ts, str):
                         if "T" in ts or "-" in ts:
@@ -619,7 +620,7 @@ class PolymarketClient:
                         else:
                             # Numeric string (unix seconds)
                             enriched_trade["timestamp_iso"] = (
-                                datetime.utcfromtimestamp(float(ts)).isoformat() + "Z"
+                                utcfromtimestamp(float(ts)).isoformat() + "Z"
                             )
                 except (ValueError, TypeError, OSError):
                     enriched_trade["timestamp_iso"] = ""
@@ -1211,7 +1212,7 @@ class PolymarketClient:
         if not trades or time_period.upper() == "ALL":
             return trades
 
-        now = datetime.utcnow()
+        now = utcnow()
         period_map = {
             "DAY": timedelta(days=1),
             "WEEK": timedelta(weeks=1),

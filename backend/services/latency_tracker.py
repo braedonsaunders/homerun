@@ -11,6 +11,7 @@ Inspired by terauss/Polymarket-Copy-Trading-Bot latency tracking.
 import uuid
 import time
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass, field
 from typing import Optional
 from sqlalchemy import Column, String, Float, DateTime, Boolean, Index, select, func
@@ -217,7 +218,7 @@ class LatencyTracker:
                     func.avg(PipelineLatencyLog.slippage_bps).label("avg_slippage_bps"),
                 ).where(
                     PipelineLatencyLog.recorded_at
-                    >= datetime.utcnow() - __import__("datetime").timedelta(hours=hours)
+                    >= utcnow() - __import__("datetime").timedelta(hours=hours)
                 )
                 if trade_context:
                     query = query.where(

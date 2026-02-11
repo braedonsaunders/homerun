@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select, desc
@@ -295,7 +296,7 @@ class ResolutionAnalyzer:
                 return cached
 
         session_id = uuid.uuid4().hex[:16]
-        started_at = datetime.utcnow()
+        started_at = utcnow()
 
         try:
             # 2. Build the user prompt with all market details
@@ -513,7 +514,7 @@ class ResolutionAnalyzer:
         The cached analysis dict, or None if no valid cache entry exists.
         """
         try:
-            cutoff = datetime.utcnow() - timedelta(hours=_CACHE_TTL_HOURS)
+            cutoff = utcnow() - timedelta(hours=_CACHE_TTL_HOURS)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
                     select(ResolutionAnalysis)
@@ -721,7 +722,7 @@ class ResolutionAnalyzer:
     ) -> None:
         """Persist the analysis result to the database."""
         try:
-            completed_at = datetime.utcnow()
+            completed_at = utcnow()
             duration = (completed_at - started_at).total_seconds()
 
             async with AsyncSessionLocal() as session:
@@ -788,7 +789,7 @@ class ResolutionAnalyzer:
     ) -> None:
         """Record a failed research session for observability."""
         try:
-            completed_at = datetime.utcnow()
+            completed_at = utcnow()
             duration = (completed_at - started_at).total_seconds()
 
             async with AsyncSessionLocal() as session:

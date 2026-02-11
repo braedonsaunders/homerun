@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import math
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Optional
 
 from sqlalchemy import select, func, update, desc, asc
@@ -643,7 +644,7 @@ class WalletDiscoveryEngine:
                 total_pnl=stats["total_pnl"],
                 total_invested=stats["total_invested"],
             )
-            now_inner = datetime.utcnow()
+            now_inner = utcnow()
             rolling = engine._calculate_rolling_windows(trade_list, now_inner)
             strategies = engine._detect_strategies(trade_list)
             classification = engine._classify_wallet(stats, risk_metrics)
@@ -808,7 +809,7 @@ class WalletDiscoveryEngine:
             if wallet is None:
                 wallet = DiscoveredWallet(
                     address=address,
-                    discovered_at=datetime.utcnow(),
+                    discovered_at=utcnow(),
                 )
                 session.add(wallet)
 
@@ -835,7 +836,7 @@ class WalletDiscoveryEngine:
                 return True
             if wallet.last_analyzed_at is None:
                 return True
-            age = datetime.utcnow() - wallet.last_analyzed_at
+            age = utcnow() - wallet.last_analyzed_at
             return age.total_seconds() > STALE_ANALYSIS_HOURS * 3600
 
     # ------------------------------------------------------------------
@@ -893,7 +894,7 @@ class WalletDiscoveryEngine:
             return
 
         self._running = True
-        run_start = datetime.utcnow()
+        run_start = utcnow()
         logger.info(
             "Starting discovery run",
             max_markets=max_markets,
@@ -970,7 +971,7 @@ class WalletDiscoveryEngine:
             # one query per wallet, which was blocking the event loop for
             # hundreds/thousands of sequential DB round-trips.
             addresses_to_analyze: list[str] = []
-            stale_cutoff = datetime.utcnow() - timedelta(hours=STALE_ANALYSIS_HOURS)
+            stale_cutoff = utcnow() - timedelta(hours=STALE_ANALYSIS_HOURS)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
                     select(
@@ -1031,7 +1032,7 @@ class WalletDiscoveryEngine:
             await self.refresh_leaderboard()
 
             # --- Record run metadata ---
-            self._last_run_at = datetime.utcnow()
+            self._last_run_at = utcnow()
             self._wallets_analyzed_last_run = analyzed_count
             duration = (self._last_run_at - run_start).total_seconds()
 
@@ -1139,7 +1140,7 @@ class WalletDiscoveryEngine:
             if recommendation:
                 base_filter.append(DiscoveredWallet.recommendation == recommendation)
             if active_within_hours is not None:
-                cutoff = datetime.utcnow() - timedelta(hours=active_within_hours)
+                cutoff = utcnow() - timedelta(hours=active_within_hours)
                 base_filter.append(DiscoveredWallet.last_trade_at >= cutoff)
             if min_activity_score is not None:
                 base_filter.append(DiscoveredWallet.activity_score >= min_activity_score)
@@ -1380,7 +1381,7 @@ class WalletDiscoveryEngine:
             return raw
         if isinstance(raw, (int, float)):
             try:
-                return datetime.utcfromtimestamp(raw)
+                return utcfromtimestamp(raw)
             except (ValueError, OSError):
                 return None
         if isinstance(raw, str):

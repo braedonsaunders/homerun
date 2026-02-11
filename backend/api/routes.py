@@ -400,7 +400,7 @@ async def trigger_scan(session: AsyncSession = Depends(get_db_session)):
     await shared_state.request_one_scan(session)
     return {
         "status": "started",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
         "message": "Scan requested; scanner worker will run on next cycle.",
     }
 
@@ -555,11 +555,12 @@ async def get_all_recent_trades(
     """
     try:
         from datetime import timedelta
+from utils.utcnow import utcnow
 
         wallets = await wallet_tracker.get_all_wallets()
         all_trades = []
 
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        cutoff_time = utcnow() - timedelta(hours=hours)
 
         for wallet in wallets:
             wallet_address = wallet.get("address", "")

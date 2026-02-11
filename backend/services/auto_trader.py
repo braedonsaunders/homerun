@@ -266,7 +266,7 @@ class AutoTrader:
         self._executing_opportunities: set[str] = set()  # Currently being executed
         self._execution_lock = asyncio.Lock()
         self._callbacks: list[Callable] = []
-        self._daily_reset_date = datetime.utcnow().date()
+        self._daily_reset_date = utcnow().date()
 
         # AI integration caches
         self._resolution_cache: dict[str, dict] = {}  # market_id -> resolution analysis
@@ -297,7 +297,7 @@ class AutoTrader:
 
     def _check_daily_reset(self):
         """Reset daily counters if new day"""
-        today = datetime.utcnow().date()
+        today = utcnow().date()
         if today != self._daily_reset_date:
             self.stats.daily_trades = 0
             self.stats.daily_profit = 0.0
@@ -311,9 +311,9 @@ class AutoTrader:
 
         # Check circuit breaker timeout
         if self.stats.circuit_breaker_until:
-            if datetime.utcnow() < self.stats.circuit_breaker_until:
+            if utcnow() < self.stats.circuit_breaker_until:
                 remaining = (
-                    self.stats.circuit_breaker_until - datetime.utcnow()
+                    self.stats.circuit_breaker_until - utcnow()
                 ).seconds
                 return False, f"Circuit breaker active ({remaining}s remaining)"
             else:
@@ -323,7 +323,7 @@ class AutoTrader:
 
         # Check consecutive losses
         if self.stats.consecutive_losses >= self.config.circuit_breaker_losses:
-            self.stats.circuit_breaker_until = datetime.utcnow() + timedelta(
+            self.stats.circuit_breaker_until = utcnow() + timedelta(
                 minutes=self.config.circuit_breaker_duration_minutes
             )
             logger.warning(
@@ -936,7 +936,7 @@ class AutoTrader:
                         id=trade_id,
                         opportunity_id=opp.id,
                         strategy=opp.strategy,
-                        executed_at=datetime.utcnow(),
+                        executed_at=utcnow(),
                         positions=opp.positions_to_take,
                         total_cost=0,
                         expected_profit=0,
@@ -1006,7 +1006,7 @@ class AutoTrader:
                                 id=trade_id,
                                 opportunity_id=opp.id,
                                 strategy=opp.strategy,
-                                executed_at=datetime.utcnow(),
+                                executed_at=utcnow(),
                                 positions=opp.positions_to_take,
                                 total_cost=0,
                                 expected_profit=0,
@@ -1051,7 +1051,7 @@ class AutoTrader:
             id=trade_id,
             opportunity_id=opp.id,
             strategy=opp.strategy,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=opp.positions_to_take,
             total_cost=position_size,
             expected_profit=position_size * (opp.roi_percent / 100),
@@ -1202,7 +1202,7 @@ class AutoTrader:
         self.stats.daily_trades += 1
         self.stats.total_invested += position_size
         self.stats.daily_invested += position_size
-        self.stats.last_trade_at = datetime.utcnow()
+        self.stats.last_trade_at = utcnow()
         self.stats.opportunities_executed += 1
 
         # Store trade
@@ -1431,6 +1431,7 @@ class AutoTrader:
         from models.database import AsyncSessionLocal, WeatherTradeIntent
         from sqlalchemy import select
         from datetime import timedelta
+from utils.utcnow import utcnow
 
         cutoff = datetime.now(timezone.utc) - timedelta(
             minutes=self.config.weather_workflow_max_age_minutes

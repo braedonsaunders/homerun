@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import func, select, update
@@ -73,7 +74,7 @@ async def write_news_snapshot(
         try:
             last_scan = _parse_iso_datetime(last_scan)
         except Exception:
-            last_scan = datetime.utcnow()
+            last_scan = utcnow()
 
     next_scan = status.get("next_scan")
     if has_next_scan and isinstance(next_scan, str):
@@ -90,7 +91,7 @@ async def write_news_snapshot(
         row = NewsWorkflowSnapshot(id=NEWS_SNAPSHOT_ID)
         session.add(row)
 
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     if has_last_scan:
         row.last_scan_at = last_scan
     if has_next_scan:
@@ -184,28 +185,28 @@ async def read_news_control(session: AsyncSession) -> dict[str, Any]:
 async def set_news_paused(session: AsyncSession, paused: bool) -> None:
     row = await ensure_news_control(session)
     row.is_paused = paused
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def set_news_interval(session: AsyncSession, interval_seconds: int) -> None:
     row = await ensure_news_control(session)
     row.scan_interval_seconds = max(30, min(3600, int(interval_seconds)))
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def request_one_news_scan(session: AsyncSession) -> None:
     row = await ensure_news_control(session)
-    row.requested_scan_at = datetime.utcnow()
-    row.updated_at = datetime.utcnow()
+    row.requested_scan_at = utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def clear_news_scan_request(session: AsyncSession) -> None:
     row = await ensure_news_control(session)
     row.requested_scan_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
@@ -216,7 +217,7 @@ async def try_acquire_news_lease(
 ) -> bool:
     """Try to acquire/renew the worker lease. Returns True if owned."""
     await ensure_news_control(session)
-    now = datetime.utcnow()
+    now = utcnow()
     lease_until = now + timedelta(seconds=max(30, ttl_seconds))
 
     stmt = (
@@ -247,7 +248,7 @@ async def release_news_lease(session: AsyncSession, owner: str) -> None:
         .values(
             lease_owner=None,
             lease_expires_at=None,
-            updated_at=datetime.utcnow(),
+            updated_at=utcnow(),
         )
     )
     await session.commit()
@@ -433,6 +434,6 @@ async def update_news_settings(
         if not col:
             continue
         setattr(db, col, value)
-    db.updated_at = datetime.utcnow()
+    db.updated_at = utcnow()
     await session.commit()
     return await get_news_settings(session)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from models.database import AppSettings
@@ -277,7 +278,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.trading_proxy_timeout = proxy.timeout
         settings.trading_proxy_require_vpn = proxy.require_vpn
 
-    settings.updated_at = datetime.utcnow()
+    settings.updated_at = utcnow()
     return {
         "needs_llm_reinit": bool(request.llm),
         "needs_proxy_reinit": bool(request.trading_proxy),

@@ -12,6 +12,7 @@ import asyncio
 import math
 import uuid
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import and_, select
@@ -99,7 +100,7 @@ class ValidationService:
             if row.status in ("completed", "failed", "cancelled"):
                 return True
             row.status = "cancelled"
-            row.finished_at = datetime.utcnow()
+            row.finished_at = utcnow()
             row.progress = 1.0
             row.message = "Cancelled"
             await session.commit()
@@ -138,12 +139,12 @@ class ValidationService:
                 row.validation_lookback_days = max(7, int(patch["lookback_days"]))
             if "auto_promote" in patch:
                 row.validation_auto_promote = bool(patch["auto_promote"])
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow()
             await session.commit()
         return await self.get_guardrail_config()
 
     async def compute_calibration_metrics(self, days: int = 90) -> dict[str, Any]:
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
         filters = [
             OpportunityHistory.detected_at >= cutoff,
             OpportunityHistory.actual_roi.isnot(None),
@@ -211,7 +212,7 @@ class ValidationService:
         self, days: int = 90, bucket_days: int = 7
     ) -> list[dict[str, Any]]:
         """Time-bucketed trend of calibration quality."""
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
         async with AsyncSessionLocal() as session:
             rows = (
                 (
@@ -289,7 +290,7 @@ class ValidationService:
 
                 # Respect manual override lock.
                 if row.manual_override:
-                    row.updated_at = datetime.utcnow()
+                    row.updated_at = utcnow()
                     updated += 1
                     continue
 
@@ -300,7 +301,7 @@ class ValidationService:
                 weak_error = mae_roi is not None and mae_roi > cfg["max_mae_roi"]
                 enough_samples = sample_size >= cfg["min_samples"]
 
-                now = datetime.utcnow()
+                now = utcnow()
                 if enough_samples and (weak_accuracy or weak_error):
                     if row.status != "demoted":
                         row.status = "demoted"
@@ -391,7 +392,7 @@ class ValidationService:
             row.manual_override = manual_override
             row.manual_override_note = note
             row.last_reason = note or row.last_reason
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow()
             await session.commit()
         return {"strategy_type": strategy_type, "status": status}
 
@@ -403,7 +404,7 @@ class ValidationService:
                 session.add(row)
             row.manual_override = False
             row.manual_override_note = None
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow()
             await session.commit()
         return {"strategy_type": strategy_type, "manual_override": False}
 
@@ -483,7 +484,7 @@ class ValidationService:
             if row is None:
                 return None
             row.status = "running"
-            row.started_at = datetime.utcnow()
+            row.started_at = utcnow()
             row.message = "Running"
             row.progress = 0.01
             await session.commit()
@@ -523,7 +524,7 @@ class ValidationService:
                     params_to_save = payload.get("params") or param_optimizer.get_current_params()
                     saved_parameter_set_id = await param_optimizer.save_parameter_set(
                         name=payload.get("parameter_set_name")
-                        or f"Backtest {datetime.utcnow().isoformat(timespec='seconds')}",
+                        or f"Backtest {utcnow().isoformat(timespec='seconds')}",
                         params=params_to_save,
                         backtest_results=result,
                         is_active=bool(payload.get("activate_saved_set")),
@@ -565,7 +566,7 @@ class ValidationService:
                     best_params = best.get("params", {})
                     saved_set_id = await param_optimizer.save_parameter_set(
                         name=payload.get("best_set_name")
-                        or f"Optimized Best {datetime.utcnow().isoformat(timespec='seconds')}",
+                        or f"Optimized Best {utcnow().isoformat(timespec='seconds')}",
                         params=best_params,
                         backtest_results=best.get("test_result"),
                         is_active=True,
@@ -592,7 +593,7 @@ class ValidationService:
                 row.result = final_result
                 row.progress = 1.0
                 row.message = "Completed"
-                row.finished_at = datetime.utcnow()
+                row.finished_at = utcnow()
                 await session.commit()
         except Exception as e:
             async with AsyncSessionLocal() as session:
@@ -609,7 +610,7 @@ class ValidationService:
                     row.error = str(e)
                     row.progress = 1.0
                     row.message = "Failed"
-                row.finished_at = datetime.utcnow()
+                row.finished_at = utcnow()
                 await session.commit()
             if str(e) != "Job cancelled":
                 logger.error("Validation job failed", job_id=job_id, error=str(e))

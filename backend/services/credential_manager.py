@@ -15,6 +15,7 @@ Flow:
 import uuid
 import time
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Optional
 from sqlalchemy import Column, String, DateTime, Boolean, select
@@ -242,7 +243,7 @@ class CredentialManager:
                 )
                 row = result.scalar_one_or_none()
                 if row:
-                    row.last_used_at = datetime.utcnow()
+                    row.last_used_at = utcnow()
                     await session.commit()
                     api_key = decrypt_secret(row.api_key)
                     api_secret = decrypt_secret(row.api_secret)

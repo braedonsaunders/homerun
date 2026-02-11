@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import desc, select
@@ -26,7 +27,7 @@ class ChatMemoryService:
         title: Optional[str] = None,
     ) -> dict:
         session_id = uuid.uuid4().hex[:16]
-        now = datetime.utcnow()
+        now = utcnow()
         row = AIChatSession(
             id=session_id,
             context_type=context_type,
@@ -116,7 +117,7 @@ class ChatMemoryService:
             model_used=model_used,
             input_tokens=max(0, int(input_tokens or 0)),
             output_tokens=max(0, int(output_tokens or 0)),
-            created_at=datetime.utcnow(),
+            created_at=utcnow(),
         )
         async with AsyncSessionLocal() as session:
             session.add(msg)
@@ -125,7 +126,7 @@ class ChatMemoryService:
             )
             s = result.scalar_one_or_none()
             if s is not None:
-                s.updated_at = datetime.utcnow()
+                s.updated_at = utcnow()
                 if not s.title and role == "user":
                     s.title = content.strip()[:120]
             await session.commit()
@@ -139,7 +140,7 @@ class ChatMemoryService:
             if row is None:
                 return False
             row.archived = True
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow()
             await session.commit()
         return True
 

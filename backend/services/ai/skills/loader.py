@@ -14,6 +14,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
+from utils.utcnow import utcnow
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,7 @@ class SkillLoader:
             raise ValueError(f"Skill not found: {name}")
 
         execution_id = uuid.uuid4().hex[:16]
-        started_at = datetime.utcnow()
+        started_at = utcnow()
 
         # Record execution start
         async with AsyncSessionLocal() as session:
@@ -208,9 +209,9 @@ class SkillLoader:
                 if row:
                     row.status = "completed"
                     row.output_result = result
-                    row.completed_at = datetime.utcnow()
+                    row.completed_at = utcnow()
                     row.duration_seconds = (
-                        datetime.utcnow() - started_at
+                        utcnow() - started_at
                     ).total_seconds()
                     if "session_id" in result:
                         row.session_id = result["session_id"]
@@ -228,9 +229,9 @@ class SkillLoader:
                 if row:
                     row.status = "failed"
                     row.error = str(e)
-                    row.completed_at = datetime.utcnow()
+                    row.completed_at = utcnow()
                     row.duration_seconds = (
-                        datetime.utcnow() - started_at
+                        utcnow() - started_at
                     ).total_seconds()
                     await session.commit()
             raise

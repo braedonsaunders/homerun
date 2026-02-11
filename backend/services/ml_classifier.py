@@ -11,6 +11,7 @@ On cold start (no training data), returns neutral predictions (probability=0.5).
 
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 
 import numpy as np
@@ -157,7 +158,7 @@ def extract_features(opp: ArbitrageOpportunity) -> dict[str, float]:
     )
 
     # Temporal
-    now = opp.detected_at or datetime.utcnow()
+    now = opp.detected_at or utcnow()
     features["hour_of_day"] = float(now.hour)
     features["day_of_week"] = float(now.weekday())
 
@@ -237,7 +238,7 @@ def _extract_features_from_history(row: OpportunityHistory) -> dict[str, float]:
         features["time_to_resolution_days"] = -1.0
 
     # Temporal from detected_at
-    det = row.detected_at or datetime.utcnow()
+    det = row.detected_at or utcnow()
     features["hour_of_day"] = float(det.hour)
     features["day_of_week"] = float(det.weekday())
 

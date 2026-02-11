@@ -1,6 +1,6 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-httpx==0.26.0
+httpx>=0.27.0,<1.0
 websockets==12.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
@@ -10,11 +10,10 @@ aiosqlite==0.19.0
 greenlet>=3.0.0
 cryptography>=42.0.0
 
-# Pin urllib3 < 2 to avoid OpenSSL compatibility issues.
-# urllib3 v2 requires OpenSSL 1.1.1+ but macOS ships with LibreSSL,
-# which is not supported.  This is pulled in transitively by
-# requests (via sentence-transformers / huggingface-hub).
-urllib3>=1.26.0,<2
+# urllib3 is pulled in transitively by requests (via sentence-transformers /
+# huggingface-hub).  v2 requires OpenSSL 1.1.1+ which is available on
+# Python 3.9+ from Homebrew/python.org (macOS) and all Windows installs.
+urllib3>=1.26.0
 
 # AI Intelligence Layer
 pyyaml>=6.0

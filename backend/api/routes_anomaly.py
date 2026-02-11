@@ -1,4 +1,5 @@
 from datetime import datetime
+from utils.utcnow import utcfromtimestamp
 
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
@@ -27,7 +28,7 @@ def _normalize_timestamp(trade: dict) -> str:
             # Unix timestamps < 1e12 are in seconds; >= 1e12 are milliseconds
             if ts > 1e12:
                 ts = ts / 1000
-            return datetime.utcfromtimestamp(ts).isoformat() + "Z"
+            return utcfromtimestamp(ts).isoformat() + "Z"
         if isinstance(ts, str):
             if "T" in ts or "-" in ts:
                 return ts
@@ -35,7 +36,7 @@ def _normalize_timestamp(trade: dict) -> str:
             numeric = float(ts)
             if numeric > 1e12:
                 numeric = numeric / 1000
-            return datetime.utcfromtimestamp(numeric).isoformat() + "Z"
+            return utcfromtimestamp(numeric).isoformat() + "Z"
     except (ValueError, TypeError, OSError):
         pass
     return ""

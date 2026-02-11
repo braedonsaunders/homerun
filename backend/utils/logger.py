@@ -2,6 +2,7 @@ import logging
 import sys
 import json
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Any
 from pathlib import Path
 
@@ -11,7 +12,7 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_data = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": utcnow().isoformat() + "Z",
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
