@@ -774,7 +774,7 @@ function App() {
                     )}
 
                     {/* View Mode Switcher */}
-                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search') && (
+                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search' || opportunitiesView === 'recent_trades') && (
                       <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
                         {([
                           { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
@@ -1032,6 +1032,7 @@ function App() {
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
                       mode="opportunities"
+                      viewMode={oppsViewMode}
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
                         setActiveTab('traders')
