@@ -385,6 +385,10 @@ class InstabilityScorer:
         """Return the latest instability score for a country, if available."""
         return self._scores.get(country_iso3)
 
+    def get_all_scores(self) -> dict[str, CountryInstabilityScore]:
+        """Return all current instability scores keyed by ISO3."""
+        return dict(self._scores)
+
     def get_critical_countries(self, threshold: float = 60.0) -> list[CountryInstabilityScore]:
         """Return all countries whose instability score meets or exceeds *threshold*."""
         return sorted(
