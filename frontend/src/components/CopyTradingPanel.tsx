@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useWebSocket } from '../hooks/useWebSocket'
 import {
   getCopyConfigs,
   getCopyTrades,
@@ -37,33 +38,63 @@ import {
   Clock,
   ArrowUpRight,
   ArrowDownRight,
+  Zap,
 } from 'lucide-react'
 
 type SubView = 'configs' | 'trades' | 'status'
+
+interface RealtimeEvent {
+  type: 'detected' | 'executed'
+  data: Record<string, unknown>
+  timestamp: Date
+}
 
 export default function CopyTradingPanel() {
   const [subView, setSubView] = useState<SubView>('configs')
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null)
   const [tradeFilter, setTradeFilter] = useState<string>('')
+  const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([])
   const queryClient = useQueryClient()
+  const { lastMessage } = useWebSocket('/ws')
 
-  // Queries
+  // React to real-time copy trading WebSocket events
+  useEffect(() => {
+    if (lastMessage?.type === 'copy_trade_detected') {
+      setRealtimeEvents(prev => [{
+        type: 'detected',
+        data: lastMessage.data,
+        timestamp: new Date(),
+      }, ...prev].slice(0, 20))
+    }
+    if (lastMessage?.type === 'copy_trade_executed') {
+      setRealtimeEvents(prev => [{
+        type: 'executed',
+        data: lastMessage.data,
+        timestamp: new Date(),
+      }, ...prev].slice(0, 20))
+      // Immediately refresh trade data
+      queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
+      queryClient.invalidateQueries({ queryKey: ['copy-configs'] })
+    }
+  }, [lastMessage, queryClient])
+
+  // Queries — WS events are primary, polling is degraded fallback
   const { data: configs = [], isLoading: configsLoading } = useQuery({
     queryKey: ['copy-configs'],
     queryFn: () => getCopyConfigs(),
-    refetchInterval: 30000, // WS provides real-time trade detection
+    refetchInterval: 60000, // Fallback only; WS events handle real-time
   })
 
   const { data: trades = [], isLoading: tradesLoading } = useQuery({
     queryKey: ['copy-trades', tradeFilter],
     queryFn: () => getCopyTrades({ status: tradeFilter || undefined, limit: 100 }),
-    refetchInterval: 30000, // WS monitor handles real-time
+    refetchInterval: 60000, // Fallback only; WS events handle real-time
   })
 
   const { data: status } = useQuery({
     queryKey: ['copy-trading-status'],
     queryFn: getCopyTradingStatus,
-    refetchInterval: 30000, // WS pushes primary
+    refetchInterval: 60000, // Fallback only; WS events handle real-time
   })
 
   const { data: accounts = [] } = useQuery({
@@ -175,8 +206,60 @@ export default function CopyTradingPanel() {
             status.service_running ? "bg-green-500 animate-pulse" : "bg-yellow-500"
           )} />
           {status.service_running
-            ? `Copy trading service running - polling every ${status.poll_interval_seconds}s - tracking ${status.tracked_wallets?.length || 0} wallets`
+            ? `Real-time WebSocket monitoring — tracking ${status.tracked_wallets?.length || 0} wallets — <500ms copy latency`
             : 'Copy trading service not running - add a config to start'}
+        </div>
+      )}
+
+      {/* Real-time Activity Feed */}
+      {realtimeEvents.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            <Zap className="w-3 h-3 text-yellow-400" />
+            Real-time Activity
+          </p>
+          <div className="max-h-32 overflow-y-auto space-y-1">
+            {realtimeEvents.slice(0, 5).map((evt, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "flex items-center justify-between px-3 py-1.5 rounded text-xs",
+                  evt.type === 'executed'
+                    ? "bg-green-500/5 border border-green-500/10"
+                    : "bg-blue-500/5 border border-blue-500/10"
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    evt.type === 'executed' ? "bg-green-500" : "bg-blue-500 animate-pulse"
+                  )} />
+                  <span className={evt.type === 'executed' ? "text-green-400" : "text-blue-400"}>
+                    {evt.type === 'detected' ? 'Trade detected' : 'Copy executed'}
+                  </span>
+                  <span className="text-muted-foreground font-mono">
+                    {(evt.data as any)?.side} {(evt.data as any)?.size?.toFixed?.(1)} @ ${(evt.data as any)?.source_price?.toFixed?.(3) || (evt.data as any)?.price?.toFixed?.(3)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  {(evt.data as any)?.total_latency_ms != null && (
+                    <span className={cn(
+                      "font-mono",
+                      (evt.data as any).total_latency_ms < 500 ? "text-green-400" : "text-yellow-400"
+                    )}>
+                      {(evt.data as any).total_latency_ms}ms
+                    </span>
+                  )}
+                  {(evt.data as any)?.detection_latency_ms != null && !(evt.data as any)?.total_latency_ms && (
+                    <span className="font-mono text-blue-400">
+                      {(evt.data as any).detection_latency_ms}ms detect
+                    </span>
+                  )}
+                  <span>{evt.timestamp.toLocaleTimeString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

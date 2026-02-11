@@ -239,9 +239,32 @@ async def get_copy_trading_status():
     configs = await copy_trader.get_configs()
     enabled_configs = [c for c in configs if c.enabled]
 
+    # Get WebSocket monitor status
+    ws_monitor_status = {}
+    try:
+        from services.wallet_ws_monitor import wallet_ws_monitor
+
+        ws_monitor_status = wallet_ws_monitor.get_status()
+    except Exception:
+        pass
+
     return {
         "service_running": copy_trader._running,
         "poll_interval_seconds": copy_trader._poll_interval,
+        "realtime_mode": True,
+        "ws_monitor": {
+            "running": ws_monitor_status.get("running", False),
+            "ws_connected": ws_monitor_status.get("ws_connected", False),
+            "fallback_polling": ws_monitor_status.get("fallback_polling", False),
+            "tracked_wallets": ws_monitor_status.get("tracked_wallets", 0),
+            "blocks_processed": ws_monitor_status.get("stats", {}).get(
+                "blocks_processed", 0
+            ),
+            "events_detected": ws_monitor_status.get("stats", {}).get(
+                "events_detected", 0
+            ),
+        },
+        "dedup_cache_size": len(copy_trader._realtime_dedup_cache),
         "total_configs": len(configs),
         "enabled_configs": len(enabled_configs),
         "tracked_wallets": list(set(c.source_wallet for c in configs)),

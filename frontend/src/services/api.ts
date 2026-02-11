@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 60000, // 60s so heavy backend work (discovery, scans) doesn't starve requests
 })
 
 // Debug interceptor — logs every response so issues are visible in browser console
@@ -62,6 +62,7 @@ export interface Opportunity {
   event_title?: string
   category?: string
   min_liquidity: number
+  volume?: number
   max_position_size: number
   detected_at: string
   resolution_date?: string
@@ -378,6 +379,7 @@ export const getOpportunities = async (params?: {
   category?: string
   sort_by?: string
   sort_dir?: string
+  exclude_strategy?: string
   limit?: number
   offset?: number
 }): Promise<OpportunitiesResponse> => {
@@ -388,6 +390,66 @@ export const getOpportunities = async (params?: {
     total
   }
 }
+
+// ==================== CRYPTO MARKETS (independent infrastructure) ====================
+
+export interface CryptoMarketUpcoming {
+  id: string
+  slug: string
+  event_title: string
+  start_time: string | null
+  end_time: string | null
+  up_price: number | null
+  down_price: number | null
+  best_bid: number | null
+  best_ask: number | null
+  liquidity: number
+  volume: number
+}
+
+export interface CryptoMarket {
+  id: string
+  condition_id: string
+  slug: string
+  question: string
+  asset: string
+  timeframe: string
+  start_time: string | null
+  end_time: string | null
+  seconds_left: number | null
+  is_live: boolean
+  is_current: boolean
+  up_price: number | null
+  down_price: number | null
+  best_bid: number | null
+  best_ask: number | null
+  spread: number | null
+  combined: number | null
+  liquidity: number
+  volume: number
+  volume_24h: number
+  series_volume_24h: number
+  series_liquidity: number
+  last_trade_price: number | null
+  clob_token_ids: string[]
+  fees_enabled: boolean
+  event_slug: string
+  event_title: string
+  upcoming_markets: CryptoMarketUpcoming[]
+  // Attached by API
+  oracle_price: number | null
+  oracle_updated_at_ms: number | null
+  oracle_age_seconds: number | null
+  price_to_beat: number | null
+  oracle_history: { t: number; p: number }[]
+}
+
+export const getCryptoMarkets = async (): Promise<CryptoMarket[]> => {
+  const { data } = await api.get('/crypto/markets')
+  return data
+}
+
+// ==================== OPPORTUNITY COUNTS ====================
 
 export interface OpportunityCounts {
   strategies: Record<string, number>
@@ -414,6 +476,11 @@ export const searchPolymarketOpportunities = async (params: {
     opportunities: response.data,
     total
   }
+}
+
+export const evaluateSearchResults = async (conditionIds: string[]): Promise<{ status: string; count: number; message: string }> => {
+  const { data } = await api.post('/opportunities/search-polymarket/evaluate', { condition_ids: conditionIds })
+  return data
 }
 
 export const triggerScan = async () => {
@@ -1309,6 +1376,10 @@ export interface SearchFilterSettings {
   risk_multiple_legs: number
   // BTC/ETH high-frequency
   btc_eth_hf_enabled: boolean
+  btc_eth_hf_series_btc_15m: string
+  btc_eth_hf_series_eth_15m: string
+  btc_eth_hf_series_sol_15m: string
+  btc_eth_hf_series_xrp_15m: string
   btc_eth_pure_arb_max_combined: number
   btc_eth_dump_hedge_drop_pct: number
   btc_eth_thin_liquidity_usd: number
@@ -1454,6 +1525,201 @@ export const testTradingProxy = async (): Promise<{ status: string; message: str
   return data
 }
 
+// ==================== VALIDATION / BACKTESTING ====================
+
+export interface ValidationSummaryMetric {
+  sample_size?: number
+  expected_roi_mean?: number | null
+  actual_roi_mean?: number | null
+  mae_roi?: number | null
+  rmse_roi?: number | null
+  directional_accuracy?: number | null
+  optimism_bias_roi?: number | null
+}
+
+export interface ValidationOverview {
+  current_params: Record<string, unknown>
+  active_parameter_set: Record<string, unknown> | null
+  parameter_spec_count: number
+  parameter_set_count: number
+  latest_optimization: Record<string, unknown> | null
+  opportunity_stats: Record<string, unknown>
+  strategy_accuracy: Record<string, unknown>
+  roi_30d: Record<string, unknown>
+  decay_30d: Record<string, unknown>
+  calibration_90d: {
+    window_days: number
+    sample_size: number
+    overall: ValidationSummaryMetric
+    by_strategy: Record<string, ValidationSummaryMetric>
+  }
+  calibration_trend_90d: Array<{
+    bucket_start: string
+    sample_size: number
+    mae_roi: number
+    directional_accuracy: number
+  }>
+  combinatorial_validation: Record<string, unknown>
+  strategy_health: ValidationStrategyHealth[]
+  guardrail_config: ValidationGuardrailConfig
+  jobs: ValidationJob[]
+}
+
+export interface BacktestRequest {
+  params?: Record<string, unknown>
+  save_parameter_set?: boolean
+  parameter_set_name?: string
+  activate_saved_set?: boolean
+}
+
+export interface OptimizationRequest {
+  method?: 'grid' | 'random'
+  param_ranges?: Record<string, unknown>
+  n_random_samples?: number
+  random_seed?: number
+  walk_forward?: boolean
+  n_windows?: number
+  train_ratio?: number
+  top_k?: number
+  save_best_as_active?: boolean
+  best_set_name?: string
+}
+
+export interface ValidationJob {
+  id: string
+  job_type: 'backtest' | 'optimize' | string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | string
+  payload?: Record<string, unknown>
+  result?: Record<string, unknown>
+  error?: string | null
+  progress?: number
+  message?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export interface ValidationGuardrailConfig {
+  enabled: boolean
+  min_samples: number
+  min_directional_accuracy: number
+  max_mae_roi: number
+  lookback_days: number
+  auto_promote: boolean
+}
+
+export interface ValidationStrategyHealth {
+  strategy_type: string
+  status: 'active' | 'demoted' | string
+  sample_size: number
+  directional_accuracy?: number | null
+  mae_roi?: number | null
+  rmse_roi?: number | null
+  optimism_bias_roi?: number | null
+  last_reason?: string | null
+  manual_override?: boolean
+  manual_override_note?: string | null
+  demoted_at?: string | null
+  restored_at?: string | null
+  updated_at?: string | null
+}
+
+export const getValidationOverview = async (): Promise<ValidationOverview> => {
+  const { data } = await api.get('/validation/overview')
+  return data
+}
+
+export const runValidationBacktest = async (payload?: BacktestRequest): Promise<{
+  status: string
+  job_id: string
+}> => {
+  const { data } = await api.post('/validation/jobs/backtest', payload || {})
+  return data
+}
+
+export const runValidationOptimization = async (payload?: OptimizationRequest): Promise<{
+  status: string
+  job_id: string
+}> => {
+  const { data } = await api.post('/validation/jobs/optimize', payload || {})
+  return data
+}
+
+export const getValidationJobs = async (limit = 50): Promise<{ jobs: ValidationJob[] }> => {
+  const { data } = await api.get('/validation/jobs', { params: { limit } })
+  return data
+}
+
+export const getValidationJob = async (jobId: string): Promise<ValidationJob> => {
+  const { data } = await api.get(`/validation/jobs/${jobId}`)
+  return data
+}
+
+export const cancelValidationJob = async (jobId: string): Promise<{ status: string; job_id: string }> => {
+  const { data } = await api.post(`/validation/jobs/${jobId}/cancel`)
+  return data
+}
+
+export const getValidationGuardrailConfig = async (): Promise<ValidationGuardrailConfig> => {
+  const { data } = await api.get('/validation/guardrails/config')
+  return data
+}
+
+export const updateValidationGuardrailConfig = async (patch: Partial<ValidationGuardrailConfig>): Promise<ValidationGuardrailConfig> => {
+  const { data } = await api.put('/validation/guardrails/config', patch)
+  return data
+}
+
+export const evaluateValidationGuardrails = async (): Promise<Record<string, unknown>> => {
+  const { data } = await api.post('/validation/guardrails/evaluate')
+  return data
+}
+
+export const getValidationStrategyHealth = async (): Promise<{ strategy_health: ValidationStrategyHealth[] }> => {
+  const { data } = await api.get('/validation/strategy-health')
+  return data
+}
+
+export const overrideValidationStrategy = async (
+  strategyType: string,
+  status: 'active' | 'demoted',
+  note?: string
+): Promise<Record<string, unknown>> => {
+  const { data } = await api.post(`/validation/strategy-health/${strategyType}/override`, null, {
+    params: { status, note }
+  })
+  return data
+}
+
+export const clearValidationStrategyOverride = async (strategyType: string): Promise<Record<string, unknown>> => {
+  const { data } = await api.delete(`/validation/strategy-health/${strategyType}/override`)
+  return data
+}
+
+export const getOptimizationResults = async (topK = 50): Promise<{
+  count: number
+  results: Array<Record<string, unknown>>
+}> => {
+  const { data } = await api.get('/validation/optimization-results', { params: { top_k: topK } })
+  return data
+}
+
+export const getValidationParameterSets = async (): Promise<{
+  count: number
+  parameter_sets: Array<Record<string, unknown>>
+}> => {
+  const { data } = await api.get('/validation/parameter-sets')
+  return data
+}
+
+export const activateValidationParameterSet = async (setId: string): Promise<{
+  status: string
+  active_set_id: string
+}> => {
+  const { data } = await api.post(`/validation/parameter-sets/${setId}/activate`)
+  return data
+}
+
 // ==================== AI INTELLIGENCE ====================
 
 // AI endpoints that invoke LLM calls need a longer timeout than the default 15s
@@ -1576,7 +1842,8 @@ export const getNewsArticles = async (params?: {
   max_age_hours?: number
   source?: string
   limit?: number
-}): Promise<{ total: number; articles: NewsArticle[] }> => {
+  offset?: number
+}): Promise<{ total: number; offset: number; limit: number; has_more: boolean; articles: NewsArticle[] }> => {
   const { data } = await api.get('/news/feed/articles', { params })
   return data
 }
@@ -1781,6 +2048,131 @@ export const getKalshiPositions = async (): Promise<KalshiPosition[]> => {
 
 export const updateKalshiSettings = async (settings: Partial<KalshiSettings>): Promise<{ status: string; message: string }> => {
   const { data } = await api.put('/settings/kalshi', settings)
+  return data
+}
+
+// ==================== NEWS WORKFLOW (Independent Pipeline) ====================
+
+export interface NewsWorkflowFinding {
+  id: string
+  article_id: string
+  market_id: string
+  article_title: string
+  article_source: string
+  article_url: string
+  market_question: string
+  market_price: number
+  model_probability: number
+  edge_percent: number
+  direction: string
+  confidence: number
+  retrieval_score: number
+  semantic_score: number
+  keyword_score: number
+  event_score: number
+  rerank_score: number
+  event_graph: Record<string, unknown>
+  evidence: Record<string, unknown>
+  reasoning: string
+  actionable: boolean
+  consumed_by_auto_trader: boolean
+  created_at: string
+}
+
+export interface NewsTradeIntent {
+  id: string
+  finding_id: string
+  market_id: string
+  market_question: string
+  direction: string
+  entry_price: number
+  model_probability: number
+  edge_percent: number
+  confidence: number
+  suggested_size_usd: number
+  status: string
+  created_at: string
+  consumed_at: string | null
+}
+
+export interface NewsWorkflowStatus {
+  running: boolean
+  is_cycling: boolean
+  cycle_count: number
+  last_run: string | null
+  last_findings_count: number
+  last_intents_count: number
+  pending_intents: number
+  market_index: {
+    initialized: boolean
+    ml_mode: boolean
+    market_count: number
+    has_faiss: boolean
+    last_rebuild: string | null
+  }
+}
+
+export interface NewsWorkflowSettings {
+  enabled: boolean
+  auto_run: boolean
+  top_k: number
+  rerank_top_n: number
+  similarity_threshold: number
+  keyword_weight: number
+  semantic_weight: number
+  event_weight: number
+  min_edge_percent: number
+  min_confidence: number
+  require_second_source: boolean
+  auto_trader_enabled: boolean
+  auto_trader_min_edge: number
+  auto_trader_max_age_minutes: number
+  model: string | null
+}
+
+export const getNewsWorkflowStatus = async (): Promise<NewsWorkflowStatus> => {
+  const { data } = await api.get('/news-workflow/status')
+  return data
+}
+
+export const runNewsWorkflow = async (): Promise<Record<string, unknown>> => {
+  const { data } = await api.post('/news-workflow/run', null, { timeout: 300_000 })
+  return data
+}
+
+export const getNewsWorkflowFindings = async (params?: {
+  min_edge?: number
+  actionable_only?: boolean
+  max_age_hours?: number
+  limit?: number
+  offset?: number
+}): Promise<{ total: number; offset: number; limit: number; findings: NewsWorkflowFinding[] }> => {
+  const { data } = await api.get('/news-workflow/findings', { params })
+  return data
+}
+
+export const getNewsWorkflowIntents = async (params?: {
+  status_filter?: string
+  limit?: number
+}): Promise<{ total: number; intents: NewsTradeIntent[] }> => {
+  const { data } = await api.get('/news-workflow/intents', { params })
+  return data
+}
+
+export const skipNewsWorkflowIntent = async (intentId: string): Promise<{ status: string; intent_id: string }> => {
+  const { data } = await api.post(`/news-workflow/intents/${intentId}/skip`)
+  return data
+}
+
+export const getNewsWorkflowSettings = async (): Promise<NewsWorkflowSettings> => {
+  const { data } = await api.get('/news-workflow/settings')
+  return data
+}
+
+export const updateNewsWorkflowSettings = async (
+  settings: Partial<NewsWorkflowSettings>
+): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/news-workflow/settings', settings)
   return data
 }
 

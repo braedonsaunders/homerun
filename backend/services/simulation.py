@@ -92,6 +92,37 @@ class SimulationService:
             result = await session.execute(select(SimulationAccount))
             return list(result.scalars().all())
 
+    async def get_all_accounts_with_positions(
+        self,
+    ) -> list[tuple[SimulationAccount, list[SimulationPosition]]]:
+        """Get all accounts and their open positions in 2 queries (avoids N+1)."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(SimulationAccount))
+            accounts = list(result.scalars().all())
+
+            if not accounts:
+                return []
+
+            account_ids = [a.id for a in accounts]
+            pos_result = await session.execute(
+                select(SimulationPosition).where(
+                    SimulationPosition.account_id.in_(account_ids),
+                    SimulationPosition.status == TradeStatus.OPEN,
+                )
+            )
+            positions = list(pos_result.scalars().all())
+
+            # Group positions by account_id
+            positions_by_account: dict[str, list[SimulationPosition]] = {
+                aid: [] for aid in account_ids
+            }
+            for pos in positions:
+                positions_by_account.setdefault(pos.account_id, []).append(pos)
+
+            return [
+                (acc, positions_by_account.get(acc.id, [])) for acc in accounts
+            ]
+
     async def delete_account(self, account_id: str) -> bool:
         """Delete a simulation account and all related records"""
         async with AsyncSessionLocal() as session:

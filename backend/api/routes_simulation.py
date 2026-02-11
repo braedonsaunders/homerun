@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.database import get_db_session
 from services.simulation import simulation_service
-from services.scanner import scanner
 
 simulation_router = APIRouter()
 
@@ -45,10 +46,11 @@ async def create_simulation_account(request: CreateAccountRequest):
 @simulation_router.get("/accounts")
 async def list_simulation_accounts():
     """List all simulation accounts with full stats"""
-    accounts = await simulation_service.get_all_accounts()
+    accounts_with_positions = (
+        await simulation_service.get_all_accounts_with_positions()
+    )
     result = []
-    for acc in accounts:
-        positions = await simulation_service.get_open_positions(acc.id)
+    for acc, positions in accounts_with_positions:
         roi = (
             (acc.current_capital - acc.initial_capital) / acc.initial_capital * 100
             if acc.initial_capital > 0
@@ -291,10 +293,15 @@ async def get_account_trades(
 
 
 @simulation_router.post("/accounts/{account_id}/execute")
-async def execute_opportunity(account_id: str, request: ExecuteTradeRequest):
+async def execute_opportunity(
+    account_id: str,
+    request: ExecuteTradeRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Execute an arbitrage opportunity in simulation"""
-    # Find the opportunity
-    opportunities = scanner.get_opportunities()
+    from services import shared_state
+
+    opportunities = await shared_state.get_opportunities_from_db(session, None)
     opportunity = next(
         (o for o in opportunities if o.id == request.opportunity_id), None
     )

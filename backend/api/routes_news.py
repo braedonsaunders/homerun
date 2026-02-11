@@ -10,77 +10,26 @@ Provides endpoints for:
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+
+from models.database import get_db_session
+from services import shared_state
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _build_market_infos_from_scanner():
-    """Build MarketInfo list from the scanner's full cached market universe.
-
-    Uses scanner._cached_markets (populated on every full scan) so that
-    news matching works even when no structural arbitrage opportunities
-    exist.  Falls back to scanner.get_opportunities() as a last resort.
-    """
+async def _build_market_infos_from_scanner(session):
+    """Build MarketInfo list from current opportunity snapshot (DB)."""
     from services.news.semantic_matcher import MarketInfo
-    from services import scanner as scanner_inst
+    from services import shared_state
 
-    # Primary source: the cached market universe from the last full scan.
-    # Each item is a models.market.Market instance (Pydantic).
-    cached_markets = getattr(scanner_inst, "_cached_markets", [])
-    cached_prices = getattr(scanner_inst, "_cached_prices", {})
-    cached_events = getattr(scanner_inst, "_cached_events", [])
-
-    if cached_markets:
-        # Build event_id -> Event lookup for category / title
-        event_by_market: dict[str, object] = {}
-        for ev in cached_events:
-            for m in ev.markets:
-                event_by_market[m.id] = ev
-
-        seen_ids: set[str] = set()
-        market_infos = []
-        for m in cached_markets:
-            if m.id in seen_ids:
-                continue
-            seen_ids.add(m.id)
-
-            # Derive yes/no prices from outcome_prices or cached live prices
-            yes_price = 0.5
-            no_price = 0.5
-            if m.outcome_prices and len(m.outcome_prices) >= 2:
-                yes_price = m.outcome_prices[0]
-                no_price = m.outcome_prices[1]
-            elif m.clob_token_ids:
-                for i, tid in enumerate(m.clob_token_ids):
-                    p = cached_prices.get(tid)
-                    if p is not None:
-                        if i == 0:
-                            yes_price = p
-                        else:
-                            no_price = p
-
-            ev = event_by_market.get(m.id)
-            market_infos.append(
-                MarketInfo(
-                    market_id=m.id,
-                    question=m.question,
-                    event_title=ev.title if ev else "",
-                    category=ev.category or "" if ev else "",
-                    yes_price=yes_price,
-                    no_price=no_price,
-                    liquidity=m.liquidity,
-                )
-            )
-        return market_infos
-
-    # Fallback: extract from current opportunity list
-    opps = scanner_inst.get_opportunities()
+    opps = await shared_state.get_opportunities_from_db(session, None)
     seen_ids: set[str] = set()
     market_infos = []
     for opp in opps:
@@ -160,7 +109,8 @@ async def trigger_news_fetch():
 async def get_articles(
     max_age_hours: int = Query(168, ge=1, le=336),
     source: Optional[str] = Query(None, description="Filter by feed source"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=2000),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
 ):
     """Get articles currently in the news feed store."""
     from services.news.feed_service import news_feed_service
@@ -172,8 +122,14 @@ async def get_articles(
 
     articles.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
 
+    total = len(articles)
+    page = articles[offset : offset + limit]
+
     return {
-        "total": len(articles),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": (offset + limit) < total,
         "articles": [
             {
                 "article_id": a.article_id,
@@ -187,7 +143,7 @@ async def get_articles(
                 "has_embedding": a.embedding is not None,
                 "fetched_at": a.fetched_at.isoformat(),
             }
-            for a in articles[:limit]
+            for a in page
         ],
     }
 
@@ -246,11 +202,14 @@ class MatchRequest(BaseModel):
 
 
 @router.post("/news/match")
-async def run_matching(request: MatchRequest):
+async def run_matching(
+    request: MatchRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Run semantic matching between current articles and active markets.
 
     This fetches articles (if needed), embeds them, and matches them
-    against the scanner's current markets.
+    against the current opportunity snapshot (DB).
     """
     from services.news.feed_service import news_feed_service
     from services.news.semantic_matcher import semantic_matcher
@@ -264,8 +223,7 @@ async def run_matching(request: MatchRequest):
         if not articles:
             return {"matches": [], "message": "No articles available"}
 
-        # Build market index from the full active market universe
-        market_infos = _build_market_infos_from_scanner()
+        market_infos = await _build_market_infos_from_scanner(session)
 
         if not market_infos:
             return {"matches": [], "message": "No markets available from scanner"}
@@ -365,7 +323,10 @@ async def get_cached_edges():
 
 
 @router.post("/news/edges")
-async def detect_edges(request: EdgeDetectionRequest):
+async def detect_edges(
+    request: EdgeDetectionRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Run the full news edge detection pipeline (manual trigger, costs money).
 
     Fetches news, matches to markets, estimates probabilities via LLM,
@@ -384,8 +345,7 @@ async def detect_edges(request: EdgeDetectionRequest):
         if not articles:
             return {"edges": [], "message": "No articles available"}
 
-        # Build market index from the full active market universe
-        market_infos = _build_market_infos_from_scanner()
+        market_infos = await _build_market_infos_from_scanner(session)
 
         if not market_infos:
             return {"edges": [], "message": "No markets available from scanner"}
@@ -436,7 +396,10 @@ class SingleEdgeRequest(BaseModel):
 
 
 @router.post("/news/edges/single")
-async def analyze_single_edge(request: SingleEdgeRequest):
+async def analyze_single_edge(
+    request: SingleEdgeRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Analyze a single article-market match with LLM (manual trigger).
 
     Finds the match from the latest matching run and estimates the
@@ -456,8 +419,7 @@ async def analyze_single_edge(request: SingleEdgeRequest):
         if not article:
             raise HTTPException(status_code=404, detail="Article not found")
 
-        # Build market index if needed
-        market_infos = _build_market_infos_from_scanner()
+        market_infos = await _build_market_infos_from_scanner(session)
         market_info = next(
             (m for m in market_infos if m.market_id == request.market_id), None
         )
@@ -573,19 +535,20 @@ class CommitteeMarketRequest(BaseModel):
 
 
 @router.post("/news/forecast/market")
-async def forecast_market_by_id(request: CommitteeMarketRequest):
-    """Run forecaster committee on a market found in the scanner.
+async def forecast_market_by_id(
+    request: CommitteeMarketRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Run forecaster committee on a market from the current opportunity snapshot.
 
     Automatically gathers market context and recent news.
     """
-    from services import scanner
     from services.news.feed_service import news_feed_service
     from services.news.semantic_matcher import semantic_matcher, MarketInfo
     from services.news.forecaster_committee import forecaster_committee
 
     try:
-        # Find the market in scanner opportunities
-        opps = scanner.get_opportunities()
+        opps = await shared_state.get_opportunities_from_db(session, None)
         target_opp = None
         target_market = None
 

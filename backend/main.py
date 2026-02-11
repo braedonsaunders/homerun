@@ -23,7 +23,10 @@ from api.routes_news import router as news_router
 from api.routes_discovery import discovery_router
 from api.routes_kalshi import router as kalshi_router
 from api.routes_plugins import router as plugins_router
-from services import scanner, wallet_tracker
+from api.routes_crypto import router as crypto_router
+from api.routes_news_workflow import router as news_workflow_router
+from api.routes_validation import router as validation_router
+from services import wallet_tracker
 from services.copy_trader import copy_trader
 from services.trading import trading_service
 from services.auto_trader import auto_trader
@@ -33,7 +36,9 @@ from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
 from services.notifier import notifier
 from services.opportunity_recorder import opportunity_recorder
-from models.database import init_database
+from services.validation_service import validation_service
+from models.database import AsyncSessionLocal, init_database
+from services import shared_state
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
@@ -155,13 +160,8 @@ async def lifespan(app: FastAPI):
         for wallet in settings.TRACKED_WALLETS:
             await wallet_tracker.add_wallet(wallet)
 
-        # Start background tasks
+        # Background tasks (scanner runs in separate worker process; API reads from DB)
         tasks = []
-
-        scan_task = asyncio.create_task(
-            scanner.start_continuous_scan(settings.SCAN_INTERVAL_SECONDS)
-        )
-        tasks.append(scan_task)
 
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
@@ -189,6 +189,27 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"WebSocket feeds failed to start (non-critical): {e}")
 
+        # Start Chainlink oracle price feed for crypto 15-min markets
+        try:
+            from services.chainlink_feed import get_chainlink_feed
+
+            chainlink_feed = get_chainlink_feed()
+            await chainlink_feed.start()
+            logger.info("Chainlink oracle price feed started")
+        except Exception as e:
+            logger.warning(f"Chainlink feed failed to start (non-critical): {e}")
+
+        # Start dedicated crypto fast-scan loop (worker process in full deploy)
+        try:
+            from services.crypto_service import get_crypto_service
+
+            crypto_svc = get_crypto_service()
+            crypto_scan_task = asyncio.create_task(crypto_svc.start_fast_scan(2.0))
+            tasks.append(crypto_scan_task)
+            logger.info("Crypto fast-scan loop started (2s interval)")
+        except Exception as e:
+            logger.warning(f"Crypto fast-scan loop failed to start (non-critical): {e}")
+
         # Start copy trading service
         await copy_trader.start()
 
@@ -213,7 +234,7 @@ async def lifespan(app: FastAPI):
                     "Trading service initialization failed - check credentials"
                 )
 
-        # Start wallet discovery engine (background)
+        # Start wallet discovery and intelligence (worker process in full deploy)
         try:
             await wallet_intelligence.initialize()
             discovery_task = asyncio.create_task(
@@ -224,7 +245,7 @@ async def lifespan(app: FastAPI):
                 wallet_intelligence.start_background(interval_minutes=30)
             )
             tasks.append(intelligence_task)
-            logger.info("Wallet discovery and intelligence services started")
+            logger.info("Wallet discovery and intelligence started")
         except Exception as e:
             logger.warning(f"Wallet discovery startup failed (non-critical): {e}")
 
@@ -268,11 +289,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"News intelligence init failed (non-critical): {e}")
 
-        # Start Telegram notifier (hooks into scanner + auto_trader callbacks)
-        await notifier.start()
+        # Start independent news workflow pipeline (Options B/C/D)
+        try:
+            from services.news.workflow_orchestrator import workflow_orchestrator
 
-        # Start opportunity recorder (hooks into scanner, tracks outcomes)
-        await opportunity_recorder.start()
+            if settings.NEWS_EDGE_ENABLED:
+                await workflow_orchestrator.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
+                logger.info("News workflow orchestrator started")
+            else:
+                logger.info("News workflow orchestrator disabled (NEWS_EDGE_ENABLED=False)")
+        except Exception as e:
+            logger.warning(f"News workflow orchestrator init failed (non-critical): {e}")
+
+        # Notifier and opportunity_recorder run in scanner worker (callbacks on scan)
+
+        # Start validation orchestration (async job queue + guardrails)
+        await validation_service.start()
 
         logger.info("All services started successfully")
 
@@ -288,7 +320,11 @@ async def lifespan(app: FastAPI):
         # Cleanup
         logger.info("Shutting down...")
 
-        await scanner.stop()
+        try:
+            from services.chainlink_feed import get_chainlink_feed
+            await get_chainlink_feed().stop()
+        except Exception:
+            pass
         wallet_tracker.stop()
         copy_trader.stop()
         auto_trader.stop()
@@ -302,12 +338,17 @@ async def lifespan(app: FastAPI):
             fill_monitor.stop()
         except Exception:
             pass
-        notifier.stop()
-        opportunity_recorder.stop()
+        await validation_service.stop()
         try:
             from services.news.feed_service import news_feed_service
 
             news_feed_service.stop()
+        except Exception:
+            pass
+        try:
+            from services.news.workflow_orchestrator import workflow_orchestrator
+
+            workflow_orchestrator.stop()
         except Exception:
             pass
 
@@ -382,6 +423,9 @@ app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
 app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
+app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])
+app.include_router(news_workflow_router, prefix="/api", tags=["News Workflow"])
+app.include_router(validation_router, prefix="/api", tags=["Validation"])
 
 
 # WebSocket endpoint
@@ -406,10 +450,12 @@ async def liveness_check():
 @app.get("/health/ready")
 async def readiness_check():
     """Readiness probe - is the service ready to accept traffic?"""
+    async with AsyncSessionLocal() as session:
+        scanner_status = await shared_state.get_scanner_status_from_db(session)
     checks = {
-        "scanner": scanner.is_running,
-        "database": True,  # Would check DB connection
-        "polymarket_api": True,  # Would check API availability
+        "scanner": scanner_status.get("running", False),
+        "database": True,
+        "polymarket_api": True,
     }
 
     all_ready = all(checks.values())
@@ -462,16 +508,16 @@ def _get_ws_feeds_status() -> dict:
 @app.get("/health/detailed")
 async def detailed_health_check():
     """Detailed health check with all system stats"""
+    async with AsyncSessionLocal() as session:
+        scanner_status = await shared_state.get_scanner_status_from_db(session)
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "scanner": {
-                "running": scanner.is_running,
-                "last_scan": (scanner.last_scan.isoformat() + "Z")
-                if scanner.last_scan
-                else None,
-                "opportunities_count": len(scanner.get_opportunities()),
+                "running": scanner_status.get("running", False),
+                "last_scan": scanner_status.get("last_scan"),
+                "opportunities_count": scanner_status.get("opportunities_count", 0),
             },
             "wallet_tracker": {
                 "tracked_wallets": len(await wallet_tracker.get_all_wallets())
@@ -526,15 +572,18 @@ async def detailed_health_check():
 @app.get("/metrics")
 async def metrics():
     """Prometheus-compatible metrics"""
-    opportunities = scanner.get_opportunities()
+    async with AsyncSessionLocal() as session:
+        scanner_status = await shared_state.get_scanner_status_from_db(session)
+    opp_count = scanner_status.get("opportunities_count", 0)
+    scanner_running = 1 if scanner_status.get("running", False) else 0
 
     metrics_text = f"""# HELP polymarket_opportunities_total Total detected opportunities
 # TYPE polymarket_opportunities_total gauge
-polymarket_opportunities_total {len(opportunities)}
+polymarket_opportunities_total {opp_count}
 
 # HELP polymarket_scanner_running Scanner running status
 # TYPE polymarket_scanner_running gauge
-polymarket_scanner_running {1 if scanner.is_running else 0}
+polymarket_scanner_running {scanner_running}
 
 # HELP polymarket_tracked_wallets Number of tracked wallets
 # TYPE polymarket_tracked_wallets gauge

@@ -71,6 +71,10 @@ const DEFAULTS = {
   settlement_lag_min_sum_deviation: 0.03,
   // BTC/ETH
   btc_eth_hf_enabled: true,
+  btc_eth_hf_series_btc_15m: '10192',
+  btc_eth_hf_series_eth_15m: '10191',
+  btc_eth_hf_series_sol_15m: '10423',
+  btc_eth_hf_series_xrp_15m: '10422',
   btc_eth_pure_arb_max_combined: 0.98,
   btc_eth_dump_hedge_drop_pct: 0.05,
   btc_eth_thin_liquidity_usd: 500,
@@ -144,6 +148,37 @@ function NumericField({
         step={step}
         disabled={disabled}
         className="mt-0.5 text-xs h-7"
+      />
+      <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">{help}</p>
+    </div>
+  )
+}
+
+function TextField({
+  label,
+  help,
+  value,
+  onChange,
+  disabled,
+  placeholder,
+}: {
+  label: string
+  help: string
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+  placeholder?: string
+}) {
+  return (
+    <div className={cn(disabled && 'opacity-40 pointer-events-none')}>
+      <Label className="text-[11px] text-muted-foreground leading-tight">{label}</Label>
+      <Input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="mt-0.5 text-xs h-7 font-mono"
       />
       <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">{help}</p>
     </div>
@@ -519,6 +554,13 @@ export default function SearchFiltersFlyout({
                 <NumericField label="Pure Arb Max Combined" help="Pure arb when YES+NO < this" value={form.btc_eth_pure_arb_max_combined} onChange={(v) => set('btc_eth_pure_arb_max_combined', v)} min={0.5} max={1} step={0.01} disabled={!form.btc_eth_hf_enabled} />
                 <NumericField label="Dump-Hedge Drop %" help="Min drop to trigger hedge" value={form.btc_eth_dump_hedge_drop_pct} onChange={(v) => set('btc_eth_dump_hedge_drop_pct', v)} min={0.01} max={0.5} step={0.01} disabled={!form.btc_eth_hf_enabled} />
                 <NumericField label="Thin Liquidity ($)" help="Below = thin order book" value={form.btc_eth_thin_liquidity_usd} onChange={(v) => set('btc_eth_thin_liquidity_usd', v)} min={0} disabled={!form.btc_eth_hf_enabled} />
+              </div>
+              <p className="text-[10px] text-muted-foreground/60 mt-2 font-medium">Polymarket Series IDs</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                <TextField label="BTC 15m" help="Series ID" value={form.btc_eth_hf_series_btc_15m} onChange={(v) => set('btc_eth_hf_series_btc_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10192" />
+                <TextField label="ETH 15m" help="Series ID" value={form.btc_eth_hf_series_eth_15m} onChange={(v) => set('btc_eth_hf_series_eth_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10191" />
+                <TextField label="SOL 15m" help="Series ID" value={form.btc_eth_hf_series_sol_15m} onChange={(v) => set('btc_eth_hf_series_sol_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10423" />
+                <TextField label="XRP 15m" help="Series ID" value={form.btc_eth_hf_series_xrp_15m} onChange={(v) => set('btc_eth_hf_series_xrp_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10422" />
               </div>
             </div>
           </CollapsibleSection>

@@ -107,6 +107,34 @@ async def get_leaderboard(
             window_key=window_key,
         )
 
+        # When no discovered wallets yet, fall back to live Polymarket leaderboard so UI shows traders
+        if (result.get("total") or 0) == 0 and offset == 0:
+            try:
+                from services.polymarket import polymarket_client
+                raw = await polymarket_client.get_leaderboard(
+                    limit=min(limit, 50),
+                    time_period="ALL",
+                    order_by="PNL",
+                    category="OVERALL",
+                )
+                if raw:
+                    wallets = [
+                        {
+                            "address": e.get("proxyWallet", ""),
+                            "username": e.get("userName"),
+                            "total_pnl": float(e.get("pnl") or 0),
+                            "vol": float(e.get("vol") or 0),
+                            "rank_position": int(e.get("rank", 0)) if str(e.get("rank", "")).isdigit() else None,
+                            "tags": [],
+                            "from_polymarket_live": True,
+                        }
+                        for e in raw
+                        if e.get("proxyWallet")
+                    ]
+                    return {"wallets": wallets, "total": len(wallets), "from_polymarket_live": True}
+            except Exception:
+                pass
+
         return result
     except HTTPException:
         raise

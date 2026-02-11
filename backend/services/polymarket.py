@@ -929,7 +929,13 @@ class PolymarketClient:
                 f"{self.data_url}/v1/leaderboard", params=params
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            # API may return a list or a wrapper object
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("data", data.get("leaderboard", data.get("items", [])))
+            return []
         except Exception as e:
             _logger.warning("Leaderboard fetch error", error=str(e))
             return []

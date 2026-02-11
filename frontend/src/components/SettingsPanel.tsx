@@ -37,6 +37,7 @@ import { Label } from './ui/label'
 import { Switch } from './ui/switch'
 import { Separator } from './ui/separator'
 import { Badge } from './ui/badge'
+import ValidationEnginePanel from './ValidationEnginePanel'
 import {
   getSettings,
   updateSettings,
@@ -58,7 +59,7 @@ import {
   type AutoTraderConfig,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'plugins' | 'maintenance'
+type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'validation' | 'plugins' | 'maintenance'
 
 function SecretInput({
   label,
@@ -569,6 +570,8 @@ export default function SettingsPanel() {
       }
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
+      case 'validation':
+        return 'Backtests'
       case 'plugins':
         return `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''}`
       default:
@@ -592,6 +595,8 @@ export default function SettingsPanel() {
         return autotraderAiForm.enabled_strategies.length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
+      case 'validation':
+        return 'text-emerald-400 bg-emerald-500/10'
       case 'plugins':
         return plugins.length > 0 ? 'text-violet-400 bg-violet-500/10' : 'text-muted-foreground bg-muted'
       default:
@@ -606,6 +611,7 @@ export default function SettingsPanel() {
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
     { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
+    { id: 'validation', icon: Activity, label: 'Validation Engine', description: 'Backtests, optimization, calibration' },
     { id: 'plugins', icon: Puzzle, label: 'Strategy Plugins', description: 'Custom strategy code' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
@@ -1343,6 +1349,11 @@ export default function SettingsPanel() {
                         )}
                       </div>
                     </div>
+                  )}
+
+                  {/* Plugins Settings */}
+                  {section.id === 'validation' && (
+                    <ValidationEnginePanel />
                   )}
 
                   {/* Plugins Settings */}

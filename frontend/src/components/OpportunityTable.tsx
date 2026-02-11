@@ -112,7 +112,13 @@ function TableRow({
           : null)
     : null
   const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
-  const kalshiUrl = kalshiMarket ? `https://kalshi.com/markets/${kalshiMarket.id}` : null
+  const kalshiUrl = kalshiMarket
+    ? (() => {
+        const ticker = kalshiMarket.id.toLowerCase()
+        const eventTicker = ticker.split('-')[0]
+        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
+      })()
+    : null
 
   return (
     <div className="group">

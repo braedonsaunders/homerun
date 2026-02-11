@@ -840,18 +840,30 @@ function SystemSection() {
 // --- Usage Block ---
 
 function UsageBlock() {
-  const { data: usage, isLoading, error } = useQuery({
+  // Reuse usage from ai-status when available (avoids duplicate /ai/usage and extra DB load)
+  const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
+    queryKey: ['ai-status'],
+    queryFn: async () => {
+      const { data } = await getAIStatus()
+      return data
+    },
+    refetchInterval: 30000,
+  })
+  const { data: usageFallback, isLoading: usageLoading, error: usageError } = useQuery({
     queryKey: ['ai-usage'],
     queryFn: async () => {
       const { data } = await getAIUsage()
       return data
     },
     refetchInterval: 30000,
+    enabled: !!status?.enabled && status?.usage == null,
   })
+  const usage = status?.usage ?? usageFallback
+  const isLoading = statusLoading || (!!status?.enabled && usage == null && usageLoading)
 
   if (isLoading) return <LoadingSpinner />
 
-  if (error) {
+  if (statusError || usageError) {
     return (
       <Card className="p-5">
         <div className="flex items-center gap-3 text-muted-foreground">

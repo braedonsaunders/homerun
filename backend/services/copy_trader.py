@@ -19,7 +19,6 @@ from models.database import (
 )
 from models.opportunity import ArbitrageOpportunity
 from services.polymarket import polymarket_client
-from services.scanner import scanner
 from services.pause_state import global_pause_state
 from services.depth_analyzer import depth_analyzer
 from services.token_circuit_breaker import token_circuit_breaker
@@ -33,6 +32,9 @@ MIN_WHALE_SHARES = (
 )  # Ignore noise trades below this threshold
 MIN_CASH_VALUE = 1.01  # Minimum cash value for order execution
 
+# Maximum size of in-memory dedup cache before eviction
+_DEDUP_CACHE_MAX = 10_000
+
 
 class CopyTradingService:
     """Full copy-trading service that mirrors trades from source wallets.
@@ -42,6 +44,9 @@ class CopyTradingService:
     - ARB_ONLY: Only copies trades matching detected arbitrage opportunities
 
     Features:
+    - Real-time WebSocket trade detection (<1s latency)
+    - Direct event processing (bypasses HTTP API for WS events)
+    - In-memory deduplication for instant dedup (no DB round-trip)
     - Trade deduplication by source trade ID
     - Proportional position sizing
     - Buy and sell mirroring
@@ -57,6 +62,11 @@ class CopyTradingService:
         self._active_configs: dict[str, CopyTradingConfig] = {}
         # In-memory cache of source wallet positions for diffing
         self._wallet_positions: dict[str, list[dict]] = {}
+        # In-memory dedup cache: tx_hash -> timestamp for instant dedup
+        # Prevents DB round-trips on the hot path for real-time events
+        self._realtime_dedup_cache: dict[str, datetime] = {}
+        # Broadcast callback for pushing copy trade events to frontend via WS
+        self._ws_broadcast_callback = None
 
     # ==================== CONFIG MANAGEMENT ====================
 
@@ -200,6 +210,323 @@ class CopyTradingService:
             )
             return config
 
+    def set_ws_broadcast(self, callback):
+        """Set the WebSocket broadcast callback for pushing copy trade events to frontend.
+
+        Args:
+            callback: Async callable that accepts a dict message to broadcast.
+        """
+        self._ws_broadcast_callback = callback
+
+    async def _broadcast_copy_event(self, event_type: str, data: dict):
+        """Broadcast a copy trading event to connected frontend clients."""
+        if self._ws_broadcast_callback:
+            try:
+                await self._ws_broadcast_callback(
+                    {"type": event_type, "data": data}
+                )
+            except Exception as e:
+                logger.error("Failed to broadcast copy event", error=str(e))
+
+    def _dedup_check_and_mark(self, dedup_key: str) -> bool:
+        """Check if a trade key was already processed (in-memory, no DB).
+
+        Returns True if this is a DUPLICATE (already seen).
+        Marks it as seen if new.
+        """
+        if dedup_key in self._realtime_dedup_cache:
+            return True  # Already processed
+
+        # Evict old entries if cache is too large
+        if len(self._realtime_dedup_cache) > _DEDUP_CACHE_MAX:
+            # Remove oldest half
+            sorted_keys = sorted(
+                self._realtime_dedup_cache.keys(),
+                key=lambda k: self._realtime_dedup_cache[k],
+            )
+            for k in sorted_keys[: _DEDUP_CACHE_MAX // 2]:
+                del self._realtime_dedup_cache[k]
+
+        self._realtime_dedup_cache[dedup_key] = datetime.utcnow()
+        return False
+
+    # ==================== REAL-TIME EVENT PROCESSING ====================
+
+    async def _process_realtime_event(self, event, config: CopyTradingConfig):
+        """Process a single real-time WalletTradeEvent directly, bypassing HTTP API.
+
+        This is the fast path: the WalletTradeEvent already contains all trade
+        data (token_id, side, size, price, tx_hash) from on-chain event parsing.
+        No HTTP API call is needed.
+
+        Target latency: <500ms from block detection to copy execution.
+        """
+        start_time = datetime.utcnow()
+
+        # Build a trade dict from the WalletTradeEvent fields
+        trade = {
+            "id": f"ws_{event.tx_hash}_{event.token_id}",
+            "side": event.side,
+            "price": event.price,
+            "size": event.size,
+            "asset": event.token_id,
+            "assetId": event.token_id,
+            "market": "",  # Not available from on-chain event
+            "condition_id": "",
+            "outcome": "",
+            "title": "",
+            "question": "",
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+            "matchTime": event.timestamp.isoformat() if event.timestamp else None,
+            "_realtime": True,
+            "_tx_hash": event.tx_hash,
+            "_detection_latency_ms": event.latency_ms,
+        }
+
+        # In-memory dedup (no DB round-trip)
+        dedup_key = f"{config.id}:{trade['id']}"
+        if self._dedup_check_and_mark(dedup_key):
+            logger.debug(
+                "Realtime dedup: already processed",
+                tx_hash=event.tx_hash,
+                config_id=config.id,
+            )
+            return
+
+        # Check if we should copy this trade
+        should_copy, reason = self._should_copy_trade(trade, config)
+        if not should_copy:
+            logger.debug(
+                "Realtime skip",
+                reason=reason,
+                tx_hash=event.tx_hash,
+            )
+            # Record as skipped for audit trail (fire-and-forget to DB)
+            asyncio.create_task(
+                self._record_copied_trade(
+                    config,
+                    source_trade_id=trade["id"],
+                    market_id="",
+                    market_question="",
+                    token_id=event.token_id,
+                    side=event.side,
+                    outcome="",
+                    source_price=event.price,
+                    source_size=event.size,
+                    source_timestamp=event.timestamp,
+                    status="skipped",
+                    error=reason,
+                )
+            )
+            return
+
+        # In ARB_ONLY mode, check for matching opportunity
+        if config.copy_mode == CopyTradingMode.ARB_ONLY:
+            opp = await self._check_arb_match(trade)
+            if not opp:
+                return
+            if opp.roi_percent < config.min_roi_threshold:
+                return
+
+        # Execute the copy — NO intentional delay for real-time events
+        # (copy_delay_seconds is skipped to achieve <500ms execution)
+        side = event.side.upper()
+        if side == "BUY":
+            result = await self._execute_copy_buy_realtime(trade, config, event)
+        elif side == "SELL":
+            result = await self._execute_copy_sell(trade, config)
+        else:
+            return
+
+        # Calculate total pipeline latency
+        execution_time = datetime.utcnow()
+        pipeline_latency_ms = (execution_time - start_time).total_seconds() * 1000.0
+        total_latency_ms = (
+            event.latency_ms + pipeline_latency_ms
+        )  # detection + processing
+
+        logger.info(
+            "REALTIME copy trade complete",
+            config_id=config.id,
+            side=side,
+            token_id=event.token_id,
+            size=event.size,
+            price=event.price,
+            detection_latency_ms=round(event.latency_ms, 1),
+            pipeline_latency_ms=round(pipeline_latency_ms, 1),
+            total_latency_ms=round(total_latency_ms, 1),
+            tx_hash=event.tx_hash,
+        )
+
+        # Broadcast to frontend via WebSocket
+        await self._broadcast_copy_event(
+            "copy_trade_executed",
+            {
+                "config_id": config.id,
+                "source_wallet": config.source_wallet,
+                "side": side,
+                "token_id": event.token_id,
+                "source_price": event.price,
+                "source_size": event.size,
+                "tx_hash": event.tx_hash,
+                "detection_latency_ms": round(event.latency_ms, 1),
+                "pipeline_latency_ms": round(pipeline_latency_ms, 1),
+                "total_latency_ms": round(total_latency_ms, 1),
+                "status": "executed" if result else "failed",
+                "executed_at": execution_time.isoformat(),
+            },
+        )
+
+    async def _execute_copy_buy_realtime(
+        self,
+        trade: dict,
+        config: CopyTradingConfig,
+        event,
+    ) -> Optional[CopiedTrade]:
+        """Fast-path BUY execution for real-time events.
+
+        Skips copy_delay_seconds to minimize latency. Uses the same
+        execution logic as _execute_copy_buy but without the intentional delay
+        and with streamlined error handling.
+        """
+        source_price = event.price
+        source_size = event.size
+        token_id = event.token_id
+        trade_id = trade["id"]
+
+        # Filter out noise trades below minimum whale size
+        if source_size < MIN_WHALE_SHARES:
+            logger.debug(
+                f"Realtime: skipping small trade: {source_size} shares < {MIN_WHALE_SHARES}"
+            )
+            asyncio.create_task(
+                self._record_copied_trade(
+                    config, trade_id, "", "", token_id, "BUY", "",
+                    source_price, source_size, event.timestamp,
+                    status="skipped",
+                    error=f"Below minimum whale size ({source_size} < {MIN_WHALE_SHARES})",
+                )
+            )
+            return None
+
+        # Get account to check capital
+        async with AsyncSessionLocal() as session:
+            account = await session.get(SimulationAccount, config.account_id)
+            if not account:
+                return None
+
+            copy_size = self._calculate_copy_size(trade, config, account.current_capital)
+            if copy_size <= 0:
+                return None
+
+            # Probabilistic sub-minimum execution
+            if copy_size * source_price < MIN_CASH_VALUE and copy_size > 0:
+                import random
+                prob = (copy_size * source_price) / MIN_CASH_VALUE
+                if random.random() < prob:
+                    copy_size = MIN_CASH_VALUE / source_price
+                else:
+                    return None
+
+        # Per-token circuit breaker
+        if token_id:
+            is_tripped, trip_reason = token_circuit_breaker.is_tripped(token_id)
+            if is_tripped:
+                return None
+
+        # Depth check
+        if token_id:
+            try:
+                depth_result = await depth_analyzer.check_depth(
+                    token_id=token_id,
+                    side="BUY",
+                    target_price=source_price,
+                    required_size_usd=source_price * copy_size,
+                    trade_context="copy_trader_realtime",
+                )
+                if not depth_result.has_sufficient_depth:
+                    token_circuit_breaker.trip_token(
+                        token_id, "insufficient_depth_realtime",
+                        {"available": depth_result.available_depth_usd},
+                    )
+                    return None
+            except Exception as e:
+                logger.error("Realtime depth check failed", error=str(e))
+
+        # Record in circuit breaker
+        if token_id:
+            token_circuit_breaker.record_trade(token_id, copy_size, source_price, "BUY")
+
+        # NO copy_delay — execute immediately for real-time
+        # Get current price to check slippage
+        try:
+            if token_id:
+                current_price = await polymarket_client.get_price(token_id, side="BUY")
+            else:
+                current_price = source_price
+        except Exception:
+            current_price = source_price
+
+        # Check slippage tolerance
+        if current_price > 0 and source_price > 0:
+            slippage_pct = abs(current_price - source_price) / source_price * 100
+            if slippage_pct > config.slippage_tolerance:
+                asyncio.create_task(
+                    self._record_copied_trade(
+                        config, trade_id, "", "", token_id, "BUY", "",
+                        source_price, source_size, event.timestamp,
+                        status="skipped",
+                        error=f"Slippage {slippage_pct:.1f}% exceeds tolerance {config.slippage_tolerance}%",
+                    )
+                )
+                return None
+
+        execution_price = current_price if current_price > 0 else source_price
+
+        # Execute the BUY in simulation
+        try:
+            sim_trade = await self._execute_sim_buy(
+                config.account_id,
+                market_id="",
+                market_question=f"RT copy: {event.tx_hash[:16]}",
+                token_id=token_id,
+                outcome="",
+                price=execution_price,
+                size=copy_size,
+                copied_from=config.source_wallet,
+            )
+
+            copied = await self._record_copied_trade(
+                config, trade_id, "", "",
+                token_id, "BUY", "",
+                source_price, source_size, event.timestamp,
+                status="executed",
+                executed_price=execution_price,
+                executed_size=copy_size,
+                simulation_trade_id=sim_trade.id,
+            )
+
+            # Update config stats
+            async with AsyncSessionLocal() as session:
+                db_config = await session.get(CopyTradingConfig, config.id)
+                if db_config:
+                    db_config.total_copied += 1
+                    db_config.successful_copies += 1
+                    db_config.total_buys_copied += 1
+                    await session.commit()
+
+            return copied
+
+        except Exception as e:
+            logger.error("Realtime copy BUY failed", error=str(e))
+            async with AsyncSessionLocal() as session:
+                db_config = await session.get(CopyTradingConfig, config.id)
+                if db_config:
+                    db_config.total_copied += 1
+                    db_config.failed_copies += 1
+                    await session.commit()
+            return None
+
     # ==================== TRADE DETECTION ====================
 
     async def _get_new_trades(
@@ -276,8 +603,12 @@ class CopyTradingService:
 
     async def _check_arb_match(self, trade: dict) -> Optional[ArbitrageOpportunity]:
         """Check if a trade matches a detected arbitrage opportunity (arb_only mode)."""
+        from models.database import AsyncSessionLocal
+        from services import shared_state
+
         trade_market = trade.get("market", trade.get("condition_id", ""))
-        opportunities = scanner.get_opportunities()
+        async with AsyncSessionLocal() as session:
+            opportunities = await shared_state.get_opportunities_from_db(session, None)
 
         for opp in opportunities:
             for market in opp.markets:
@@ -1158,7 +1489,10 @@ class CopyTradingService:
 
     async def _on_realtime_trade(self, event):
         """Callback for real-time WebSocket wallet trade events.
-        Triggers immediate copy processing for the source wallet."""
+
+        Uses DIRECT event processing (no HTTP API re-fetch) for <500ms latency.
+        The WalletTradeEvent already contains all trade data from on-chain parsing.
+        """
         if global_pause_state.is_paused:
             return
         try:
@@ -1175,11 +1509,37 @@ class CopyTradingService:
 
             if configs:
                 logger.info(
-                    "Real-time trade detected, processing immediately",
+                    "Real-time trade detected — direct processing",
                     wallet=wallet_address,
                     configs=len(configs),
+                    side=event.side,
+                    size=event.size,
+                    price=event.price,
+                    token_id=event.token_id,
+                    detection_latency_ms=round(event.latency_ms, 1),
+                    tx_hash=event.tx_hash,
                 )
-                tasks = [self._process_config(config) for config in configs]
+
+                # Broadcast detection event to frontend immediately
+                await self._broadcast_copy_event(
+                    "copy_trade_detected",
+                    {
+                        "wallet": wallet_address,
+                        "side": event.side,
+                        "token_id": event.token_id,
+                        "size": event.size,
+                        "price": event.price,
+                        "tx_hash": event.tx_hash,
+                        "detection_latency_ms": round(event.latency_ms, 1),
+                        "configs_count": len(configs),
+                    },
+                )
+
+                # Process directly from the event data — no HTTP API call
+                tasks = [
+                    self._process_realtime_event(event, config)
+                    for config in configs
+                ]
                 await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error("Error handling real-time trade event", error=str(e))

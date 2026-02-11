@@ -96,6 +96,24 @@ if (-not (Test-Path "data")) {
     New-Item -ItemType Directory -Path "data" | Out-Null
 }
 
+# Write setup fingerprint so run.ps1 can detect drift and auto-rerun setup.
+function Get-HashOrMissing {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return "missing" }
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+$stamp = @{
+    python_version = (python -c "import platform; print(platform.python_version())")
+    requirements_sha256 = Get-HashOrMissing "backend\requirements.txt"
+    requirements_trading_sha256 = Get-HashOrMissing "backend\requirements-trading.txt"
+    package_json_sha256 = Get-HashOrMissing "frontend\package.json"
+    package_lock_sha256 = Get-HashOrMissing "frontend\package-lock.json"
+}
+
+$stamp | ConvertTo-Json | Set-Content -Path ".setup-stamp.json" -Encoding UTF8
+Write-Host "Wrote .setup-stamp.json"
+
 Write-Host ""
 Write-Host "=========================================" -ForegroundColor Green
 Write-Host "  Setup Complete!" -ForegroundColor Green

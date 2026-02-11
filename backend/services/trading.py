@@ -621,6 +621,16 @@ class TradingService:
             position_usd = size_usd / len(valid_positions)
             shares = position_usd / price
 
+            # Crypto 15-min markets: use maker mode to avoid taker fees
+            # and earn rebates.  Place at best_bid (or 1 tick below ask)
+            # to sit on the book as a maker order.
+            if position.get("_maker_mode"):
+                maker_price = position.get("_maker_price", price)
+                # Round down to tick size (0.01 for crypto markets)
+                maker_price = max(0.01, round(maker_price - 0.005, 2))
+                price = maker_price
+                shares = position_usd / price
+
             return await self.place_order(
                 token_id=token_id,
                 side=OrderSide.BUY,

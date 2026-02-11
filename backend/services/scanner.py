@@ -327,6 +327,31 @@ class ArbitrageScanner:
         plugin_strategies = plugin_loader.get_all_strategy_instances()
         return self.strategies + plugin_strategies
 
+    @staticmethod
+    def _strategy_key(strategy) -> str:
+        st = getattr(strategy, "strategy_type", "")
+        return st if isinstance(st, str) else getattr(st, "value", "")
+
+    async def _get_effective_strategies(self) -> list:
+        """Apply validation guardrails (demoted strategies are skipped)."""
+        all_strategies = self._get_all_strategies()
+        try:
+            from services.validation_service import validation_service
+
+            demoted = await validation_service.get_demoted_strategy_types()
+        except Exception:
+            demoted = set()
+        if not demoted:
+            return all_strategies
+
+        filtered = [
+            s for s in all_strategies if self._strategy_key(s) not in demoted
+        ]
+        skipped = len(all_strategies) - len(filtered)
+        if skipped > 0:
+            print(f"  Validation guardrails: skipped {skipped} demoted strategies")
+        return filtered
+
     async def scan_once(self) -> list[ArbitrageOpportunity]:
         """Perform a single scan for arbitrage opportunities"""
         print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
@@ -507,7 +532,7 @@ class ArbitrageScanner:
                     None, strategy.detect, events, markets_to_evaluate, prices
                 )
 
-            all_strategies = self._get_all_strategies()
+            all_strategies = await self._get_effective_strategies()
             results = await asyncio.gather(
                 *[_run_strategy(s) for s in all_strategies],
                 return_exceptions=True,
@@ -755,7 +780,7 @@ class ArbitrageScanner:
                     merged_prices,
                 )
 
-            all_strategies = self._get_all_strategies()
+            all_strategies = await self._get_effective_strategies()
             results = await asyncio.gather(
                 *[_run_strategy(s) for s in all_strategies],
                 return_exceptions=True,

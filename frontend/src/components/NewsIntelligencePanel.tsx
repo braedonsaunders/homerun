@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Newspaper,
   RefreshCw,
@@ -18,12 +18,15 @@ import {
   Radio,
   Layers,
   Eye,
+  Filter,
+  Loader2,
+  ChevronRight,
+  X,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
   getNewsFeedStatus,
   getNewsArticles,
-  searchNewsArticles,
   triggerNewsFetch,
   clearNewsArticles,
   getNewsEdgesCached,
@@ -31,11 +34,19 @@ import {
   analyzeNewsEdgeSingle,
   runNewsMatching,
   runForecastCommittee,
+  getNewsWorkflowStatus,
+  getNewsWorkflowFindings,
+  getNewsWorkflowIntents,
+  runNewsWorkflow,
+  skipNewsWorkflowIntent,
   NewsArticle,
   NewsEdge,
   NewsMatch,
   ForecastResult,
+  NewsWorkflowFinding,
+  NewsTradeIntent,
 } from '../services/api'
+import NewsWorkflowSettingsFlyout from './NewsWorkflowSettingsFlyout'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Card } from './ui/card'
@@ -43,12 +54,17 @@ import { Input } from './ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 // ─── Sub-view types ─────────────────────────────────────────
-type SubView = 'edges' | 'feed' | 'matches'
+type SubView = 'edges' | 'feed' | 'matches' | 'workflow'
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function timeAgo(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000)
+function timeAgo(dateStr: string | null | undefined): string {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const ms = date.getTime()
+  if (isNaN(ms)) return ''
+  const seconds = Math.floor((Date.now() - ms) / 1000)
+  if (seconds < 0) return 'just now'
   if (seconds < 60) return `${seconds}s ago`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
@@ -213,6 +229,7 @@ function EdgeCard({ edge, onForecast }: { edge: NewsEdge; onForecast: (edge: New
 // ─── Article Row ────────────────────────────────────────────
 
 function ArticleRow({ article }: { article: NewsArticle }) {
+  const timeStr = timeAgo(article.published) || timeAgo(article.fetched_at)
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30 rounded-lg transition-colors group">
       <div className="shrink-0 text-base">{CATEGORY_ICONS[article.category] || '📰'}</div>
@@ -230,8 +247,8 @@ function ArticleRow({ article }: { article: NewsArticle }) {
           <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", SOURCE_COLORS[article.feed_source] || 'bg-muted/50 text-muted-foreground border-border')}>
             {article.feed_source.replace('_', ' ')}
           </Badge>
-          <span className="text-[10px] text-muted-foreground">{article.source}</span>
-          {article.published && <span className="text-[10px] text-muted-foreground font-data">{timeAgo(article.published)}</span>}
+          <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">{article.source}</span>
+          {timeStr && <span className="text-[10px] text-muted-foreground font-data shrink-0">{timeStr}</span>}
         </div>
       </div>
       <div className="shrink-0 flex items-center gap-2">
@@ -398,6 +415,159 @@ function ForecastPanel({ result, onClose }: { result: ForecastResult; onClose: (
   )
 }
 
+// ─── Finding Card ───────────────────────────────────────────
+
+function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
+  const [expanded, setExpanded] = useState(false)
+  const isBuyYes = finding.direction === 'buy_yes'
+  const eventGraph = finding.event_graph as Record<string, unknown> | null
+
+  return (
+    <Card className="overflow-hidden border-border/40 hover:border-border/80 hover:shadow-lg hover:shadow-black/20 transition-all group">
+      <div className={cn('h-0.5', finding.actionable ? (finding.edge_percent >= 15 ? 'bg-green-400' : 'bg-yellow-400') : 'bg-muted')} />
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className={cn(
+              "text-[10px] font-semibold gap-1",
+              isBuyYes ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20"
+            )}>
+              {isBuyYes ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+              {isBuyYes ? 'BUY YES' : 'BUY NO'}
+            </Badge>
+            {finding.actionable && (
+              <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">Actionable</Badge>
+            )}
+            {eventGraph?.event_type && (
+              <Badge variant="outline" className="text-[10px] bg-violet-500/10 text-violet-400 border-violet-500/20">
+                {String(eventGraph.event_type).replace('_', ' ')}
+              </Badge>
+            )}
+          </div>
+          <div className="text-right shrink-0">
+            <span className={cn("text-lg font-bold font-data", edgeColor(finding.edge_percent))}>
+              {finding.edge_percent.toFixed(1)}%
+            </span>
+            <span className="text-[10px] text-muted-foreground block">edge</span>
+          </div>
+        </div>
+
+        <p className="text-sm font-medium text-foreground line-clamp-2 mb-2">{finding.market_question}</p>
+
+        <div className="flex items-start gap-2 mb-3">
+          <Newspaper className="w-3.5 h-3.5 text-orange-400 shrink-0 mt-0.5" />
+          <a href={finding.article_url} target="_blank" rel="noopener noreferrer"
+            className="text-xs text-muted-foreground hover:text-orange-400 transition-colors line-clamp-1">
+            {finding.article_title}
+            <ExternalLink className="w-3 h-3 inline ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+          </a>
+        </div>
+
+        <div className="grid grid-cols-5 gap-1.5 mb-3">
+          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Mkt</div>
+            <div className="text-xs font-data font-semibold">{(finding.market_price * 100).toFixed(0)}c</div>
+          </div>
+          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Model</div>
+            <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>{(finding.model_probability * 100).toFixed(0)}c</div>
+          </div>
+          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Conf</div>
+            <div className={cn("text-xs font-data font-semibold", confidenceColor(finding.confidence))}>{(finding.confidence * 100).toFixed(0)}%</div>
+          </div>
+          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">KW</div>
+            <div className="text-xs font-data font-semibold text-blue-400">{(finding.keyword_score * 100).toFixed(0)}</div>
+          </div>
+          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Sem</div>
+            <div className="text-xs font-data font-semibold text-blue-400">{(finding.semantic_score * 100).toFixed(0)}</div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <a href={finding.article_url} target="_blank" rel="noopener noreferrer">
+            <Button variant="outline" size="sm" className="text-xs h-7 gap-1 bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-400">
+              <ExternalLink className="w-3 h-3" /> Source
+            </Button>
+          </a>
+          <Button variant="ghost" size="sm" className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
+            onClick={() => setExpanded(!expanded)}>
+            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </Button>
+        </div>
+
+        {expanded && (
+          <div className="mt-3 pt-3 border-t border-border/30 space-y-2">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">AI Reasoning</div>
+            <p className="text-xs text-muted-foreground leading-relaxed">{finding.reasoning}</p>
+            {eventGraph && (
+              <div>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 mt-2">Event Graph</div>
+                <div className="text-[10px] text-muted-foreground/80 font-mono bg-muted/20 p-2 rounded-lg">
+                  {eventGraph.actors && Array.isArray(eventGraph.actors) && (eventGraph.actors as string[]).length > 0 && (
+                    <div>Actors: {(eventGraph.actors as string[]).join(', ')}</div>
+                  )}
+                  {eventGraph.action && <div>Action: {String(eventGraph.action)}</div>}
+                  {eventGraph.key_entities && Array.isArray(eventGraph.key_entities) && (eventGraph.key_entities as string[]).length > 0 && (
+                    <div>Entities: {(eventGraph.key_entities as string[]).join(', ')}</div>
+                  )}
+                  {eventGraph.region && <div>Region: {String(eventGraph.region)}</div>}
+                </div>
+              </div>
+            )}
+            <div className="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+              <span className="font-data">Rerank: {(finding.rerank_score * 100).toFixed(0)}%</span>
+              <span className="font-data">{timeAgo(finding.created_at)}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// ─── Intent Row ─────────────────────────────────────────────
+
+function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; onSkip: (id: string) => void; isSkipping: boolean }) {
+  const isBuyYes = intent.direction === 'buy_yes'
+  const statusColors: Record<string, string> = {
+    pending: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+    submitted: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+    executed: 'bg-green-500/10 text-green-400 border-green-500/20',
+    skipped: 'bg-muted/50 text-muted-foreground border-border',
+    expired: 'bg-red-500/10 text-red-400 border-red-500/20',
+  }
+
+  return (
+    <div className="px-3 py-3 hover:bg-muted/30 rounded-lg transition-colors">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-foreground line-clamp-1">{intent.market_question}</p>
+          <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
+            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", isBuyYes ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20')}>
+              {isBuyYes ? 'BUY YES' : 'BUY NO'}
+            </Badge>
+            <span className="font-data">Edge: {intent.edge_percent.toFixed(1)}%</span>
+            <span className="font-data">Size: ${intent.suggested_size_usd.toFixed(0)}</span>
+            <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", statusColors[intent.status] || '')}>
+              {intent.status}
+            </Badge>
+            <span className="font-data">{timeAgo(intent.created_at)}</span>
+          </div>
+        </div>
+        {intent.status === 'pending' && (
+          <Button variant="outline" size="sm" className="text-xs h-7 gap-1 text-muted-foreground hover:text-foreground"
+            onClick={() => onSkip(intent.id)} disabled={isSkipping}>
+            <X className="w-3 h-3" /> Skip
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Component ─────────────────────────────────────────
 
 interface NewsIntelligencePanelProps {
@@ -406,12 +576,61 @@ interface NewsIntelligencePanelProps {
 
 export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntelligencePanelProps = {}) {
   const queryClient = useQueryClient()
-  const [subView, setSubView] = useState<SubView>(initialSearchQuery ? 'feed' : 'matches')
+  const [subView, setSubView] = useState<SubView>(initialSearchQuery ? 'feed' : 'workflow')
   const [searchFilter, setSearchFilter] = useState(initialSearchQuery || '')
   const [edgeSortBy, setEdgeSortBy] = useState<'edge' | 'confidence' | 'similarity'>('edge')
+  const [feedSourceFilter, setFeedSourceFilter] = useState<string | null>(null)
+
+  // Sync initialSearchQuery prop changes (useState only uses it on mount)
+  useEffect(() => {
+    if (initialSearchQuery !== undefined) {
+      setSearchFilter(initialSearchQuery)
+      if (initialSearchQuery) setSubView('feed')
+    }
+  }, [initialSearchQuery])
   const [forecastResult, setForecastResult] = useState<ForecastResult | null>(null)
   const [, setForecastingEdge] = useState<string | null>(null)
   const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null)
+  const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
+
+  // ─── Workflow Queries ─────────────────────────────────────
+
+  const { data: workflowStatus } = useQuery({
+    queryKey: ['news-workflow-status'],
+    queryFn: getNewsWorkflowStatus,
+    refetchInterval: 30000,
+  })
+
+  const { data: workflowFindingsData, isLoading: findingsLoading } = useQuery({
+    queryKey: ['news-workflow-findings'],
+    queryFn: () => getNewsWorkflowFindings({ actionable_only: false, max_age_hours: 24, limit: 100 }),
+    refetchInterval: 30000,
+    enabled: subView === 'workflow',
+  })
+
+  const { data: workflowIntentsData, isLoading: intentsLoading } = useQuery({
+    queryKey: ['news-workflow-intents'],
+    queryFn: () => getNewsWorkflowIntents({ limit: 50 }),
+    refetchInterval: 15000,
+    enabled: subView === 'workflow',
+  })
+
+  const runWorkflowMutation = useMutation({
+    mutationFn: runNewsWorkflow,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+    },
+  })
+
+  const skipIntentMutation = useMutation({
+    mutationFn: skipNewsWorkflowIntent,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+    },
+  })
 
   // ─── Queries ──────────────────────────────────────────────
 
@@ -422,9 +641,28 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     refetchInterval: 60000, // fallback (WS push refreshes instantly)
   })
 
-  const { data: articlesData, isLoading: articlesLoading } = useQuery({
-    queryKey: ['news-articles'],
-    queryFn: () => getNewsArticles({ max_age_hours: 168, limit: 200 }),
+  // Paginated article fetching — load 100 at a time with "Load More"
+  const PAGE_SIZE = 100
+  const {
+    data: articlesPages,
+    isLoading: articlesLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['news-articles', feedSourceFilter],
+    queryFn: ({ pageParam = 0 }) =>
+      getNewsArticles({
+        max_age_hours: 168,
+        limit: PAGE_SIZE,
+        offset: pageParam,
+        source: feedSourceFilter || undefined,
+      }),
+    getNextPageParam: (lastPage, _allPages, lastPageParam) => {
+      if (lastPage.has_more) return (lastPageParam as number) + PAGE_SIZE
+      return undefined
+    },
+    initialPageParam: 0,
     refetchInterval: 120000,
   })
 
@@ -451,14 +689,16 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   const fetchMutation = useMutation({
     mutationFn: triggerNewsFetch,
     onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
     },
   })
 
   // Manual matching trigger (avoids infinite spinner)
+  // Use 168h to match ALL articles in the feed, and higher top_k for more matches
   const runMatchingMutation = useMutation({
-    mutationFn: () => runNewsMatching({ max_age_hours: 24, top_k: 5 }),
+    mutationFn: () => runNewsMatching({ max_age_hours: 168, top_k: 10 }),
     onMutate: () => setMatchesLoading(true),
     onSuccess: (data) => {
       setMatchesData(data)
@@ -471,13 +711,16 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     mutationFn: clearNewsArticles,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
+      queryClient.removeQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
       setMatchesData(null)
+      setSearchFilter('')
+      setFeedSourceFilter(null)
     },
   })
 
   const edgeRefreshMutation = useMutation({
-    mutationFn: () => detectNewsEdges({ max_age_hours: 12, top_k: 5 }),
+    mutationFn: () => detectNewsEdges({ max_age_hours: 168, top_k: 10 }),
     onSuccess: (data) => {
       queryClient.setQueryData(['news-edges'], data)
     },
@@ -524,7 +767,14 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
 
   // ─── Derived data ─────────────────────────────────────────
 
-  const articles = articlesData?.articles || []
+  // Flatten paginated articles
+  const articles = useMemo(
+    () => articlesPages?.pages.flatMap(p => p.articles) || [],
+    [articlesPages],
+  )
+  const articlesTotalCount = articlesPages?.pages[0]?.total ?? 0
+  const articlesLoadedCount = articles.length
+
   const edges = edgesData?.edges || []
   const matches = matchesData?.matches || []
 
@@ -568,6 +818,12 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   // ─── Source breakdown ─────────────────────────────────────
 
   const sourceBreakdown = feedStatus?.sources || {}
+  const sourceKeys = useMemo(() => Object.keys(sourceBreakdown), [sourceBreakdown])
+
+  // Handle "Load More" for infinite scroll
+  const handleLoadMore = useCallback(() => {
+    if (hasNextPage && !isFetchingNextPage) fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage])
 
   return (
     <div className="max-w-[1600px] mx-auto">
@@ -715,8 +971,10 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
         >
           <Newspaper className="w-3.5 h-3.5" />
           Feed
-          {articles.length > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">{articles.length}</span>
+          {articlesTotalCount > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">
+              {articlesLoadedCount < articlesTotalCount ? `${articlesLoadedCount}/${articlesTotalCount}` : articlesTotalCount}
+            </span>
           )}
         </Button>
         <Button
@@ -736,6 +994,25 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 text-[10px] font-data">{matches.length}</span>
           )}
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setSubView('workflow')}
+          className={cn(
+            "gap-1.5 text-xs h-8",
+            subView === 'workflow'
+              ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
+              : "bg-card text-muted-foreground hover:text-foreground border-border"
+          )}
+        >
+          <Target className="w-3.5 h-3.5" />
+          Workflow
+          {(workflowStatus?.last_findings_count ?? 0) > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-400 text-[10px] font-data">
+              {workflowStatus?.last_findings_count}
+            </span>
+          )}
+        </Button>
 
         <div className="ml-auto flex items-center gap-2">
           <div className="relative">
@@ -745,8 +1022,16 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
               placeholder="Filter..."
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              className="pl-8 w-48 h-8 text-xs bg-card border-border"
+              className={cn("pl-8 h-8 text-xs bg-card border-border", searchFilter ? "w-56 pr-8" : "w-48")}
             />
+            {searchFilter && (
+              <button
+                onClick={() => setSearchFilter('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {subView === 'edges' && (
@@ -797,10 +1082,40 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           ) : filteredEdges.length === 0 ? (
             <div className="text-center py-16">
               <Zap className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">No news edges analyzed yet</p>
-              <p className="text-sm text-muted-foreground/70 mt-1">
-                Go to Matches and click "Analyze" on individual matches, or click "Analyze All" to run the full pipeline
+              <p className="text-muted-foreground">
+                {searchFilter ? 'No edges match your filter' : 'No news edges analyzed yet'}
               </p>
+              {!searchFilter ? (
+                <>
+                  <p className="text-sm text-muted-foreground/70 mt-1 mb-4">
+                    Edge detection uses AI to estimate where news creates market mispricings.
+                    <br />
+                    Run matching first, then analyze matches — or click "Analyze All" for the full pipeline.
+                  </p>
+                  <div className="flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-8 gap-1.5 bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20 hover:text-purple-400"
+                      onClick={() => edgeRefreshMutation.mutate()}
+                      disabled={edgeRefreshMutation.isPending}
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      Analyze All (Full Pipeline)
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1 mt-3"
+                  onClick={() => setSearchFilter('')}
+                >
+                  <X className="w-3 h-3" />
+                  Clear Filter
+                </Button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
@@ -819,6 +1134,44 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
       {/* ─── Feed View ───────────────────────────────────────── */}
       {subView === 'feed' && (
         <>
+          {/* Source filter tabs */}
+          {sourceKeys.length > 0 && (
+            <div className="flex items-center gap-1.5 mb-3">
+              <Filter className="w-3 h-3 text-muted-foreground" />
+              <button
+                onClick={() => setFeedSourceFilter(null)}
+                className={cn(
+                  'px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors',
+                  !feedSourceFilter ? 'bg-orange-500/20 text-orange-400' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                )}
+              >
+                All ({feedStatus?.article_count ?? 0})
+              </button>
+              {sourceKeys.map(src => (
+                <button
+                  key={src}
+                  onClick={() => setFeedSourceFilter(feedSourceFilter === src ? null : src)}
+                  className={cn(
+                    'px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors',
+                    feedSourceFilter === src ? 'bg-orange-500/20 text-orange-400' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                  )}
+                >
+                  {src.replace('_', ' ')} ({sourceBreakdown[src] as number})
+                </button>
+              ))}
+              {feedSourceFilter && (
+                <button
+                  onClick={() => setFeedSourceFilter(null)}
+                  className="text-muted-foreground hover:text-foreground transition-colors ml-1"
+                  title="Clear filter"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Articles list */}
           {articlesLoading ? (
             <div className="flex items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-orange-400" />
@@ -826,17 +1179,78 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           ) : filteredArticles.length === 0 ? (
             <div className="text-center py-16">
               <Newspaper className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">No articles in feed</p>
-              <p className="text-sm text-muted-foreground/70 mt-1">
-                Click "Fetch News" to ingest articles from Google News, GDELT, and custom RSS feeds
+              <p className="text-muted-foreground">
+                {searchFilter ? 'No articles match your filter' : 'No articles in feed'}
               </p>
+              <p className="text-sm text-muted-foreground/70 mt-1">
+                {searchFilter
+                  ? 'Try a different search term or clear the filter'
+                  : 'Click "Fetch News" to ingest articles from Google News, GDELT, and custom RSS feeds'}
+              </p>
+              {searchFilter && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1 mt-3"
+                  onClick={() => setSearchFilter('')}
+                >
+                  <X className="w-3 h-3" />
+                  Clear Filter
+                </Button>
+              )}
             </div>
           ) : (
-            <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
-              {filteredArticles.map((article) => (
-                <ArticleRow key={article.article_id} article={article} />
-              ))}
-            </div>
+            <>
+              {/* Count summary */}
+              <div className="flex items-center justify-between mb-2 text-xs text-muted-foreground">
+                <span>
+                  Showing {filteredArticles.length}
+                  {searchFilter ? ` of ${articlesLoadedCount} loaded` : ''}
+                  {articlesTotalCount > articlesLoadedCount ? ` (${articlesTotalCount} total)` : ''}
+                </span>
+                {articles.length > 0 && articles[0].published && (
+                  <span className="font-data">Latest: {timeAgo(articles[0].published) || timeAgo(articles[0].fetched_at)}</span>
+                )}
+              </div>
+
+              <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
+                {filteredArticles.map((article) => (
+                  <ArticleRow key={article.article_id} article={article} />
+                ))}
+              </div>
+
+              {/* Load More button */}
+              {hasNextPage && !searchFilter && (
+                <div className="flex justify-center mt-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs h-8 gap-1.5 px-6"
+                    onClick={handleLoadMore}
+                    disabled={isFetchingNextPage}
+                  >
+                    {isFetchingNextPage ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                        Load More ({articlesTotalCount - articlesLoadedCount} remaining)
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
+
+              {/* All loaded indicator */}
+              {!hasNextPage && articlesLoadedCount > PAGE_SIZE && !searchFilter && (
+                <div className="text-center text-xs text-muted-foreground/60 mt-3">
+                  All {articlesTotalCount} articles loaded
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -853,29 +1267,84 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           ) : filteredMatches.length === 0 ? (
             <div className="text-center py-16">
               <Layers className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">No article-market matches yet</p>
-              <p className="text-sm text-muted-foreground/70 mt-1 mb-4">
-                Click "Run Matching" to embed articles and find market matches. Then click "Analyze" on any match to run LLM edge detection.
+              <p className="text-muted-foreground">
+                {searchFilter ? 'No matches for your filter' : 'No article-market matches yet'}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs h-8 gap-1.5 bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-400"
-                onClick={() => runMatchingMutation.mutate()}
-                disabled={runMatchingMutation.isPending}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                Run Matching
-              </Button>
+              {!searchFilter && (
+                <>
+                  <p className="text-sm text-muted-foreground/70 mt-1 mb-1">
+                    Matching embeds all articles and finds semantic matches to active markets.
+                  </p>
+                  <p className="text-xs text-muted-foreground/50 mb-4">
+                    {feedStatus?.article_count
+                      ? `${feedStatus.article_count} articles available • `
+                      : 'No articles yet — fetch news first • '}
+                    {feedStatus?.matcher?.markets_indexed
+                      ? `${feedStatus.matcher.markets_indexed} markets indexed`
+                      : 'Markets indexed on first run'}
+                  </p>
+                  <div className="flex items-center justify-center gap-2">
+                    {!feedStatus?.article_count && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs h-8 gap-1.5 bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20 hover:text-orange-400"
+                        onClick={() => fetchMutation.mutate()}
+                        disabled={fetchMutation.isPending}
+                      >
+                        {fetchMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Newspaper className="w-3.5 h-3.5" />}
+                        Fetch News First
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-8 gap-1.5 bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-400"
+                      onClick={() => runMatchingMutation.mutate()}
+                      disabled={runMatchingMutation.isPending || !feedStatus?.article_count}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      Run Matching
+                    </Button>
+                  </div>
+                </>
+              )}
+              {searchFilter && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1 mt-3"
+                  onClick={() => setSearchFilter('')}
+                >
+                  <X className="w-3 h-3" />
+                  Clear Filter
+                </Button>
+              )}
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-3 mb-3 text-xs text-muted-foreground">
-                <span>{matchesData?.total_articles ?? 0} articles</span>
-                <span className="text-border">|</span>
-                <span>{matchesData?.total_markets ?? 0} markets</span>
-                <span className="text-border">|</span>
-                <span>{matchesData?.matcher_mode === 'semantic' ? 'Semantic (ML)' : 'TF-IDF'} matching</span>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  <span>{matchesData?.total_articles ?? 0} articles</span>
+                  <span className="text-border">|</span>
+                  <span>{matchesData?.total_markets ?? 0} markets</span>
+                  <span className="text-border">|</span>
+                  <span>{filteredMatches.length} matches</span>
+                  <span className="text-border">|</span>
+                  <Badge variant="outline" className="text-[9px] h-4 px-1.5 bg-blue-500/10 text-blue-400 border-blue-500/20">
+                    {matchesData?.matcher_mode === 'semantic' ? 'Semantic (ML)' : 'TF-IDF'}
+                  </Badge>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1 text-blue-400 border-blue-500/20 hover:bg-blue-500/10 hover:text-blue-400"
+                  onClick={() => runMatchingMutation.mutate()}
+                  disabled={runMatchingMutation.isPending}
+                >
+                  <RefreshCw className={cn("w-3 h-3", runMatchingMutation.isPending && "animate-spin")} />
+                  Re-run
+                </Button>
               </div>
               <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
                 {filteredMatches.map((match, i) => (
@@ -891,6 +1360,112 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           )}
         </>
       )}
+
+      {/* ─── Workflow View ─────────────────────────────────────── */}
+      {subView === 'workflow' && (
+        <>
+          {/* Workflow Status Bar */}
+          <div className="flex items-center justify-between mb-4 p-3 bg-card/40 rounded-xl border border-border/30">
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <div className={cn("w-2 h-2 rounded-full", workflowStatus?.running ? "bg-green-400 animate-pulse" : "bg-muted")} />
+                <span>{workflowStatus?.running ? 'Running' : 'Stopped'}</span>
+              </div>
+              {workflowStatus?.last_run && (
+                <span className="font-data">Last: {timeAgo(workflowStatus.last_run)}</span>
+              )}
+              <span className="font-data">Cycles: {workflowStatus?.cycle_count ?? 0}</span>
+              <span className="font-data">Markets: {workflowStatus?.market_index?.market_count ?? 0}</span>
+              {(workflowStatus?.pending_intents ?? 0) > 0 && (
+                <Badge variant="outline" className="text-[9px] bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
+                  {workflowStatus?.pending_intents} pending intents
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
+                onClick={() => runWorkflowMutation.mutate()} disabled={runWorkflowMutation.isPending}>
+                {runWorkflowMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                Run Workflow
+              </Button>
+              <Button variant="ghost" size="sm" className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
+                onClick={() => setWorkflowSettingsOpen(true)} title="Workflow Settings">
+                <Filter className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Trade Intents */}
+          {(workflowIntentsData?.intents?.length ?? 0) > 0 && (
+            <div className="mb-4">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Target className="w-3 h-3 text-purple-400" />
+                Trade Intents ({workflowIntentsData?.intents.length})
+              </div>
+              <div className="bg-card/40 rounded-xl border border-border/30 divide-y divide-border/20">
+                {workflowIntentsData?.intents.map((intent) => (
+                  <IntentRow
+                    key={intent.id}
+                    intent={intent}
+                    onSkip={(id) => skipIntentMutation.mutate(id)}
+                    isSkipping={skipIntentMutation.isPending}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Findings */}
+          {findingsLoading || runWorkflowMutation.isPending ? (
+            <div className="flex flex-col items-center justify-center py-16">
+              <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mb-3" />
+              <p className="text-sm text-muted-foreground">
+                {runWorkflowMutation.isPending ? 'Running workflow pipeline...' : 'Loading findings...'}
+              </p>
+              {runWorkflowMutation.isPending && (
+                <p className="text-xs text-muted-foreground/60 mt-1">
+                  Event extraction, hybrid retrieval, LLM reranking, edge estimation...
+                </p>
+              )}
+            </div>
+          ) : (workflowFindingsData?.findings?.length ?? 0) === 0 ? (
+            <div className="text-center py-16">
+              <Target className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
+              <p className="text-muted-foreground">No workflow findings yet</p>
+              <p className="text-sm text-muted-foreground/70 mt-1 mb-4">
+                The workflow pipeline extracts events from articles, matches them to markets using
+                hybrid retrieval, reranks with LLM, and estimates edges.
+              </p>
+              <Button variant="outline" size="sm"
+                className="text-xs h-8 gap-1.5 bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20 hover:text-purple-400"
+                onClick={() => runWorkflowMutation.mutate()} disabled={runWorkflowMutation.isPending}>
+                <Zap className="w-3.5 h-3.5" /> Run First Workflow Cycle
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Zap className="w-3 h-3 text-green-400" />
+                Findings ({workflowFindingsData?.total ?? 0})
+                {workflowFindingsData?.findings.filter(f => f.actionable).length
+                  ? ` / ${workflowFindingsData.findings.filter(f => f.actionable).length} actionable`
+                  : ''}
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
+                {workflowFindingsData?.findings.map((finding) => (
+                  <FindingCard key={finding.id} finding={finding} />
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {/* ─── Workflow Settings Flyout ─────────────────────────── */}
+      <NewsWorkflowSettingsFlyout
+        isOpen={workflowSettingsOpen}
+        onClose={() => setWorkflowSettingsOpen(false)}
+      />
 
       {/* ─── Forecast Modal ──────────────────────────────────── */}
       {forecastResult && (

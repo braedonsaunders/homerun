@@ -175,6 +175,11 @@ class AutoTraderConfig:
         None  # LLM model override (None = default gpt-4o-mini)
     )
 
+    # News Workflow trade intent consumption
+    news_workflow_enabled: bool = True  # Consume pending intents from news workflow
+    news_workflow_min_edge: float = 10.0  # Min edge % to auto-trade a news intent
+    news_workflow_max_age_minutes: int = 120  # Skip intents older than this
+
     # LLM verification before trading: consult AI before executing trades
     llm_verify_trades: bool = False  # When True, run LLM check before each trade
     llm_verify_strategies: list[str] = field(
@@ -1304,6 +1309,147 @@ class AutoTrader:
 
         await self._process_opportunities(opportunities)
 
+        # Poll news workflow trade intents (independent pipeline)
+        if self.config.news_workflow_enabled:
+            try:
+                await self._poll_news_intents()
+            except Exception as e:
+                logger.debug("News intent polling error: %s", e)
+
+    async def _poll_news_intents(self):
+        """Poll pending trade intents from the news workflow and execute them.
+
+        Converts each intent into a synthetic ArbitrageOpportunity and routes
+        it through the existing _should_trade_opportunity + _execute_trade
+        pipeline, giving news findings full access to all safety systems.
+        """
+        from models.database import AsyncSessionLocal, NewsTradeIntent
+        from sqlalchemy import select
+        from datetime import timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=self.config.news_workflow_max_age_minutes
+        )
+
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(NewsTradeIntent)
+                    .where(NewsTradeIntent.status == "pending")
+                    .where(NewsTradeIntent.created_at >= cutoff)
+                    .order_by(NewsTradeIntent.edge_percent.desc())
+                    .limit(10)
+                )
+                intents = result.scalars().all()
+
+            if not intents:
+                return
+
+            for intent in intents:
+                if intent.edge_percent < self.config.news_workflow_min_edge:
+                    await self._mark_intent(intent.id, "skipped")
+                    continue
+
+                # Build synthetic ArbitrageOpportunity
+                opp = self._intent_to_opportunity(intent)
+                if opp is None:
+                    await self._mark_intent(intent.id, "skipped")
+                    continue
+
+                should_trade, reason = await self._should_trade_opportunity(opp)
+                if should_trade:
+                    await self._mark_intent(intent.id, "submitted")
+                    try:
+                        trade = await self._execute_trade(opp)
+                        status = "executed" if trade.status in ("open", "shadow") else "skipped"
+                        await self._mark_intent(intent.id, status)
+                    except Exception as e:
+                        logger.error("News intent execution failed: %s", e)
+                        await self._mark_intent(intent.id, "skipped")
+                else:
+                    await self._mark_intent(intent.id, "skipped")
+                    logger.debug("News intent skipped: %s", reason)
+
+        except Exception as e:
+            logger.debug("News intent polling error: %s", e)
+
+    def _intent_to_opportunity(self, intent) -> Optional[ArbitrageOpportunity]:
+        """Convert a NewsTradeIntent into a synthetic ArbitrageOpportunity."""
+        try:
+            if intent.direction == "buy_yes":
+                side = "YES"
+                entry_price = intent.entry_price or 0.5
+            else:
+                side = "NO"
+                entry_price = intent.entry_price or 0.5
+
+            if entry_price <= 0 or entry_price >= 1:
+                return None
+
+            expected_payout = intent.model_probability or 0.5
+            total_cost = entry_price
+            gross_profit = expected_payout - total_cost
+            fee = expected_payout * 0.02  # 2% winner fee
+            net_profit = gross_profit - fee
+            roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
+
+            position_size = intent.suggested_size_usd or 10.0
+
+            return ArbitrageOpportunity(
+                strategy=StrategyType.NEWS_EDGE,
+                title=f"News Intent: {intent.market_question[:60]}",
+                description=(
+                    f"News-driven {side} at ${entry_price:.2f} "
+                    f"(edge: {intent.edge_percent:.1f}%, "
+                    f"confidence: {intent.confidence:.0%})"
+                ),
+                total_cost=total_cost,
+                expected_payout=expected_payout,
+                gross_profit=gross_profit,
+                fee=fee,
+                net_profit=net_profit,
+                roi_percent=roi,
+                risk_score=0.5,  # News trades: moderate base risk
+                risk_factors=["News-driven directional bet"],
+                markets=[{
+                    "id": intent.market_id,
+                    "question": intent.market_question,
+                    "yes_price": intent.entry_price if intent.direction == "buy_yes" else (1.0 - (intent.entry_price or 0.5)),
+                    "no_price": (1.0 - (intent.entry_price or 0.5)) if intent.direction == "buy_yes" else intent.entry_price,
+                    "liquidity": 5000.0,
+                }],
+                min_liquidity=5000.0,
+                max_position_size=position_size,
+                positions_to_take=[{
+                    "action": "BUY",
+                    "outcome": side,
+                    "price": entry_price,
+                    "token_id": None,
+                }],
+            )
+        except Exception as e:
+            logger.debug("Failed to convert intent to opportunity: %s", e)
+            return None
+
+    async def _mark_intent(self, intent_id: str, status: str):
+        """Update a news trade intent's status in the DB."""
+        try:
+            from models.database import AsyncSessionLocal, NewsTradeIntent
+            from sqlalchemy import update
+
+            async with AsyncSessionLocal() as session:
+                await session.execute(
+                    update(NewsTradeIntent)
+                    .where(NewsTradeIntent.id == intent_id)
+                    .values(
+                        status=status,
+                        consumed_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+        except Exception as e:
+            logger.debug("Failed to mark intent %s as %s: %s", intent_id, status, e)
+
     def stop(self):
         """Stop the auto trader"""
         self._running = False
@@ -1426,6 +1572,10 @@ class AutoTrader:
             # LLM verification before trading
             "llm_verify_trades": self.config.llm_verify_trades,
             "llm_verify_strategies": self.config.llm_verify_strategies,
+            # News workflow
+            "news_workflow_enabled": self.config.news_workflow_enabled,
+            "news_workflow_min_edge": self.config.news_workflow_min_edge,
+            "news_workflow_max_age_minutes": self.config.news_workflow_max_age_minutes,
             # Scanner auto AI scoring (read from scanner singleton)
             "auto_ai_scoring": scanner.auto_ai_scoring,
         }

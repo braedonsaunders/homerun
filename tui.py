@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -78,6 +79,19 @@ Screen {
     color: #888888;
     text-align: center;
     padding: 0 0 1 0;
+}
+
+/* ---- Action buttons ---- */
+#action-bar {
+    layout: horizontal;
+    height: 3;
+    padding: 0 2;
+    margin: 0 1 1 1;
+}
+
+#action-bar Button {
+    margin: 0 1 0 0;
+    min-width: 14;
 }
 
 /* ---- Service status bar ---- */
@@ -299,34 +313,60 @@ TabPane {
 # ---------------------------------------------------------------------------
 def kill_port(port: int) -> None:
     """Kill any process listening on the given port."""
-    try:
-        result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        pids = result.stdout.strip()
-        if pids:
-            for pid_str in pids.split("\n"):
-                pid = int(pid_str.strip())
-                if pid == os.getpid():
-                    continue
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            time.sleep(0.5)
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
+    if sys.platform == "win32":
         try:
-            subprocess.run(
-                ["fuser", "-k", f"{port}/tcp"],
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True,
+                text=True,
                 timeout=5,
             )
+            for line in result.stdout.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = int(parts[-1])
+                    if pid == os.getpid() or pid == 0:
+                        continue
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True,
+                            timeout=5,
+                        )
+                    except Exception:
+                        pass
             time.sleep(0.5)
-        except Exception:
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
             pass
+    else:
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pids = result.stdout.strip()
+            if pids:
+                for pid_str in pids.split("\n"):
+                    pid = int(pid_str.strip())
+                    if pid == os.getpid():
+                        continue
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                time.sleep(0.5)
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
+            try:
+                subprocess.run(
+                    ["fuser", "-k", f"{port}/tcp"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                time.sleep(0.5)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +474,7 @@ class HomerunApp(App):
     ]
 
     # Process handles
+    scanner_worker_proc: Optional[subprocess.Popen] = None
     backend_proc: Optional[subprocess.Popen] = None
     frontend_proc: Optional[subprocess.Popen] = None
 
@@ -463,6 +504,8 @@ class HomerunApp(App):
         self._shutting_down = False
         # Guard against starting frontend twice (race between worker thread and @work)
         self._frontend_starting = False
+        # Prevent concurrent restart/update operations.
+        self._service_op_in_progress = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -480,6 +523,9 @@ class HomerunApp(App):
             "Autonomous Prediction Market Trading Platform",
             id="subtitle",
         )
+        with Horizontal(id="action-bar"):
+            yield Button("Restart", id="restart-btn", variant="warning")
+            yield Button("Update", id="update-btn", variant="success")
 
         # Service status bar
         with Horizontal(id="status-bar"):
@@ -850,6 +896,169 @@ class HomerunApp(App):
             except Exception:
                 pass
 
+        elif btn_id == "restart-btn":
+            self._restart_services()
+
+        elif btn_id == "update-btn":
+            self._update_and_restart()
+
+    def _set_action_buttons_enabled(self, enabled: bool) -> None:
+        for button_id in ("restart-btn", "update-btn"):
+            try:
+                self.query_one(f"#{button_id}", Button).disabled = not enabled
+            except Exception:
+                pass
+
+    @work(thread=True)
+    def _restart_services(self) -> None:
+        if self._service_op_in_progress:
+            self.call_from_thread(
+                self.notify, "A service operation is already running.", severity="warning"
+            )
+            return
+        self._service_op_in_progress = True
+        self.call_from_thread(self._set_action_buttons_enabled, False)
+        self.call_from_thread(
+            self.notify, "Restarting backend/frontend services...", timeout=2
+        )
+        self._log_activity("[yellow]Restart requested[/]")
+        self._enqueue_log(">>> Restarting services...", source="SYSTEM", level="INFO")
+        self._frontend_starting = False
+        self._kill_children()
+        kill_port(BACKEND_PORT)
+        kill_port(FRONTEND_PORT)
+        self._start_services()
+        self._service_op_in_progress = False
+        self.call_from_thread(self._set_action_buttons_enabled, True)
+
+    @work(thread=True)
+    def _update_and_restart(self) -> None:
+        if self._service_op_in_progress:
+            self.call_from_thread(
+                self.notify, "A service operation is already running.", severity="warning"
+            )
+            return
+        self._service_op_in_progress = True
+        self.call_from_thread(self._set_action_buttons_enabled, False)
+        self.call_from_thread(self.notify, "Updating project...", timeout=2)
+        self._log_activity("[yellow]Update requested[/]")
+        self._enqueue_log(">>> Running git pull --ff-only...", source="SYSTEM", level="INFO")
+
+        if shutil.which("git") is None:
+            self._enqueue_log("ERROR: git is not available on PATH.", source="SYSTEM", level="ERROR")
+            self.call_from_thread(
+                self.notify, "git is not available on PATH.", severity="error", timeout=4
+            )
+            self._service_op_in_progress = False
+            self.call_from_thread(self._set_action_buttons_enabled, True)
+            return
+
+        try:
+            pull_result = subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            for line in (pull_result.stdout or "").splitlines():
+                self._enqueue_log(line, source="SYSTEM", level="INFO")
+            for line in (pull_result.stderr or "").splitlines():
+                self._enqueue_log(line, source="SYSTEM", level="WARNING")
+            if pull_result.returncode != 0:
+                self._enqueue_log(
+                    "ERROR: git pull failed; aborting update/restart.",
+                    source="SYSTEM",
+                    level="ERROR",
+                )
+                self.call_from_thread(
+                    self.notify, "Update failed: git pull error.", severity="error", timeout=4
+                )
+                self._service_op_in_progress = False
+                self.call_from_thread(self._set_action_buttons_enabled, True)
+                return
+        except Exception as exc:
+            self._enqueue_log(
+                f"ERROR: git pull failed with exception: {exc}",
+                source="SYSTEM",
+                level="ERROR",
+            )
+            self.call_from_thread(
+                self.notify, "Update failed while running git pull.", severity="error", timeout=4
+            )
+            self._service_op_in_progress = False
+            self.call_from_thread(self._set_action_buttons_enabled, True)
+            return
+
+        setup_cmd: list[str]
+        if sys.platform == "win32":
+            setup_cmd = [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(PROJECT_ROOT / "setup.ps1"),
+            ]
+        else:
+            setup_cmd = ["bash", str(PROJECT_ROOT / "setup.sh")]
+
+        self._enqueue_log(">>> Running setup script...", source="SYSTEM", level="INFO")
+        try:
+            setup_proc = subprocess.Popen(
+                setup_cmd,
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert setup_proc.stdout is not None
+            for line in setup_proc.stdout:
+                msg = line.rstrip()
+                if msg:
+                    self._enqueue_log(msg, source="SYSTEM", level="INFO")
+            code = setup_proc.wait(timeout=900)
+            if code != 0:
+                self._enqueue_log(
+                    "ERROR: setup failed; services were not restarted.",
+                    source="SYSTEM",
+                    level="ERROR",
+                )
+                self.call_from_thread(
+                    self.notify, "Update failed during setup.", severity="error", timeout=4
+                )
+                self._service_op_in_progress = False
+                self.call_from_thread(self._set_action_buttons_enabled, True)
+                return
+        except Exception as exc:
+            self._enqueue_log(
+                f"ERROR: setup failed with exception: {exc}",
+                source="SYSTEM",
+                level="ERROR",
+            )
+            self.call_from_thread(
+                self.notify, "Update failed while running setup.", severity="error", timeout=4
+            )
+            self._service_op_in_progress = False
+            self.call_from_thread(self._set_action_buttons_enabled, True)
+            return
+
+        self._frontend_starting = False
+        self._kill_children()
+        kill_port(BACKEND_PORT)
+        kill_port(FRONTEND_PORT)
+        self._start_services()
+        self._enqueue_log(
+            ">>> Update complete. Services restarting...",
+            source="SYSTEM",
+            level="INFO",
+        )
+        self.call_from_thread(
+            self.notify, "Update complete. Restarting services...", timeout=3
+        )
+        self._service_op_in_progress = False
+        self.call_from_thread(self._set_action_buttons_enabled, True)
+
     @on(Select.Changed, "#log-level-select")
     def _on_level_changed(self, event: Select.Changed) -> None:
         self._level_filter = str(event.value)
@@ -865,10 +1074,14 @@ class HomerunApp(App):
         kill_port(FRONTEND_PORT)
 
         # Activate venv and start backend
-        venv_python = BACKEND_DIR / "venv" / "bin" / "python"
+        if sys.platform == "win32":
+            venv_python = BACKEND_DIR / "venv" / "Scripts" / "python.exe"
+        else:
+            venv_python = BACKEND_DIR / "venv" / "bin" / "python"
         if not venv_python.exists():
+            setup_cmd = ".\\setup.ps1" if sys.platform == "win32" else "./setup.sh"
             self._enqueue_log(
-                "ERROR: Virtual environment not found. Run ./setup.sh first.",
+                f"ERROR: Virtual environment not found. Run {setup_cmd} first.",
                 source="BACKEND",
                 level="ERROR",
             )
@@ -877,11 +1090,46 @@ class HomerunApp(App):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         # Add venv bin to PATH so uvicorn is found
-        venv_bin = str(BACKEND_DIR / "venv" / "bin")
+        if sys.platform == "win32":
+            venv_bin = str(BACKEND_DIR / "venv" / "Scripts")
+        else:
+            venv_bin = str(BACKEND_DIR / "venv" / "bin")
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
         env["VIRTUAL_ENV"] = str(BACKEND_DIR / "venv")
         # Default to INFO; the TUI level filter can show DEBUG if needed
         env.setdefault("LOG_LEVEL", "INFO")
+
+        # Start scanner worker (writes opportunities to DB; API reads from DB)
+        self._enqueue_log(
+            ">>> Starting scanner worker...", source="BACKEND", level="INFO"
+        )
+        try:
+            self.scanner_worker_proc = subprocess.Popen(
+                [
+                    str(venv_python),
+                    "-m",
+                    "workers.scanner_worker",
+                ],
+                cwd=str(BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            # Stream scanner output in a daemon thread so we don't block starting the backend
+            scanner_stream = threading.Thread(
+                target=self._stream_output,
+                args=(self.scanner_worker_proc, "SCANNER"),
+                daemon=True,
+                name="scanner-stream",
+            )
+            scanner_stream.start()
+        except Exception as e:
+            self._enqueue_log(
+                f"Scanner worker failed to start (non-fatal): {e}",
+                source="BACKEND",
+                level="WARNING",
+            )
+            self.scanner_worker_proc = None
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -935,6 +1183,7 @@ class HomerunApp(App):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
+                shell=(sys.platform == "win32"),
             )
         except Exception as e:
             self._enqueue_log(
@@ -1142,7 +1391,7 @@ class HomerunApp(App):
     def _kill_children(self) -> None:
         """Kill child processes and close their pipes to unblock reader threads."""
         procs = [
-            p for p in (self.backend_proc, self.frontend_proc)
+            p for p in (self.scanner_worker_proc, self.backend_proc, self.frontend_proc)
             if p and p.poll() is None
         ]
         # SIGKILL all first (non-blocking)
@@ -1173,7 +1422,8 @@ def main() -> None:
     # Verify venv exists
     venv_dir = BACKEND_DIR / "venv"
     if not venv_dir.exists():
-        print("Setup not complete. Run ./setup.sh first.")
+        setup_cmd = ".\\setup.ps1" if sys.platform == "win32" else "./setup.sh"
+        print(f"Setup not complete. Run {setup_cmd} first.")
         sys.exit(1)
 
     app = HomerunApp()

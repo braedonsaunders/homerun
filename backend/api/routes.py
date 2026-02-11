@@ -1,15 +1,17 @@
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from typing import Optional
 from datetime import datetime, timezone
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
-from models.database import AsyncSessionLocal, StrategyPlugin
+from models.database import AsyncSessionLocal, StrategyPlugin, get_db_session
 from services import scanner, wallet_tracker, polymarket_client
 from services.kalshi_client import kalshi_client
 from services.plugin_loader import plugin_loader
+from services import shared_state
 
 router = APIRouter()
 
@@ -56,6 +58,7 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
 @router.get("/opportunities")
 async def get_opportunities(
     response: Response,
+    session: AsyncSession = Depends(get_db_session),
     min_profit: float = Query(0.0, description="Minimum profit percentage"),
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     strategy: Optional[str] = Query(
@@ -72,10 +75,14 @@ async def get_opportunities(
         description="Sort field: ai_score (default), roi, profit, liquidity, risk",
     ),
     sort_dir: Optional[str] = Query("desc", description="Sort direction: asc or desc"),
+    exclude_strategy: Optional[str] = Query(
+        None,
+        description="Exclude a strategy type from results (e.g. btc_eth_highfreq)",
+    ),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip"),
 ):
-    """Get current arbitrage opportunities"""
+    """Get current arbitrage opportunities (from DB snapshot)."""
     strategies = await _resolve_strategy_to_filter(strategy)
     filter = OpportunityFilter(
         min_profit=min_profit / 100,  # Convert from percentage
@@ -85,7 +92,13 @@ async def get_opportunities(
         category=category,
     )
 
-    opportunities = scanner.get_opportunities(filter)
+    opportunities = await shared_state.get_opportunities_from_db(session, filter)
+
+    # Exclude a specific strategy if requested
+    if exclude_strategy:
+        opportunities = [
+            opp for opp in opportunities if opp.strategy != exclude_strategy
+        ]
 
     # Apply search filter if provided
     if search:
@@ -198,6 +211,18 @@ async def search_polymarket_opportunities(
             if m.end_date is None or m.end_date > now
         ]
 
+        # Relevance filter: only keep markets where the query actually
+        # appears in the question text.  The Gamma API _q search and
+        # slug_contains both return markets from matching *events* (e.g.
+        # searching "trump" returns every market in a Trump-tagged event,
+        # including GTA VI markets).
+        q_lower = q.lower()
+        q_words = q_lower.split()
+        all_markets = [
+            m for m in all_markets
+            if any(w in m.question.lower() for w in q_words)
+        ]
+
         if not all_markets:
             from fastapi.responses import JSONResponse
 
@@ -222,7 +247,10 @@ async def search_polymarket_opportunities(
             no_price = market.no_price
 
             slug = market.slug or ""
+            event_slug = getattr(market, "event_slug", "") or ""
             category = ""
+            volume = float(market.volume or 0)
+            liquidity = float(getattr(market, "liquidity", 0) or market.volume or 0)
 
             results.append({
                 "id": f"search-{mid}",
@@ -230,6 +258,7 @@ async def search_polymarket_opportunities(
                 "title": market.question,
                 "description": f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}",
                 "event_title": market.question,
+                "event_slug": event_slug,
                 "strategy": "search",
                 "total_cost": 0.0,
                 "expected_payout": 0.0,
@@ -239,10 +268,11 @@ async def search_polymarket_opportunities(
                 "roi_percent": 0.0,
                 "risk_score": 0.0,
                 "risk_factors": [],
-                "min_liquidity": float(market.volume or 0),
+                "min_liquidity": liquidity,
+                "volume": volume,
                 "max_position_size": 0.0,
                 "category": category,
-                "detected_at": datetime.utcnow().isoformat(),
+                "detected_at": datetime.now(timezone.utc).isoformat(),
                 "expires_at": market.end_date.isoformat() if market.end_date else None,
                 "resolution_date": market.end_date.isoformat() if market.end_date else None,
                 "platform": platform,
@@ -252,11 +282,12 @@ async def search_polymarket_opportunities(
                         "id": market.condition_id or "",
                         "question": market.question,
                         "slug": slug,
-                        "event_slug": "",
+                        "event_slug": event_slug,
                         "platform": platform,
                         "yes_price": yes_price,
                         "no_price": no_price,
-                        "volume": float(market.volume or 0),
+                        "volume": volume,
+                        "liquidity": liquidity,
                     }
                 ],
                 "ai_analysis": None,
@@ -273,8 +304,31 @@ async def search_polymarket_opportunities(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/opportunities/search-polymarket/evaluate")
+async def evaluate_search_markets(
+    body: dict = {},
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Trigger strategy evaluation on search result markets.
+
+    Requests a scan from the scanner worker (writes to DB); results
+    will appear once the worker runs and updates the snapshot.
+    """
+    condition_ids = body.get("condition_ids", [])
+
+    await shared_state.request_one_scan(session)
+
+    return {
+        "status": "evaluating",
+        "count": len(condition_ids),
+        "message": "Strategy scan requested. Detected opportunities will appear in the Markets tab.",
+    }
+
+
 @router.get("/opportunities/counts")
 async def get_opportunity_counts(
+    session: AsyncSession = Depends(get_db_session),
     min_profit: float = Query(0.0, description="Minimum profit percentage"),
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
@@ -291,7 +345,7 @@ async def get_opportunity_counts(
         min_liquidity=min_liquidity,
     )
 
-    opportunities = scanner.get_opportunities(filter)
+    opportunities = await shared_state.get_opportunities_from_db(session, filter)
 
     # Apply search filter if provided
     if search:
@@ -318,9 +372,12 @@ async def get_opportunity_counts(
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
-async def get_opportunity(opportunity_id: str):
+async def get_opportunity(
+    opportunity_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Get a specific opportunity by ID"""
-    opportunities = scanner.get_opportunities()
+    opportunities = await shared_state.get_opportunities_from_db(session, None)
     for opp in opportunities:
         if opp.id == opportunity_id:
             return opp
@@ -328,19 +385,13 @@ async def get_opportunity(opportunity_id: str):
 
 
 @router.post("/scan")
-async def trigger_scan():
-    """Manually trigger a new scan (non-blocking).
-
-    Kicks off scan_once() as a background task and returns immediately
-    so the UI stays responsive.  The frontend already polls
-    /scanner/status and /opportunities on intervals, so results
-    appear automatically once the scan completes.
-    """
-    asyncio.create_task(scanner.scan_once())
+async def trigger_scan(session: AsyncSession = Depends(get_db_session)):
+    """Manually request one scan. Scanner worker will run a scan on its next loop."""
+    await shared_state.request_one_scan(session)
     return {
         "status": "started",
         "timestamp": datetime.utcnow().isoformat(),
-        "message": "Scan started in background",
+        "message": "Scan requested; scanner worker will run on next cycle.",
     }
 
 
@@ -348,44 +399,44 @@ async def trigger_scan():
 
 
 @router.get("/scanner/status")
-async def get_scanner_status():
-    """Get scanner status"""
-    return scanner.get_status()
+async def get_scanner_status(session: AsyncSession = Depends(get_db_session)):
+    """Get scanner status (from DB snapshot)."""
+    return await shared_state.get_scanner_status_from_db(session)
 
 
 @router.post("/scanner/start")
-async def start_scanner():
-    """Start/resume the scanner"""
-    await scanner.start()
-    return {"status": "started", **scanner.get_status()}
+async def start_scanner(session: AsyncSession = Depends(get_db_session)):
+    """Start/resume the scanner (worker reads control from DB)."""
+    await shared_state.set_scanner_paused(session, False)
+    return {"status": "started", **await shared_state.get_scanner_status_from_db(session)}
 
 
 @router.post("/scanner/pause")
-async def pause_scanner():
-    """Pause the scanner (keeps loop running but doesn't scan)"""
-    await scanner.pause()
-    return {"status": "paused", **scanner.get_status()}
+async def pause_scanner(session: AsyncSession = Depends(get_db_session)):
+    """Pause the scanner (worker skips scans when paused)."""
+    await shared_state.set_scanner_paused(session, True)
+    return {"status": "paused", **await shared_state.get_scanner_status_from_db(session)}
 
 
 @router.post("/scanner/interval")
-async def set_scanner_interval(interval_seconds: int = Query(..., ge=10, le=3600)):
-    """Set the scan interval (10-3600 seconds)"""
-    await scanner.set_interval(interval_seconds)
-    return {"status": "updated", **scanner.get_status()}
+async def set_scanner_interval(
+    session: AsyncSession = Depends(get_db_session),
+    interval_seconds: int = Query(..., ge=10, le=3600),
+):
+    """Set the scan interval (10-3600 seconds)."""
+    await shared_state.set_scanner_interval(session, interval_seconds)
+    return {"status": "updated", **await shared_state.get_scanner_status_from_db(session)}
 
 
 # ==================== OPPORTUNITIES CLEANUP ====================
 
 
 @router.delete("/opportunities")
-async def clear_opportunities():
+async def clear_opportunities(session: AsyncSession = Depends(get_db_session)):
     """
-    Clear all opportunities from memory.
-
-    This removes all detected arbitrage opportunities.
-    They will be repopulated on the next scan.
+    Clear all opportunities in the snapshot. Repopulated on next scanner run.
     """
-    count = scanner.clear_opportunities()
+    count = await shared_state.clear_opportunities_in_snapshot(session)
     return {
         "status": "success",
         "cleared_count": count,
@@ -395,6 +446,7 @@ async def clear_opportunities():
 
 @router.post("/opportunities/cleanup")
 async def cleanup_opportunities(
+    session: AsyncSession = Depends(get_db_session),
     remove_expired: bool = Query(
         True, description="Remove opportunities past resolution date"
     ),
@@ -403,23 +455,11 @@ async def cleanup_opportunities(
     ),
 ):
     """
-    Clean up stale opportunities.
-
-    - remove_expired: Remove opportunities whose resolution date has passed
-    - max_age_minutes: Remove opportunities detected more than X minutes ago
+    Clean up stale opportunities in the snapshot.
     """
-    results = {}
-
-    if remove_expired:
-        expired_count = scanner.remove_expired_opportunities()
-        results["expired_removed"] = expired_count
-
-    if max_age_minutes:
-        old_count = scanner.remove_old_opportunities(max_age_minutes)
-        results["old_removed"] = old_count
-
-    results["remaining_count"] = len(scanner.get_opportunities())
-
+    results = await shared_state.cleanup_snapshot_opportunities(
+        session, remove_expired=remove_expired, max_age_minutes=max_age_minutes
+    )
     return {"status": "success", **results}
 
 

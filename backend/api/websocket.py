@@ -2,7 +2,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import Set
 import json
 
-from services import scanner, wallet_tracker
+from models.database import AsyncSessionLocal
+from services import shared_state, wallet_tracker
 
 
 class ConnectionManager:
@@ -51,20 +52,18 @@ async def handle_websocket(websocket: WebSocket):
     """Main WebSocket handler"""
     await manager.connect(websocket)
 
-    # Send current state
+    # Send current state (from DB snapshot)
+    async with AsyncSessionLocal() as session:
+        opportunities, status = await shared_state.read_scanner_snapshot(session)
     await manager.send_personal(
         websocket,
         {
             "type": "init",
             "data": {
-                "opportunities": [
-                    o.model_dump() for o in scanner.get_opportunities()[:20]
-                ],
+                "opportunities": [o.model_dump() for o in opportunities[:20]],
                 "scanner_status": {
-                    "running": scanner.is_running,
-                    "last_scan": (scanner.last_scan.isoformat() + "Z")
-                    if scanner.last_scan
-                    else None,
+                    "running": status.get("running", False),
+                    "last_scan": status.get("last_scan"),
                 },
             },
         },
@@ -78,7 +77,6 @@ async def handle_websocket(websocket: WebSocket):
 
             # Handle different message types
             if message.get("type") == "subscribe":
-                # Client wants to subscribe to specific updates
                 await manager.send_personal(
                     websocket,
                     {"type": "subscribed", "data": message.get("channels", [])},
@@ -88,17 +86,18 @@ async def handle_websocket(websocket: WebSocket):
                 await manager.send_personal(websocket, {"type": "pong"})
 
             elif message.get("type") == "scan":
-                # Trigger manual scan
-                opportunities = await scanner.scan_once()
+                # Request one scan; worker will run it
+                async with AsyncSessionLocal() as session:
+                    await shared_state.request_one_scan(session)
+                async with AsyncSessionLocal() as session:
+                    opportunities, _ = await shared_state.read_scanner_snapshot(session)
                 await manager.send_personal(
                     websocket,
                     {
-                        "type": "scan_complete",
+                        "type": "scan_requested",
                         "data": {
-                            "count": len(opportunities),
-                            "opportunities": [
-                                o.model_dump() for o in opportunities[:20]
-                            ],
+                            "message": "Scan requested; results will update when worker runs.",
+                            "current_count": len(opportunities),
                         },
                     },
                 )
@@ -147,8 +146,31 @@ async def broadcast_news_update(article_count: int):
     )
 
 
-# Register callbacks
-scanner.add_callback(broadcast_opportunities)
-scanner.add_status_callback(broadcast_scanner_status)
-scanner.add_activity_callback(broadcast_scanner_activity)
+async def broadcast_crypto_markets(markets_data: list[dict]):
+    """Broadcast live crypto market data to all connected clients."""
+    await manager.broadcast(
+        {"type": "crypto_markets_update", "data": {"markets": markets_data}}
+    )
+
+
+async def broadcast_copy_trade_event(message: dict):
+    """Broadcast copy trading events (detection + execution) to all clients.
+
+    Message types:
+    - copy_trade_detected: A tracked wallet trade was detected on-chain
+    - copy_trade_executed: A copy trade was executed (or failed)
+
+    These events carry latency metrics so the frontend can display
+    real-time copy trading activity and pipeline performance.
+    """
+    await manager.broadcast(message)
+
+
+# Register callbacks (scanner runs in worker process; no scanner callbacks here)
+# Frontend gets opportunities/status via polling or init; or add API polling→broadcast later
 wallet_tracker.add_callback(broadcast_wallet_trade)
+
+# Wire copy trading WebSocket broadcast into the copy trader service
+from services.copy_trader import copy_trader as _copy_trader_instance
+
+_copy_trader_instance.set_ws_broadcast(broadcast_copy_trade_event)

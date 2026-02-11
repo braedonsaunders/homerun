@@ -1048,12 +1048,15 @@ class WalletDiscoveryEngine:
     # ------------------------------------------------------------------
 
     async def start_background_discovery(self, interval_minutes: int = 60):
-        """Run discovery on a recurring schedule."""
+        """Run discovery on a recurring schedule. First run after 60s so API can serve requests at startup."""
         self._running = True
         logger.info(
             "Background discovery started",
             interval_minutes=interval_minutes,
         )
+
+        # Defer first run so /opportunities, /scanner/status, etc. don't timeout at startup
+        await asyncio.sleep(60)
 
         while self._running:
             if not global_pause_state.is_paused:
@@ -1206,38 +1209,37 @@ class WalletDiscoveryEngine:
         Get aggregate statistics about the discovery engine's state.
 
         Returns dict with total_wallets, last_run_at, avg_rank_score, etc.
+        Uses a single query with scalar subqueries to avoid 5 round-trips.
         """
         async with AsyncSessionLocal() as session:
-            total_q = await session.execute(
+            # Single query with 5 scalar subqueries - one round-trip instead of 5
+            stats_query = select(
+                select(func.count(DiscoveredWallet.address)).scalar_subquery().label(
+                    "total"
+                ),
                 select(func.count(DiscoveredWallet.address))
+                .where(DiscoveredWallet.is_profitable == True)  # noqa: E712
+                .scalar_subquery()
+                .label("profitable"),
+                select(func.count(DiscoveredWallet.address))
+                .where(DiscoveredWallet.recommendation == "copy_candidate")
+                .scalar_subquery()
+                .label("copy_candidates"),
+                select(func.avg(DiscoveredWallet.rank_score)).scalar_subquery().label(
+                    "avg_score"
+                ),
+                select(func.avg(DiscoveredWallet.win_rate))
+                .where(DiscoveredWallet.total_trades >= 10)
+                .scalar_subquery()
+                .label("avg_win_rate"),
             )
-            total_wallets = total_q.scalar() or 0
+            row = (await session.execute(stats_query)).one()
 
-            profitable_q = await session.execute(
-                select(func.count(DiscoveredWallet.address)).where(
-                    DiscoveredWallet.is_profitable == True  # noqa: E712
-                )
-            )
-            profitable_count = profitable_q.scalar() or 0
-
-            copy_q = await session.execute(
-                select(func.count(DiscoveredWallet.address)).where(
-                    DiscoveredWallet.recommendation == "copy_candidate"
-                )
-            )
-            copy_candidates = copy_q.scalar() or 0
-
-            avg_score_q = await session.execute(
-                select(func.avg(DiscoveredWallet.rank_score))
-            )
-            avg_rank_score = avg_score_q.scalar() or 0.0
-
-            avg_wr_q = await session.execute(
-                select(func.avg(DiscoveredWallet.win_rate)).where(
-                    DiscoveredWallet.total_trades >= 10
-                )
-            )
-            avg_win_rate = avg_wr_q.scalar() or 0.0
+        total_wallets = row.total or 0
+        profitable_count = row.profitable or 0
+        copy_candidates = row.copy_candidates or 0
+        avg_rank_score = row.avg_score or 0.0
+        avg_win_rate = row.avg_win_rate or 0.0
 
         return {
             "total_discovered": total_wallets,

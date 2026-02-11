@@ -164,6 +164,12 @@ class Settings(BaseSettings):
     BTC_ETH_HF_PURE_ARB_MAX_COMBINED: float = 0.98  # Max combined for pure arb
     BTC_ETH_HF_DUMP_THRESHOLD: float = 0.05  # Min drop for dump-hedge trigger
     BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
+    # Polymarket series IDs for crypto up-or-down markets (editable in Settings)
+    BTC_ETH_HF_SERIES_BTC_15M: str = "10192"
+    BTC_ETH_HF_SERIES_ETH_15M: str = "10191"
+    BTC_ETH_HF_SERIES_SOL_15M: str = "10423"
+    BTC_ETH_HF_SERIES_XRP_15M: str = "10422"
+    BTC_ETH_HF_MAKER_MODE: bool = True  # Place maker (limit) orders to avoid fees & earn rebates
 
     # Miracle Strategy Thresholds
     MIRACLE_MIN_NO_PRICE: float = 0.90  # Only consider NO prices >= this
@@ -315,6 +321,10 @@ async def apply_search_filters():
         ("BTC_ETH_HF_PURE_ARB_MAX_COMBINED", "btc_eth_pure_arb_max_combined", 0.98),
         ("BTC_ETH_HF_DUMP_THRESHOLD", "btc_eth_dump_hedge_drop_pct", 0.05),
         ("BTC_ETH_HF_THIN_LIQUIDITY_USD", "btc_eth_thin_liquidity_usd", 500.0),
+        ("BTC_ETH_HF_SERIES_BTC_15M", "btc_eth_hf_series_btc_15m", "10192"),
+        ("BTC_ETH_HF_SERIES_ETH_15M", "btc_eth_hf_series_eth_15m", "10191"),
+        ("BTC_ETH_HF_SERIES_SOL_15M", "btc_eth_hf_series_sol_15m", "10423"),
+        ("BTC_ETH_HF_SERIES_XRP_15M", "btc_eth_hf_series_xrp_15m", "10422"),
         # Miracle strategy
         ("MIRACLE_MIN_NO_PRICE", "miracle_min_no_price", 0.90),
         ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.999),

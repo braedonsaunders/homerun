@@ -40,6 +40,7 @@ import {
   getOpportunities,
   getOpportunityCounts,
   searchPolymarketOpportunities,
+  evaluateSearchResults,
   getScannerStatus,
   triggerScan,
   getStrategies,
@@ -57,7 +58,6 @@ import { shortcutsHelpOpenAtom, simulationEnabledAtom, accountModeAtom, selected
 // shadcn/ui components
 import { Button } from './components/ui/button'
 
-import { Badge } from './components/ui/badge'
 import { Input } from './components/ui/input'
 import { Separator } from './components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './components/ui/tooltip'
@@ -125,12 +125,11 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'crypto_markets'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'crypto_markets' | 'search'>('arbitrage')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
-  const [, setPolymarketSearchQuery] = useState('')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
-  const [searchMode, setSearchMode] = useState<'current' | 'polymarket'>('current')
+  const [searchSort, setSearchSort] = useState<string>('competitive')
   const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [copilotContext, setCopilotContext] = useState<{ type?: string; id?: string; label?: string }>({})
@@ -165,10 +164,37 @@ function App() {
 
   // Navigate to news tab with a keyword search from an opportunity
   const handleSearchNewsForOpportunity = useCallback((opp: Opportunity) => {
-    // Extract first meaningful keyword from title (skip strategy prefix)
-    const title = opp.event_title || opp.title || ''
-    // Take first 3-5 words as search keywords
-    const keywords = title.replace(/^(News Edge:|Basic Arb:|NegRisk:)\s*/i, '').split(/\s+/).slice(0, 4).join(' ')
+    // Build meaningful search terms from the opportunity
+    // Priority: first market question (most descriptive) > event_title > cleaned title
+    let raw = ''
+
+    if (opp.markets?.length > 0 && opp.markets[0].question) {
+      raw = opp.markets[0].question
+    } else if (opp.event_title) {
+      raw = opp.event_title
+    } else {
+      raw = opp.title || ''
+    }
+
+    // Strip strategy prefixes (e.g., "Temporal Decay:", "News Edge:", "Basic Arb:")
+    raw = raw.replace(/^[A-Za-z_ ]+:\s*/i, '')
+
+    // Clean up comma-separated outcome lists:
+    //   "yes Both Teams To Score,yes Chelsea,yes Tie" → "Both Teams To Score Chelsea Tie"
+    if (raw.includes(',')) {
+      raw = raw.split(',')
+        .map(s => s.trim().replace(/^(yes|no)\s+/i, ''))
+        .filter(s => s.length > 0)
+        .slice(0, 3)
+        .join(' ')
+    }
+
+    // Remove standalone "yes"/"no" tokens
+    raw = raw.replace(/\b(yes|no)\b\s*/gi, '')
+
+    // Take first few meaningful words (skip very short fragments)
+    const keywords = raw.split(/\s+/).filter(w => w.length > 2).slice(0, 6).join(' ')
+
     setNewsSearchQuery(keywords)
     setOpportunitiesView('news')
   }, [])
@@ -203,9 +229,7 @@ function App() {
     // Default: search markets
     else {
       setActiveTab('opportunities')
-      setOpportunitiesView('arbitrage')
-      setSearchMode('polymarket')
-      setPolymarketSearchQuery(trimmed)
+      setOpportunitiesView('search')
       setPolymarketSearchSubmitted(trimmed)
     }
 
@@ -249,24 +273,34 @@ function App() {
       queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
       queryClient.invalidateQueries({ queryKey: ['copy-trading-status'] })
     }
+    if (lastMessage?.type === 'copy_trade_detected' || lastMessage?.type === 'copy_trade_executed') {
+      // Real-time copy trading events from WebSocket pipeline
+      queryClient.invalidateQueries({ queryKey: ['copy-trades'] })
+      queryClient.invalidateQueries({ queryKey: ['copy-configs'] })
+      queryClient.invalidateQueries({ queryKey: ['copy-trading-status'] })
+    }
     if (lastMessage?.type === 'news_update') {
       // New news articles arrived — refresh news panel data
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-matches'] })
       queryClient.invalidateQueries({ queryKey: ['news-edges'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
+      // Also refresh workflow data
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
     }
   }, [lastMessage, queryClient])
 
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(0)
-  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted])
+  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted, searchSort])
 
   // Queries — WS pushes are primary; polling is a degraded fallback.
   // When WS is connected, polls are infrequent. When disconnected, revert to faster polling.
   const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
+    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage, 'exclude:btc_eth_highfreq'],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
       category: selectedCategory || undefined,
@@ -275,6 +309,7 @@ function App() {
       search: searchQuery || undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
+      exclude_strategy: 'btc_eth_highfreq',
       limit: ITEMS_PER_PAGE,
       offset: currentPage * ITEMS_PER_PAGE
     }),
@@ -324,7 +359,7 @@ function App() {
   const { data: polymarketSearchData, isLoading: polySearchLoading } = useQuery({
     queryKey: ['polymarket-search', polymarketSearchSubmitted],
     queryFn: () => searchPolymarketOpportunities({ q: polymarketSearchSubmitted, limit: 50 }),
-    enabled: !!polymarketSearchSubmitted && searchMode === 'polymarket',
+    enabled: !!polymarketSearchSubmitted && opportunitiesView === 'search',
     staleTime: 60000,
   })
 
@@ -354,33 +389,31 @@ function App() {
       results = results.filter(r => r.category?.toLowerCase() === selectedCategory.toLowerCase())
     }
 
-    // Apply sort
-    const reverse = sortDir !== 'asc'
-    const dir = reverse ? -1 : 1
-    const effectiveSort = sortBy || 'ai_score'
-
-    if (effectiveSort === 'ai_score') {
+    // Apply Polymarket-style sort
+    if (searchSort === 'competitive') {
+      // Most evenly-split markets (closest to 50/50)
       results.sort((a, b) => {
-        const aScored = a.ai_analysis && a.ai_analysis.recommendation !== 'pending' ? 1 : 0
-        const bScored = b.ai_analysis && b.ai_analysis.recommendation !== 'pending' ? 1 : 0
-        if (aScored !== bScored) return (bScored - aScored) * dir
-        const aScore = a.ai_analysis?.overall_score || 0
-        const bScore = b.ai_analysis?.overall_score || 0
-        if (aScore !== bScore) return (bScore - aScore) * dir
-        return (b.roi_percent - a.roi_percent) * dir
+        const aComp = Math.abs((a.markets?.[0]?.yes_price ?? 0.5) - 0.5)
+        const bComp = Math.abs((b.markets?.[0]?.yes_price ?? 0.5) - 0.5)
+        return aComp - bComp
       })
-    } else if (effectiveSort === 'roi') {
-      results.sort((a, b) => (b.roi_percent - a.roi_percent) * dir)
-    } else if (effectiveSort === 'profit') {
-      results.sort((a, b) => (b.net_profit - a.net_profit) * dir)
-    } else if (effectiveSort === 'liquidity') {
-      results.sort((a, b) => (b.min_liquidity - a.min_liquidity) * dir)
-    } else if (effectiveSort === 'risk') {
-      results.sort((a, b) => (b.risk_score - a.risk_score) * dir)
+    } else if (searchSort === 'volume') {
+      results.sort((a, b) => (b.volume ?? b.min_liquidity ?? 0) - (a.volume ?? a.min_liquidity ?? 0))
+    } else if (searchSort === 'liquidity') {
+      results.sort((a, b) => (b.min_liquidity ?? 0) - (a.min_liquidity ?? 0))
+    } else if (searchSort === 'newest') {
+      // Furthest resolution date = likely newest market
+      results.sort((a, b) => (b.resolution_date ?? '').localeCompare(a.resolution_date ?? ''))
+    } else if (searchSort === 'ending_soon') {
+      // Closest end date first, nulls last
+      results.sort((a, b) => (a.resolution_date ?? '9999').localeCompare(b.resolution_date ?? '9999'))
+    } else if (searchSort === 'trending') {
+      // High volume as proxy for trending
+      results.sort((a, b) => (b.volume ?? b.min_liquidity ?? 0) - (a.volume ?? a.min_liquidity ?? 0))
     }
 
     return results
-  }, [polymarketResults, strategyFilterSet, selectedCategory, sortBy, sortDir])
+  }, [polymarketResults, strategyFilterSet, selectedCategory, searchSort])
 
   const polymarketTotalFiltered = processedPolymarketResults.length
   const polymarketTotalPages = Math.ceil(polymarketTotalFiltered / ITEMS_PER_PAGE)
@@ -416,6 +449,24 @@ function App() {
     mutationFn: () => judgeOpportunitiesBulk({ force: true }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+    },
+  })
+
+  // Run Strategies on search results
+  const [evalStatus, setEvalStatus] = useState<'idle' | 'running' | 'done'>('idle')
+  const evaluateMutation = useMutation({
+    mutationFn: (conditionIds: string[]) => evaluateSearchResults(conditionIds),
+    onMutate: () => setEvalStatus('running'),
+    onSuccess: () => {
+      setEvalStatus('done')
+      // Invalidate opportunities so any newly detected ones appear in the Markets tab
+      queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+      // Reset status after a few seconds
+      setTimeout(() => setEvalStatus('idle'), 4000)
+    },
+    onError: () => {
+      setEvalStatus('idle')
     },
   })
 
@@ -553,7 +604,6 @@ function App() {
                       setSearchQuery(headerSearchQuery.trim())
                       setActiveTab('opportunities')
                       setOpportunitiesView('arbitrage')
-                      setSearchMode('current')
                       setHeaderSearchQuery('')
                       setHeaderSearchOpen(false)
                     }}
@@ -743,11 +793,50 @@ function App() {
                       )}
                     >
                       <ArrowUpDown className="w-3.5 h-3.5" />
-                      Crypto Markets
+                      Crypto
                     </Button>
 
+                    {/* Search results subtab — only visible when a search is active */}
+                    {polymarketSearchSubmitted && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setOpportunitiesView('search')}
+                        className={cn(
+                          "gap-1.5 text-xs h-8",
+                          opportunitiesView === 'search'
+                            ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                            : "bg-card text-muted-foreground hover:text-foreground border-border"
+                        )}
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        Search
+                        <span className="ml-0.5 max-w-[120px] truncate text-[10px] opacity-70">&quot;{polymarketSearchSubmitted}&quot;</span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setPolymarketSearchSubmitted('')
+                            setOpportunitiesView('arbitrage')
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setPolymarketSearchSubmitted('')
+                              setOpportunitiesView('arbitrage')
+                            }
+                          }}
+                          className="ml-1 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          &times;
+                        </span>
+                      </Button>
+                    )}
+
                     {/* View Mode Switcher */}
-                    {opportunitiesView === 'arbitrage' && (
+                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search') && (
                       <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
                         {([
                           { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
@@ -811,7 +900,187 @@ function App() {
                     </div>
                   )}
 
-                  {opportunitiesView === 'crypto_markets' ? (
+                  {opportunitiesView === 'search' ? (
+                    <>
+                      {/* ====== SEARCH RESULTS VIEW (Polymarket-style) ====== */}
+                      {polySearchLoading ? (
+                        <div className="flex items-center justify-center py-12">
+                          <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
+                          <span className="ml-3 text-muted-foreground">Searching Polymarket &amp; Kalshi...</span>
+                        </div>
+                      ) : polymarketResults.length === 0 ? (
+                        <div className="text-center py-12">
+                          <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
+                          <p className="text-muted-foreground">No markets found for &quot;{polymarketSearchSubmitted}&quot;</p>
+                          <p className="text-sm text-muted-foreground/70 mt-1">
+                            Try different keywords or broader search terms
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {/* Result count + Sort pills (Polymarket-style) */}
+                          <div className="flex items-center gap-2 mb-4 flex-wrap">
+                            <span className="text-xs text-muted-foreground font-data">
+                              {polymarketTotalFiltered} result{polymarketTotalFiltered !== 1 ? 's' : ''} for <span className="text-blue-400 font-medium">&quot;{polymarketSearchSubmitted}&quot;</span>
+                            </span>
+
+                            <Separator orientation="vertical" className="h-4 mx-1" />
+
+                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Sort by</span>
+                            {([
+                              ['trending', 'Trending'],
+                              ['liquidity', 'Liquidity'],
+                              ['volume', 'Volume'],
+                              ['newest', 'Newest'],
+                              ['ending_soon', 'Ending Soon'],
+                              ['competitive', 'Competitive'],
+                            ] as const).map(([key, label]) => (
+                              <button
+                                key={key}
+                                onClick={() => setSearchSort(key)}
+                                className={cn(
+                                  'px-2.5 py-1 rounded-md text-xs font-medium transition-all',
+                                  searchSort === key
+                                    ? 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/30'
+                                    : 'bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                                )}
+                              >
+                                {label}
+                              </button>
+                            ))}
+
+                            <div className="ml-auto flex items-center gap-2">
+                              {evalStatus === 'done' && (
+                                <span className="text-[10px] text-green-400 font-data animate-in fade-in">
+                                  Scan triggered — check Markets tab
+                                </span>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  const conditionIds = processedPolymarketResults
+                                    .map(r => r.markets?.[0]?.id)
+                                    .filter(Boolean)
+                                  evaluateMutation.mutate(conditionIds)
+                                }}
+                                disabled={processedPolymarketResults.length === 0 || evaluateMutation.isPending}
+                                className={cn(
+                                  "text-xs gap-1.5",
+                                  evalStatus === 'done'
+                                    ? "border-green-500/40 bg-green-500/10 text-green-400"
+                                    : "border-green-500/30 text-green-400 hover:bg-green-500/10 hover:text-green-400"
+                                )}
+                              >
+                                {evaluateMutation.isPending ? (
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                ) : evalStatus === 'done' ? (
+                                  <Zap className="w-3 h-3" />
+                                ) : (
+                                  <Zap className="w-3 h-3" />
+                                )}
+                                {evaluateMutation.isPending ? 'Scanning...' : evalStatus === 'done' ? 'Scan Running' : 'Run Strategies'}
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Category filter row */}
+                          <div className="flex gap-3 mb-4">
+                            <div className="flex-1 max-w-xs">
+                              <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
+                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                  <SelectValue placeholder="All Categories" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="_all">All Categories</SelectItem>
+                                  {[
+                                    { value: 'politics', label: 'Politics' },
+                                    { value: 'sports', label: 'Sports' },
+                                    { value: 'crypto', label: 'Crypto' },
+                                    { value: 'culture', label: 'Culture' },
+                                    { value: 'economics', label: 'Economics' },
+                                    { value: 'tech', label: 'Tech' },
+                                    { value: 'finance', label: 'Finance' },
+                                    { value: 'weather', label: 'Weather' },
+                                  ].map((cat) => (
+                                    <SelectItem key={cat.value} value={cat.value}>
+                                      {cat.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+
+                          {/* Search Results */}
+                          {oppsViewMode === 'terminal' ? (
+                            <OpportunityTerminal
+                              opportunities={paginatedPolymarketResults}
+                              onExecute={setExecutingOpportunity}
+                              onOpenCopilot={handleOpenCopilotForOpportunity}
+                              isConnected={isConnected}
+                              totalCount={polymarketTotalFiltered}
+                            />
+                          ) : oppsViewMode === 'list' ? (
+                            <OpportunityTable
+                              opportunities={paginatedPolymarketResults}
+                              onExecute={setExecutingOpportunity}
+                              onOpenCopilot={handleOpenCopilotForOpportunity}
+                            />
+                          ) : (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
+                              {paginatedPolymarketResults.map((opp) => (
+                                <OpportunityCard
+                                  key={opp.id}
+                                  opportunity={opp}
+                                  onExecute={setExecutingOpportunity}
+                                  onOpenCopilot={handleOpenCopilotForOpportunity}
+                                />
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Pagination */}
+                          {polymarketTotalPages > 1 && (
+                            <div className="mt-5">
+                              <Separator />
+                              <div className="flex items-center justify-between pt-4">
+                                <div className="text-xs text-muted-foreground">
+                                  {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, polymarketTotalFiltered)} of {polymarketTotalFiltered}
+                                  {selectedCategory && ` (filtered from ${polymarketTotal})`}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                                    disabled={currentPage === 0}
+                                  >
+                                    <ChevronLeft className="w-3.5 h-3.5" />
+                                    Prev
+                                  </Button>
+                                  <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
+                                    {currentPage + 1}/{polymarketTotalPages}
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={() => setCurrentPage(p => p + 1)}
+                                    disabled={currentPage >= polymarketTotalPages - 1}
+                                  >
+                                    Next
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  ) : opportunitiesView === 'crypto_markets' ? (
                     <CryptoMarketsPanel
                       onExecute={setExecutingOpportunity}
                       onOpenCopilot={handleOpenCopilotForOpportunity}
@@ -830,229 +1099,20 @@ function App() {
                     <>
                       {/* Search Input */}
                       <div className="mb-4">
-                        {searchMode === 'polymarket' && polymarketSearchSubmitted && (
-                          <div className="flex items-center gap-2 mb-3">
-                            <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10 gap-1.5">
-                              <Globe className="w-3 h-3" />
-                              Market search: &quot;{polymarketSearchSubmitted}&quot;
-                            </Badge>
-                            <button
-                              onClick={() => {
-                                setSearchMode('current')
-                                setPolymarketSearchSubmitted('')
-                                setPolymarketSearchQuery('')
-                              }}
-                              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              Clear
-                            </button>
-                          </div>
-                        )}
-                        {searchMode === 'current' && (
-                          <div className="relative">
-                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                            <Input
-                              type="text"
-                              placeholder="Filter opportunities by market, event, or keyword..."
-                              value={searchQuery}
-                              onChange={(e) => setSearchQuery(e.target.value)}
-                              className="pl-10 bg-card border-border h-9"
-                            />
-                          </div>
-                        )}
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                          <Input
+                            type="text"
+                            placeholder="Filter opportunities by market, event, or keyword..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="pl-10 bg-card border-border h-9"
+                          />
+                        </div>
                       </div>
 
-                      {searchMode === 'polymarket' ? (
-                        <>
-                          {polySearchLoading ? (
-                            <div className="flex items-center justify-center py-12">
-                              <RefreshCw className="w-8 h-8 animate-spin text-blue-400" />
-                              <span className="ml-3 text-muted-foreground">Searching Polymarket & Kalshi...</span>
-                            </div>
-                          ) : polymarketResults.length === 0 ? (
-                            <div className="text-center py-12">
-                              <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-                              <p className="text-muted-foreground">No markets found for &quot;{polymarketSearchSubmitted}&quot;</p>
-                              <p className="text-sm text-muted-foreground/70 mt-1">
-                                Try different keywords or broader search terms
-                              </p>
-                            </div>
-                          ) : (
-                            <>
-                              {/* Filters */}
-                              <div className="flex gap-3 mb-4">
-                                <div className="flex-1">
-                                  <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
-                                  <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
-                                    <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
-                                      <SelectValue placeholder="All Strategies" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="_all">All Strategies</SelectItem>
-                                      {strategies.map((s) => (
-                                        <SelectItem key={s.type} value={s.type}>
-                                          {s.name}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <div className="flex-1">
-                                  <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
-                                  <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
-                                    <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
-                                      <SelectValue placeholder="All Categories" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="_all">All Categories</SelectItem>
-                                      {[
-                                        { value: 'politics', label: 'Politics' },
-                                        { value: 'sports', label: 'Sports' },
-                                        { value: 'crypto', label: 'Crypto' },
-                                        { value: 'culture', label: 'Culture' },
-                                        { value: 'economics', label: 'Economics' },
-                                        { value: 'tech', label: 'Tech' },
-                                        { value: 'finance', label: 'Finance' },
-                                        { value: 'weather', label: 'Weather' },
-                                      ].map((cat) => (
-                                        <SelectItem key={cat.value} value={cat.value}>
-                                          {cat.label}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                              </div>
-
-                              {/* Sort Controls */}
-                              <div className="flex items-center gap-2 mb-4">
-                                <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/20 bg-blue-500/10">
-                                  {polymarketTotalFiltered}{polymarketTotalFiltered !== polymarketTotal ? ` / ${polymarketTotal}` : ''} opportunities for &quot;{polymarketSearchSubmitted}&quot;
-                                </Badge>
-                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider ml-2">Sort:</span>
-                                {([
-                                  ['roi', 'ROI'],
-                                  ['ai_score', 'AI Score'],
-                                  ['profit', 'Profit'],
-                                  ['liquidity', 'Liquidity'],
-                                  ['risk', 'Risk'],
-                                ] as const).map(([key, label]) => (
-                                  <button
-                                    key={key}
-                                    onClick={() => {
-                                      if (sortBy === key) {
-                                        setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-                                      } else {
-                                        setSortBy(key)
-                                        setSortDir('desc')
-                                      }
-                                    }}
-                                    className={cn(
-                                      'px-2 py-1 rounded text-xs font-medium transition-colors',
-                                      sortBy === key
-                                        ? 'bg-primary/20 text-primary'
-                                        : 'bg-muted/50 text-muted-foreground hover:bg-muted'
-                                    )}
-                                  >
-                                    {label}
-                                    {sortBy === key && (
-                                      sortDir === 'desc'
-                                        ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
-                                        : <ChevronUp className="w-3 h-3 inline ml-0.5" />
-                                    )}
-                                  </button>
-                                ))}
-
-                                <div className="ml-auto">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => analyzeAllMutation.mutate()}
-                                    disabled={analyzeAllMutation.isPending || processedPolymarketResults.length === 0}
-                                    className="text-xs gap-1.5"
-                                  >
-                                    {analyzeAllMutation.isPending ? (
-                                      <RefreshCw className="w-3 h-3 animate-spin" />
-                                    ) : (
-                                      <Brain className="w-3 h-3" />
-                                    )}
-                                    {analyzeAllMutation.isPending ? 'Analyzing...' : 'Analyze All'}
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {/* Search Results Views */}
-                              {oppsViewMode === 'terminal' ? (
-                                <OpportunityTerminal
-                                  opportunities={paginatedPolymarketResults}
-                                  onExecute={setExecutingOpportunity}
-                                  onOpenCopilot={handleOpenCopilotForOpportunity}
-                                  isConnected={isConnected}
-                                  totalCount={polymarketTotalFiltered}
-                                />
-                              ) : oppsViewMode === 'list' ? (
-                                <OpportunityTable
-                                  opportunities={paginatedPolymarketResults}
-                                  onExecute={setExecutingOpportunity}
-                                  onOpenCopilot={handleOpenCopilotForOpportunity}
-                                />
-                              ) : (
-                                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
-                                  {paginatedPolymarketResults.map((opp) => (
-                                    <OpportunityCard
-                                      key={opp.id}
-                                      opportunity={opp}
-                                      onExecute={setExecutingOpportunity}
-                                      onOpenCopilot={handleOpenCopilotForOpportunity}
-                                    />
-                                  ))}
-                                </div>
-                              )}
-
-                              {/* Pagination */}
-                              {polymarketTotalPages > 1 && (
-                                <div className="mt-5">
-                                  <Separator />
-                                  <div className="flex items-center justify-between pt-4">
-                                    <div className="text-xs text-muted-foreground">
-                                      {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, polymarketTotalFiltered)} of {polymarketTotalFiltered}
-                                      {(selectedStrategy || selectedCategory) && ` (filtered from ${polymarketTotal})`}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-7 text-xs"
-                                        onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
-                                        disabled={currentPage === 0}
-                                      >
-                                        <ChevronLeft className="w-3.5 h-3.5" />
-                                        Prev
-                                      </Button>
-                                      <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
-                                        {currentPage + 1}/{polymarketTotalPages}
-                                      </span>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-7 text-xs"
-                                        onClick={() => setCurrentPage(p => p + 1)}
-                                        disabled={currentPage >= polymarketTotalPages - 1}
-                                      >
-                                        Next
-                                        <ChevronRight className="w-3.5 h-3.5" />
-                                      </Button>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          {/* Filters */}
-                          <div className="flex gap-3 mb-4">
+                      {/* Filters */}
+                      <div className="flex gap-3 mb-4">
                             <div className="flex-1">
                               <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
                               <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
@@ -1287,8 +1347,6 @@ function App() {
                               </div>
                             </>
                           )}
-                        </>
-                      )}
                     </>
                   )}
                 </div>

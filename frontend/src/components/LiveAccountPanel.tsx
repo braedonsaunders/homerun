@@ -358,7 +358,9 @@ function PositionsTable({ positions, platform, positionsCostBasis, positionsTota
 
   const getMarketLink = (pos: TradingPosition | KalshiPosition) => {
     if (platform === 'kalshi') {
-      return `https://kalshi.com/markets/${pos.market_id}`
+      const ticker = pos.market_id.toLowerCase()
+      const eventTicker = ticker.split('-')[0]
+      return `https://kalshi.com/markets/${eventTicker}/${ticker}`
     }
     return `https://polymarket.com/event/${pos.market_id}`
   }

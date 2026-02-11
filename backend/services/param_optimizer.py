@@ -14,6 +14,7 @@ different parameter configurations and find optimal settings.
 import itertools
 import math
 import uuid
+import asyncio
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from enum import Enum
@@ -885,6 +886,7 @@ class ParameterOptimizer:
         walk_forward: bool = True,
         n_windows: int = 5,
         train_ratio: float = 0.7,
+        progress_hook=None,
     ) -> list[dict]:
         """
         Run a parameter sweep and return ranked results.
@@ -970,6 +972,7 @@ class ParameterOptimizer:
                 )
                 walk_forward = False
 
+        total_candidates = len(candidates)
         for idx, params in enumerate(candidates):
             if walk_forward:
                 # Average across all walk-forward folds
@@ -1076,6 +1079,13 @@ class ParameterOptimizer:
                         "score": round(score, 4),
                     }
                 )
+
+            if progress_hook and (idx % 10 == 0 or idx + 1 == total_candidates):
+                maybe_awaitable = progress_hook(idx + 1, total_candidates)
+                if maybe_awaitable is not None and hasattr(maybe_awaitable, "__await__"):
+                    await maybe_awaitable
+            if idx % 25 == 0:
+                await asyncio.sleep(0)
 
         # Sort by composite score descending
         scored.sort(key=lambda x: x["score"], reverse=True)

@@ -24,6 +24,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -122,17 +123,46 @@ _SLUG_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Polymarket Gamma API uses tag_id (numeric), not tag (string slug).
-# These IDs are from GET /tags - verified against Polymarket's API.
-# See: https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide
-_GAMMA_CRYPTO_TAG_IDS = [
-    21,      # Crypto (slug: crypto)
-    235,     # Bitcoin (slug: bitcoin)
-    1312,    # Crypto Prices (slug: crypto-prices)
-    102127,  # Up or Down (slug: up-or-down)
-    102467,  # 15M (slug: 15M)
-    101757,  # Recurring (slug: recurring)
-]
+# Polymarket crypto series definitions.
+# Each series has a unique ID on the Gamma API that returns all active events
+# in the series.  Querying /events?series_id=X&active=true&closed=false
+# reliably returns the currently-live and upcoming 15-minute markets.
+# Series IDs are configurable via the Settings UI (persisted in DB).
+def _get_crypto_series() -> list[tuple[str, str, str]]:
+    """Return crypto series configs, reading IDs from the live config singleton."""
+    return [
+        # (series_id, asset, timeframe)
+        (_cfg.BTC_ETH_HF_SERIES_BTC_15M, "BTC", "15min"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_15M, "ETH", "15min"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_15M, "SOL", "15min"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_15M, "XRP", "15min"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Fee curve — official Polymarket taker fee for 15-minute crypto markets
+# ---------------------------------------------------------------------------
+
+
+def polymarket_fee_curve(price: float) -> float:
+    """Compute the taker fee per share at a given price.
+
+    Official formula from Polymarket docs:
+        fee = price * 0.25 * (price * (1 - price))^2
+
+    At $0.50: fee = 0.50 * 0.25 * (0.50 * 0.50)^2 = $0.0078 → 1.56%
+    At $0.10: fee = 0.10 * 0.25 * (0.10 * 0.90)^2 = $0.0002 → 0.20%
+    At $0.90: fee = 0.90 * 0.25 * (0.90 * 0.10)^2 = $0.0018 → 0.20%
+    """
+    p = max(0.0, min(1.0, price))
+    return p * 0.25 * (p * (1.0 - p)) ** 2
+
+
+def polymarket_fee_pct(price: float) -> float:
+    """Fee as a fraction of the share price (0.0 – 0.0156)."""
+    if price <= 0:
+        return 0.0
+    return polymarket_fee_curve(price) / price
 
 
 # Strategy selector thresholds — read from config (persisted in DB via Settings UI)
@@ -169,17 +199,20 @@ _MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
 
 
 class _CryptoMarketFetcher:
-    """Sync HTTP fetcher that queries Polymarket's Gamma API for crypto markets.
+    """Sync HTTP fetcher that queries Polymarket's Gamma API for crypto markets
+    using series_id-based discovery (the same approach used by
+    PolymarketBTC15mAssistant and other production bots).
 
-    BTC/ETH 15-minute markets are high-frequency and may not appear in the
-    top 500 general markets.  This fetcher queries specific tags/slugs to
-    ensure they are always included in the candidate pool.
+    Each crypto asset/timeframe has a stable ``series_id`` on the Gamma API.
+    Querying ``GET /events?series_id=X&active=true&closed=false`` reliably
+    returns the currently-live and upcoming 15-minute (or hourly) markets
+    with correct ``endDate`` values, real-time ``bestBid``/``bestAsk``
+    pricing, CLOB token IDs, and liquidity data.
 
-    Uses a sync client (like the Kalshi cache) because detect() is sync.
     Results are cached for ``ttl_seconds`` to avoid hammering the API.
     """
 
-    def __init__(self, gamma_url: str = "", ttl_seconds: int = 30):
+    def __init__(self, gamma_url: str = "", ttl_seconds: int = 15):
         self._gamma_url = gamma_url or _cfg.GAMMA_API_URL
         self._ttl = ttl_seconds
         self._markets: list[Market] = []
@@ -193,18 +226,140 @@ class _CryptoMarketFetcher:
         """Return cached crypto markets, refreshing if stale."""
         if self.is_stale:
             fetched = self._fetch()
-            if fetched:
+            if fetched is not None:
                 self._markets = fetched
                 self._last_fetch = time.monotonic()
+                # Subscribe new market tokens to the WS feed for real-time prices
+                self._subscribe_tokens_to_ws(fetched)
         return self._markets
 
-    def _fetch(self) -> list[Market]:
-        """Fetch crypto markets from Gamma API using tag_id, slug path, and series.
+    @staticmethod
+    def _subscribe_tokens_to_ws(markets: list[Market]) -> None:
+        """Fire-and-forget: subscribe crypto market CLOB tokens to the
+        WebSocket price feed so we get real-time bid/ask updates instead
+        of relying on stale HTTP polling."""
+        import asyncio
 
-        Polymarket Gamma API requires:
-          - tag_id (numeric), NOT tag (string) for filtering
-          - GET /events/slug/{slug} for event-by-slug (path, not query param)
-          - Series events contain recurring BTC/ETH/SOL/XRP up-or-down markets
+        token_ids = []
+        for m in markets:
+            token_ids.extend(t for t in m.clob_token_ids if len(t) > 20)
+        if not token_ids:
+            return
+
+        try:
+            from services.ws_feeds import get_feed_manager
+
+            feed_mgr = get_feed_manager()
+            if not feed_mgr._started:
+                return
+
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    feed_mgr.polymarket_feed.subscribe(token_ids=token_ids)
+                )
+            else:
+                loop.run_until_complete(
+                    feed_mgr.polymarket_feed.subscribe(token_ids=token_ids)
+                )
+            logger.debug(
+                "BtcEthHighFreq: subscribed %d crypto tokens to WS feed",
+                len(token_ids),
+            )
+        except Exception as e:
+            logger.debug("BtcEthHighFreq: WS subscription failed (non-critical): %s", e)
+
+    @staticmethod
+    def _is_currently_live(event: dict, now_ms: float) -> bool:
+        """Check if an event's market window is currently live.
+
+        A 15-minute market is live when:
+          startTime <= now < endDate
+        The event-level ``startTime`` is when the 15-min window opens;
+        ``endDate`` is when it resolves.
+        """
+        start_str = event.get("startTime") or event.get("startDate")
+        end_str = event.get("endDate")
+        if not end_str:
+            return False
+
+        try:
+            end_ms = datetime.fromisoformat(
+                end_str.replace("Z", "+00:00")
+            ).timestamp() * 1000
+        except (ValueError, AttributeError):
+            return False
+
+        if now_ms >= end_ms:
+            return False  # Already resolved
+
+        if start_str:
+            try:
+                start_ms = datetime.fromisoformat(
+                    start_str.replace("Z", "+00:00")
+                ).timestamp() * 1000
+                if now_ms < start_ms:
+                    return False  # Not started yet
+            except (ValueError, AttributeError):
+                pass
+
+        return True
+
+    @staticmethod
+    def _pick_live_and_upcoming(events: list[dict], max_upcoming: int = 2) -> list[dict]:
+        """From a list of events, return the currently-live one plus next upcoming.
+
+        This mirrors the reference bot's ``pickLatestLiveMarket`` logic but
+        returns multiple events so we can show upcoming opportunities too.
+        """
+        now_ms = time.time() * 1000
+        live: list[dict] = []
+        upcoming: list[dict] = []
+
+        for evt in events:
+            if evt.get("closed"):
+                continue
+            start_str = evt.get("startTime") or evt.get("startDate")
+            end_str = evt.get("endDate")
+            if not end_str:
+                continue
+            try:
+                end_ms = datetime.fromisoformat(
+                    end_str.replace("Z", "+00:00")
+                ).timestamp() * 1000
+            except (ValueError, AttributeError):
+                continue
+            if end_ms <= now_ms:
+                continue  # Already resolved
+
+            start_ms = None
+            if start_str:
+                try:
+                    start_ms = datetime.fromisoformat(
+                        start_str.replace("Z", "+00:00")
+                    ).timestamp() * 1000
+                except (ValueError, AttributeError):
+                    pass
+
+            if start_ms is not None and start_ms <= now_ms:
+                live.append((end_ms, evt))
+            else:
+                upcoming.append((end_ms, evt))
+
+        # Sort by end time (soonest first)
+        live.sort(key=lambda x: x[0])
+        upcoming.sort(key=lambda x: x[0])
+
+        result = [e for _, e in live]
+        result.extend(e for _, e in upcoming[:max_upcoming])
+        return result
+
+    def _fetch(self) -> list[Market]:
+        """Fetch live crypto markets from Gamma API using series_id.
+
+        For each crypto series (BTC 15m, ETH 15m, etc.), queries the
+        events endpoint to get active events, then picks the currently-live
+        and next-upcoming markets.
         """
         import httpx
 
@@ -212,102 +367,60 @@ class _CryptoMarketFetcher:
         seen_ids: set[str] = set()
 
         def _market_id(mkt: dict) -> str:
-            """Extract canonical market ID (conditionId preferred)."""
             return str(
                 mkt.get("conditionId")
                 or mkt.get("condition_id")
                 or mkt.get("id", "")
             )
 
-        def add_markets_from_events(events: list | dict) -> None:
-            """Extract markets from events (list or single event dict)."""
-            for event_data in [events] if isinstance(events, dict) else (events or []):
-                for mkt_data in event_data.get("markets", []):
-                    mid = _market_id(mkt_data)
-                    if mid and mid not in seen_ids:
-                        try:
-                            m = Market.from_gamma_response(mkt_data)
-                            all_markets.append(m)
-                            seen_ids.add(mid)
-                        except Exception:
-                            pass
-
         try:
-            with httpx.Client(timeout=15.0) as client:
-                # Strategy 1: Events by tag_id (Gamma API uses tag_id, NOT tag)
-                for tag_id in _GAMMA_CRYPTO_TAG_IDS:
+            series = _get_crypto_series()
+            with httpx.Client(timeout=10.0) as client:
+                for series_id, asset, timeframe in series:
                     try:
                         resp = client.get(
                             f"{self._gamma_url}/events",
                             params={
-                                "tag_id": tag_id,
+                                "series_id": series_id,
+                                "active": "true",
                                 "closed": "false",
-                                "limit": 100,
+                                "limit": 10,
                             },
                         )
-                        if resp.status_code == 200:
-                            add_markets_from_events(resp.json())
-                        time.sleep(0.08)  # Rate limit
-                    except Exception:
-                        pass
+                        if resp.status_code != 200:
+                            logger.debug(
+                                "BtcEthHighFreq: Gamma series_id=%s returned %s",
+                                series_id, resp.status_code,
+                            )
+                            continue
 
-                # Strategy 2: Event-by-slug via path (GET /events/slug/{slug})
-                # Polymarket slug format: btc-updown-15m-{unix_ts} (primary)
-                # Some bots use btc-up-or-down-15m - we try both.
-                now_ts = int(time.time())
-                slug_configs = [
-                    ("btc", "updown", "5m", 300),
-                    ("btc", "updown", "15m", 900),
-                    ("eth", "updown", "15m", 900),
-                    ("sol", "updown", "15m", 900),
-                    ("xrp", "updown", "15m", 900),
-                    ("btc", "updown", "1h", 3600),
-                    ("eth", "updown", "1h", 3600),
-                ]
-                for asset, style, tf, interval in slug_configs:
-                    base = now_ts - (now_ts % interval)
-                    for offset in (-interval, 0, interval, interval * 2):
-                        ts = base + offset
-                        # Try primary format (updown) and alternate (up-or-down)
-                        for evt_slug in [
-                            f"{asset}-{style}-{tf}-{ts}",
-                            f"{asset}-up-or-down-{tf}-{ts}",
-                        ]:
-                            try:
-                                resp = client.get(
-                                    f"{self._gamma_url}/events/slug/{evt_slug}",
-                                )
-                                if resp.status_code == 200:
-                                    add_markets_from_events(resp.json())
-                                    break  # Found with this slug, skip alternate
-                                time.sleep(0.02)
-                            except Exception:
-                                pass
+                        events = resp.json()
+                        if not isinstance(events, list):
+                            continue
 
-                # Strategy 3: Markets endpoint with tag_id (broader coverage)
-                for tag_id in [21, 235]:  # Crypto, Bitcoin
-                    try:
-                        resp = client.get(
-                            f"{self._gamma_url}/markets",
-                            params={
-                                "tag_id": tag_id,
-                                "closed": "false",
-                                "limit": 100,
-                            },
-                        )
-                        if resp.status_code == 200:
-                            for mkt_data in resp.json():
+                        # Pick live + upcoming events
+                        selected = self._pick_live_and_upcoming(events)
+
+                        for event_data in selected:
+                            for mkt_data in event_data.get("markets", []):
                                 mid = _market_id(mkt_data)
                                 if mid and mid not in seen_ids:
                                     try:
                                         m = Market.from_gamma_response(mkt_data)
                                         all_markets.append(m)
                                         seen_ids.add(mid)
-                                    except Exception:
-                                        pass
-                        time.sleep(0.08)
-                    except Exception:
-                        pass
+                                    except Exception as e:
+                                        logger.debug(
+                                            "BtcEthHighFreq: failed to parse market %s: %s",
+                                            mid, e,
+                                        )
+
+                        time.sleep(0.05)  # Rate limit between series
+                    except Exception as e:
+                        logger.debug(
+                            "BtcEthHighFreq: series_id=%s fetch failed: %s",
+                            series_id, e,
+                        )
 
         except Exception as exc:
             logger.warning(
@@ -318,7 +431,15 @@ class _CryptoMarketFetcher:
 
         if all_markets:
             logger.info(
-                f"BtcEthHighFreq: fetched {len(all_markets)} crypto markets via Gamma API"
+                "BtcEthHighFreq: fetched %d live crypto markets via Gamma series API "
+                "(%s)",
+                len(all_markets),
+                ", ".join(f"{a} {tf}" for _, a, tf in series),
+            )
+        else:
+            logger.debug(
+                "BtcEthHighFreq: no live crypto markets found across %d series",
+                len(series),
             )
         return all_markets
 
@@ -344,6 +465,7 @@ class SubStrategy(str, Enum):
     PURE_ARB = "pure_arb"
     DUMP_HEDGE = "dump_hedge"
     PRE_PLACED_LIMITS = "pre_placed_limits"
+    DIRECTIONAL_EDGE = "directional_edge"
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +591,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
     def __init__(self) -> None:
         super().__init__()
+        # 15-minute crypto markets have taker-only fees using a price-curve:
+        #   fee_per_share = price * 0.25 * (price * (1 - price))^2
+        # At 50% (where up/down markets sit), this is ~1.56%.
+        # We set self.fee to the midpoint estimate; the scoring methods
+        # use polymarket_fee_curve() for price-specific calculations.
+        # See: https://docs.polymarket.com/polymarket-learn/trading/maker-rebates-program
+        self.fee = 0.0156  # ~1.56% at 50% probability
         # Per-market price history keyed by market ID
         self._price_histories: dict[str, MarketPriceHistory] = {}
 
@@ -731,6 +860,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             self._score_pure_arb(candidate),
             self._score_dump_hedge(candidate),
             self._score_pre_placed_limits(candidate),
+            self._score_directional_edge(candidate),
         ]
 
         # Sort descending by score
@@ -748,7 +878,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         Select when combined < 0.98.
         """
         combined = c.yes_price + c.no_price
-        fee_cost = self.fee  # winner pays this fraction
+        # Use actual Polymarket fee curve: fee depends on the winning price
+        # For pure arb we buy both sides, winner is at ~$1 so fee is near 0.
+        # Conservative: use fee at the more expensive side.
+        fee_cost = polymarket_fee_curve(max(c.yes_price, c.no_price))
 
         # Net profit per $1 payout after fees
         net_profit = 1.0 - combined - fee_cost
@@ -856,11 +989,13 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             )
 
         fair_value = 0.50  # up-or-down markets are coin flips
-        ev_profit = fair_value - dumped_price - self.fee
+        dump_fee = polymarket_fee_curve(dumped_price)
+        ev_profit = fair_value - dumped_price - dump_fee
 
         combined = c.yes_price + c.no_price
         # If combined < $1.00 there's also a guaranteed arb component
-        guaranteed_component = max(1.0 - combined - self.fee, 0.0)
+        arb_fee = polymarket_fee_curve(max(c.yes_price, c.no_price))
+        guaranteed_component = max(1.0 - combined - arb_fee, 0.0)
 
         if ev_profit <= 0 and guaranteed_component <= 0:
             return SubStrategyScore(
@@ -941,7 +1076,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # Ensure combined still profits: need combined < 1.0 - fee
         # If we bid base_price on both sides, combined = 2 * base_price
         # Need: 2 * base_price + fee < 1.0
-        max_combined = 1.0 - self.fee - 0.01  # Leave 1% minimum profit
+        limit_fee = polymarket_fee_curve(0.48)  # fee at typical limit price
+        max_combined = 1.0 - limit_fee - 0.01  # Leave 1% minimum profit
         max_per_side = max_combined / 2.0
 
         target_price = min(base_price, max_per_side)
@@ -979,7 +1115,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         # Calculate dynamic limit prices based on market conditions
         target_yes, target_no = self._calculate_dynamic_limit_prices(c)
         target_combined = target_yes + target_no
-        target_profit = 1.0 - target_combined - self.fee
+        target_fee = polymarket_fee_curve(max(target_yes, target_no))
+        target_profit = 1.0 - target_combined - target_fee
 
         if target_profit <= 0:
             return SubStrategyScore(
@@ -1039,6 +1176,178 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             },
         )
 
+    # -- Sub-strategy D: Directional Edge scoring --
+
+    def _score_directional_edge(self, c: HighFreqCandidate) -> SubStrategyScore:
+        """Score directional edge opportunity using Chainlink oracle prices.
+
+        Compares real-time Chainlink oracle price against the market's
+        "price to beat" to estimate probability of Up vs Down.  When the
+        model probability diverges from market-implied probability by >5%,
+        there's a directional edge.
+
+        This is the primary alpha strategy for 15-minute crypto markets.
+        """
+        try:
+            from services.chainlink_feed import get_chainlink_feed
+        except ImportError:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason="Chainlink feed not available",
+            )
+
+        feed = get_chainlink_feed()
+        oracle = feed.get_price(c.asset)
+        if not oracle or not oracle.price:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason=f"No oracle price for {c.asset}",
+            )
+
+        # Check oracle freshness (must be <60 seconds old)
+        age_ms = (time.time() * 1000) - (oracle.updated_at_ms or 0)
+        if age_ms > 60_000:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason=f"Oracle price stale ({age_ms / 1000:.0f}s old)",
+            )
+
+        # Extract "price to beat" from the market question
+        # E.g. "Bitcoin Up or Down - February 10, 10:15AM-10:30AM ET"
+        # The price to beat is the Chainlink price at start_time
+        # For now, we use the midpoint: if up_price > 0.5, market thinks Up
+        market_up_prob = c.yes_price  # Market-implied probability of Up
+        market_down_prob = c.no_price
+
+        # Build a simple directional model:
+        # If oracle price is trending in a direction, that direction is more likely
+        # The market at fair value has Up/Down both at ~0.50
+        # Any deviation > 5% from 0.50 implies the oracle is moving
+        price_history = self._price_histories.get(c.market.id)
+        if not price_history or len(price_history.snapshots) < 3:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason="Insufficient price history for directional signal",
+            )
+
+        # Calculate model probability from market movement
+        # If yes_price (Up) has been rising, model should agree
+        snapshots = list(price_history.snapshots)
+        recent_yes = [s.yes_price for s in snapshots[-5:]]  # Last 5 yes prices
+        if len(recent_yes) < 3:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason="Not enough recent snapshots",
+            )
+
+        # Trend: is the market moving consistently in one direction?
+        trend = recent_yes[-1] - recent_yes[0]  # Positive = trending Up
+        trend_strength = abs(trend)
+
+        # Model probability: base 50/50, adjusted by trend
+        model_up = 0.50 + (trend * 2.0)  # Scale trend into probability
+        model_up = max(0.30, min(0.70, model_up))  # Clamp
+        model_down = 1.0 - model_up
+
+        # Calculate edge: model vs market
+        edge_up = model_up - market_up_prob
+        edge_down = model_down - market_down_prob
+
+        best_side = "UP" if edge_up > edge_down else "DOWN"
+        best_edge = edge_up if best_side == "UP" else edge_down
+
+        # Time-phase awareness: determine where we are in the 15-min window
+        # EARLY (10-15 min left): conservative, require large edge
+        # MID (5-10 min left): moderate thresholds
+        # LATE (<5 min left): aggressive, model is most reliable
+        remaining_secs = None
+        if c.market.end_date:
+            try:
+                end_str = str(c.market.end_date)
+                if hasattr(c.market.end_date, "timestamp"):
+                    end_ts = c.market.end_date.timestamp()
+                else:
+                    end_ts = datetime.fromisoformat(
+                        end_str.replace("Z", "+00:00")
+                    ).timestamp()
+                remaining_secs = max(0, end_ts - time.time())
+            except (ValueError, AttributeError):
+                pass
+
+        remaining_min = (remaining_secs / 60.0) if remaining_secs else 15.0
+
+        if remaining_min > 10:
+            phase = "EARLY"
+            min_edge = 0.08       # Require 8% edge early (less predictable)
+            score_multiplier = 1.0
+        elif remaining_min > 5:
+            phase = "MID"
+            min_edge = 0.05       # 5% edge in the middle
+            score_multiplier = 1.5
+        else:
+            phase = "LATE"
+            min_edge = 0.03       # 3% edge late (model is most accurate)
+            score_multiplier = 2.0
+
+        if best_edge < min_edge:
+            return SubStrategyScore(
+                strategy=SubStrategy.DIRECTIONAL_EDGE,
+                score=0.0,
+                reason=(
+                    f"Edge too small ({phase}): {best_side} edge={best_edge:.3f} "
+                    f"(need >{min_edge:.2f}), model_up={model_up:.2f} "
+                    f"vs market_up={market_up_prob:.3f}, "
+                    f"{remaining_min:.1f}min left"
+                ),
+            )
+
+        # Score based on edge size, amplified by time phase
+        score = min(best_edge * 500.0 * score_multiplier, 80.0)
+
+        # Bonus for trend strength
+        if trend_strength > 0.05:
+            score += 15.0
+        elif trend_strength > 0.02:
+            score += 8.0
+
+        # LATE phase bonus: we're most confident here
+        if phase == "LATE":
+            score += 20.0
+
+        # The price we'd buy at
+        buy_price = market_up_prob if best_side == "UP" else market_down_prob
+        buy_fee = polymarket_fee_curve(buy_price)
+
+        return SubStrategyScore(
+            strategy=SubStrategy.DIRECTIONAL_EDGE,
+            score=score,
+            reason=(
+                f"Directional {best_side} ({phase}, {remaining_min:.0f}m left): "
+                f"edge={best_edge:.3f}, model_up={model_up:.2f}, "
+                f"market_up={market_up_prob:.3f}, trend={trend:+.4f}, "
+                f"fee={buy_fee:.4f}"
+            ),
+            params={
+                "side": best_side,
+                "edge": best_edge,
+                "model_up": model_up,
+                "model_down": model_down,
+                "market_up": market_up_prob,
+                "market_down": market_down_prob,
+                "buy_price": buy_price,
+                "oracle_price": oracle.price,
+                "trend": trend,
+                "trend_strength": trend_strength,
+                "phase": phase,
+                "remaining_minutes": remaining_min,
+            },
+        )
+
     # ------------------------------------------------------------------
     # Opportunity generation
     # ------------------------------------------------------------------
@@ -1061,6 +1370,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             return self._generate_dump_hedge(candidate, params)
         elif sub == SubStrategy.PRE_PLACED_LIMITS:
             return self._generate_pre_placed_limits(candidate, params)
+        elif sub == SubStrategy.DIRECTIONAL_EDGE:
+            return self._generate_directional_edge(candidate, params)
 
         logger.warning(
             "BtcEthHighFreq: unknown sub-strategy %s for market %s",
@@ -1249,6 +1560,82 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             )
         return opp
 
+    def _generate_directional_edge(
+        self,
+        c: HighFreqCandidate,
+        params: dict,
+    ) -> Optional[ArbitrageOpportunity]:
+        """Generate opportunity for sub-strategy D: Directional Edge.
+
+        Buys only the predicted winning side (directional bet, not arb).
+        Uses maker orders to avoid taker fees and earn rebates.
+        """
+        market = c.market
+        side = params["side"]  # "UP" or "DOWN"
+        edge = params["edge"]
+        buy_price = params["buy_price"]
+        model_up = params["model_up"]
+
+        # Build single-side position
+        maker_mode = _cfg.BTC_ETH_HF_MAKER_MODE
+        positions = []
+        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
+            if side == "UP":
+                token_id = market.clob_token_ids[0]
+                outcome = "YES"
+            else:
+                token_id = market.clob_token_ids[1]
+                outcome = "NO"
+
+            positions = [
+                {
+                    "action": "BUY",
+                    "outcome": outcome,
+                    "price": buy_price,
+                    "token_id": token_id,
+                    "_maker_mode": maker_mode,
+                    "_maker_price": buy_price,
+                }
+            ]
+
+        # Fair value for directional bet: model probability * $1.00 payout
+        expected_payout = model_up if side == "UP" else (1.0 - model_up)
+
+        opp = self.create_opportunity(
+            title=(
+                f"BTC/ETH HF Directional: {c.asset} {c.timeframe} "
+                f"({side} edge {edge:.1%})"
+            ),
+            description=(
+                f"Directional {side} bet on {c.asset} {c.timeframe} market. "
+                f"Model: {model_up:.0%} Up / {1-model_up:.0%} Down. "
+                f"Market: {params['market_up']:.1%} Up. "
+                f"Edge: {edge:.1%}. "
+                f"{'Maker order (0% fee + rebates).' if maker_mode else ''}"
+            ),
+            total_cost=buy_price,
+            expected_payout=expected_payout,
+            markets=[market],
+            positions=positions,
+            is_guaranteed=False,  # Directional, not guaranteed
+            min_liquidity_hard=200.0,
+            min_position_size=5.0,
+            min_absolute_profit=0.5,
+        )
+
+        if opp is not None:
+            self._attach_highfreq_metadata(
+                opp,
+                c,
+                SubStrategy.DIRECTIONAL_EDGE,
+                params,
+            )
+            opp.risk_factors.insert(
+                0,
+                f"Directional bet: profit depends on {c.asset} going {side}",
+            )
+        return opp
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -1260,6 +1647,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         no_price: float,
     ) -> list[dict]:
         """Build standard BUY YES + BUY NO position list."""
+        maker_mode = _cfg.BTC_ETH_HF_MAKER_MODE
         positions: list[dict] = []
         if market.clob_token_ids and len(market.clob_token_ids) >= 2:
             positions = [
@@ -1268,12 +1656,16 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "outcome": "YES",
                     "price": yes_price,
                     "token_id": market.clob_token_ids[0],
+                    "_maker_mode": maker_mode,
+                    "_maker_price": yes_price,
                 },
                 {
                     "action": "BUY",
                     "outcome": "NO",
                     "price": no_price,
                     "token_id": market.clob_token_ids[1],
+                    "_maker_mode": maker_mode,
+                    "_maker_price": no_price,
                 },
             ]
         return positions

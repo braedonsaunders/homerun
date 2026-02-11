@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from models.database import (
     DiscoveredWallet,
@@ -1059,23 +1059,39 @@ class WalletTagger:
         return matches
 
     async def get_all_tags(self) -> list[dict]:
-        """Get all tag definitions with wallet counts."""
+        """Get all tag definitions with wallet counts. Uses one aggregated query for counts."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(WalletTag).order_by(WalletTag.category, WalletTag.name)
             )
             tags = list(result.scalars().all())
 
-        # Count wallets per tag
-        all_wallets_result = None
-        async with AsyncSessionLocal() as session:
-            all_wallets_result = await session.execute(select(DiscoveredWallet))
-            all_wallets = list(all_wallets_result.scalars().all())
+        # Ensure tag definitions exist (e.g. first request before initialize_tags ran)
+        if not tags:
+            await self.initialize_tags()
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(WalletTag).order_by(WalletTag.category, WalletTag.name)
+                )
+                tags = list(result.scalars().all())
 
-        tag_counts: dict[str, int] = {}
-        for w in all_wallets:
-            for t in w.tags or []:
-                tag_counts[t] = tag_counts.get(t, 0) + 1
+        async with AsyncSessionLocal() as session:
+            # Count wallets per tag via SQL (json_each) instead of loading all wallets
+            tag_counts: dict[str, int] = {}
+            try:
+                count_result = await session.execute(
+                    text(
+                        "SELECT value AS tag_name, COUNT(DISTINCT address) AS cnt "
+                        "FROM discovered_wallets, json_each(discovered_wallets.tags) "
+                        "WHERE discovered_wallets.tags IS NOT NULL "
+                        "GROUP BY value"
+                    )
+                )
+                for row in count_result:
+                    tag_counts[str(row.tag_name)] = row.cnt
+            except Exception:
+                # Fallback if json_each not supported or column type differs
+                pass
 
         return [
             {

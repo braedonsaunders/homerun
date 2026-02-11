@@ -160,6 +160,17 @@ class AutoTraderConfigRequest(BaseModel):
         description="LLM model for opportunity judging (e.g. 'gpt-4o-mini', 'gemini-2.0-flash')",
     )
 
+    # News workflow trade intents
+    news_workflow_enabled: Optional[bool] = Field(
+        None, description="Consume pending trade intents from the news workflow pipeline"
+    )
+    news_workflow_min_edge: Optional[float] = Field(
+        None, ge=0, le=100, description="Min edge % to auto-trade a news intent"
+    )
+    news_workflow_max_age_minutes: Optional[int] = Field(
+        None, ge=1, le=1440, description="Skip intents older than this many minutes"
+    )
+
     # LLM verification before trading
     llm_verify_trades: Optional[bool] = Field(
         None,
@@ -407,6 +418,14 @@ async def update_auto_trader_config(config: AutoTraderConfigRequest):
 
     if config.ai_judge_model is not None:
         updates["ai_judge_model"] = config.ai_judge_model
+
+    # News workflow
+    if config.news_workflow_enabled is not None:
+        updates["news_workflow_enabled"] = config.news_workflow_enabled
+    if config.news_workflow_min_edge is not None:
+        updates["news_workflow_min_edge"] = config.news_workflow_min_edge
+    if config.news_workflow_max_age_minutes is not None:
+        updates["news_workflow_max_age_minutes"] = config.news_workflow_max_age_minutes
 
     # LLM verification before trading
     if config.llm_verify_trades is not None:

@@ -14,10 +14,14 @@ Provides endpoints for:
 - Opportunity AI summaries
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+
+from models.database import get_db_session
+from services import shared_state
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +96,12 @@ class JudgeOpportunityRequest(BaseModel):
 
 
 @router.post("/ai/judge/opportunity")
-async def judge_opportunity(request: JudgeOpportunityRequest):
+async def judge_opportunity(
+    request: JudgeOpportunityRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Judge a specific opportunity using LLM."""
-    # Get opportunity from scanner
-    from services import scanner
-
-    opps = scanner.get_opportunities()
+    opps = await shared_state.get_opportunities_from_db(session, None)
     opp = next((o for o in opps if o.id == request.opportunity_id), None)
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
@@ -134,14 +138,16 @@ class JudgeBulkRequest(BaseModel):
 
 
 @router.post("/ai/judge/opportunities/bulk")
-async def judge_opportunities_bulk(request: JudgeBulkRequest):
+async def judge_opportunities_bulk(
+    request: JudgeBulkRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Judge multiple opportunities sequentially. Returns results as they complete."""
-    from services import scanner
     from services.ai.opportunity_judge import opportunity_judge
     from models.opportunity import AIAnalysis
     from datetime import datetime
 
-    opps = scanner.get_opportunities()
+    opps = await shared_state.get_opportunities_from_db(session, None)
 
     if request.opportunity_ids:
         id_set = set(request.opportunity_ids)
@@ -339,17 +345,21 @@ async def get_ai_usage():
 @router.get("/ai/status")
 async def get_ai_status():
     """Get overall AI system status."""
+    import asyncio
+
     try:
         from services.ai import get_llm_manager
         from services.ai.skills.loader import skill_loader
 
         manager = get_llm_manager()
+        # Run sync filesystem scan in thread pool so it doesn't block the event loop
+        skills_list = await asyncio.to_thread(skill_loader.list_skills)
         return {
             "enabled": manager.is_available(),
             "providers_configured": list(manager._providers.keys())
             if hasattr(manager, "_providers")
             else [],
-            "skills_available": len(skill_loader.list_skills()),
+            "skills_available": len(skills_list),
             "usage": await manager.get_usage_stats()
             if manager.is_available()
             else None,
@@ -368,17 +378,15 @@ async def get_ai_status():
 
 @router.get("/ai/markets/search")
 async def search_markets(
+    session: AsyncSession = Depends(get_db_session),
     q: str = Query(..., min_length=1, description="Search query for market titles"),
     limit: int = Query(10, le=50),
 ):
     """Search available markets by question text for autocomplete.
 
-    Returns markets from the scanner's current market pool, allowing users
-    to find markets without needing to manually look up IDs.
+    Returns markets from the current opportunity snapshot (DB).
     """
-    from services import scanner
-
-    opportunities = scanner.get_opportunities()
+    opportunities = await shared_state.get_opportunities_from_db(session, None)
     seen_ids = set()
     results = []
     q_lower = q.lower()
@@ -415,15 +423,15 @@ async def search_markets(
 
 
 @router.get("/ai/opportunity/{opportunity_id}/summary")
-async def get_opportunity_ai_summary(opportunity_id: str):
+async def get_opportunity_ai_summary(
+    opportunity_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Get a quick AI intelligence summary for a specific opportunity.
 
-    Returns cached judgment + resolution analysis if available,
-    or triggers a quick analysis if not cached.
+    Returns cached judgment + resolution analysis if available.
     """
-    from services import scanner
-
-    opps = scanner.get_opportunities()
+    opps = await shared_state.get_opportunities_from_db(session, None)
     opp = next((o for o in opps if o.id == opportunity_id), None)
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
@@ -474,7 +482,10 @@ class AIChatRequest(BaseModel):
 
 
 @router.post("/ai/chat")
-async def ai_chat(request: AIChatRequest):
+async def ai_chat(
+    request: AIChatRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """Conversational AI copilot for the trading platform.
 
     Context-aware chat that understands the current page/opportunity
@@ -495,9 +506,7 @@ async def ai_chat(request: AIChatRequest):
         context_parts = []
 
         if request.context_type == "opportunity" and request.context_id:
-            from services import scanner
-
-            opps = scanner.get_opportunities()
+            opps = await shared_state.get_opportunities_from_db(session, None)
             opp = next((o for o in opps if o.id == request.context_id), None)
             if opp:
                 context_parts.append(

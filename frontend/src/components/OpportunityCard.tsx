@@ -26,6 +26,7 @@ import Sparkline from './Sparkline'
 // ─── Constants ────────────────────────────────────────────
 
 const STRATEGY_COLORS: Record<string, string> = {
+  search: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
   basic: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
   negrisk: 'bg-green-500/10 text-green-400 border-green-500/20',
   mutually_exclusive: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
@@ -43,6 +44,7 @@ const STRATEGY_COLORS: Record<string, string> = {
 }
 
 const STRATEGY_ABBREV: Record<string, string> = {
+  search: 'MKT',
   basic: 'ARB',
   negrisk: 'NEG',
   mutually_exclusive: 'MXL',
@@ -60,6 +62,7 @@ const STRATEGY_ABBREV: Record<string, string> = {
 }
 
 const STRATEGY_NAMES: Record<string, string> = {
+  search: 'Market',
   basic: 'Basic Arb',
   negrisk: 'NegRisk',
   mutually_exclusive: 'Mutually Exclusive',
@@ -130,7 +133,9 @@ function generatePriceHistory(id: string, currentPrice: number, points = 20): nu
 }
 
 export function timeAgo(dateStr: string): string {
+  if (!dateStr) return '—'
   const diffMs = Date.now() - new Date(dateStr).getTime()
+  if (diffMs < 0 || Number.isNaN(diffMs)) return 'now'
   const sec = Math.floor(diffMs / 1000)
   if (sec < 60) return `${sec}s`
   const min = Math.floor(sec / 60)
@@ -138,6 +143,21 @@ export function timeAgo(dateStr: string): string {
   const hr = Math.floor(min / 60)
   if (hr < 24) return `${hr}h`
   return `${Math.floor(hr / 24)}d`
+}
+
+/** Format a resolution date as a human-readable "time remaining" string */
+function timeUntil(dateStr?: string | null): string {
+  if (!dateStr) return '—'
+  const diffMs = new Date(dateStr).getTime() - Date.now()
+  if (Number.isNaN(diffMs)) return '—'
+  if (diffMs <= 0) return 'Ended'
+  const days = Math.floor(diffMs / 86_400_000)
+  if (days > 365) return `${Math.floor(days / 365)}y`
+  if (days > 30) return `${Math.floor(days / 30)}mo`
+  if (days > 0) return `${days}d`
+  const hrs = Math.floor(diffMs / 3_600_000)
+  if (hrs > 0) return `${hrs}h`
+  return `${Math.floor(diffMs / 60_000)}m`
 }
 
 /** Safely format a number with toFixed, returning a fallback for null/undefined/NaN */
@@ -216,17 +236,29 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || 'bg-border') : 'bg-border/50'
   const bgGradient = recommendation ? (CARD_BG_GRADIENT[recommendation] || '') : ''
 
-  // Platform URLs
+  // Platform URLs — prefer event_slug (correct Polymarket URL), fall back to market slug
   const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
+  const bestEventSlug = opportunity.event_slug
+    || (polyMarket as any)?.event_slug
+    || ''
   const polyUrl = polyMarket
-    ? (opportunity.event_slug
-        ? `https://polymarket.com/event/${opportunity.event_slug}`
+    ? (bestEventSlug
+        ? `https://polymarket.com/event/${bestEventSlug}`
         : polyMarket.slug
           ? `https://polymarket.com/event/${polyMarket.slug}`
           : null)
     : null
   const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
-  const kalshiUrl = kalshiMarket ? `https://kalshi.com/markets/${kalshiMarket.id}` : null
+  const kalshiUrl = kalshiMarket
+    ? (() => {
+        const ticker = kalshiMarket.id.toLowerCase()
+        const eventTicker = ticker.split('-')[0]
+        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
+      })()
+    : null
+
+  // Search result mode (market listing, not an arbitrage opportunity)
+  const isSearch = opportunity.strategy === 'search'
 
   // ROI direction
   const roiPositive = opportunity.roi_percent >= 0
@@ -241,12 +273,19 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
       <div className={cn("absolute left-0 top-0 bottom-0 w-1 rounded-l-lg transition-all", accentColor)} />
 
       <div className="pl-4 pr-3 py-2.5 space-y-2">
-        {/* ── Row 1: Badges + ROI ── */}
+        {/* ── Row 1: Badges + ROI / Prices ── */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-            <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", STRATEGY_COLORS[opportunity.strategy])}>
-              {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
-            </Badge>
+            {!isSearch && (
+              <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", STRATEGY_COLORS[opportunity.strategy])}>
+                {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
+              </Badge>
+            )}
+            {isSearch && (
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-blue-500/10 text-blue-400 border-blue-500/20">
+                {(opportunity as any).platform === 'kalshi' ? 'Kalshi' : 'Polymarket'}
+              </Badge>
+            )}
             {opportunity.category && (
               <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground border-border/60">
                 {opportunity.category}
@@ -264,18 +303,37 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
             )}
           </div>
           <div className="text-right shrink-0">
-            <div className="flex items-center gap-1 justify-end">
-              <TrendingUp className={cn("w-3.5 h-3.5", roiPositive ? "text-green-400" : "text-red-400")} />
-              <span className={cn(
-                "text-base font-bold font-data leading-none",
-                roiPositive ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
-              )}>
-                {roiPositive ? '+' : ''}{safeFixed(opportunity.roi_percent, 2, '0.00')}%
-              </span>
-            </div>
-            <p className="text-[10px] text-muted-foreground font-data mt-0.5">
-              {formatCompact(opportunity.net_profit)} net
-            </p>
+            {isSearch && market ? (
+              <>
+                {/* Search results: show Yes/No prices prominently */}
+                <div className="flex items-center gap-2 justify-end">
+                  <span className="text-sm font-bold font-data text-green-400 leading-none">
+                    Yes {safeFixed((market.yes_price ?? 0) * 100, 0)}¢
+                  </span>
+                  <span className="text-sm font-bold font-data text-red-400 leading-none">
+                    No {safeFixed((market.no_price ?? 0) * 100, 0)}¢
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground font-data mt-0.5">
+                  {formatCompact(opportunity.volume ?? opportunity.min_liquidity)} vol
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-1 justify-end">
+                  <TrendingUp className={cn("w-3.5 h-3.5", roiPositive ? "text-green-400" : "text-red-400")} />
+                  <span className={cn(
+                    "text-base font-bold font-data leading-none",
+                    roiPositive ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
+                  )}>
+                    {roiPositive ? '+' : ''}{safeFixed(opportunity.roi_percent, 2, '0.00')}%
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground font-data mt-0.5">
+                  {formatCompact(opportunity.net_profit)} net
+                </p>
+              </>
+            )}
           </div>
         </div>
 
@@ -307,18 +365,31 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
           )}
 
           {/* Metrics Grid */}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
-            <MiniMetric label="Cost" value={formatCompact(opportunity.total_cost)} />
-            <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
-            <MiniMetric
-              label="Risk"
-              value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
-              valueClass={riskColor}
-              bar={opportunity.risk_score}
-              barClass={riskBarColor}
-            />
-            <MiniMetric label="Max Pos" value={formatCompact(opportunity.max_position_size)} />
-          </div>
+          {isSearch ? (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
+              <MiniMetric label="Volume" value={formatCompact(opportunity.volume ?? opportunity.min_liquidity)} />
+              <MiniMetric label="Liquidity" value={formatCompact(opportunity.min_liquidity)} />
+              <MiniMetric label="Ends" value={timeUntil(opportunity.resolution_date)} />
+              <MiniMetric
+                label="Competitive"
+                value={market ? `${safeFixed(Math.abs(market.yes_price - 0.5) * 200, 0)}%` : '—'}
+                valueClass={market && Math.abs(market.yes_price - 0.5) < 0.1 ? 'text-green-400' : undefined}
+              />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
+              <MiniMetric label="Cost" value={formatCompact(opportunity.total_cost)} />
+              <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
+              <MiniMetric
+                label="Risk"
+                value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
+                valueClass={riskColor}
+                bar={opportunity.risk_score}
+                barClass={riskBarColor}
+              />
+              <MiniMetric label="Max Pos" value={formatCompact(opportunity.max_position_size)} />
+            </div>
+          )}
         </div>
 
         {/* ── Row 4: AI Score Bar ── */}
@@ -379,28 +450,42 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
         {/* ── Row 5: Positions + Time ── */}
         <div className="flex items-center text-[10px] text-muted-foreground gap-1.5 overflow-hidden">
-          <div className="flex items-center gap-1 truncate min-w-0">
-            {opportunity.positions_to_take.slice(0, 3).map((pos, i) => (
-              <span key={i} className="inline-flex items-center gap-0.5 shrink-0">
-                {i > 0 && <span className="text-border">·</span>}
-                <span className={cn(
-                  "font-data font-medium",
-                  pos.outcome === 'YES' ? 'text-green-400/80' : 'text-red-400/80'
-                )}>
-                  {pos.action} {pos.outcome}
+          {isSearch ? (
+            <div className="flex items-center gap-1 truncate min-w-0">
+              {market && (
+                <span className="font-data">
+                  <span className="text-green-400/80">Yes {safeFixed(market.yes_price, 3)}</span>
+                  {' / '}
+                  <span className="text-red-400/80">No {safeFixed(market.no_price, 3)}</span>
                 </span>
-                <span className="font-data">@{safeFixed(pos.price, 2)}</span>
-              </span>
-            ))}
-            {opportunity.positions_to_take.length > 3 && (
-              <span className="text-muted-foreground/60">+{opportunity.positions_to_take.length - 3}</span>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 truncate min-w-0">
+              {opportunity.positions_to_take.slice(0, 3).map((pos, i) => (
+                <span key={i} className="inline-flex items-center gap-0.5 shrink-0">
+                  {i > 0 && <span className="text-border">·</span>}
+                  <span className={cn(
+                    "font-data font-medium",
+                    pos.outcome === 'YES' ? 'text-green-400/80' : 'text-red-400/80'
+                  )}>
+                    {pos.action} {pos.outcome}
+                  </span>
+                  <span className="font-data">@{safeFixed(pos.price, 2)}</span>
+                </span>
+              ))}
+              {opportunity.positions_to_take.length > 3 && (
+                <span className="text-muted-foreground/60">+{opportunity.positions_to_take.length - 3}</span>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
-            <span className="flex items-center gap-0.5">
-              <Layers className="w-2.5 h-2.5" />
-              {opportunity.markets.length}
-            </span>
+            {!isSearch && (
+              <span className="flex items-center gap-0.5">
+                <Layers className="w-2.5 h-2.5" />
+                {opportunity.markets.length}
+              </span>
+            )}
             <span className="flex items-center gap-0.5">
               <Clock className="w-2.5 h-2.5" />
               {timeAgo(opportunity.detected_at)}
@@ -483,102 +568,187 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               </p>
             )}
 
-            {/* Positions to Take */}
-            <div>
-              <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Positions</h4>
-              <div className="space-y-1.5">
-                {opportunity.positions_to_take.map((pos, idx) => {
-                  const platform = (pos as any).platform
-                  return (
-                    <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <Badge variant="outline" className={cn(
-                          "text-[10px] px-1.5 py-0",
-                          pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
-                        )}>
-                          {pos.action} {pos.outcome}
-                        </Badge>
-                        {platform && (
-                          <Badge variant="outline" className={cn(
-                            "text-[9px] px-1 py-0",
-                            platform === 'kalshi' ? 'text-indigo-400 border-indigo-500/20' : 'text-blue-400 border-blue-500/20'
-                          )}>
-                            {platform === 'kalshi' ? 'KL' : 'PM'}
-                          </Badge>
-                        )}
-                        <span className="text-[11px] text-foreground/70 truncate">{pos.market}</span>
-                      </div>
-                      <span className="font-data text-xs text-foreground">${safeFixed(pos.price, 4)}</span>
+            {isSearch ? (
+              <>
+                {/* ── Search result expanded: Market Details ── */}
+                <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Market Details</h4>
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Yes Price</p>
+                      <p className="font-data text-green-400">{safeFixed((market?.yes_price ?? 0) * 100, 1)}¢</p>
                     </div>
-                  )
-                })}
-              </div>
-            </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">No Price</p>
+                      <p className="font-data text-red-400">{safeFixed((market?.no_price ?? 0) * 100, 1)}¢</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Spread</p>
+                      <p className="font-data text-foreground">{market ? safeFixed(Math.abs(1 - market.yes_price - market.no_price) * 100, 1) : '—'}¢</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Volume</p>
+                      <p className="font-data text-foreground">{formatCompact(opportunity.volume ?? 0)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Liquidity</p>
+                      <p className="font-data text-foreground">{formatCompact(opportunity.min_liquidity)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Ends</p>
+                      <p className="font-data text-foreground">{timeUntil(opportunity.resolution_date)}</p>
+                    </div>
+                  </div>
+                </div>
 
-            {/* Profit Breakdown */}
-            <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
-              <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Profit Breakdown</h4>
-              <div className="grid grid-cols-3 gap-3 text-xs">
-                <div>
-                  <p className="text-[10px] text-muted-foreground">Cost</p>
-                  <p className="font-data text-foreground">${safeFixed(opportunity.total_cost, 4)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">Payout</p>
-                  <p className="font-data text-foreground">${safeFixed(opportunity.expected_payout, 4)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">Gross</p>
-                  <p className="font-data text-foreground">${safeFixed(opportunity.gross_profit, 4)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">Fee (2%)</p>
-                  <p className="font-data text-red-400">-${safeFixed(opportunity.fee, 4)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">Net</p>
-                  <p className="font-data text-green-400">${safeFixed(opportunity.net_profit, 4)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-muted-foreground">ROI</p>
-                  <p className="font-data text-green-400">{safeFixed(opportunity.roi_percent, 2)}%</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Markets */}
-            <div>
-              <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Markets ({opportunity.markets.length})</h4>
-              <div className="space-y-1.5">
+                {/* Market link */}
                 {opportunity.markets.map((mkt, idx) => {
                   const isKalshi = (mkt as any).platform === 'kalshi'
+                  const mktEventSlug = (mkt as any).event_slug || opportunity.event_slug || ''
                   const url = isKalshi
-                    ? `https://kalshi.com/markets/${mkt.id}`
-                    : mkt.slug
-                      ? `https://polymarket.com/event/${mkt.slug}`
-                      : `https://polymarket.com/event/${mkt.id}`
+                    ? (() => {
+                        const ticker = mkt.id.toLowerCase()
+                        const eventTicker = ticker.split('-')[0]
+                        return `https://kalshi.com/markets/${eventTicker}/${ticker}`
+                      })()
+                    : mktEventSlug
+                      ? `https://polymarket.com/event/${mktEventSlug}`
+                      : mkt.slug
+                        ? `https://polymarket.com/event/${mkt.slug}`
+                        : null
                   return (
                     <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                         <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                          Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Liq:{formatCompact(mkt.liquidity)}
+                          Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Vol:{formatCompact((mkt as any).volume)} Liq:{formatCompact((mkt as any).liquidity || mkt.liquidity)}
                         </p>
                       </div>
-                      <a
-                        href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
+                      {url && (
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
                     </div>
                   )
                 })}
-              </div>
-            </div>
+              </>
+            ) : (
+              <>
+                {/* ── Arbitrage opportunity expanded: Positions + Profit ── */}
+                {/* Positions to Take */}
+                <div>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Positions</h4>
+                  <div className="space-y-1.5">
+                    {opportunity.positions_to_take.map((pos, idx) => {
+                      const platform = (pos as any).platform
+                      return (
+                        <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="outline" className={cn(
+                              "text-[10px] px-1.5 py-0",
+                              pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
+                            )}>
+                              {pos.action} {pos.outcome}
+                            </Badge>
+                            {platform && (
+                              <Badge variant="outline" className={cn(
+                                "text-[9px] px-1 py-0",
+                                platform === 'kalshi' ? 'text-indigo-400 border-indigo-500/20' : 'text-blue-400 border-blue-500/20'
+                              )}>
+                                {platform === 'kalshi' ? 'KL' : 'PM'}
+                              </Badge>
+                            )}
+                            <span className="text-[11px] text-foreground/70 truncate">{pos.market}</span>
+                          </div>
+                          <span className="font-data text-xs text-foreground">${safeFixed(pos.price, 4)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* Profit Breakdown */}
+                <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Profit Breakdown</h4>
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Cost</p>
+                      <p className="font-data text-foreground">${safeFixed(opportunity.total_cost, 4)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Payout</p>
+                      <p className="font-data text-foreground">${safeFixed(opportunity.expected_payout, 4)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Gross</p>
+                      <p className="font-data text-foreground">${safeFixed(opportunity.gross_profit, 4)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Fee (2%)</p>
+                      <p className="font-data text-red-400">-${safeFixed(opportunity.fee, 4)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Net</p>
+                      <p className="font-data text-green-400">${safeFixed(opportunity.net_profit, 4)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">ROI</p>
+                      <p className="font-data text-green-400">{safeFixed(opportunity.roi_percent, 2)}%</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Markets */}
+                <div>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Markets ({opportunity.markets.length})</h4>
+                  <div className="space-y-1.5">
+                    {opportunity.markets.map((mkt, idx) => {
+                      const isKalshi = (mkt as any).platform === 'kalshi'
+                      const mktEventSlug = (mkt as any).event_slug || opportunity.event_slug || ''
+                      const url = isKalshi
+                        ? (() => {
+                            const ticker = mkt.id.toLowerCase()
+                            const eventTicker = ticker.split('-')[0]
+                            return `https://kalshi.com/markets/${eventTicker}/${ticker}`
+                          })()
+                        : mktEventSlug
+                          ? `https://polymarket.com/event/${mktEventSlug}`
+                          : mkt.slug
+                            ? `https://polymarket.com/event/${mkt.slug}`
+                            : null
+                      return (
+                        <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
+                            <p className="text-[9px] text-muted-foreground font-data mt-0.5">
+                              Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Liq:{formatCompact(mkt.liquidity)}
+                            </p>
+                          </div>
+                          {url && (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Risk Factors */}
             {opportunity.risk_factors.length > 0 && (
@@ -617,7 +787,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
             )}
 
             {/* Execute Button */}
-            {onExecute && (
+            {onExecute && !isSearch && (
               <Button
                 onClick={(e) => { e.stopPropagation(); onExecute(opportunity) }}
                 size="sm"

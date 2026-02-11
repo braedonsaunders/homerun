@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Enum as SQLEnum,
     Index,
+    event,
     inspect as sa_inspect,
     text,
 )
@@ -399,6 +400,96 @@ class NewsArticleCache(Base):
     )
 
 
+class NewsMarketWatcher(Base):
+    """Reverse index entry for a market watcher used by the news workflow."""
+
+    __tablename__ = "news_market_watchers"
+
+    market_id = Column(String, primary_key=True)
+    question = Column(Text, nullable=False)
+    event_title = Column(Text, nullable=True)
+    category = Column(String, nullable=True)
+    yes_price = Column(Float, nullable=True)
+    no_price = Column(Float, nullable=True)
+    liquidity = Column(Float, nullable=True)
+    slug = Column(String, nullable=True)
+    keywords = Column(JSON, nullable=True)
+    embedding = Column(JSON, nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_news_watcher_updated", "updated_at"),
+        Index("idx_news_watcher_category", "category"),
+        Index("idx_news_watcher_liquidity", "liquidity"),
+    )
+
+
+class NewsWorkflowFinding(Base):
+    """Persisted result from the independent news workflow pipeline."""
+
+    __tablename__ = "news_workflow_findings"
+
+    id = Column(String, primary_key=True)
+    article_id = Column(String, nullable=False, index=True)
+    market_id = Column(String, nullable=False, index=True)
+    article_title = Column(Text, nullable=False)
+    article_source = Column(String, nullable=True)
+    article_url = Column(Text, nullable=True)
+    market_question = Column(Text, nullable=False)
+    market_price = Column(Float, nullable=True)
+    model_probability = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    direction = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
+    retrieval_score = Column(Float, nullable=True)
+    semantic_score = Column(Float, nullable=True)
+    keyword_score = Column(Float, nullable=True)
+    event_score = Column(Float, nullable=True)
+    rerank_score = Column(Float, nullable=True)
+    event_graph = Column(JSON, nullable=True)
+    evidence = Column(JSON, nullable=True)
+    reasoning = Column(Text, nullable=True)
+    actionable = Column(Boolean, default=False, nullable=False)
+    consumed_by_auto_trader = Column(Boolean, default=False, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_news_finding_created", "created_at"),
+        Index("idx_news_finding_actionable", "actionable"),
+        Index("idx_news_finding_consumed", "consumed_by_auto_trader"),
+    )
+
+
+class NewsTradeIntent(Base):
+    """Execution-oriented intent generated from high-conviction findings."""
+
+    __tablename__ = "news_trade_intents"
+
+    id = Column(String, primary_key=True)
+    finding_id = Column(String, nullable=False, index=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=False)
+    direction = Column(String, nullable=False)  # buy_yes | buy_no
+    entry_price = Column(Float, nullable=True)
+    model_probability = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    suggested_size_usd = Column(Float, nullable=True)
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_news_intent_created", "created_at"),
+        Index("idx_news_intent_status", "status"),
+        Index("idx_news_intent_market", "market_id"),
+    )
+
+
 # ==================== ANOMALIES ====================
 
 
@@ -494,6 +585,56 @@ class ParameterSet(Base):
     backtest_results = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ValidationJob(Base):
+    """Persistent async validation job queue (backtests/optimization)."""
+
+    __tablename__ = "validation_jobs"
+
+    id = Column(String, primary_key=True)
+    job_type = Column(String, nullable=False)  # backtest | optimize
+    status = Column(
+        String, nullable=False, default="queued"
+    )  # queued | running | completed | failed | cancelled
+    payload = Column(JSON, nullable=True)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    progress = Column(Float, default=0.0)
+    message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_validation_job_status", "status"),
+        Index("idx_validation_job_created", "created_at"),
+    )
+
+
+class StrategyValidationProfile(Base):
+    """Persisted health metrics and guardrail status per strategy."""
+
+    __tablename__ = "strategy_validation_profiles"
+
+    strategy_type = Column(String, primary_key=True)
+    status = Column(String, nullable=False, default="active")  # active | demoted
+    sample_size = Column(Integer, default=0)
+    directional_accuracy = Column(Float, nullable=True)
+    mae_roi = Column(Float, nullable=True)
+    rmse_roi = Column(Float, nullable=True)
+    optimism_bias_roi = Column(Float, nullable=True)
+    last_reason = Column(Text, nullable=True)
+    manual_override = Column(Boolean, default=False)
+    manual_override_note = Column(String, nullable=True)
+    demoted_at = Column(DateTime, nullable=True)
+    restored_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_validation_profile_status", "status"),
+        Index("idx_validation_profile_updated", "updated_at"),
+    )
 
 
 # ==================== SCANNER SETTINGS ====================
@@ -609,6 +750,11 @@ class AppSettings(Base):
     btc_eth_pure_arb_max_combined = Column(Float, default=0.98)
     btc_eth_dump_hedge_drop_pct = Column(Float, default=0.05)
     btc_eth_thin_liquidity_usd = Column(Float, default=500.0)
+    # Polymarket series IDs for crypto 15-min markets
+    btc_eth_hf_series_btc_15m = Column(String, default="10192")
+    btc_eth_hf_series_eth_15m = Column(String, default="10191")
+    btc_eth_hf_series_sol_15m = Column(String, default="10423")
+    btc_eth_hf_series_xrp_15m = Column(String, default="10422")
 
     # Miracle Strategy
     miracle_min_no_price = Column(Float, default=0.90)
@@ -674,6 +820,31 @@ class AppSettings(Base):
     trading_proxy_require_vpn = Column(
         Boolean, default=True
     )  # Block trades if VPN unreachable
+
+    # Validation guardrails (auto strategy demotion/promotion)
+    validation_guardrails_enabled = Column(Boolean, default=True)
+    validation_min_samples = Column(Integer, default=25)
+    validation_min_directional_accuracy = Column(Float, default=0.52)
+    validation_max_mae_roi = Column(Float, default=12.0)
+    validation_lookback_days = Column(Integer, default=90)
+    validation_auto_promote = Column(Boolean, default=True)
+
+    # Independent News Workflow (Option B/C/D pipeline)
+    news_workflow_enabled = Column(Boolean, default=True)
+    news_workflow_auto_run = Column(Boolean, default=True)
+    news_workflow_top_k = Column(Integer, default=8)
+    news_workflow_rerank_top_n = Column(Integer, default=5)
+    news_workflow_similarity_threshold = Column(Float, default=0.35)
+    news_workflow_keyword_weight = Column(Float, default=0.25)
+    news_workflow_semantic_weight = Column(Float, default=0.45)
+    news_workflow_event_weight = Column(Float, default=0.30)
+    news_workflow_min_edge_percent = Column(Float, default=8.0)
+    news_workflow_min_confidence = Column(Float, default=0.6)
+    news_workflow_require_second_source = Column(Boolean, default=False)
+    news_workflow_auto_trader_enabled = Column(Boolean, default=True)
+    news_workflow_auto_trader_min_edge = Column(Float, default=10.0)
+    news_workflow_auto_trader_max_age_minutes = Column(Integer, default=120)
+    news_workflow_model = Column(String, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -996,6 +1167,7 @@ class LLMUsageLog(Base):
         Index("idx_llm_usage_provider", "provider"),
         Index("idx_llm_usage_model", "model"),
         Index("idx_llm_usage_time", "requested_at"),
+        Index("idx_llm_usage_time_success", "requested_at", "success"),
         Index("idx_llm_usage_purpose", "purpose"),
     )
 
@@ -1208,9 +1380,65 @@ class CrossPlatformEntity(Base):
     )
 
 
+# ==================== SHARED STATE (DB AS SINGLE SOURCE OF TRUTH) ====================
+
+
+class ScannerControl(Base):
+    """Control flags for scanner worker (pause, request one-time scan)."""
+
+    __tablename__ = "scanner_control"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    scan_interval_seconds = Column(Integer, default=60)
+    requested_scan_at = Column(DateTime, nullable=True)  # set by API to trigger one scan
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ScannerSnapshot(Base):
+    """Latest scanner output: opportunities + status. Written by scanner worker, read by API."""
+
+    __tablename__ = "scanner_snapshot"
+
+    id = Column(String, primary_key=True, default="latest")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_scan_at = Column(DateTime, nullable=True)
+    opportunities_json = Column(JSON, default=list)  # list of ArbitrageOpportunity dicts
+    # Status fields (denormalized for API)
+    running = Column(Boolean, default=True)
+    enabled = Column(Boolean, default=True)
+    current_activity = Column(String, nullable=True)
+    interval_seconds = Column(Integer, default=60)
+    strategies_json = Column(JSON, default=list)  # list of {name, type}
+    tiered_scanning_json = Column(JSON, nullable=True)
+    ws_feeds_json = Column(JSON, nullable=True)
+
+
 # ==================== DATABASE SETUP ====================
 
-async_engine = create_async_engine(settings.DATABASE_URL, echo=False)
+# SQLite-specific: improve concurrency (WAL + busy_timeout applied in _set_sqlite_pragma)
+_engine_kw: dict = {"echo": False}
+if "sqlite" in settings.DATABASE_URL:
+    _engine_kw["connect_args"] = {"timeout": 30}  # Wait up to 30s when DB is locked
+# For Postgres, pool_size/max_overflow can be set via env or here if needed
+
+async_engine = create_async_engine(settings.DATABASE_URL, **_engine_kw)
+
+
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    """Configure SQLite for better concurrent access (WAL mode, busy timeout)."""
+    if "sqlite" not in settings.DATABASE_URL:
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")  # Allow concurrent reads during writes
+    cursor.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s when locked (ms)
+    cursor.close()
+
+
+# Apply pragmas on each new SQLite connection
+event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_pragma)
+
 AsyncSessionLocal = sessionmaker(
     async_engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -1302,6 +1530,18 @@ def _migrate_schema(connection):
             connection.execute(text(stmt))
 
     _fix_enum_values(connection)
+
+    # Ensure composite index for usage stats (requested_at, success)
+    if "llm_usage_log" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_usage_time_success "
+                    "ON llm_usage_log(requested_at, success)"
+                )
+            )
+        except Exception as e:
+            logger.debug("idx_llm_usage_time_success may already exist: %s", e)
 
 
 async def init_database():

@@ -88,6 +88,36 @@ cd ..
 # Create data directory
 mkdir -p data
 
+# Write setup fingerprint so run.sh can detect drift and auto-rerun setup.
+python3 - <<'PY'
+import hashlib
+import json
+import platform
+from pathlib import Path
+
+root = Path(".").resolve()
+
+def sha256(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+stamp = {
+    "python_version": platform.python_version(),
+    "requirements_sha256": sha256(root / "backend" / "requirements.txt"),
+    "requirements_trading_sha256": sha256(root / "backend" / "requirements-trading.txt"),
+    "package_json_sha256": sha256(root / "frontend" / "package.json"),
+    "package_lock_sha256": sha256(root / "frontend" / "package-lock.json"),
+}
+
+(root / ".setup-stamp.json").write_text(json.dumps(stamp, indent=2), encoding="utf-8")
+print("Wrote .setup-stamp.json")
+PY
+
 echo ""
 echo "========================================="
 echo "  Setup Complete!"

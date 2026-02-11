@@ -9,6 +9,7 @@ venv/
 ENV/
 env/
 .env
+.setup-stamp.json
 *.egg-info/
 dist/
 build/

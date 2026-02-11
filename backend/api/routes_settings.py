@@ -266,6 +266,18 @@ class SearchFilterSettings(BaseModel):
     )
 
     # BTC/ETH high-frequency
+    btc_eth_hf_series_btc_15m: str = Field(
+        default="10192", description="Polymarket series ID for BTC 15-min markets"
+    )
+    btc_eth_hf_series_eth_15m: str = Field(
+        default="10191", description="Polymarket series ID for ETH 15-min markets"
+    )
+    btc_eth_hf_series_sol_15m: str = Field(
+        default="10423", description="Polymarket series ID for SOL 15-min markets"
+    )
+    btc_eth_hf_series_xrp_15m: str = Field(
+        default="10422", description="Polymarket series ID for XRP 15-min markets"
+    )
     btc_eth_pure_arb_max_combined: float = Field(
         default=0.98, ge=0.5, le=1.0, description="Use pure arb when YES+NO < this"
     )
@@ -613,6 +625,18 @@ async def get_settings():
                 risk_multiple_legs=settings.risk_multiple_legs
                 if settings.risk_multiple_legs is not None
                 else 3,
+                btc_eth_hf_series_btc_15m=settings.btc_eth_hf_series_btc_15m
+                if settings.btc_eth_hf_series_btc_15m is not None
+                else "10192",
+                btc_eth_hf_series_eth_15m=settings.btc_eth_hf_series_eth_15m
+                if settings.btc_eth_hf_series_eth_15m is not None
+                else "10191",
+                btc_eth_hf_series_sol_15m=settings.btc_eth_hf_series_sol_15m
+                if settings.btc_eth_hf_series_sol_15m is not None
+                else "10423",
+                btc_eth_hf_series_xrp_15m=settings.btc_eth_hf_series_xrp_15m
+                if settings.btc_eth_hf_series_xrp_15m is not None
+                else "10422",
                 btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined
                 if settings.btc_eth_pure_arb_max_combined is not None
                 else 0.98,
@@ -842,6 +866,10 @@ async def update_settings(request: UpdateSettingsRequest):
                 )
                 settings.btc_eth_dump_hedge_drop_pct = sf.btc_eth_dump_hedge_drop_pct
                 settings.btc_eth_thin_liquidity_usd = sf.btc_eth_thin_liquidity_usd
+                settings.btc_eth_hf_series_btc_15m = sf.btc_eth_hf_series_btc_15m
+                settings.btc_eth_hf_series_eth_15m = sf.btc_eth_hf_series_eth_15m
+                settings.btc_eth_hf_series_sol_15m = sf.btc_eth_hf_series_sol_15m
+                settings.btc_eth_hf_series_xrp_15m = sf.btc_eth_hf_series_xrp_15m
                 settings.miracle_min_no_price = sf.miracle_min_no_price
                 settings.miracle_max_no_price = sf.miracle_max_no_price
                 settings.miracle_min_impossibility_score = (
@@ -1184,6 +1212,18 @@ async def get_search_filter_settings():
         risk_multiple_legs=settings.risk_multiple_legs
         if settings.risk_multiple_legs is not None
         else 3,
+        btc_eth_hf_series_btc_15m=settings.btc_eth_hf_series_btc_15m
+        if settings.btc_eth_hf_series_btc_15m is not None
+        else "10192",
+        btc_eth_hf_series_eth_15m=settings.btc_eth_hf_series_eth_15m
+        if settings.btc_eth_hf_series_eth_15m is not None
+        else "10191",
+        btc_eth_hf_series_sol_15m=settings.btc_eth_hf_series_sol_15m
+        if settings.btc_eth_hf_series_sol_15m is not None
+        else "10423",
+        btc_eth_hf_series_xrp_15m=settings.btc_eth_hf_series_xrp_15m
+        if settings.btc_eth_hf_series_xrp_15m is not None
+        else "10422",
         btc_eth_pure_arb_max_combined=settings.btc_eth_pure_arb_max_combined
         if settings.btc_eth_pure_arb_max_combined is not None
         else 0.98,

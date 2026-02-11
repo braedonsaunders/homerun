@@ -43,11 +43,14 @@ from enum import Enum
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from models.database import AppSettings, AsyncSessionLocal, LLMModelCache, LLMUsageLog
 
 logger = logging.getLogger(__name__)
+
+# Serialize LLM usage log writes to avoid SQLite "database is locked" under concurrent load
+_log_usage_lock = asyncio.Lock()
 
 
 # ==================== PRICING ====================
@@ -1538,23 +1541,24 @@ class LLMManager:
             error: Error message if the request failed.
         """
         try:
-            async with AsyncSessionLocal() as session:
-                log_entry = LLMUsageLog(
-                    id=uuid.uuid4().hex[:16],
-                    provider=provider,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost_usd=cost_usd,
-                    purpose=purpose,
-                    session_id=session_id,
-                    requested_at=datetime.utcnow(),
-                    latency_ms=latency_ms,
-                    success=success,
-                    error=error,
-                )
-                session.add(log_entry)
-                await session.commit()
+            async with _log_usage_lock:
+                async with AsyncSessionLocal() as session:
+                    log_entry = LLMUsageLog(
+                        id=uuid.uuid4().hex[:16],
+                        provider=provider,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=cost_usd,
+                        purpose=purpose,
+                        session_id=session_id,
+                        requested_at=datetime.utcnow(),
+                        latency_ms=latency_ms,
+                        success=success,
+                        error=error,
+                    )
+                    session.add(log_entry)
+                    await session.commit()
 
             if success:
                 self._monthly_spend += cost_usd
@@ -1739,37 +1743,53 @@ class LLMManager:
 
         Returns a summary of LLM usage including total spend, per-provider
         breakdown, per-model breakdown, and request counts for the current
-        month.
-
-        Returns:
-            Dict with usage statistics.
+        month. Uses one query for totals+errors (conditional aggregation),
+        one for provider breakdown, one for model breakdown.
         """
         now = datetime.utcnow()
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         try:
             async with AsyncSessionLocal() as session:
-                # Total spend this month (successful requests)
-                total_result = await session.execute(
+                # Single query for totals (success=True) and error count (success=False)
+                # using conditional aggregation to avoid two scans
+                totals_result = await session.execute(
                     select(
-                        func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0),
-                        func.coalesce(func.sum(LLMUsageLog.input_tokens), 0),
-                        func.coalesce(func.sum(LLMUsageLog.output_tokens), 0),
-                        func.count(LLMUsageLog.id),
-                        func.coalesce(func.avg(LLMUsageLog.latency_ms), 0.0),
-                    ).where(
-                        LLMUsageLog.requested_at >= month_start,
-                        LLMUsageLog.success == True,  # noqa: E712
-                    )
+                        func.coalesce(
+                            func.sum(
+                                case((LLMUsageLog.success == True, LLMUsageLog.cost_usd), else_=0)
+                            ),
+                            0.0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case((LLMUsageLog.success == True, LLMUsageLog.input_tokens), else_=0)
+                            ),
+                            0,
+                        ),
+                        func.coalesce(
+                            func.sum(
+                                case((LLMUsageLog.success == True, LLMUsageLog.output_tokens), else_=0)
+                            ),
+                            0,
+                        ),
+                        func.count(case((LLMUsageLog.success == True, 1), else_=None)),
+                        func.coalesce(
+                            func.avg(case((LLMUsageLog.success == True, LLMUsageLog.latency_ms), else_=None)),
+                            0.0,
+                        ),
+                        func.count(case((LLMUsageLog.success == False, 1), else_=None)),
+                    ).where(LLMUsageLog.requested_at >= month_start)
                 )
-                total_row = total_result.one()
-                total_cost = float(total_row[0])
-                total_input = int(total_row[1])
-                total_output = int(total_row[2])
-                total_requests = int(total_row[3])
-                avg_latency = float(total_row[4])
+                tot = totals_result.one()
+                total_cost = float(tot[0])
+                total_input = int(tot[1])
+                total_output = int(tot[2])
+                total_requests = int(tot[3])
+                avg_latency = float(tot[4])
+                error_count = int(tot[5] or 0)
 
-                # Per-provider breakdown
+                # Per-provider breakdown (success only)
                 provider_result = await session.execute(
                     select(
                         LLMUsageLog.provider,
@@ -1784,7 +1804,7 @@ class LLMManager:
                 )
                 provider_rows = provider_result.all()
 
-                # Per-model breakdown
+                # Per-model breakdown (success only)
                 model_result = await session.execute(
                     select(
                         LLMUsageLog.model,
@@ -1800,15 +1820,6 @@ class LLMManager:
                     .group_by(LLMUsageLog.model)
                 )
                 model_rows = model_result.all()
-
-                # Error count
-                error_result = await session.execute(
-                    select(func.count(LLMUsageLog.id)).where(
-                        LLMUsageLog.requested_at >= month_start,
-                        LLMUsageLog.success == False,  # noqa: E712
-                    )
-                )
-                error_count = error_result.scalar() or 0
 
             return {
                 "month_start": month_start.isoformat(),

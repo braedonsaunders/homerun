@@ -19,6 +19,7 @@ class Market(BaseModel):
     condition_id: str
     question: str
     slug: str
+    event_slug: str = ""
     tokens: list[Token] = []
     clob_token_ids: list[str] = []
     outcome_prices: list[float] = []
@@ -48,6 +49,19 @@ class Market(BaseModel):
                 outcome_prices = [float(p) for p in json.loads(data["outcomePrices"])]
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        # Prefer bestBid/bestAsk from CLOB for the YES side (more accurate
+        # than outcomePrices which can be stale on fast-moving markets).
+        best_bid = data.get("bestBid")
+        best_ask = data.get("bestAsk")
+        if best_bid is not None and best_ask is not None:
+            try:
+                yes_mid = (float(best_bid) + float(best_ask)) / 2.0
+                no_mid = 1.0 - yes_mid
+                outcome_prices = [yes_mid, no_mid]
+            except (ValueError, TypeError):
+                pass
+
         # Binary markets (Up/Down, Yes/No) sometimes omit outcomePrices in API
         if not outcome_prices and data.get("outcomes"):
             outcomes_raw = data["outcomes"]
@@ -67,11 +81,22 @@ class Market(BaseModel):
             outcome = outcomes[i] if i < len(outcomes) else f"Outcome {i}"
             tokens.append(Token(token_id=token_id, outcome=outcome, price=price))
 
+        # Extract parent event slug from nested events array or direct field
+        event_slug = ""
+        if data.get("events"):
+            try:
+                event_slug = data["events"][0].get("slug", "")
+            except (IndexError, AttributeError, TypeError):
+                pass
+        if not event_slug:
+            event_slug = data.get("event_slug", "") or data.get("eventSlug", "")
+
         return cls(
             id=str(data.get("id", "")),
             condition_id=data.get("condition_id", data.get("conditionId", "")),
             question=data.get("question", ""),
             slug=data.get("slug", ""),
+            event_slug=event_slug,
             tokens=tokens,
             clob_token_ids=clob_token_ids,
             outcome_prices=outcome_prices,
