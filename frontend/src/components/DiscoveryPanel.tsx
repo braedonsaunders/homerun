@@ -82,6 +82,7 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 const ITEMS_PER_PAGE = 25
 
 function formatPnl(value: number): string {
+  if (value == null) return '0.00'
   const abs = Math.abs(value)
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
   if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`
@@ -89,10 +90,12 @@ function formatPnl(value: number): string {
 }
 
 function formatPercent(value: number): string {
+  if (value == null) return '0.0%'
   return `${value.toFixed(1)}%`
 }
 
 function formatNumber(value: number): string {
+  if (value == null) return '0'
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
   return value.toLocaleString()
@@ -837,20 +840,20 @@ function LeaderboardRow({
   const pnl =
     useWindowMetrics && wallet.period_pnl != null
       ? wallet.period_pnl
-      : wallet.total_pnl
+      : (wallet.total_pnl ?? 0)
   const winRate =
     useWindowMetrics && wallet.period_win_rate != null
       ? wallet.period_win_rate
-      : wallet.win_rate
+      : (wallet.win_rate ?? 0)
   const sharpe = useWindowMetrics
     ? wallet.period_sharpe ?? wallet.sharpe_ratio
     : wallet.sharpe_ratio
   const trades =
     useWindowMetrics && wallet.period_trades != null
       ? wallet.period_trades
-      : wallet.total_trades
+      : (wallet.total_trades ?? 0)
   const roi =
-    useWindowMetrics && wallet.period_roi != null ? wallet.period_roi : wallet.avg_roi
+    useWindowMetrics && wallet.period_roi != null ? wallet.period_roi : (wallet.avg_roi ?? 0)
   const composite = wallet.composite_score ?? wallet.rank_score ?? 0
   const activity = wallet.activity_score ?? 0
   const quality = wallet.quality_score ?? wallet.rank_score ?? 0
@@ -1039,7 +1042,7 @@ function LeaderboardRow({
         {trades}
         {!useWindowMetrics && (
           <span className="text-[10px] text-muted-foreground/70 ml-1">
-            ({wallet.trades_per_day.toFixed(1)}/d)
+            ({(wallet.trades_per_day ?? 0).toFixed(1)}/d)
           </span>
         )}
       </TableCell>
