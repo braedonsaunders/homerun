@@ -24,6 +24,7 @@ from typing import Optional, Callable
 import uuid
 
 from config import settings
+from utils.utcnow import utcnow
 from services.trading import trading_service, OrderStatus
 from services.scanner import scanner
 from services.pause_state import global_pause_state
@@ -1431,7 +1432,6 @@ class AutoTrader:
         from models.database import AsyncSessionLocal, WeatherTradeIntent
         from sqlalchemy import select
         from datetime import timedelta
-        from utils.utcnow import utcnow
 
         cutoff = datetime.now(timezone.utc) - timedelta(
             minutes=self.config.weather_workflow_max_age_minutes
