@@ -12,6 +12,7 @@ import {
   Bot,
   Zap,
   Target,
+  Timer,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -91,6 +92,7 @@ function Section({
 const DEFAULTS: NewsWorkflowSettings = {
   enabled: true,
   auto_run: true,
+  scan_interval_seconds: 120,
   top_k: 8,
   rerank_top_n: 5,
   similarity_threshold: 0.35,
@@ -103,6 +105,11 @@ const DEFAULTS: NewsWorkflowSettings = {
   auto_trader_enabled: true,
   auto_trader_min_edge: 10.0,
   auto_trader_max_age_minutes: 120,
+  cycle_spend_cap_usd: 0.25,
+  hourly_spend_cap_usd: 2.0,
+  cycle_llm_call_cap: 30,
+  cache_ttl_minutes: 30,
+  max_edge_evals_per_article: 3,
   model: null,
 }
 
@@ -212,6 +219,16 @@ export default function NewsWorkflowSettingsFlyout({
               </div>
               <Switch checked={form.auto_run} onCheckedChange={(v) => set('auto_run', v)} className="scale-75" disabled={!form.enabled} />
             </div>
+            <NumericField
+              label="Scan Interval (sec)"
+              help="Worker scan cadence"
+              value={form.scan_interval_seconds}
+              onChange={(v) => set('scan_interval_seconds', v)}
+              min={30}
+              max={3600}
+              step={10}
+              disabled={!form.enabled}
+            />
           </Section>
 
           {/* Retrieval */}
@@ -273,6 +290,65 @@ export default function NewsWorkflowSettingsFlyout({
               <p className="text-[10px] text-muted-foreground">
                 Trade intents flow through the auto-trader's full safety pipeline: circuit breakers, risk scoring, AI judge, depth analysis, and position limits.
               </p>
+            </div>
+          </Section>
+
+          {/* Model Override */}
+          <Section title="LLM Budget Guards" icon={Timer} color="text-amber-500">
+            <p className="text-[10px] text-muted-foreground/60 -mt-1">
+              Hard caps applied on top of global AI monthly limits to control workflow spend and call volume.
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              <NumericField
+                label="Cycle Spend Cap ($)"
+                help="Max LLM spend per cycle"
+                value={form.cycle_spend_cap_usd}
+                onChange={(v) => set('cycle_spend_cap_usd', v)}
+                min={0}
+                max={100}
+                step={0.05}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Hourly Spend Cap ($)"
+                help="Max workflow spend per rolling hour"
+                value={form.hourly_spend_cap_usd}
+                onChange={(v) => set('hourly_spend_cap_usd', v)}
+                min={0}
+                max={1000}
+                step={0.1}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Cycle LLM Call Cap"
+                help="Max provider calls per cycle"
+                value={form.cycle_llm_call_cap}
+                onChange={(v) => set('cycle_llm_call_cap', v)}
+                min={0}
+                max={500}
+                step={1}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Cache TTL (min)"
+                help="Reuse edge estimations in this window"
+                value={form.cache_ttl_minutes}
+                onChange={(v) => set('cache_ttl_minutes', v)}
+                min={1}
+                max={1440}
+                step={1}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Max Edge Evals / Article"
+                help="Cap expensive edge calls per article"
+                value={form.max_edge_evals_per_article}
+                onChange={(v) => set('max_edge_evals_per_article', v)}
+                min={1}
+                max={20}
+                step={1}
+                disabled={!form.enabled}
+              />
             </div>
           </Section>
 

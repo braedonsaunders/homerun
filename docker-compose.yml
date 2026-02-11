@@ -35,12 +35,40 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
+  discovery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-discovery-worker
+    command: ["python", "-m", "workers.discovery_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
   weather-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: polymarket-weather-worker
     command: ["python", "-m", "workers.weather_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  news-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-news-worker
+    command: ["python", "-m", "workers.news_worker"]
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
     env_file:

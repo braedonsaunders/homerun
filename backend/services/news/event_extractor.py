@@ -233,13 +233,16 @@ class EventExtractor:
         summary: str = "",
         source: str = "",
         model: Optional[str] = None,
+        allow_llm: bool = True,
     ) -> ExtractedEvent:
         """Extract a structured event from article text.
 
         Tries LLM first; falls back to keyword extraction.
         """
         # Try LLM extraction
-        event = await self._extract_llm(title, summary, source, model=model)
+        event = None
+        if allow_llm:
+            event = await self._extract_llm(title, summary, source, model=model)
         if event is not None:
             return event
 
@@ -250,6 +253,7 @@ class EventExtractor:
         self,
         articles: list[dict],
         model: Optional[str] = None,
+        allow_llm: bool = True,
     ) -> list[ExtractedEvent]:
         """Extract events from a batch of articles.
 
@@ -266,6 +270,7 @@ class EventExtractor:
                     summary=article.get("summary", ""),
                     source=article.get("source", ""),
                     model=model,
+                    allow_llm=allow_llm,
                 )
 
         return await asyncio.gather(*[_one(a) for a in articles])
@@ -313,7 +318,7 @@ class EventExtractor:
                 ],
                 schema=EVENT_EXTRACTION_SCHEMA,
                 model=model,
-                purpose="news_event_extraction",
+                purpose="news_workflow_event_extraction",
             )
 
             # Build keywords from entities + actors for retrieval

@@ -436,6 +436,8 @@ class NewsWorkflowFinding(Base):
     article_title = Column(Text, nullable=False)
     article_source = Column(String, nullable=True)
     article_url = Column(Text, nullable=True)
+    signal_key = Column(String, nullable=True, index=True)
+    cache_key = Column(String, nullable=True, index=True)
     market_question = Column(Text, nullable=False)
     market_price = Column(Float, nullable=True)
     model_probability = Column(Float, nullable=True)
@@ -459,6 +461,7 @@ class NewsWorkflowFinding(Base):
         Index("idx_news_finding_created", "created_at"),
         Index("idx_news_finding_actionable", "actionable"),
         Index("idx_news_finding_consumed", "consumed_by_auto_trader"),
+        Index("idx_news_finding_signal", "signal_key", unique=True),
     )
 
 
@@ -472,11 +475,13 @@ class NewsTradeIntent(Base):
     market_id = Column(String, nullable=False, index=True)
     market_question = Column(Text, nullable=False)
     direction = Column(String, nullable=False)  # buy_yes | buy_no
+    signal_key = Column(String, nullable=True, index=True)
     entry_price = Column(Float, nullable=True)
     model_probability = Column(Float, nullable=True)
     edge_percent = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)
     suggested_size_usd = Column(Float, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
     status = Column(
         String, default="pending", nullable=False
     )  # pending | submitted | executed | skipped | expired
@@ -487,6 +492,7 @@ class NewsTradeIntent(Base):
         Index("idx_news_intent_created", "created_at"),
         Index("idx_news_intent_status", "status"),
         Index("idx_news_intent_market", "market_id"),
+        Index("idx_news_intent_signal", "signal_key", unique=True),
     )
 
 
@@ -844,7 +850,13 @@ class AppSettings(Base):
     news_workflow_auto_trader_enabled = Column(Boolean, default=True)
     news_workflow_auto_trader_min_edge = Column(Float, default=10.0)
     news_workflow_auto_trader_max_age_minutes = Column(Integer, default=120)
+    news_workflow_scan_interval_seconds = Column(Integer, default=120)
     news_workflow_model = Column(String, nullable=True)
+    news_workflow_cycle_spend_cap_usd = Column(Float, default=0.25)
+    news_workflow_hourly_spend_cap_usd = Column(Float, default=2.0)
+    news_workflow_cycle_llm_call_cap = Column(Integer, default=30)
+    news_workflow_cache_ttl_minutes = Column(Integer, default=30)
+    news_workflow_max_edge_evals_per_article = Column(Integer, default=3)
 
     # Independent Weather Workflow (forecast consensus -> opportunities/intents)
     weather_workflow_enabled = Column(Boolean, default=True)
@@ -1602,6 +1614,69 @@ class ScannerSnapshot(Base):
     market_history_json = Column(JSON, default=dict)
 
 
+class NewsWorkflowControl(Base):
+    """Control flags for news workflow worker (pause, request one-time scan, lease)."""
+
+    __tablename__ = "news_workflow_control"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    scan_interval_seconds = Column(Integer, default=120)
+    requested_scan_at = Column(DateTime, nullable=True)
+    lease_owner = Column(String, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NewsWorkflowSnapshot(Base):
+    """Latest news workflow output/status written by worker, read by API/UI."""
+
+    __tablename__ = "news_workflow_snapshot"
+
+    id = Column(String, primary_key=True, default="latest")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_scan_at = Column(DateTime, nullable=True)
+    next_scan_at = Column(DateTime, nullable=True)
+    running = Column(Boolean, default=True)
+    enabled = Column(Boolean, default=True)
+    current_activity = Column(String, nullable=True)
+    interval_seconds = Column(Integer, default=120)
+    last_error = Column(Text, nullable=True)
+    degraded_mode = Column(Boolean, default=False)
+    budget_remaining_usd = Column(Float, nullable=True)
+    stats_json = Column(JSON, default=dict)
+
+
+class DiscoveryControl(Base):
+    """Control flags for discovery worker (pause, request one-time run)."""
+
+    __tablename__ = "discovery_control"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    run_interval_minutes = Column(Integer, default=60)
+    requested_run_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DiscoverySnapshot(Base):
+    """Latest discovery status. Written by discovery worker, read by API/UI."""
+
+    __tablename__ = "discovery_snapshot"
+
+    id = Column(String, primary_key=True, default="latest")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    running = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    current_activity = Column(String, nullable=True)
+    run_interval_minutes = Column(Integer, default=60)
+    wallets_discovered_last_run = Column(Integer, default=0)
+    wallets_analyzed_last_run = Column(Integer, default=0)
+
+
 class WeatherControl(Base):
     """Control flags for weather worker (pause, request one-time scan)."""
 
@@ -1752,6 +1827,53 @@ def _fix_enum_values(connection):
             )
 
 
+def _prepare_news_uniqueness(connection):
+    """Best-effort cleanup so unique news indexes can be created safely."""
+    inspector = sa_inspect(connection)
+    existing_tables = set(inspector.get_table_names())
+    dialect = connection.dialect.name
+
+    # SQL relies on SQLite rowid semantics; skip for non-SQLite engines.
+    if dialect != "sqlite":
+        return
+
+    if "news_workflow_findings" in existing_tables:
+        cols = {c["name"] for c in inspector.get_columns("news_workflow_findings")}
+        if "signal_key" in cols:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM news_workflow_findings
+                    WHERE signal_key IS NOT NULL
+                      AND rowid NOT IN (
+                        SELECT MAX(rowid)
+                        FROM news_workflow_findings
+                        WHERE signal_key IS NOT NULL
+                        GROUP BY signal_key
+                      )
+                    """
+                )
+            )
+
+    if "news_trade_intents" in existing_tables:
+        cols = {c["name"] for c in inspector.get_columns("news_trade_intents")}
+        if "signal_key" in cols:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM news_trade_intents
+                    WHERE signal_key IS NOT NULL
+                      AND rowid NOT IN (
+                        SELECT MAX(rowid)
+                        FROM news_trade_intents
+                        WHERE signal_key IS NOT NULL
+                        GROUP BY signal_key
+                      )
+                    """
+                )
+            )
+
+
 def _migrate_schema(connection):
     """Add missing columns to existing tables (SQLite ALTER TABLE ADD COLUMN)."""
     inspector = sa_inspect(connection)
@@ -1790,10 +1912,34 @@ def _migrate_schema(connection):
         except Exception as e:
             logger.debug("idx_llm_usage_time_success may already exist: %s", e)
 
+    # Ensure unique signal indexes for news workflow idempotency.
+    if "news_workflow_findings" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_finding_signal "
+                    "ON news_workflow_findings(signal_key)"
+                )
+            )
+        except Exception as e:
+            logger.debug("idx_news_finding_signal may already exist: %s", e)
+
+    if "news_trade_intents" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_intent_signal "
+                    "ON news_trade_intents(signal_key)"
+                )
+            )
+        except Exception as e:
+            logger.debug("idx_news_intent_signal may already exist: %s", e)
+
 
 async def init_database():
     """Initialize database tables and migrate schema for existing databases."""
     async with async_engine.begin() as conn:
+        await conn.run_sync(_prepare_news_uniqueness)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_schema)
 

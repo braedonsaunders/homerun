@@ -52,6 +52,8 @@ class WorkflowFinding:
     evidence: dict = field(default_factory=dict)
     reasoning: str = ""
     actionable: bool = False
+    signal_key: Optional[str] = None
+    cache_key: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -143,6 +145,8 @@ class EdgeEstimator:
         min_edge_percent: float = 8.0,
         min_confidence: float = 0.6,
         model: Optional[str] = None,
+        allow_llm: bool = True,
+        max_llm_calls: Optional[int] = None,
     ) -> list[WorkflowFinding]:
         """Estimate edges for a batch of reranked candidates.
 
@@ -156,7 +160,13 @@ class EdgeEstimator:
         sem = asyncio.Semaphore(self._CONCURRENCY)
         findings: list[WorkflowFinding] = []
 
-        async def _one(rc: RerankedCandidate) -> Optional[WorkflowFinding]:
+        llm_budget = (
+            max(0, max_llm_calls if max_llm_calls is not None else len(reranked))
+            if allow_llm
+            else 0
+        )
+
+        async def _one(i: int, rc: RerankedCandidate) -> Optional[WorkflowFinding]:
             async with sem:
                 return await self._estimate_one(
                     article_title=article_title,
@@ -167,9 +177,10 @@ class EdgeEstimator:
                     event=event,
                     rc=rc,
                     model=model,
+                    allow_llm=i < llm_budget,
                 )
 
-        results = await asyncio.gather(*[_one(rc) for rc in reranked])
+        results = await asyncio.gather(*[_one(i, rc) for i, rc in enumerate(reranked)])
 
         for finding in results:
             if finding is None:
@@ -191,6 +202,7 @@ class EdgeEstimator:
         event: ExtractedEvent,
         rc: RerankedCandidate,
         model: Optional[str] = None,
+        allow_llm: bool = True,
     ) -> Optional[WorkflowFinding]:
         """Estimate edge for a single article-market pair."""
         c = rc.candidate
@@ -227,16 +239,18 @@ class EdgeEstimator:
         }
 
         # Try LLM estimation
-        llm_result = await self._call_llm(
-            article_title=article_title,
-            article_summary=article_summary,
-            market_question=c.question,
-            event_title=c.event_title,
-            category=c.category,
-            yes_price=c.yes_price,
-            no_price=c.no_price,
-            model=model,
-        )
+        llm_result = None
+        if allow_llm:
+            llm_result = await self._call_llm(
+                article_title=article_title,
+                article_summary=article_summary,
+                market_question=c.question,
+                event_title=c.event_title,
+                category=c.category,
+                yes_price=c.yes_price,
+                no_price=c.no_price,
+                model=model,
+            )
 
         if llm_result is None:
             # No LLM available; create a partial finding

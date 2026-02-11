@@ -80,6 +80,7 @@ class Reranker:
         candidates: list[RetrievalCandidate],
         top_n: int = 5,
         model: Optional[str] = None,
+        allow_llm: bool = True,
     ) -> list[RerankedCandidate]:
         """Rerank candidates using LLM.
 
@@ -99,9 +100,11 @@ class Reranker:
             return []
 
         # Try LLM reranking
-        reranked = await self._rerank_llm(
-            article_title, article_summary, candidates, model=model
-        )
+        reranked = None
+        if allow_llm:
+            reranked = await self._rerank_llm(
+                article_title, article_summary, candidates, model=model
+            )
 
         if reranked is not None:
             reranked.sort(key=lambda r: r.rerank_score, reverse=True)

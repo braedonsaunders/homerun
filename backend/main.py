@@ -53,7 +53,7 @@ from services.opportunity_recorder import opportunity_recorder
 from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from models.database import AsyncSessionLocal, init_database
-from services import shared_state
+from services import discovery_shared_state, shared_state
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
@@ -252,22 +252,20 @@ async def lifespan(app: FastAPI):
                     "Trading service initialization failed - check credentials"
                 )
 
-        # Start wallet discovery and intelligence (worker process in full deploy)
+        # Start wallet intelligence + smart pool (discovery runs in dedicated worker)
         try:
             await wallet_intelligence.initialize()
-            discovery_task = asyncio.create_task(
-                wallet_discovery.start_background_discovery(interval_minutes=60)
-            )
-            tasks.append(discovery_task)
             intelligence_task = asyncio.create_task(
                 wallet_intelligence.start_background(interval_minutes=30)
             )
             tasks.append(intelligence_task)
             smart_pool_task = asyncio.create_task(smart_wallet_pool.start_background())
             tasks.append(smart_pool_task)
-            logger.info("Wallet discovery, intelligence, and smart pool started")
+            logger.info("Wallet intelligence and smart pool started (discovery via worker)")
         except Exception as e:
-            logger.warning(f"Wallet discovery startup failed (non-critical): {e}")
+            logger.warning(
+                f"Wallet intelligence/smart-pool startup failed (non-critical): {e}"
+            )
 
         # Start background cleanup if enabled
         if settings.AUTO_CLEANUP_ENABLED:
@@ -286,7 +284,7 @@ async def lifespan(app: FastAPI):
             tasks.append(cleanup_task)
             logger.info("Background database cleanup enabled")
 
-        # Start news intelligence layer (background news fetching + semantic matcher)
+        # Initialize news intelligence layer (workers own background loops)
         try:
             from services.news.feed_service import news_feed_service
             from services.news.semantic_matcher import semantic_matcher
@@ -296,30 +294,13 @@ async def lifespan(app: FastAPI):
             await news_feed_service.load_from_db()
 
             await asyncio.to_thread(semantic_matcher.initialize)
-            if settings.NEWS_EDGE_ENABLED:
-                await news_feed_service.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
-                logger.info(
-                    "News intelligence layer started",
-                    ml_mode=semantic_matcher.is_ml_mode,
-                    interval=settings.NEWS_SCAN_INTERVAL_SECONDS,
-                    cached_articles=news_feed_service.article_count,
-                )
-            else:
-                logger.info("News intelligence layer initialized (scanning disabled)")
+            logger.info(
+                "News intelligence layer initialized (worker-owned execution)",
+                ml_mode=semantic_matcher.is_ml_mode,
+                cached_articles=news_feed_service.article_count,
+            )
         except Exception as e:
             logger.warning(f"News intelligence init failed (non-critical): {e}")
-
-        # Start independent news workflow pipeline (Options B/C/D)
-        try:
-            from services.news.workflow_orchestrator import workflow_orchestrator
-
-            if settings.NEWS_EDGE_ENABLED:
-                await workflow_orchestrator.start(settings.NEWS_SCAN_INTERVAL_SECONDS)
-                logger.info("News workflow orchestrator started")
-            else:
-                logger.info("News workflow orchestrator disabled (NEWS_EDGE_ENABLED=False)")
-        except Exception as e:
-            logger.warning(f"News workflow orchestrator init failed (non-critical): {e}")
 
         # Notifier and opportunity_recorder run in scanner worker (callbacks on scan)
 
@@ -365,12 +346,6 @@ async def lifespan(app: FastAPI):
             from services.news.feed_service import news_feed_service
 
             news_feed_service.stop()
-        except Exception:
-            pass
-        try:
-            from services.news.workflow_orchestrator import workflow_orchestrator
-
-            workflow_orchestrator.stop()
         except Exception:
             pass
 
@@ -533,6 +508,17 @@ async def detailed_health_check():
     """Detailed health check with all system stats"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+        discovery_status = await discovery_shared_state.get_discovery_status_from_db(
+            session
+        )
+        try:
+            from services.news import shared_state as news_shared_state
+
+            news_workflow_status = await news_shared_state.get_news_status_from_db(
+                session
+            )
+        except Exception:
+            news_workflow_status = {}
     smart_pool_stats = await smart_wallet_pool.get_pool_stats()
     return {
         "status": "healthy",
@@ -572,12 +558,42 @@ async def detailed_health_check():
             "ai_intelligence": _get_ai_status(),
             "ws_feeds": _get_ws_feeds_status(),
             "news_intelligence": _get_news_status(),
+            "news_workflow": {
+                "running": bool(news_workflow_status.get("running", False)),
+                "enabled": bool(news_workflow_status.get("enabled", False)),
+                "paused": bool(news_workflow_status.get("paused", False)),
+                "last_scan": news_workflow_status.get("last_scan"),
+                "next_scan": news_workflow_status.get("next_scan"),
+                "current_activity": news_workflow_status.get("current_activity"),
+                "last_error": news_workflow_status.get("last_error"),
+                "degraded_mode": bool(news_workflow_status.get("degraded_mode", False)),
+                "pending_intents": int(news_workflow_status.get("pending_intents", 0)),
+            },
             "wallet_discovery": {
-                "running": wallet_discovery._running,
-                "last_run": wallet_discovery._last_run_at.isoformat()
-                if wallet_discovery._last_run_at
-                else None,
-                "wallets_discovered": wallet_discovery._wallets_discovered_last_run,
+                "running": bool(
+                    discovery_status.get("running", wallet_discovery._running)
+                ),
+                "last_run": discovery_status.get("last_run_at")
+                or (
+                    wallet_discovery._last_run_at.isoformat()
+                    if wallet_discovery._last_run_at
+                    else None
+                ),
+                "wallets_discovered": int(
+                    discovery_status.get(
+                        "wallets_discovered_last_run",
+                        wallet_discovery._wallets_discovered_last_run,
+                    )
+                ),
+                "wallets_analyzed": int(
+                    discovery_status.get(
+                        "wallets_analyzed_last_run",
+                        wallet_discovery._wallets_analyzed_last_run,
+                    )
+                ),
+                "current_activity": discovery_status.get("current_activity"),
+                "interval_minutes": discovery_status.get("run_interval_minutes"),
+                "paused": bool(discovery_status.get("paused", False)),
             },
             "wallet_intelligence": {
                 "running": wallet_intelligence._running,
@@ -599,8 +615,18 @@ async def metrics():
     """Prometheus-compatible metrics"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+        try:
+            from services.news import shared_state as news_shared_state
+
+            news_status = await news_shared_state.get_news_status_from_db(session)
+        except Exception:
+            news_status = {}
     opp_count = scanner_status.get("opportunities_count", 0)
     scanner_running = 1 if scanner_status.get("running", False) else 0
+    news_stats = news_status.get("stats") or {}
+    news_running = 1 if news_status.get("running", False) else 0
+    news_degraded = 1 if news_status.get("degraded_mode", False) else 0
+    news_last_error = 1 if news_status.get("last_error") else 0
 
     metrics_text = f"""# HELP polymarket_opportunities_total Total detected opportunities
 # TYPE polymarket_opportunities_total gauge
@@ -633,6 +659,42 @@ polymarket_auto_trader_trades {auto_trader.stats.total_trades}
 # HELP polymarket_auto_trader_profit Total auto trader profit
 # TYPE polymarket_auto_trader_profit gauge
 polymarket_auto_trader_profit {auto_trader.stats.total_profit}
+
+# HELP polymarket_news_workflow_running News workflow worker running status
+# TYPE polymarket_news_workflow_running gauge
+polymarket_news_workflow_running {news_running}
+
+# HELP polymarket_news_workflow_pending_intents Pending news intents
+# TYPE polymarket_news_workflow_pending_intents gauge
+polymarket_news_workflow_pending_intents {news_status.get("pending_intents", 0)}
+
+# HELP polymarket_news_workflow_last_findings Last cycle finding count
+# TYPE polymarket_news_workflow_last_findings gauge
+polymarket_news_workflow_last_findings {news_stats.get("findings", 0)}
+
+# HELP polymarket_news_workflow_last_intents Last cycle intent count
+# TYPE polymarket_news_workflow_last_intents gauge
+polymarket_news_workflow_last_intents {news_stats.get("intents", 0)}
+
+# HELP polymarket_news_workflow_llm_calls Last cycle LLM call count
+# TYPE polymarket_news_workflow_llm_calls gauge
+polymarket_news_workflow_llm_calls {news_stats.get("llm_calls_used", 0)}
+
+# HELP polymarket_news_workflow_budget_skips Last cycle budget skip count
+# TYPE polymarket_news_workflow_budget_skips gauge
+polymarket_news_workflow_budget_skips {news_stats.get("budget_skip_count", news_stats.get("llm_calls_skipped", 0))}
+
+# HELP polymarket_news_workflow_cycle_duration_seconds Last cycle duration in seconds
+# TYPE polymarket_news_workflow_cycle_duration_seconds gauge
+polymarket_news_workflow_cycle_duration_seconds {news_stats.get("elapsed_seconds", 0)}
+
+# HELP polymarket_news_workflow_degraded_mode News workflow degraded mode flag
+# TYPE polymarket_news_workflow_degraded_mode gauge
+polymarket_news_workflow_degraded_mode {news_degraded}
+
+# HELP polymarket_news_workflow_last_error_flag News workflow last error flag
+# TYPE polymarket_news_workflow_last_error_flag gauge
+polymarket_news_workflow_last_error_flag {news_last_error}
 """
 
     return JSONResponse(content=metrics_text, media_type="text/plain")

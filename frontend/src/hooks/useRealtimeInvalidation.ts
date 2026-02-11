@@ -48,7 +48,11 @@ export function useRealtimeInvalidation(
       queryClient.invalidateQueries({ queryKey: ['discovery-pool-stats'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-leaderboard'] })
     }
-    if (lastMessage?.type === 'news_update') {
+    if (
+      lastMessage?.type === 'news_update'
+      || lastMessage?.type === 'news_workflow_update'
+      || lastMessage?.type === 'news_workflow_status'
+    ) {
       queryClient.invalidateQueries({ queryKey: ['news-articles'] })
       queryClient.invalidateQueries({ queryKey: ['news-matches'] })
       queryClient.invalidateQueries({ queryKey: ['news-edges'] })

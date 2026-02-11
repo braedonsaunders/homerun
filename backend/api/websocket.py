@@ -4,6 +4,7 @@ import json
 
 from models.database import AsyncSessionLocal
 from services import shared_state, wallet_tracker
+from services.news import shared_state as news_shared_state
 from services.weather import shared_state as weather_shared_state
 
 
@@ -57,6 +58,7 @@ async def handle_websocket(websocket: WebSocket):
     async with AsyncSessionLocal() as session:
         opportunities, status = await shared_state.read_scanner_snapshot(session)
         weather_opportunities, weather_status = await weather_shared_state.read_weather_snapshot(session)
+        news_workflow_status = await news_shared_state.get_news_status_from_db(session)
     await manager.send_personal(
         websocket,
         {
@@ -69,6 +71,7 @@ async def handle_websocket(websocket: WebSocket):
                     "last_scan": status.get("last_scan"),
                 },
                 "weather_status": weather_status,
+                "news_workflow_status": news_workflow_status,
             },
         },
     )

@@ -1,8 +1,9 @@
-import asyncio
-
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.database import get_db_session
+from services import discovery_shared_state
 from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
 from services.smart_wallet_pool import smart_wallet_pool
@@ -17,6 +18,33 @@ TIME_PERIOD_TO_WINDOW_KEY = {
 }
 
 discovery_router = APIRouter()
+
+
+async def _build_discovery_status(session: AsyncSession) -> dict:
+    stats = await wallet_discovery.get_discovery_stats()
+    worker_status = await discovery_shared_state.get_discovery_status_from_db(session)
+
+    stats["is_running"] = bool(worker_status.get("running", stats.get("is_running", False)))
+    stats["last_run_at"] = worker_status.get("last_run_at") or stats.get("last_run_at")
+    stats["wallets_discovered_last_run"] = int(
+        worker_status.get(
+            "wallets_discovered_last_run",
+            stats.get("wallets_discovered_last_run", 0),
+        )
+    )
+    stats["wallets_analyzed_last_run"] = int(
+        worker_status.get(
+            "wallets_analyzed_last_run",
+            stats.get("wallets_analyzed_last_run", 0),
+        )
+    )
+    stats["current_activity"] = worker_status.get("current_activity")
+    stats["interval_minutes"] = int(
+        worker_status.get("run_interval_minutes", 60)
+    )
+    stats["paused"] = bool(worker_status.get("paused", False))
+    stats["requested_run_at"] = worker_status.get("requested_run_at")
+    return stats
 
 
 # ==================== LEADERBOARD ====================
@@ -174,7 +202,7 @@ async def get_leaderboard(
 
 
 @discovery_router.get("/leaderboard/stats")
-async def get_discovery_stats():
+async def get_discovery_stats(session: AsyncSession = Depends(get_db_session)):
     """
     Get discovery engine statistics.
 
@@ -182,8 +210,7 @@ async def get_discovery_stats():
     and engine health information.
     """
     try:
-        stats = await wallet_discovery.get_discovery_stats()
-        return stats
+        return await _build_discovery_status(session)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -221,34 +248,53 @@ async def get_wallet_profile(wallet_address: str):
 
 @discovery_router.post("/run")
 async def trigger_discovery(
-    max_markets: int = Query(default=50, ge=1, le=500),
-    max_wallets_per_market: int = Query(default=30, ge=1, le=200),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """
-    Trigger a manual discovery run.
-
-    Scans active markets for profitable wallets, analyzes their trading
-    patterns, and updates the leaderboard. Returns immediately while
-    the discovery runs in the background.
+    Queue a one-time discovery run for the discovery worker.
     """
     try:
-        asyncio.create_task(
-            wallet_discovery.run_discovery(
-                max_markets=max_markets,
-                max_wallets_per_market=max_wallets_per_market,
-            )
-        )
-
+        await discovery_shared_state.request_one_discovery_run(session)
         return {
-            "status": "started",
-            "message": "Discovery run started in background",
-            "params": {
-                "max_markets": max_markets,
-                "max_wallets_per_market": max_wallets_per_market,
-            },
+            "status": "queued",
+            "message": "Discovery run requested; worker will execute on next cycle.",
+            **await discovery_shared_state.get_discovery_status_from_db(session),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/start")
+async def start_discovery_worker(session: AsyncSession = Depends(get_db_session)):
+    """Resume automatic discovery worker cycles."""
+    await discovery_shared_state.set_discovery_paused(session, False)
+    return {
+        "status": "started",
+        **await discovery_shared_state.get_discovery_status_from_db(session),
+    }
+
+
+@discovery_router.post("/pause")
+async def pause_discovery_worker(session: AsyncSession = Depends(get_db_session)):
+    """Pause automatic discovery worker cycles."""
+    await discovery_shared_state.set_discovery_paused(session, True)
+    return {
+        "status": "paused",
+        **await discovery_shared_state.get_discovery_status_from_db(session),
+    }
+
+
+@discovery_router.post("/interval")
+async def set_discovery_interval(
+    interval_minutes: int = Query(..., ge=5, le=1440),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Set discovery worker cadence in minutes."""
+    await discovery_shared_state.set_discovery_interval(session, interval_minutes)
+    return {
+        "status": "updated",
+        **await discovery_shared_state.get_discovery_status_from_db(session),
+    }
 
 
 @discovery_router.post("/refresh-leaderboard")

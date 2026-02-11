@@ -69,6 +69,7 @@ class WalletDiscoveryEngine:
     def __init__(self):
         self.client = polymarket_client
         self._running = False
+        self._background_running = False
         self._last_run_at: Optional[datetime] = None
         self._wallets_discovered_last_run: int = 0
         self._wallets_analyzed_last_run: int = 0
@@ -1049,7 +1050,10 @@ class WalletDiscoveryEngine:
 
     async def start_background_discovery(self, interval_minutes: int = 60):
         """Run discovery on a recurring schedule. First run after 60s so API can serve requests at startup."""
-        self._running = True
+        if self._background_running:
+            logger.info("Background discovery already running")
+            return
+        self._background_running = True
         logger.info(
             "Background discovery started",
             interval_minutes=interval_minutes,
@@ -1058,7 +1062,7 @@ class WalletDiscoveryEngine:
         # Defer first run so /opportunities, /scanner/status, etc. don't timeout at startup
         await asyncio.sleep(60)
 
-        while self._running:
+        while self._background_running:
             if not global_pause_state.is_paused:
                 try:
                     await self.run_discovery()
@@ -1069,7 +1073,7 @@ class WalletDiscoveryEngine:
 
     def stop(self):
         """Stop the background discovery loop."""
-        self._running = False
+        self._background_running = False
         logger.info("Background discovery stopped")
 
     # ------------------------------------------------------------------

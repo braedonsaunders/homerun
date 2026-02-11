@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
 from models.database import get_db_session
+from services.polymarket import polymarket_client
 from services.simulation import simulation_service
 
 simulation_router = APIRouter()
@@ -111,10 +113,32 @@ async def delete_simulation_account(account_id: str):
 async def get_account_positions(account_id: str):
     """Get open positions for a simulation account"""
     positions = await simulation_service.get_open_positions(account_id)
+
+    lookups = {}
+    for pos in positions:
+        market_id = pos.market_id
+        if not market_id or market_id in lookups:
+            continue
+        if market_id.startswith("0x"):
+            lookups[market_id] = polymarket_client.get_market_by_condition_id(market_id)
+        else:
+            lookups[market_id] = polymarket_client.get_market_by_token_id(market_id)
+
+    market_info_by_id: dict[str, dict] = {}
+    if lookups:
+        results = await asyncio.gather(*lookups.values(), return_exceptions=True)
+        for market_id, info in zip(lookups.keys(), results):
+            if isinstance(info, dict):
+                market_info_by_id[market_id] = info
+
     return [
         {
             "id": pos.id,
             "market_id": pos.market_id,
+            "market_slug": market_info_by_id.get(pos.market_id, {}).get("slug", ""),
+            "event_slug": market_info_by_id.get(pos.market_id, {}).get(
+                "event_slug", ""
+            ),
             "market_question": pos.market_question,
             "side": pos.side.value,
             "quantity": pos.quantity,

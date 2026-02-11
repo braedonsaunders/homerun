@@ -29,7 +29,6 @@ import {
   Command,
   Copy,
   Globe,
-  SlidersHorizontal,
   LayoutGrid,
   List,
   Newspaper,
@@ -227,6 +226,12 @@ function App() {
   useEffect(() => {
     setCurrentPage(0)
   }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted, searchSort])
+
+  useEffect(() => {
+    if (opportunitiesView !== 'arbitrage') {
+      setSearchFiltersOpen(false)
+    }
+  }, [opportunitiesView])
 
   // Queries — WS pushes are primary; polling is a degraded fallback.
   // When WS is connected, polls are infrequent. When disconnected, revert to faster polling.
@@ -800,17 +805,19 @@ function App() {
                       </div>
                     )}
 
-                    <div className="ml-auto">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSearchFiltersOpen(true)}
-                        className="gap-1.5 text-xs h-8 bg-card text-muted-foreground hover:text-orange-400 border-border hover:border-orange-500/30"
-                      >
-                        <SlidersHorizontal className="w-3.5 h-3.5" />
-                        Search Filters
-                      </Button>
-                    </div>
+                    {opportunitiesView === 'arbitrage' && (
+                      <div className="ml-auto">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSearchFiltersOpen(true)}
+                          className="gap-1.5 text-xs h-8 bg-card text-muted-foreground hover:text-orange-400 border-border hover:border-orange-500/30"
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                          Settings
+                        </Button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Live Scanning Status Line */}
@@ -1421,7 +1428,6 @@ function App() {
                   <div className={tradersSubTab === 'discovery' ? '' : 'hidden'}>
                     <DiscoveryPanel
                       onAnalyzeWallet={handleAnalyzeWallet}
-                      onExecuteTrade={setExecutingOpportunity}
                     />
                   </div>
                   <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>

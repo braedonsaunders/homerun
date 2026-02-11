@@ -23,9 +23,13 @@ from enum import Enum
 from threading import Lock
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 
+from sqlalchemy import select
+
 from config import settings
+from models.database import AppSettings, AsyncSessionLocal
 from services.optimization.vwap import OrderBook, OrderBookLevel
 from utils.logger import get_logger
+from utils.secrets import decrypt_secret
 
 try:
     import websockets
@@ -42,13 +46,72 @@ logger = get_logger("ws_feeds")
 # ---------------------------------------------------------------------------
 
 POLYMARKET_WS_URL = settings.CLOB_WS_URL
-KALSHI_WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+KALSHI_WS_URL = settings.KALSHI_WS_URL
 
 DEFAULT_STALE_TTL = 15.0  # seconds before a cached price is considered stale
 DEFAULT_HEARTBEAT_INTERVAL = 10.0  # seconds between keep-alive pings
 DEFAULT_RECONNECT_BASE_DELAY = 1.0  # initial backoff delay in seconds
 DEFAULT_RECONNECT_MAX_DELAY = 60.0  # maximum backoff ceiling
 DEFAULT_RECONNECT_MULTIPLIER = 2.0  # exponential multiplier per attempt
+
+
+# ---------------------------------------------------------------------------
+# Kalshi auth helpers
+# ---------------------------------------------------------------------------
+
+
+def _clean_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+async def _load_kalshi_stored_credentials() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Load Kalshi credentials from DB-backed app settings."""
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(AppSettings).where(AppSettings.id == "default")
+            )
+            app_settings = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning(
+            "Failed to read Kalshi settings for WS auth",
+            error=repr(exc),
+        )
+        return None, None, None
+
+    if app_settings is None:
+        return None, None, None
+
+    api_key = _clean_secret(decrypt_secret(app_settings.kalshi_api_key))
+    email = _clean_secret(app_settings.kalshi_email)
+    password = _clean_secret(decrypt_secret(app_settings.kalshi_password))
+    return api_key, email, password
+
+
+async def _resolve_kalshi_ws_auth_headers() -> dict[str, str]:
+    """Return auth headers for Kalshi WS, or {} when not configured."""
+    from services.kalshi_client import kalshi_client
+
+    if kalshi_client.is_authenticated:
+        return kalshi_client.get_auth_headers()
+
+    api_key, email, password = await _load_kalshi_stored_credentials()
+    if not api_key and not (email and password):
+        return {}
+
+    initialized = await kalshi_client.initialize_auth(
+        email=email,
+        password=password,
+        api_key=api_key,
+    )
+    if not initialized:
+        logger.warning("Kalshi WS auth initialization failed; feed will remain stopped")
+        return {}
+
+    return kalshi_client.get_auth_headers()
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +711,7 @@ class KalshiWSFeed:
         self._run_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        self._auth_headers: dict[str, str] = {}
 
         # Stats
         self.stats = FeedStats()
@@ -669,9 +733,20 @@ class KalshiWSFeed:
             return
         if self._run_task is not None and not self._run_task.done():
             return
+        self._auth_headers = await self._load_auth_headers()
+        if not self._auth_headers:
+            self._state = ConnectionState.CLOSED
+            logger.info(
+                "KalshiWSFeed not started: credentials are not configured in app settings"
+            )
+            return
         self._stop_event.clear()
         self._run_task = asyncio.create_task(self._run_loop(), name="kalshi-ws-feed")
         logger.info("KalshiWSFeed started")
+
+    async def _load_auth_headers(self) -> dict[str, str]:
+        """Resolve auth headers for Kalshi WebSocket connection."""
+        return await _resolve_kalshi_ws_auth_headers()
 
     async def stop(self) -> None:
         """Gracefully shut down."""
@@ -769,6 +844,7 @@ class KalshiWSFeed:
         extra_headers = {
             "User-Agent": "homerun-arb-scanner/1.0",
         }
+        extra_headers.update(self._auth_headers)
         async with websockets.connect(
             self._ws_url,
             ping_interval=None,
@@ -1024,7 +1100,11 @@ class FeedManager:
         await self._polymarket_feed.start()
         await self._kalshi_feed.start()
         self._started = True
-        logger.info("FeedManager started (Polymarket + Kalshi)")
+        logger.info(
+            "FeedManager started",
+            polymarket_ws=True,
+            kalshi_state=self._kalshi_feed.state.value,
+        )
 
     async def stop(self) -> None:
         """Stop both feeds and clear cache."""

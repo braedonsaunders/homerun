@@ -143,6 +143,10 @@ class KalshiClient:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         return headers
 
+    def get_auth_headers(self) -> dict:
+        """Return auth headers for external integrations (e.g. WebSocket feed)."""
+        return self._auth_headers()
+
     async def _get(self, path: str, params: Optional[dict] = None) -> dict:
         """Perform a rate-limited GET request with 429 retry and return the JSON body."""
         import random
@@ -780,6 +784,7 @@ class KalshiClient:
                         for p in positions:
                             if p["market_id"] == ticker:
                                 p["market_question"] = market.question
+                                p["event_slug"] = market.event_slug
                                 p["current_price"] = (
                                     market.yes_price
                                     if p["outcome"] == "YES"

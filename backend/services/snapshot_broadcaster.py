@@ -16,6 +16,7 @@ from sqlalchemy import select
 from api.websocket import manager
 from models.database import AsyncSessionLocal, OpportunityEvent
 from services import shared_state
+from services.news import shared_state as news_shared_state
 from services.weather import shared_state as weather_shared_state
 from utils.logger import get_logger
 
@@ -34,6 +35,8 @@ class SnapshotBroadcaster:
         self._last_event_ts: Optional[datetime] = None
         self._last_weather_status_sig: Optional[tuple] = None
         self._last_weather_opp_sig: Optional[tuple] = None
+        self._last_news_status_sig: Optional[tuple] = None
+        self._last_news_update_sig: Optional[tuple] = None
 
     async def start(self, interval_seconds: float = 1.0) -> None:
         """Start background poll loop (idempotent)."""
@@ -62,6 +65,8 @@ class SnapshotBroadcaster:
         self._last_event_ts = None
         self._last_weather_status_sig = None
         self._last_weather_opp_sig = None
+        self._last_news_status_sig = None
+        self._last_news_update_sig = None
         logger.info("Snapshot broadcaster stopped")
 
     async def _run_loop(self, interval_seconds: float) -> None:
@@ -70,6 +75,7 @@ class SnapshotBroadcaster:
                 async with AsyncSessionLocal() as session:
                     opportunities, status = await shared_state.read_scanner_snapshot(session)
                     weather_opps, weather_status = await weather_shared_state.read_weather_snapshot(session)
+                    news_status = await news_shared_state.get_news_status_from_db(session)
                     event_query = select(OpportunityEvent).order_by(
                         OpportunityEvent.created_at.asc()
                     )
@@ -175,6 +181,47 @@ class SnapshotBroadcaster:
                                     o.model_dump(mode="json") for o in weather_opps[:100]
                                 ],
                                 "status": weather_status,
+                            },
+                        }
+                    )
+
+                news_stats = news_status.get("stats") or {}
+                news_status_sig = (
+                    news_status.get("running"),
+                    news_status.get("enabled"),
+                    news_status.get("paused"),
+                    news_status.get("interval_seconds"),
+                    news_status.get("last_scan"),
+                    news_status.get("next_scan"),
+                    news_status.get("pending_intents"),
+                    news_status.get("degraded_mode"),
+                    news_status.get("last_error"),
+                )
+                news_update_sig = (
+                    news_status.get("last_scan"),
+                    news_stats.get("findings"),
+                    news_stats.get("intents"),
+                    news_status.get("pending_intents"),
+                )
+
+                if news_status_sig != self._last_news_status_sig:
+                    self._last_news_status_sig = news_status_sig
+                    await manager.broadcast(
+                        {"type": "news_workflow_status", "data": news_status}
+                    )
+
+                if news_update_sig != self._last_news_update_sig:
+                    self._last_news_update_sig = news_update_sig
+                    await manager.broadcast(
+                        {
+                            "type": "news_workflow_update",
+                            "data": {
+                                "status": news_status,
+                                "findings": int(news_stats.get("findings", 0) or 0),
+                                "intents": int(news_stats.get("intents", 0) or 0),
+                                "pending_intents": int(
+                                    news_status.get("pending_intents", 0) or 0
+                                ),
                             },
                         }
                     )

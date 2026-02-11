@@ -475,7 +475,9 @@ class HomerunApp(App):
 
     # Process handles
     scanner_worker_proc: Optional[subprocess.Popen] = None
+    discovery_worker_proc: Optional[subprocess.Popen] = None
     weather_worker_proc: Optional[subprocess.Popen] = None
+    news_worker_proc: Optional[subprocess.Popen] = None
     backend_proc: Optional[subprocess.Popen] = None
     frontend_proc: Optional[subprocess.Popen] = None
 
@@ -548,6 +550,11 @@ class HomerunApp(App):
             yield Static(
                 "[@click=app.noop]WEATHER[/]  [bold red]OFF[/]",
                 id="svc-weather",
+                classes="status-item",
+            )
+            yield Static(
+                "[@click=app.noop]NEWS[/]  [bold red]OFF[/]",
+                id="svc-news",
                 classes="status-item",
             )
             yield Static(
@@ -1146,6 +1153,37 @@ class HomerunApp(App):
             )
             self.scanner_worker_proc = None
 
+        # Start discovery worker (wallet discovery + leaderboard refresh loop)
+        self._enqueue_log(
+            ">>> Starting discovery worker...", source="BACKEND", level="INFO"
+        )
+        try:
+            self.discovery_worker_proc = subprocess.Popen(
+                [
+                    str(venv_python),
+                    "-m",
+                    "workers.discovery_worker",
+                ],
+                cwd=str(BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            discovery_stream = threading.Thread(
+                target=self._stream_output,
+                args=(self.discovery_worker_proc, "DISCOVERY"),
+                daemon=True,
+                name="discovery-stream",
+            )
+            discovery_stream.start()
+        except Exception as e:
+            self._enqueue_log(
+                f"Discovery worker failed to start (non-fatal): {e}",
+                source="BACKEND",
+                level="WARNING",
+            )
+            self.discovery_worker_proc = None
+
         # Start weather worker (independent weather opportunities pipeline)
         self._enqueue_log(
             ">>> Starting weather worker...", source="BACKEND", level="INFO"
@@ -1176,6 +1214,37 @@ class HomerunApp(App):
                 level="WARNING",
             )
             self.weather_worker_proc = None
+
+        # Start news worker (independent news workflow pipeline)
+        self._enqueue_log(
+            ">>> Starting news worker...", source="BACKEND", level="INFO"
+        )
+        try:
+            self.news_worker_proc = subprocess.Popen(
+                [
+                    str(venv_python),
+                    "-m",
+                    "workers.news_worker",
+                ],
+                cwd=str(BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            news_stream = threading.Thread(
+                target=self._stream_output,
+                args=(self.news_worker_proc, "NEWS"),
+                daemon=True,
+                name="news-stream",
+            )
+            news_stream.start()
+        except Exception as e:
+            self._enqueue_log(
+                f"News worker failed to start (non-fatal): {e}",
+                source="BACKEND",
+                level="WARNING",
+            )
+            self.news_worker_proc = None
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -1319,6 +1388,8 @@ class HomerunApp(App):
         self._update_status("svc-scanner", "SCANNER", scanner.get("running", False))
         weather_alive = self.weather_worker_proc is not None and self.weather_worker_proc.poll() is None
         self._update_status("svc-weather", "WEATHER", weather_alive)
+        news_alive = self.news_worker_proc is not None and self.news_worker_proc.poll() is None
+        self._update_status("svc-news", "NEWS", news_alive)
         self._update_status("svc-autotrader", "AUTO TRADER", auto.get("running", False))
         ws_healthy = ws.get("healthy", False) if isinstance(ws, dict) else False
         self._update_status("svc-wsfeeds", "WS FEEDS", ws_healthy)
@@ -1385,6 +1456,7 @@ class HomerunApp(App):
             self._update_status("svc-backend", "BACKEND", False)
             self._update_status("svc-scanner", "SCANNER", False)
             self._update_status("svc-weather", "WEATHER", False)
+            self._update_status("svc-news", "NEWS", False)
             self._update_status("svc-autotrader", "AUTO TRADER", False)
             self._update_status("svc-wsfeeds", "WS FEEDS", False)
 
@@ -1443,7 +1515,9 @@ class HomerunApp(App):
             p
             for p in (
                 self.scanner_worker_proc,
+                self.discovery_worker_proc,
                 self.weather_worker_proc,
+                self.news_worker_proc,
                 self.backend_proc,
                 self.frontend_proc,
             )

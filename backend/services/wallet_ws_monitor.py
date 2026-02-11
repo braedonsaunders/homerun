@@ -24,6 +24,7 @@ except ImportError:
 
 from sqlalchemy import Column, String, Float, Integer, DateTime, Index
 
+from config import settings
 from models.database import Base, AsyncSessionLocal
 from utils.logger import get_logger
 
@@ -41,10 +42,18 @@ ORDER_FILLED_TOPIC = (
 )
 
 # Default Polygon WebSocket RPC endpoint
-DEFAULT_WS_URL = "wss://polygon-bor-rpc.publicnode.com"
+DEFAULT_WS_URL = settings.POLYGON_WS_URL
 
 # Default HTTP RPC fallback endpoint
-DEFAULT_HTTP_RPC_URL = "https://polygon-bor-rpc.publicnode.com"
+DEFAULT_HTTP_RPC_URL = settings.POLYGON_RPC_URL
+
+# Fallback RPC endpoints (tried in order after the configured primary).
+FALLBACK_HTTP_RPC_URLS = (
+    "https://polygon-rpc.com",
+    "https://polygon-bor-rpc.publicnode.com",
+)
+
+DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=8.0, write=8.0, pool=8.0)
 
 
 # ==================== DATA MODEL ====================
@@ -97,6 +106,22 @@ class WalletMonitorEvent(Base):
 def _decode_uint256(hex_str: str) -> int:
     """Decode a 256-bit unsigned integer from a hex-encoded ABI word."""
     return int(hex_str, 16)
+
+
+def _exception_text(exc: Exception) -> str:
+    """Return a non-empty exception string for structured logging."""
+    text = str(exc).strip()
+    return text if text else repr(exc)
+
+
+def _build_rpc_candidates(primary_url: str) -> list[str]:
+    """Build de-duplicated RPC endpoints in failover order."""
+    urls: list[str] = []
+    for raw_url in (primary_url, *FALLBACK_HTTP_RPC_URLS):
+        url = (raw_url or "").strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
 
 
 def _decode_address_from_topic(topic_hex: str) -> str:
@@ -226,7 +251,8 @@ class WalletWebSocketMonitor:
         self._tracked_sources: dict[str, set[str]] = {}
         self._callbacks: list[Callable] = []
         self._ws_url: str = DEFAULT_WS_URL
-        self._http_rpc_url: str = DEFAULT_HTTP_RPC_URL
+        self._http_rpc_url: str = DEFAULT_HTTP_RPC_URL or "https://polygon-rpc.com"
+        self._rpc_urls: list[str] = _build_rpc_candidates(self._http_rpc_url)
         self._reconnect_delay: int = 5
         self._max_reconnect_delay: int = 60
         self._ws_connection = None
@@ -503,7 +529,8 @@ class WalletWebSocketMonitor:
 
                 logger.warning(
                     "WS connection lost, will reconnect",
-                    error=str(e),
+                    error_type=type(e).__name__,
+                    error=_exception_text(e),
                     reconnect_delay=current_delay,
                 )
 
@@ -547,9 +574,6 @@ class WalletWebSocketMonitor:
         ):
             return
 
-        self._last_processed_block = block_number
-        self._stats["blocks_processed"] += 1
-
         block_hex = hex(block_number)
 
         try:
@@ -561,21 +585,36 @@ class WalletWebSocketMonitor:
             # Query logs via HTTP RPC (more reliable for getLogs)
             logs = await self._get_logs_for_block(block_hex)
 
-            if not logs:
-                return
-
             for log_entry in logs:
-                await self._process_log(
-                    log_entry,
-                    block_number=block_number,
-                    block_timestamp=block_timestamp,
-                )
+                try:
+                    await self._process_log(
+                        log_entry,
+                        block_number=block_number,
+                        block_timestamp=block_timestamp,
+                    )
+                except Exception as e:
+                    self._stats["errors"] += 1
+                    logger.error(
+                        "Error processing log entry",
+                        block_number=block_number,
+                        tx_hash=log_entry.get("transactionHash"),
+                        error_type=type(e).__name__,
+                        error=_exception_text(e),
+                        exc_info=True,
+                    )
+
+            # Only advance the cursor after a successful RPC call so failed
+            # blocks can be retried by fallback polling.
+            self._last_processed_block = block_number
+            self._stats["blocks_processed"] += 1
 
         except Exception as e:
             logger.error(
                 "Error handling block",
                 block_number=block_number,
-                error=str(e),
+                error_type=type(e).__name__,
+                error=_exception_text(e),
+                exc_info=True,
             )
             self._stats["errors"] += 1
 
@@ -602,13 +641,13 @@ class WalletWebSocketMonitor:
             ],
         }
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                self._http_rpc_url,
-                json=payload,
-            )
-            response.raise_for_status()
-            result = response.json()
+        result = await self._rpc_request(
+            payload,
+            method="eth_getLogs",
+            block_hex=block_hex,
+        )
+        if result is None:
+            raise RuntimeError(f"RPC request failed for eth_getLogs on block {block_hex}")
 
         if "error" in result:
             logger.error(
@@ -618,7 +657,71 @@ class WalletWebSocketMonitor:
             )
             return []
 
-        return result.get("result", [])
+        logs = result.get("result", [])
+        if isinstance(logs, list):
+            return logs
+        logger.warning(
+            "Unexpected eth_getLogs result shape",
+            block=block_hex,
+            result_type=type(logs).__name__,
+        )
+        return []
+
+    async def _rpc_request(
+        self,
+        payload: dict,
+        *,
+        method: str,
+        block_hex: str = "",
+    ) -> Optional[dict]:
+        """Send an HTTP JSON-RPC request with endpoint failover."""
+        last_error: Optional[Exception] = None
+        for endpoint in self._rpc_urls:
+            try:
+                async with httpx.AsyncClient(timeout=DEFAULT_HTTP_TIMEOUT) as client:
+                    response = await client.post(endpoint, json=payload)
+                    response.raise_for_status()
+                    result = response.json()
+
+                if endpoint != self._http_rpc_url:
+                    logger.warning(
+                        "Wallet monitor RPC failover",
+                        previous_endpoint=self._http_rpc_url,
+                        active_endpoint=endpoint,
+                    )
+                    self._http_rpc_url = endpoint
+                    self._rpc_urls = _build_rpc_candidates(self._http_rpc_url)
+
+                if not isinstance(result, dict):
+                    logger.warning(
+                        "Unexpected RPC response payload",
+                        method=method,
+                        endpoint=endpoint,
+                        response_type=type(result).__name__,
+                    )
+                    return None
+                return result
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Wallet monitor RPC request failed",
+                    method=method,
+                    endpoint=endpoint,
+                    block=block_hex or None,
+                    error_type=type(e).__name__,
+                    error=_exception_text(e),
+                )
+
+        if last_error is not None:
+            logger.error(
+                "Wallet monitor RPC failed across all endpoints",
+                method=method,
+                block=block_hex or None,
+                endpoints=self._rpc_urls,
+                error_type=type(last_error).__name__,
+                error=_exception_text(last_error),
+            )
+        return None
 
     # ==================== LOG PROCESSING ====================
 
@@ -733,7 +836,8 @@ class WalletWebSocketMonitor:
         except Exception as e:
             logger.error(
                 "Failed to persist wallet monitor event",
-                error=str(e),
+                error_type=type(e).__name__,
+                error=_exception_text(e),
                 wallet=event.wallet_address,
                 tx_hash=event.tx_hash,
             )
@@ -756,7 +860,8 @@ class WalletWebSocketMonitor:
             except Exception as e:
                 logger.error(
                     "Callback error",
-                    error=str(e),
+                    error_type=type(e).__name__,
+                    error=_exception_text(e),
                     callback=getattr(callback, "__name__", str(callback)),
                 )
 
@@ -798,7 +903,11 @@ class WalletWebSocketMonitor:
                 logger.info("Fallback polling cancelled")
                 break
             except Exception as e:
-                logger.error("Fallback polling error", error=str(e))
+                logger.error(
+                    "Fallback polling error",
+                    error_type=type(e).__name__,
+                    error=_exception_text(e),
+                )
                 self._stats["errors"] += 1
 
             await asyncio.sleep(poll_interval)
@@ -816,26 +925,33 @@ class WalletWebSocketMonitor:
             "params": [],
         }
 
+        result = await self._rpc_request(payload, method="eth_blockNumber")
+        if result is None:
+            return None
+
+        if "error" in result:
+            logger.error(
+                "RPC error getting block number",
+                error=result["error"],
+            )
+            return None
+
+        block_hex = result.get("result")
+        if not isinstance(block_hex, str):
+            logger.warning(
+                "Unexpected eth_blockNumber result shape",
+                result_type=type(block_hex).__name__,
+            )
+            return None
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    self._http_rpc_url,
-                    json=payload,
-                )
-                response.raise_for_status()
-                result = response.json()
-
-            if "error" in result:
-                logger.error(
-                    "RPC error getting block number",
-                    error=result["error"],
-                )
-                return None
-
-            return int(result["result"], 16)
-
-        except Exception as e:
-            logger.error("Failed to get latest block number", error=str(e))
+            return int(block_hex, 16)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Failed to parse block number result",
+                raw_value=block_hex,
+                error_type=type(e).__name__,
+                error=_exception_text(e),
+            )
             return None
 
     # ==================== STATUS ====================

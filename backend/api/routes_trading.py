@@ -9,10 +9,12 @@ Ensure TRADING_ENABLED=true and proper credentials are configured.
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Awaitable, Optional
 from datetime import datetime
+import asyncio
 
 from config import settings
+from services.polymarket import polymarket_client
 from services.trading import (
     trading_service,
     Order,
@@ -81,6 +83,8 @@ class OrderResponse(BaseModel):
 class PositionResponse(BaseModel):
     token_id: str
     market_id: str
+    market_slug: Optional[str] = None
+    event_slug: Optional[str] = None
     market_question: str
     outcome: str
     size: float
@@ -89,10 +93,15 @@ class PositionResponse(BaseModel):
     unrealized_pnl: float
 
     @classmethod
-    def from_position(cls, pos: Position) -> "PositionResponse":
+    def from_position(
+        cls, pos: Position, market_info: Optional[dict] = None
+    ) -> "PositionResponse":
+        market_info = market_info or {}
         return cls(
             token_id=pos.token_id,
             market_id=pos.market_id,
+            market_slug=market_info.get("slug") or None,
+            event_slug=market_info.get("event_slug") or None,
             market_question=pos.market_question,
             outcome=pos.outcome,
             size=pos.size,
@@ -270,7 +279,30 @@ async def cancel_all_orders():
 async def get_positions():
     """Get current open positions"""
     positions = await trading_service.sync_positions()
-    return [PositionResponse.from_position(p) for p in positions]
+    if not positions:
+        return []
+
+    lookups: dict[str, Awaitable[Optional[dict]]] = {}
+    for pos in positions:
+        market_id = pos.market_id
+        if not market_id or market_id in lookups:
+            continue
+        if market_id.startswith("0x"):
+            lookups[market_id] = polymarket_client.get_market_by_condition_id(market_id)
+        else:
+            lookups[market_id] = polymarket_client.get_market_by_token_id(market_id)
+
+    market_info_by_id: dict[str, dict] = {}
+    if lookups:
+        results = await asyncio.gather(*lookups.values(), return_exceptions=True)
+        for market_id, info in zip(lookups.keys(), results):
+            if isinstance(info, dict):
+                market_info_by_id[market_id] = info
+
+    return [
+        PositionResponse.from_position(p, market_info_by_id.get(p.market_id))
+        for p in positions
+    ]
 
 
 @router.get("/balance")

@@ -443,8 +443,6 @@ class CryptoService:
         Runs every 2 seconds:
         1. Refreshes market data if stale (Gamma API, 8s TTL)
         2. Broadcasts live market data to all connected frontends via WebSocket
-        3. Runs the btc_eth_highfreq strategy on the markets
-        4. Injects any detected opportunities into the scanner pool
         """
         self._fast_scan_running = True
         logger.info(
@@ -455,8 +453,6 @@ class CryptoService:
             try:
                 # Broadcast current market state to frontends via WebSocket
                 await self._broadcast_markets()
-                # Run strategy for opportunity detection
-                await self._run_fast_scan()
             except Exception as e:
                 logger.debug(f"CryptoService: fast scan error: {e}")
             await asyncio.sleep(interval_seconds)
@@ -652,86 +648,6 @@ class CryptoService:
             await broadcast_crypto_markets(result)
         except Exception as e:
             logger.debug(f"CryptoService: broadcast failed: {e}")
-
-    async def _run_fast_scan(self) -> None:
-        """Single fast-scan iteration: fetch CLOB prices + run strategy."""
-        markets = self.get_live_markets()
-        if not markets:
-            return
-
-        # Fetch CLOB prices for all crypto market tokens
-        clob_prices: dict[str, dict] = {}
-        for m in markets:
-            for i, token_id in enumerate(m.clob_token_ids or []):
-                if not token_id or len(token_id) < 20:
-                    continue
-                # Use Gamma-provided prices as baseline
-                price = m.up_price if i == 0 else m.down_price
-                if price is not None:
-                    clob_prices[token_id] = {"mid": price}
-
-        # Overlay WebSocket prices where available
-        try:
-            from services.ws_feeds import get_feed_manager
-
-            feed_mgr = get_feed_manager()
-            if feed_mgr._started:
-                for token_id in list(clob_prices.keys()):
-                    if feed_mgr.price_cache.is_fresh(token_id):
-                        ws_price = feed_mgr.price_cache.get_mid(token_id)
-                        if ws_price is not None:
-                            clob_prices[token_id] = {"mid": ws_price}
-        except Exception:
-            pass
-
-        # Run the btc_eth_highfreq strategy with these prices
-        try:
-            from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy
-            from models import Market as MktModel, Event
-
-            strategy = BtcEthHighFreqStrategy()
-
-            # Convert our CryptoMarket objects to Market model objects
-            model_markets: list[MktModel] = []
-            for m in markets:
-                model_markets.append(
-                    MktModel(
-                        id=m.id,
-                        condition_id=m.condition_id or "",
-                        question=m.question or "",
-                        slug=m.slug or "",
-                        clob_token_ids=m.clob_token_ids or [],
-                        outcome_prices=[m.up_price or 0.5, m.down_price or 0.5],
-                        active=True,
-                        closed=False,
-                        liquidity=m.liquidity or 0,
-                        volume=m.volume or 0,
-                        end_date=m.end_time,
-                    )
-                )
-
-            opps = strategy.detect(
-                events=[],
-                markets=model_markets,
-                prices=clob_prices,
-            )
-
-            if opps:
-                # Inject into scanner's opportunity list via merge
-                try:
-                    from services import scanner as scanner_mod
-
-                    scanner_mod.scanner._opportunities = (
-                        scanner_mod.scanner._merge_opportunities(opps)
-                    )
-                    logger.info(
-                        f"CryptoService: fast scan found {len(opps)} opportunity(ies)"
-                    )
-                except Exception as e:
-                    logger.debug(f"CryptoService: could not inject opportunities: {e}")
-        except Exception as e:
-            logger.debug(f"CryptoService: strategy run failed: {e}")
-
 
 # ---------------------------------------------------------------------------
 # Singleton

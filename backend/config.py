@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     MIN_PROFIT_THRESHOLD: float = 0.015  # 1.5% minimum profit after fees
     POLYMARKET_FEE: float = 0.02  # 2% winner fee
 
+    # Trader Discovery Worker
+    DISCOVERY_RUN_INTERVAL_MINUTES: int = 60
+    DISCOVERY_MAX_MARKETS_PER_RUN: int = 100
+    DISCOVERY_MAX_WALLETS_PER_MARKET: int = 50
+
     # Market Settings
     MAX_MARKETS_TO_SCAN: int = 500
     MIN_LIQUIDITY: float = 1000.0  # Minimum liquidity in USD

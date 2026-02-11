@@ -8,9 +8,12 @@ import {
   Globe,
   ChevronDown,
   ChevronUp,
+  Play,
+  Pause,
   Brain,
   Shield,
   Target,
+  Settings,
   Search,
   ArrowUpRight,
   ArrowDownRight,
@@ -38,6 +41,8 @@ import {
   getNewsWorkflowFindings,
   getNewsWorkflowIntents,
   runNewsWorkflow,
+  startNewsWorkflow,
+  pauseNewsWorkflow,
   skipNewsWorkflowIntent,
   NewsArticle,
   NewsEdge,
@@ -601,6 +606,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   const [, setForecastingEdge] = useState<string | null>(null)
   const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   // ─── Workflow Queries ─────────────────────────────────────
 
@@ -629,6 +635,20 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+    },
+  })
+
+  const startWorkflowMutation = useMutation({
+    mutationFn: startNewsWorkflow,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+    },
+  })
+
+  const pauseWorkflowMutation = useMutation({
+    mutationFn: pauseNewsWorkflow,
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
     },
   })
@@ -856,43 +876,19 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 gap-1"
-            onClick={() => fetchMutation.mutate()}
-            disabled={fetchMutation.isPending}
-          >
-            {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-            Fetch News
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 gap-1 text-blue-400 border-blue-500/20 hover:bg-blue-500/10 hover:text-blue-400"
-            onClick={() => runMatchingMutation.mutate()}
-            disabled={runMatchingMutation.isPending}
-          >
-            {runMatchingMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
-            Run Matching
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
-                onClick={() => edgeRefreshMutation.mutate()}
-                disabled={edgeRefreshMutation.isPending}
-              >
-                {edgeRefreshMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                Analyze All
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent className="text-xs">Analyze all matches with LLM (uses configured AI provider)</TooltipContent>
-          </Tooltip>
-        </div>
+        <Badge
+          variant="outline"
+          className={cn(
+            'text-[10px] h-6 px-2.5',
+            workflowStatus?.paused
+              ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+              : workflowStatus?.enabled
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                : 'bg-muted/40 text-muted-foreground border-border'
+          )}
+        >
+          Autopilot {workflowStatus?.paused ? 'Paused' : workflowStatus?.enabled ? 'Active' : 'Disabled'}
+        </Badge>
       </div>
 
       {/* ─── Status Bar ──────────────────────────────────────── */}
@@ -1016,9 +1012,9 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
         >
           <Target className="w-3.5 h-3.5" />
           Workflow
-          {(workflowStatus?.last_findings_count ?? 0) > 0 && (
+          {(Number(workflowStatus?.stats?.findings ?? 0) ?? 0) > 0 && (
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-400 text-[10px] font-data">
-              {workflowStatus?.last_findings_count}
+              {Number(workflowStatus?.stats?.findings ?? 0)}
             </span>
           )}
         </Button>
@@ -1373,35 +1369,136 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
       {/* ─── Workflow View ─────────────────────────────────────── */}
       {subView === 'workflow' && (
         <>
-          {/* Workflow Status Bar */}
-          <div className="flex items-center justify-between mb-4 p-3 bg-card/40 rounded-xl border border-border/30">
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <div className={cn("w-2 h-2 rounded-full", workflowStatus?.running ? "bg-green-400 animate-pulse" : "bg-muted")} />
-                <span>{workflowStatus?.running ? 'Running' : 'Stopped'}</span>
+          <div className="space-y-3 mb-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-card/40 rounded-xl border border-border/30">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+                <div className={cn('w-2 h-2 rounded-full', workflowStatus?.running ? 'bg-green-400 animate-pulse' : 'bg-muted')} />
+                <span className="truncate">
+                  {workflowStatus?.current_activity || 'Waiting for news worker'}
+                </span>
+                {workflowStatus?.last_error && (
+                  <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-400 border-red-500/20">
+                    Error
+                  </Badge>
+                )}
               </div>
-              {workflowStatus?.last_run && (
-                <span className="font-data">Last: {timeAgo(workflowStatus.last_run)}</span>
-              )}
-              <span className="font-data">Cycles: {workflowStatus?.cycle_count ?? 0}</span>
-              <span className="font-data">Markets: {workflowStatus?.market_index?.market_count ?? 0}</span>
-              {(workflowStatus?.pending_intents ?? 0) > 0 && (
-                <Badge variant="outline" className="text-[9px] bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
-                  {workflowStatus?.pending_intents} pending intents
-                </Badge>
-              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1.5"
+                  onClick={() => (workflowStatus?.paused ? startWorkflowMutation.mutate() : pauseWorkflowMutation.mutate())}
+                  disabled={startWorkflowMutation.isPending || pauseWorkflowMutation.isPending}
+                >
+                  {workflowStatus?.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                  {workflowStatus?.paused ? 'Resume' : 'Pause'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7 gap-1.5"
+                  onClick={() => setWorkflowSettingsOpen(true)}
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  Settings
+                </Button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
-                onClick={() => runWorkflowMutation.mutate()} disabled={runWorkflowMutation.isPending}>
-                {runWorkflowMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                Run Workflow
-              </Button>
-              <Button variant="ghost" size="sm" className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
-                onClick={() => setWorkflowSettingsOpen(true)} title="Workflow Settings">
-                <Filter className="w-3.5 h-3.5" />
-              </Button>
+
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+              <Card className="border-border/40 bg-card/40 p-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Last Cycle</p>
+                <p className="text-sm font-data font-semibold text-foreground mt-0.5">
+                  {timeAgo(workflowStatus?.last_scan)}
+                </p>
+              </Card>
+              <Card className="border-border/40 bg-card/40 p-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Next Cycle</p>
+                <p className="text-sm font-data font-semibold text-blue-400 mt-0.5">
+                  {workflowStatus?.next_scan ? timeAgo(workflowStatus.next_scan) : 'N/A'}
+                </p>
+              </Card>
+              <Card className="border-border/40 bg-card/40 p-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Pending Intents</p>
+                <p className="text-sm font-data font-semibold text-yellow-400 mt-0.5">
+                  {workflowStatus?.pending_intents ?? 0}
+                </p>
+              </Card>
+              <Card className="border-border/40 bg-card/40 p-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Budget Skips</p>
+                <p className="text-sm font-data font-semibold text-orange-400 mt-0.5">
+                  {Number(workflowStatus?.stats?.budget_skip_count ?? workflowStatus?.stats?.llm_calls_skipped ?? 0)}
+                </p>
+              </Card>
+              <Card className="border-border/40 bg-card/40 p-3">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Mode</p>
+                <p className={cn(
+                  'text-sm font-data font-semibold mt-0.5',
+                  workflowStatus?.degraded_mode ? 'text-amber-400' : 'text-emerald-400'
+                )}>
+                  {workflowStatus?.degraded_mode ? 'Degraded' : 'Normal'}
+                </p>
+              </Card>
             </div>
+
+            <Card className="border-border/40 bg-card/30 overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                <span className="uppercase tracking-wider">Advanced / Debug</span>
+                {advancedOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+              {advancedOpen && (
+                <div className="px-3 pb-3 pt-1 border-t border-border/30 space-y-2">
+                  <p className="text-[10px] text-muted-foreground">
+                    Manual controls for diagnostics only. Autopilot worker handles normal operation.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
+                      onClick={() => runWorkflowMutation.mutate()}
+                      disabled={runWorkflowMutation.isPending}
+                    >
+                      {runWorkflowMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      Queue Scan
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-7 gap-1"
+                      onClick={() => fetchMutation.mutate()}
+                      disabled={fetchMutation.isPending}
+                    >
+                      {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Fetch News
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-7 gap-1 text-blue-400 border-blue-500/20 hover:bg-blue-500/10 hover:text-blue-400"
+                      onClick={() => runMatchingMutation.mutate()}
+                      disabled={runMatchingMutation.isPending}
+                    >
+                      {runMatchingMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
+                      Run Matching
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs h-7 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
+                      onClick={() => edgeRefreshMutation.mutate()}
+                      disabled={edgeRefreshMutation.isPending}
+                    >
+                      {edgeRefreshMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      Analyze All
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </Card>
           </div>
 
           {/* Trade Intents */}
@@ -1429,11 +1526,11 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
             <div className="flex flex-col items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {runWorkflowMutation.isPending ? 'Running workflow pipeline...' : 'Loading findings...'}
+                {runWorkflowMutation.isPending ? 'Queueing workflow cycle...' : 'Loading findings...'}
               </p>
               {runWorkflowMutation.isPending && (
                 <p className="text-xs text-muted-foreground/60 mt-1">
-                  Event extraction, hybrid retrieval, LLM reranking, edge estimation...
+                  Worker will pick up the request on the next cycle.
                 </p>
               )}
             </div>
@@ -1442,14 +1539,8 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
               <Target className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
               <p className="text-muted-foreground">No workflow findings yet</p>
               <p className="text-sm text-muted-foreground/70 mt-1 mb-4">
-                The workflow pipeline extracts events from articles, matches them to markets using
-                hybrid retrieval, reranks with LLM, and estimates edges.
+                Autopilot runs continuously in the background. Use Advanced / Debug only for manual diagnostics.
               </p>
-              <Button variant="outline" size="sm"
-                className="text-xs h-8 gap-1.5 bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20 hover:text-purple-400"
-                onClick={() => runWorkflowMutation.mutate()} disabled={runWorkflowMutation.isPending}>
-                <Zap className="w-3.5 h-3.5" /> Run First Workflow Cycle
-              </Button>
             </div>
           ) : (
             <>

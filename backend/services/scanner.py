@@ -16,7 +16,6 @@ from services.strategies import (
     MiracleStrategy,
     CombinatorialStrategy,
     SettlementLagStrategy,
-    BtcEthHighFreqStrategy,
     NewsEdgeStrategy,
     CrossPlatformStrategy,
     BayesianCascadeStrategy,
@@ -67,7 +66,6 @@ class ArbitrageScanner:
             MiracleStrategy(),  # Swisstony's garbage collection strategy
             CombinatorialStrategy(),  # Cross-market arbitrage via integer programming
             SettlementLagStrategy(),  # Exploit delayed price adjustments (article Part IV)
-            BtcEthHighFreqStrategy(),  # BTC/ETH 15min/1hr high-frequency arb
             CrossPlatformStrategy(),  # Cross-platform arb (Polymarket vs Kalshi)
             BayesianCascadeStrategy(),  # Probability graph belief propagation
             LiquidityVacuumStrategy(),  # Order book imbalance exploitation
@@ -92,7 +90,6 @@ class ArbitrageScanner:
             "miracle": MispricingType.WITHIN_MARKET,
             "combinatorial": MispricingType.CROSS_MARKET,
             "settlement_lag": MispricingType.SETTLEMENT_LAG,
-            "btc_eth_highfreq": MispricingType.WITHIN_MARKET,
             "news_edge": MispricingType.NEWS_INFORMATION,
             "cross_platform": MispricingType.CROSS_MARKET,
             "bayesian_cascade": MispricingType.CROSS_MARKET,
@@ -1112,11 +1109,13 @@ class ArbitrageScanner:
                 new_count += 1
             existing_map[new_opp.stable_id] = new_opp
 
-        # Remove expired opportunities (resolution date has passed)
+        # Remove expired opportunities and keep BTC/ETH high-frequency
+        # opportunities isolated to the dedicated Crypto surface.
         merged = [
             opp
             for opp in existing_map.values()
-            if opp.resolution_date is None or _make_aware(opp.resolution_date) > now
+            if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now)
+            and opp.strategy != "btc_eth_highfreq"
         ]
 
         expired_count = len(existing_map) - len(merged)

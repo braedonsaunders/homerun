@@ -1498,6 +1498,28 @@ class AutoTrader:
             net_profit = gross_profit - fee
             roi = (net_profit / total_cost) * 100 if total_cost > 0 else 0
 
+            metadata = intent.metadata_json or {}
+            market_meta = metadata.get("market", {}) if isinstance(metadata, dict) else {}
+            try:
+                liquidity = float(market_meta.get("liquidity", 5000.0) or 0.0)
+            except Exception:
+                liquidity = 5000.0
+            if liquidity <= 0:
+                liquidity = 5000.0
+            token_ids = market_meta.get("token_ids") or []
+            token_id = None
+            if isinstance(token_ids, list) and len(token_ids) >= 2:
+                token_id = token_ids[0] if side == "YES" else token_ids[1]
+            elif isinstance(token_ids, list) and len(token_ids) == 1:
+                token_id = token_ids[0]
+
+            yes_price = (
+                entry_price if intent.direction == "buy_yes" else (1.0 - entry_price)
+            )
+            no_price = (
+                (1.0 - entry_price) if intent.direction == "buy_yes" else entry_price
+            )
+
             position_size = intent.suggested_size_usd or 10.0
 
             return ArbitrageOpportunity(
@@ -1519,17 +1541,26 @@ class AutoTrader:
                 markets=[{
                     "id": intent.market_id,
                     "question": intent.market_question,
-                    "yes_price": intent.entry_price if intent.direction == "buy_yes" else (1.0 - (intent.entry_price or 0.5)),
-                    "no_price": (1.0 - (intent.entry_price or 0.5)) if intent.direction == "buy_yes" else intent.entry_price,
-                    "liquidity": 5000.0,
+                    "yes_price": yes_price,
+                    "no_price": no_price,
+                    "liquidity": liquidity,
+                    "slug": market_meta.get("slug"),
+                    "event_slug": market_meta.get("event_slug"),
                 }],
-                min_liquidity=5000.0,
+                event_id=market_meta.get("id"),
+                event_slug=market_meta.get("event_slug"),
+                event_title=intent.market_question,
+                category="news",
+                min_liquidity=liquidity,
                 max_position_size=position_size,
                 positions_to_take=[{
                     "action": "BUY",
                     "outcome": side,
+                    "market": intent.market_question,
                     "price": entry_price,
-                    "token_id": None,
+                    "token_id": token_id,
+                    "market_id": intent.market_id,
+                    "platform": "polymarket",
                 }],
             )
         except Exception as e:
@@ -1640,12 +1671,16 @@ class AutoTrader:
             return None
 
     async def _mark_news_intent(self, intent_id: str, status: str):
-        """Update a news trade intent's status in the DB."""
+        """Update a news trade intent status and mark parent finding consumed."""
         try:
-            from models.database import AsyncSessionLocal, NewsTradeIntent
-            from sqlalchemy import update
+            from models.database import AsyncSessionLocal, NewsTradeIntent, NewsWorkflowFinding
+            from sqlalchemy import select, update
 
             async with AsyncSessionLocal() as session:
+                finding_result = await session.execute(
+                    select(NewsTradeIntent.finding_id).where(NewsTradeIntent.id == intent_id)
+                )
+                finding_id = finding_result.scalar_one_or_none()
                 await session.execute(
                     update(NewsTradeIntent)
                     .where(NewsTradeIntent.id == intent_id)
@@ -1654,6 +1689,12 @@ class AutoTrader:
                         consumed_at=datetime.now(timezone.utc),
                     )
                 )
+                if finding_id and status != "pending":
+                    await session.execute(
+                        update(NewsWorkflowFinding)
+                        .where(NewsWorkflowFinding.id == finding_id)
+                        .values(consumed_by_auto_trader=True)
+                    )
                 await session.commit()
         except Exception as e:
             logger.debug("Failed to mark news intent %s as %s: %s", intent_id, status, e)

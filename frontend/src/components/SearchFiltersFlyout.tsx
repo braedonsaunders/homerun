@@ -308,11 +308,11 @@ export default function SearchFiltersFlyout({
     mutationFn: updateSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
-      setSaveMessage({ type: 'success', text: 'Search filters saved' })
+      setSaveMessage({ type: 'success', text: 'Settings saved' })
       setTimeout(() => setSaveMessage(null), 3000)
     },
     onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save search filters' })
+      setSaveMessage({ type: 'error', text: error.message || 'Failed to save settings' })
       setTimeout(() => setSaveMessage(null), 5000)
     }
   })
@@ -339,7 +339,7 @@ export default function SearchFiltersFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-orange-500" />
-            <h3 className="text-sm font-semibold">Opportunity Filters</h3>
+            <h3 className="text-sm font-semibold">Market Settings</h3>
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
               {18 + plugins.length} strategies
             </span>
@@ -841,7 +841,7 @@ export default function SearchFiltersFlyout({
           <div className="flex items-center gap-2 pt-1 pb-4">
             <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending} className="gap-1.5">
               <Save className="w-3.5 h-3.5" />
-              {saveMutation.isPending ? 'Saving...' : 'Save All Filters'}
+              {saveMutation.isPending ? 'Saving...' : 'Save All Settings'}
             </Button>
           </div>
         </div>

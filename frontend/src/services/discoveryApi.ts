@@ -108,7 +108,13 @@ export interface DiscoveryStats {
   total_profitable: number
   total_copy_candidates: number
   last_run_at: string | null
+  wallets_discovered_last_run?: number
+  wallets_analyzed_last_run?: number
   is_running: boolean
+  current_activity?: string | null
+  interval_minutes?: number
+  paused?: boolean
+  requested_run_at?: string | null
 }
 
 export interface PoolStats {

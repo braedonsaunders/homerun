@@ -2162,6 +2162,8 @@ export interface NewsWorkflowFinding {
   article_title: string
   article_source: string
   article_url: string
+  signal_key?: string | null
+  cache_key?: string | null
   market_question: string
   market_price: number
   model_probability: number
@@ -2183,6 +2185,7 @@ export interface NewsWorkflowFinding {
 
 export interface NewsTradeIntent {
   id: string
+  signal_key?: string | null
   finding_id: string
   market_id: string
   market_question: string
@@ -2192,6 +2195,23 @@ export interface NewsTradeIntent {
   edge_percent: number
   confidence: number
   suggested_size_usd: number
+  metadata?: {
+    market?: {
+      id?: string
+      slug?: string
+      event_slug?: string
+      event_title?: string
+      liquidity?: number
+      yes_price?: number
+      no_price?: number
+      token_ids?: string[]
+    }
+    finding?: {
+      article_id?: string
+      signal_key?: string
+      cache_key?: string
+    }
+  }
   status: string
   created_at: string
   consumed_at: string | null
@@ -2199,24 +2219,24 @@ export interface NewsTradeIntent {
 
 export interface NewsWorkflowStatus {
   running: boolean
-  is_cycling: boolean
-  cycle_count: number
-  last_run: string | null
-  last_findings_count: number
-  last_intents_count: number
+  enabled: boolean
+  paused: boolean
+  interval_seconds: number
+  last_scan: string | null
+  next_scan: string | null
+  current_activity: string | null
+  last_error: string | null
+  degraded_mode: boolean
+  budget_remaining: number | null
   pending_intents: number
-  market_index: {
-    initialized: boolean
-    ml_mode: boolean
-    market_count: number
-    has_faiss: boolean
-    last_rebuild: string | null
-  }
+  requested_scan_at: string | null
+  stats: Record<string, unknown>
 }
 
 export interface NewsWorkflowSettings {
   enabled: boolean
   auto_run: boolean
+  scan_interval_seconds: number
   top_k: number
   rerank_top_n: number
   similarity_threshold: number
@@ -2229,6 +2249,11 @@ export interface NewsWorkflowSettings {
   auto_trader_enabled: boolean
   auto_trader_min_edge: number
   auto_trader_max_age_minutes: number
+  cycle_spend_cap_usd: number
+  hourly_spend_cap_usd: number
+  cycle_llm_call_cap: number
+  cache_ttl_minutes: number
+  max_edge_evals_per_article: number
   model: string | null
 }
 
@@ -2238,7 +2263,24 @@ export const getNewsWorkflowStatus = async (): Promise<NewsWorkflowStatus> => {
 }
 
 export const runNewsWorkflow = async (): Promise<Record<string, unknown>> => {
-  const { data } = await api.post('/news-workflow/run', null, { timeout: 300_000 })
+  const { data } = await api.post('/news-workflow/run')
+  return data
+}
+
+export const startNewsWorkflow = async (): Promise<NewsWorkflowStatus> => {
+  const { data } = await api.post('/news-workflow/start')
+  return data
+}
+
+export const pauseNewsWorkflow = async (): Promise<NewsWorkflowStatus> => {
+  const { data } = await api.post('/news-workflow/pause')
+  return data
+}
+
+export const setNewsWorkflowInterval = async (intervalSeconds: number): Promise<NewsWorkflowStatus> => {
+  const { data } = await api.post('/news-workflow/interval', null, {
+    params: { interval_seconds: intervalSeconds },
+  })
   return data
 }
 
@@ -2273,7 +2315,7 @@ export const getNewsWorkflowSettings = async (): Promise<NewsWorkflowSettings> =
 
 export const updateNewsWorkflowSettings = async (
   settings: Partial<NewsWorkflowSettings>
-): Promise<{ status: string; message: string }> => {
+): Promise<{ status: string; settings: NewsWorkflowSettings }> => {
   const { data } = await api.put('/news-workflow/settings', settings)
   return data
 }
