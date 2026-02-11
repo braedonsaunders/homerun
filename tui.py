@@ -1718,6 +1718,13 @@ class HomerunApp(App):
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    # On Windows Python 3.10+ the default ProactorEventLoop can crash during
+    # asyncio runner shutdown.  SelectorEventLoop avoids this and is all the
+    # TUI needs (no subprocess pipes managed via IOCP).
+    if sys.platform == "win32":
+        import asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     # Verify venv exists
     venv_dir = BACKEND_DIR / "venv"
     if not venv_dir.exists():
