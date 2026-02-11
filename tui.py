@@ -28,7 +28,6 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
-    Sparkline,
     TextArea,
 )
 
@@ -167,55 +166,26 @@ Screen {
     padding: 0 0 0 0;
 }
 
-/* ---- KPI grid ---- */
-#stats-grid {
-    layout: grid;
-    grid-size: 3 2;
-    grid-gutter: 1;
-    padding: 0 1;
-    margin: 1 1 0 1;
-    height: auto;
-}
-
-.stat-card {
-    height: 5;
-    background: #0f1d2b;
-    border: round #2a4862;
-    padding: 0 1;
-    content-align: center middle;
-}
-
-.stat-value {
-    text-style: bold;
-    color: #58f1c1;
-    text-align: center;
-    width: 100%;
-}
-
-.stat-title {
-    color: #88adc4;
-    text-align: center;
-    width: 100%;
-}
-
-/* ---- Sparkline ---- */
-#sparkline-wrap {
-    margin: 1 1 0 1;
-    height: 5;
-    border: round #24445e;
-    background: #0b1825;
-    padding: 0 1;
-}
-
-#sparkline-label {
+/* ---- Runtime metrics bar ---- */
+#metrics-bar {
+    layout: horizontal;
+    height: 1;
+    margin: 1 2 0 2;
     color: #8cb3c8;
-    text-align: left;
-    padding: 0 0;
 }
 
-#opp-sparkline {
-    height: 2;
-    color: #4bc8ff;
+.metric-item {
+    width: auto;
+    margin: 0 2 0 0;
+}
+
+.metric-value {
+    color: #58f1c1;
+    text-style: bold;
+}
+
+.metric-label {
+    color: #6e94ab;
 }
 
 /* ---- Worker command center ---- */
@@ -350,6 +320,103 @@ TabbedContent {
 TabPane {
     padding: 0;
 }
+
+/* ---- Light mode ---- */
+Screen.light-mode {
+    background: #f0f2f5;
+    color: #1a1a2e;
+}
+
+Screen.light-mode #logo {
+    color: #0d7a52;
+}
+
+Screen.light-mode #subtitle {
+    color: #5a6e7f;
+}
+
+Screen.light-mode #brand-panel {
+    background: #e4e8ec;
+    border: round #b0bec5;
+}
+
+Screen.light-mode #platform-panel {
+    background: #dce3e8;
+    border: round #90a4ae;
+}
+
+Screen.light-mode #platform-title {
+    color: #37474f;
+}
+
+Screen.light-mode .platform-item {
+    color: #455a64;
+}
+
+Screen.light-mode .platform-url {
+    color: #1565c0;
+}
+
+Screen.light-mode .worker-panel {
+    background: #e8ecf0;
+    border: round #b0bec5;
+}
+
+Screen.light-mode .worker-panel-title {
+    color: #263238;
+}
+
+Screen.light-mode .worker-panel-meta {
+    color: #546e7a;
+}
+
+Screen.light-mode .worker-panel-logs {
+    color: #607d8b;
+}
+
+Screen.light-mode #workers-title {
+    color: #37474f;
+}
+
+Screen.light-mode .metric-value {
+    color: #0d7a52;
+}
+
+Screen.light-mode .metric-label {
+    color: #607d8b;
+}
+
+Screen.light-mode #metrics-bar {
+    color: #546e7a;
+}
+
+Screen.light-mode #uptime-bar {
+    color: #607d8b;
+}
+
+Screen.light-mode #log-output {
+    border: round #b0bec5;
+}
+
+Screen.light-mode #log-header {
+    background: #e4e8ec;
+}
+
+Screen.light-mode .status-on {
+    color: #0d7a52;
+}
+
+Screen.light-mode .status-off {
+    color: #c62828;
+}
+
+Screen.light-mode .status-warn {
+    color: #e65100;
+}
+
+Screen.light-mode .status-idle {
+    color: #78909c;
+}
 """
 
 
@@ -412,29 +479,6 @@ def kill_port(port: int) -> None:
                 time.sleep(0.5)
             except Exception:
                 pass
-
-
-# ---------------------------------------------------------------------------
-# Stat card widget
-# ---------------------------------------------------------------------------
-class StatCard(Static):
-    """A small card showing a single metric."""
-
-    def __init__(self, title: str, value: str = "--", card_id: str = "") -> None:
-        super().__init__(id=card_id)
-        self._title = title
-        self._value = value
-
-    def compose(self) -> ComposeResult:
-        yield Label(self._value, classes="stat-value", id=f"{self.id}-val")
-        yield Label(self._title, classes="stat-title")
-
-    def update_value(self, value: str) -> None:
-        self._value = value
-        try:
-            self.query_one(f"#{self.id}-val", Label).update(value)
-        except Exception:
-            pass
 
 
 class WorkerPanel(Static):
@@ -536,7 +580,11 @@ class HomerunApp(App):
         Binding("q", "quit", "Quit", priority=True),
         Binding("h", "show_tab('home')", "Home", show=True, priority=True),
         Binding("l", "show_tab('logs')", "Logs", show=True, priority=True),
-        Binding("d", "toggle_dark", "Dark/Light", priority=True),
+        Binding("d", "toggle_dark", "Dark/Light", show=True, priority=True),
+        Binding("slash", "command_palette", "Search", show=True, priority=True),
+        Binding("r", "do_restart", "Restart", show=True, priority=True),
+        Binding("u", "do_update", "Update", show=False, priority=True),
+        Binding("question_mark", "show_help", "Help", show=True, priority=True),
         Binding("ctrl+c", "copy_to_clip", "Copy", show=False, priority=True),
     ]
 
@@ -553,9 +601,10 @@ class HomerunApp(App):
 
     # State
     start_time: float = 0.0
-    opp_history: list[float] = []
     backend_healthy: bool = False
     health_data: dict = {}
+    health_poll_count: int = 0
+    _is_light_mode: bool = False
 
     def __init__(self) -> None:
         super().__init__()
@@ -621,26 +670,21 @@ class HomerunApp(App):
                 yield Static(f"API        http://localhost:{BACKEND_PORT}", classes="platform-url")
                 yield Static(f"Docs       http://localhost:{BACKEND_PORT}/docs", classes="platform-url")
 
-        # Key metrics
-        with Container(id="stats-grid"):
-            yield StatCard("Opportunities", "--", card_id="stat-opps")
-            yield StatCard("Tracked Wallets", "--", card_id="stat-wallets")
-            yield StatCard("Auto Trades", "--", card_id="stat-trades")
-            yield StatCard("Total Profit", "--", card_id="stat-profit")
-            yield StatCard("Wallets Found", "--", card_id="stat-discovered")
-            yield StatCard("Rate Limits", "--", card_id="stat-ratelimits")
-
-        with Container(id="sparkline-wrap"):
-            yield Static("Opportunity Pulse (last 60 polls)", id="sparkline-label")
-            yield Sparkline([], id="opp-sparkline")
+        # Runtime metrics bar
+        with Horizontal(id="metrics-bar"):
+            yield Static("Uptime [bold]--:--:--[/]", id="metric-uptime", classes="metric-item")
+            yield Static("Workers [bold]0/7[/]", id="metric-workers", classes="metric-item")
+            yield Static("Health [bold red]OFFLINE[/]", id="metric-health", classes="metric-item")
+            yield Static("Polls [bold]0[/]", id="metric-polls", classes="metric-item")
+            yield Static("Logs [bold]0[/]", id="metric-logs", classes="metric-item")
 
         yield Static("Worker Command Center", id="workers-title")
         with Container(id="workers-grid"):
             for worker_name, worker_label in WORKER_STATUS_ORDER:
                 yield WorkerPanel(worker_name, worker_label)
 
-        # Uptime
-        yield Static("Uptime: starting...", id="uptime-bar")
+        # Shortcuts bar
+        yield Static("", id="uptime-bar")
 
     # ---- Logs tab layout ----
     def _compose_logs(self) -> ComposeResult:
@@ -685,7 +729,6 @@ class HomerunApp(App):
     # ---- Lifecycle ----
     def on_mount(self) -> None:
         self.start_time = time.time()
-        self.opp_history = []
         self._start_services()
         self._poll_health()
         self._update_uptime()
@@ -696,6 +739,37 @@ class HomerunApp(App):
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
+
+    def action_toggle_dark(self) -> None:
+        self._is_light_mode = not self._is_light_mode
+        if self._is_light_mode:
+            self.screen.add_class("light-mode")
+        else:
+            self.screen.remove_class("light-mode")
+        mode = "Light" if self._is_light_mode else "Dark"
+        self.notify(f"Switched to {mode} mode", timeout=2)
+
+    def action_do_restart(self) -> None:
+        self._restart_services()
+
+    def action_do_update(self) -> None:
+        self._update_and_restart()
+
+    def action_show_help(self) -> None:
+        shortcuts = (
+            "[bold]Keyboard Shortcuts[/]\n"
+            "\n"
+            "  [bold]h[/]       Switch to Home tab\n"
+            "  [bold]l[/]       Switch to Logs tab\n"
+            "  [bold]d[/]       Toggle dark/light mode\n"
+            "  [bold]/[/]       Open command palette (search)\n"
+            "  [bold]r[/]       Restart all services\n"
+            "  [bold]u[/]       Update & restart (git pull)\n"
+            "  [bold]?[/]       Show this help\n"
+            "  [bold]Ctrl+C[/]  Copy logs to clipboard\n"
+            "  [bold]q[/]       Quit"
+        )
+        self.notify(shortcuts, timeout=8)
 
     # ---- Copy action ----
     def _do_copy(self) -> None:
@@ -1404,15 +1478,13 @@ class HomerunApp(App):
         """Update all dashboard widgets from health data."""
         self.backend_healthy = True
         self.health_data = data
+        self.health_poll_count += 1
         services = data.get("services", {})
         workers = data.get("workers")
         if workers is None:
             workers = services.get("workers", {})
-        rate_limits = data.get("rate_limits", {})
 
         # --- Platform status ---
-        scanner = services.get("scanner", {})
-        auto = services.get("auto_trader", {})
         ws = services.get("ws_feeds", {})
 
         self._update_platform_item("svc-backend", "BACKEND", True)
@@ -1421,53 +1493,11 @@ class HomerunApp(App):
         ws_healthy = ws.get("healthy", False) if isinstance(ws, dict) else False
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", ws_healthy)
 
-        # --- Key metrics ---
-        opp_count = scanner.get("opportunities_count", 0)
-        self._update_stat("stat-opps", str(opp_count))
-        self.opp_history.append(float(opp_count))
-        if len(self.opp_history) > 60:
-            self.opp_history = self.opp_history[-60:]
-
-        wallets = services.get("wallet_tracker", {})
-        self._update_stat("stat-wallets", str(wallets.get("tracked_wallets", 0)))
-
-        auto_stats = auto.get("stats", {}) if isinstance(auto, dict) else {}
-        if isinstance(auto_stats, dict):
-            trades = auto_stats.get("total_trades")
-            if trades is None:
-                trades = auto_stats.get("trades_count", 0)
-            self._update_stat("stat-trades", str(trades))
-
-            profit = auto_stats.get("total_profit")
-            if profit is None:
-                profit = auto_stats.get("daily_pnl", 0)
-            self._update_stat("stat-profit", f"${profit:,.2f}" if profit else "$0.00")
-        else:
-            self._update_stat("stat-trades", "0")
-            self._update_stat("stat-profit", "$0.00")
-
-        discovery = services.get("wallet_discovery", {})
-        self._update_stat(
-            "stat-discovered", str(discovery.get("wallets_discovered", 0))
-        )
-
-        # Rate limits
-        if isinstance(rate_limits, dict):
-            remaining = rate_limits.get("remaining", "?")
-            limit = rate_limits.get("limit", "?")
-            self._update_stat("stat-ratelimits", f"{remaining}/{limit}")
-        else:
-            self._update_stat("stat-ratelimits", "OK")
-
         # --- Worker command center ---
         self._update_worker_panels(workers, services)
 
-        # --- Sparkline ---
-        try:
-            spark = self.query_one("#opp-sparkline", Sparkline)
-            spark.data = self.opp_history
-        except Exception:
-            pass
+        # --- Runtime metrics ---
+        self._update_runtime_metrics()
 
     def _apply_health_offline(self) -> None:
         """Mark backend as offline; check worker/frontend processes directly."""
@@ -1480,18 +1510,13 @@ class HomerunApp(App):
         # Workers are separate processes; check them individually instead of
         # blanket-marking everything offline when only the backend is down.
         self._update_workers_from_processes()
+        self._update_runtime_metrics()
 
     def _update_platform_item(self, widget_id: str, label: str, is_on: bool) -> None:
         state = "ONLINE" if is_on else "OFFLINE"
         dot = "[green]\u25cf[/]" if is_on else "[red]\u25cf[/]"
         try:
             self.query_one(f"#{widget_id}", Static).update(f"{dot} {label:<8} {state}")
-        except Exception:
-            pass
-
-    def _update_stat(self, card_id: str, value: str) -> None:
-        try:
-            self.query_one(f"#{card_id}", StatCard).update_value(value)
         except Exception:
             pass
 
@@ -1684,21 +1709,68 @@ class HomerunApp(App):
         except Exception:
             return None
 
+    # ---- Runtime metrics ----
+    def _update_runtime_metrics(self) -> None:
+        """Update the runtime metrics bar on the home page."""
+        elapsed = time.time() - self.start_time
+        h, rem = divmod(int(elapsed), 3600)
+        m, s = divmod(rem, 60)
+
+        # Count running workers
+        running = 0
+        total = len(WORKER_STATUS_ORDER)
+        for worker_name, _ in WORKER_STATUS_ORDER:
+            snapshot = self._worker_state_cache.get(worker_name, {})
+            if bool(snapshot.get("running", False)):
+                running += 1
+
+        health_text = "[bold green]OK[/]" if self.backend_healthy else "[bold red]OFFLINE[/]"
+
+        try:
+            self.query_one("#metric-uptime", Static).update(
+                f"Uptime [bold]{h:02d}:{m:02d}:{s:02d}[/]"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#metric-workers", Static).update(
+                f"Workers [bold]{running}/{total}[/]"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#metric-health", Static).update(
+                f"Health {health_text}"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#metric-polls", Static).update(
+                f"Polls [bold]{self.health_poll_count}[/]"
+            )
+        except Exception:
+            pass
+        try:
+            self.query_one("#metric-logs", Static).update(
+                f"Logs [bold]{len(self._log_entries):,}[/]"
+            )
+        except Exception:
+            pass
+
     # ---- Uptime ticker ----
     def _update_uptime(self) -> None:
         self.set_interval(1.0, self._tick_uptime)
 
     def _tick_uptime(self) -> None:
-        elapsed = time.time() - self.start_time
-        h, rem = divmod(int(elapsed), 3600)
-        m, s = divmod(rem, 60)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             self.query_one("#uptime-bar", Static).update(
-                f"Uptime: {h:02d}:{m:02d}:{s:02d}  |  {ts}  |  Press [bold]h[/]=Home  [bold]l[/]=Logs  [bold]q[/]=Quit"
+                f"{ts}  |  [bold]h[/]=Home  [bold]l[/]=Logs  [bold]d[/]=Theme  "
+                f"[bold]/[/]=Search  [bold]r[/]=Restart  [bold]?[/]=Help  [bold]q[/]=Quit"
             )
         except Exception:
             pass
+        self._update_runtime_metrics()
 
     # ---- Cleanup ----
     def on_unmount(self) -> None:
