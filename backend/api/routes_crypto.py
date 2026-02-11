@@ -1,62 +1,41 @@
-"""Dedicated crypto market API routes.
+"""Crypto routes backed by dedicated crypto-worker snapshots."""
 
-Completely independent from the scanner/opportunities pipeline.
-Always returns live 15-minute crypto market data from the Polymarket
-Gamma series API + Chainlink oracle prices.
-"""
+from __future__ import annotations
 
-import time as _time
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter
-
-from services.crypto_service import get_crypto_service
-from services.chainlink_feed import get_chainlink_feed
+from models.database import get_db_session
+from services.worker_state import read_worker_snapshot
 
 router = APIRouter()
 
 
 @router.get("/crypto/markets")
-async def get_crypto_markets():
-    """Return live crypto 15-minute markets with real-time pricing.
-
-    Always returns one market per configured asset (BTC, ETH, SOL, XRP)
-    regardless of whether any arbitrage opportunity exists.
-    Includes Chainlink oracle prices when available.
-    """
-    svc = get_crypto_service()
-    feed = get_chainlink_feed()
-    markets = svc.get_live_markets()
-
-    # Update price-to-beat tracking
-    svc._update_price_to_beat(markets)
-
-    result = []
-    for m in markets:
-        d = m.to_dict()
-        # Attach Chainlink oracle price for this asset
-        oracle = feed.get_price(m.asset)
-        if oracle:
-            d["oracle_price"] = oracle.price
-            d["oracle_updated_at_ms"] = oracle.updated_at_ms
-            d["oracle_age_seconds"] = round(
-                (_time.time() * 1000 - oracle.updated_at_ms) / 1000, 1
-            ) if oracle.updated_at_ms else None
-        else:
-            d["oracle_price"] = None
-            d["oracle_updated_at_ms"] = None
-            d["oracle_age_seconds"] = None
-
-        # Attach price to beat
-        d["price_to_beat"] = svc._price_to_beat.get(m.slug)
-
-        result.append(d)
-
-    return result
+async def get_crypto_markets(session: AsyncSession = Depends(get_db_session)):
+    """Return latest crypto market payload produced by ``crypto-worker``."""
+    snapshot = await read_worker_snapshot(session, "crypto")
+    stats = snapshot.get("stats") or {}
+    markets = stats.get("markets") if isinstance(stats, dict) else []
+    return markets if isinstance(markets, list) else []
 
 
 @router.get("/crypto/oracle-prices")
-async def get_oracle_prices():
-    """Return current Chainlink oracle prices for all assets."""
-    feed = get_chainlink_feed()
-    prices = feed.get_all_prices()
-    return {asset: p.to_dict() for asset, p in prices.items()}
+async def get_oracle_prices(session: AsyncSession = Depends(get_db_session)):
+    """Return latest oracle prices derived from the crypto-worker market snapshot."""
+    snapshot = await read_worker_snapshot(session, "crypto")
+    stats = snapshot.get("stats") or {}
+    markets = stats.get("markets") if isinstance(stats, dict) else []
+
+    out: dict[str, dict] = {}
+    if isinstance(markets, list):
+        for market in markets:
+            asset = (market or {}).get("asset")
+            if not asset:
+                continue
+            out[str(asset)] = {
+                "price": (market or {}).get("oracle_price"),
+                "updated_at_ms": (market or {}).get("oracle_updated_at_ms"),
+                "age_seconds": (market or {}).get("oracle_age_seconds"),
+            }
+    return out

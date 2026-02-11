@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Optional
 
 # Ensure backend is on path when run as python -m workers.scanner_worker from project root
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,12 +32,15 @@ os.environ.setdefault("EMBEDDING_DEVICE", "cpu")
 from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services import scanner
+from services.signal_bus import emit_scanner_signals
 from services.shared_state import (
     clear_scan_request,
     read_scanner_control,
+    read_scanner_snapshot,
     update_scanner_activity,
     write_scanner_snapshot,
 )
+from services.worker_state import write_worker_snapshot
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO")),
@@ -45,10 +49,79 @@ logging.basicConfig(
 logger = logging.getLogger("scanner_worker")
 
 
+def _is_upstream_resolution_error(exc: Exception) -> bool:
+    """Classify DNS/name-resolution upstream failures from HTTP client errors."""
+    text = str(exc).lower()
+    markers = (
+        "nodename nor servname provided",
+        "name or service not known",
+        "temporary failure in name resolution",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO timestamp into a UTC-aware datetime."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def _hydrate_scanner_pool_from_snapshot() -> int:
+    """Restore scanner in-memory pool from DB snapshot on worker startup."""
+    try:
+        async with AsyncSessionLocal() as session:
+            existing_opps, existing_status = await read_scanner_snapshot(session)
+    except Exception as e:
+        logger.warning("Scanner startup hydration skipped (snapshot read failed): %s", e)
+        return 0
+
+    now = datetime.now(timezone.utc)
+    restored = []
+    dropped_expired = 0
+    for opp in existing_opps:
+        rd = opp.resolution_date
+        if rd is not None:
+            if rd.tzinfo is None:
+                rd = rd.replace(tzinfo=timezone.utc)
+            else:
+                rd = rd.astimezone(timezone.utc)
+            if rd <= now:
+                dropped_expired += 1
+                continue
+        restored.append(opp)
+
+    scanner._opportunities = restored
+    if isinstance(existing_status, dict):
+        parsed_last_scan = _parse_iso_utc(existing_status.get("last_scan"))
+        if parsed_last_scan is not None:
+            scanner._last_scan = parsed_last_scan
+
+    if restored or dropped_expired:
+        logger.info(
+            "Hydrated scanner pool from DB snapshot: restored=%d dropped_expired=%d",
+            len(restored),
+            dropped_expired,
+        )
+    return len(restored)
+
+
 async def _run_scan_loop() -> None:
     """Load scanner, then loop: read control -> scan -> write snapshot -> sleep."""
     await scanner.load_settings()
     await scanner.load_plugins()
+    restored_count = await _hydrate_scanner_pool_from_snapshot()
     scanner._running = True
     scanner._enabled = True
 
@@ -98,8 +171,30 @@ async def _run_scan_loop() -> None:
 
     # Write initial status so API doesn't show "Waiting for scanner worker" before first scan
     try:
+        current_count = len(scanner.get_opportunities())
         async with AsyncSessionLocal() as session:
-            await update_scanner_activity(session, "Scanner started; first scan pending.")
+            if restored_count > 0:
+                activity = (
+                    f"Scanner resumed with {restored_count} restored opportunities; "
+                    "next scan pending."
+                )
+            else:
+                activity = "Scanner started; first scan pending."
+            await update_scanner_activity(session, activity)
+            await write_worker_snapshot(
+                session,
+                "scanner",
+                running=True,
+                enabled=True,
+                current_activity=activity,
+                interval_seconds=60,
+                last_run_at=None,
+                last_error=None,
+                stats={
+                    "opportunities_count": current_count,
+                    "signals_emitted_last_run": 0,
+                },
+            )
     except Exception:
         pass
 
@@ -111,6 +206,21 @@ async def _run_scan_loop() -> None:
         requested = control.get("requested_scan_at")
 
         if paused and not requested:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await write_worker_snapshot(
+                        session,
+                        "scanner",
+                        running=True,
+                        enabled=False,
+                        current_activity="Paused",
+                        interval_seconds=interval,
+                        last_run_at=None,
+                        last_error=None,
+                        stats={"opportunities_count": 0, "signals_emitted_last_run": 0},
+                    )
+            except Exception:
+                pass
             await asyncio.sleep(min(10, interval))
             continue
 
@@ -132,12 +242,36 @@ async def _run_scan_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.exception("Scan failed: %s", e)
+            network_resolution_error = _is_upstream_resolution_error(e)
+            if network_resolution_error:
+                logger.warning(
+                    "Scanner upstream DNS/network resolution failed; retaining previous snapshot where possible: %s",
+                    e,
+                )
+            else:
+                logger.exception("Scan failed: %s", e)
             try:
                 prev_opps = scanner.get_opportunities()
             except Exception:
                 prev_opps = []
+
+            existing_last_scan = None
             async with AsyncSessionLocal() as session:
+                try:
+                    existing_opps, existing_status = await read_scanner_snapshot(session)
+                except Exception:
+                    existing_opps, existing_status = [], {}
+                if not prev_opps and existing_opps:
+                    prev_opps = existing_opps
+                if isinstance(existing_status, dict):
+                    existing_last_scan = existing_status.get("last_scan")
+
+                if network_resolution_error:
+                    activity = (
+                        "Upstream market API DNS/network error; retaining last known snapshot."
+                    )
+                else:
+                    activity = f"Last scan error: {e}"
                 await write_scanner_snapshot(
                     session,
                     prev_opps,
@@ -145,13 +279,25 @@ async def _run_scan_loop() -> None:
                         "running": True,
                         "enabled": not paused,
                         "interval_seconds": interval,
-                        "last_scan": None,
-                        "current_activity": f"Last scan error: {e}",
+                        "last_scan": existing_last_scan,
+                        "current_activity": activity,
                         "strategies": [],
                     },
-                    market_history=scanner.get_market_history_for_opportunities(
-                        prev_opps, max_points=40
-                    ),
+                    market_history=scanner.get_market_history_for_opportunities(prev_opps),
+                )
+                await write_worker_snapshot(
+                    session,
+                    "scanner",
+                    running=True,
+                    enabled=not paused,
+                    current_activity=activity,
+                    interval_seconds=interval,
+                    last_run_at=datetime.utcnow(),
+                    last_error=str(e),
+                    stats={
+                        "opportunities_count": len(prev_opps),
+                        "signals_emitted_last_run": 0,
+                    },
                 )
             sleep_seconds = (
                 settings.FAST_SCAN_INTERVAL_SECONDS
@@ -167,6 +313,17 @@ async def _run_scan_loop() -> None:
         except Exception as e:
             logger.exception("Failed to fetch opportunities after scan: %s", e)
             opps = []
+
+        # API-triggered manual AI analysis runs in the API process and writes
+        # OpportunityJudgment rows. Re-attach those judgments here so scanner
+        # worker memory doesn't wipe them on the next snapshot write.
+        if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
+            try:
+                await asyncio.wait_for(scanner._attach_ai_judgments(opps), timeout=6)
+            except asyncio.TimeoutError:
+                logger.debug("Timed out reattaching AI judgments in worker loop")
+            except Exception as e:
+                logger.debug("AI judgment reattach skipped: %s", e)
 
         try:
             status = scanner.get_status()
@@ -195,12 +352,27 @@ async def _run_scan_loop() -> None:
         try:
             async with AsyncSessionLocal() as session:
                 market_history = scanner.get_market_history_for_opportunities(
-                    opps, max_points=40
+                    opps
                 )
                 await write_scanner_snapshot(
                     session, opps, status, market_history=market_history
                 )
+                emitted = await emit_scanner_signals(session, opps)
                 await clear_scan_request(session)
+                await write_worker_snapshot(
+                    session,
+                    "scanner",
+                    running=True,
+                    enabled=not paused,
+                    current_activity="Idle - waiting for next scanner cycle.",
+                    interval_seconds=interval,
+                    last_run_at=datetime.utcnow(),
+                    last_error=None,
+                    stats={
+                        "opportunities_count": len(opps),
+                        "signals_emitted_last_run": int(emitted),
+                    },
+                )
             logger.debug("Wrote snapshot: %d opportunities", len(opps))
         except Exception as e:
             logger.exception("Failed to persist scanner snapshot: %s", e)

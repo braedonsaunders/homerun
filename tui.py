@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +28,6 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
-    RichLog,
     Sparkline,
     TextArea,
 )
@@ -49,6 +48,39 @@ LOG_FLUSH_MS = 500  # Flush buffered lines every N ms
 # Log level ordering for filter comparison
 LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
 
+WORKER_STATUS_ORDER: list[tuple[str, str]] = [
+    ("scanner", "SCANNER"),
+    ("discovery", "DISCOVERY"),
+    ("weather", "WEATHER"),
+    ("news", "NEWS"),
+    ("crypto", "CRYPTO"),
+    ("tracked_traders", "TRACKED"),
+    ("autotrader", "AUTOTRADER"),
+]
+
+WORKER_TAG_TO_NAME: dict[str, str] = {
+    "SCANNER": "scanner",
+    "DISCOVERY": "discovery",
+    "WEATHER": "weather",
+    "NEWS": "news",
+    "CRYPTO": "crypto",
+    "TRACKED": "tracked_traders",
+    "AUTOTRADER": "autotrader",
+}
+
+WORKER_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
+    ("scanner_worker", "scanner"),
+    ("discovery_worker", "discovery"),
+    ("weather_worker", "weather"),
+    ("news_worker", "news"),
+    ("crypto_worker", "crypto"),
+    ("tracked_traders_worker", "tracked_traders"),
+    ("autotrader_worker", "autotrader"),
+)
+
+WORKER_MINI_LOG_LINES = 2
+WORKER_MINI_LOG_WIDTH = 84
+
 LOGO = r"""
  _   _  ___  __  __ _____ ____  _   _ _   _
 | | | |/ _ \|  \/  | ____|  _ \| | | | \ | |
@@ -65,180 +97,191 @@ LOGO = r"""
 # ---------------------------------------------------------------------------
 CSS = """
 Screen {
-    background: $surface;
+    background: #08111a;
+    color: #d8e5ef;
 }
 
 #logo {
-    color: #00ff88;
+    color: #58f1c1;
     text-style: bold;
-    text-align: center;
-    padding: 1 0;
+    text-align: left;
+    padding: 0 0 0 1;
 }
 
 #subtitle {
-    color: #888888;
-    text-align: center;
-    padding: 0 0 1 0;
+    color: #87a9bf;
+    text-align: left;
+    padding: 0 0 0 1;
 }
 
-/* ---- Action buttons ---- */
+/* ---- Home hero ---- */
+#hero-row {
+    layout: horizontal;
+    margin: 1 1 0 1;
+    height: 11;
+}
+
+#brand-panel {
+    width: 2fr;
+    background: #0e1a28;
+    border: round #28445f;
+    margin: 0 1 0 0;
+}
+
 #action-bar {
     layout: horizontal;
     height: 3;
-    padding: 0 2;
-    margin: 0 1 1 1;
+    padding: 0 1;
+    margin: 0 0 0 0;
 }
 
 #action-bar Button {
-    margin: 0 1 0 0;
+    margin: 0 1 0 1;
     min-width: 14;
 }
 
-/* ---- Service status bar ---- */
-#status-bar {
-    layout: horizontal;
-    height: 3;
-    padding: 0 2;
-    background: $boost;
-    margin: 0 1 1 1;
-}
-
-.status-item {
+#platform-panel {
     width: 1fr;
-    content-align: center middle;
+    background: #112333;
+    border: round #325b77;
+    padding: 0 1;
 }
 
-.status-label {
+#platform-title {
+    color: #b6d3e6;
     text-style: bold;
+    padding: 0 0 0 0;
 }
 
-.status-on {
-    color: #00ff88;
+.platform-item {
+    color: #9ec4da;
+    height: 1;
+    padding: 0 0 0 0;
 }
 
-.status-off {
-    color: #ff4444;
+.platform-url {
+    color: #7ebee6;
+    height: 1;
+    padding: 0 0 0 0;
 }
 
-.status-warn {
-    color: #ffaa00;
-}
-
-/* ---- URL bar ---- */
-#url-bar {
-    layout: horizontal;
-    height: 3;
-    padding: 0 2;
-    background: $boost;
-    margin: 0 1 1 1;
-}
-
-.url-item {
-    width: 1fr;
-    content-align: center middle;
-    color: #66ccff;
-}
-
-/* ---- Stats grid ---- */
+/* ---- KPI grid ---- */
 #stats-grid {
     layout: grid;
-    grid-size: 4 2;
+    grid-size: 3 2;
     grid-gutter: 1;
     padding: 0 1;
-    margin: 0 1;
+    margin: 1 1 0 1;
     height: auto;
 }
 
 .stat-card {
     height: 5;
-    background: $boost;
-    border: round $primary-background;
+    background: #0f1d2b;
+    border: round #2a4862;
     padding: 0 1;
     content-align: center middle;
 }
 
 .stat-value {
     text-style: bold;
-    color: #00ff88;
+    color: #58f1c1;
     text-align: center;
     width: 100%;
 }
 
 .stat-title {
-    color: #888888;
+    color: #88adc4;
     text-align: center;
     width: 100%;
 }
 
-/* ---- Config section ---- */
-#config-section {
-    layout: grid;
-    grid-size: 3;
-    grid-gutter: 1;
-    padding: 0 1;
-    margin: 1 1;
-    height: auto;
-}
-
-.config-card {
+/* ---- Sparkline ---- */
+#sparkline-wrap {
+    margin: 1 1 0 1;
     height: 5;
-    background: $boost;
-    border: round $primary-background;
-    padding: 0 1;
-    content-align: center middle;
-}
-
-.config-value {
-    text-style: bold;
-    color: #ffaa00;
-    text-align: center;
-    width: 100%;
-}
-
-.config-label {
-    color: #888888;
-    text-align: center;
-    width: 100%;
-}
-
-/* ---- Sparkline section ---- */
-#sparkline-section {
-    height: 5;
-    margin: 0 2;
+    border: round #24445e;
+    background: #0b1825;
     padding: 0 1;
 }
 
 #sparkline-label {
-    color: #888888;
+    color: #8cb3c8;
     text-align: left;
     padding: 0 0;
 }
 
 #opp-sparkline {
-    height: 3;
-    color: #00ff88;
+    height: 2;
+    color: #4bc8ff;
 }
 
-/* ---- Activity feed ---- */
-#activity-section {
-    margin: 0 2;
+/* ---- Worker command center ---- */
+#workers-title {
+    color: #b5d4e7;
+    text-style: bold;
+    margin: 1 2 0 2;
+}
+
+#workers-grid {
+    layout: grid;
+    grid-size: 4;
+    grid-gutter: 1;
+    padding: 0 1;
+    margin: 0 1 1 1;
+    height: auto;
+}
+
+.worker-panel {
     height: 8;
-    background: $boost;
-    border: round $primary-background;
+    background: #0f1d2c;
+    border: round #2b4961;
     padding: 0 1;
 }
 
-#activity-title {
-    color: #888888;
+.worker-panel-title {
+    color: #d2e8f7;
     text-style: bold;
-    padding: 0 0;
+    height: 1;
+}
+
+.worker-panel-status {
+    text-style: bold;
+    height: 1;
+}
+
+.worker-panel-meta {
+    color: #89acc3;
+    height: 1;
+}
+
+.worker-panel-logs {
+    color: #9ab4c6;
+    height: 3;
+    padding: 0 0 0 0;
+}
+
+.status-on {
+    color: #55f0b8;
+}
+
+.status-off {
+    color: #ff6a6a;
+}
+
+.status-warn {
+    color: #ffd166;
+}
+
+.status-idle {
+    color: #8faec0;
 }
 
 /* ---- Uptime ---- */
 #uptime-bar {
     height: 1;
     margin: 0 2 1 2;
-    color: #666666;
+    color: #7f98ac;
     text-align: center;
 }
 
@@ -251,7 +294,7 @@ Screen {
     layout: horizontal;
     height: 1;
     padding: 0 1;
-    background: $boost;
+    background: #0f1d2c;
     margin: 0 1 0 1;
 }
 
@@ -293,7 +336,7 @@ Screen {
 
 #log-output {
     margin: 0 1;
-    border: round $primary-background;
+    border: round #2b4961;
     scrollbar-size: 1 1;
 }
 
@@ -392,22 +435,44 @@ class StatCard(Static):
             pass
 
 
-class ConfigCard(Static):
-    """A config display card."""
+class WorkerPanel(Static):
+    """Compact worker telemetry panel with mini logs."""
 
-    def __init__(self, label: str, value: str = "--", card_id: str = "") -> None:
-        super().__init__(id=card_id)
+    def __init__(self, worker_name: str, label: str) -> None:
+        super().__init__(id=f"worker-{worker_name}", classes="worker-panel")
+        self.worker_name = worker_name
         self._label = label
-        self._value = value
 
     def compose(self) -> ComposeResult:
-        yield Label(self._value, classes="config-value", id=f"{self.id}-val")
-        yield Label(self._label, classes="config-label")
+        yield Label(self._label, classes="worker-panel-title")
+        yield Label("OFFLINE", id=f"{self.id}-status", classes="worker-panel-status status-off")
+        yield Label("No telemetry yet", id=f"{self.id}-meta", classes="worker-panel-meta")
+        yield Static(
+            "  waiting for worker events\n  --",
+            id=f"{self.id}-logs",
+            classes="worker-panel-logs",
+        )
 
-    def update_value(self, value: str) -> None:
-        self._value = value
+    def update_state(self, status: str, status_class: str, meta: str) -> None:
         try:
-            self.query_one(f"#{self.id}-val", Label).update(value)
+            status_label = self.query_one(f"#{self.id}-status", Label)
+            status_label.update(status)
+            status_label.remove_class("status-on")
+            status_label.remove_class("status-off")
+            status_label.remove_class("status-warn")
+            status_label.remove_class("status-idle")
+            status_label.add_class(status_class)
+            self.query_one(f"#{self.id}-meta", Label).update(meta)
+        except Exception:
+            pass
+
+    def update_logs(self, lines: list[str]) -> None:
+        if lines:
+            body = "\n".join(f"  {line}" for line in lines[-WORKER_MINI_LOG_LINES:])
+        else:
+            body = "  waiting for worker events\n  --"
+        try:
+            self.query_one(f"#{self.id}-logs", Static).update(body)
         except Exception:
             pass
 
@@ -478,6 +543,9 @@ class HomerunApp(App):
     discovery_worker_proc: Optional[subprocess.Popen] = None
     weather_worker_proc: Optional[subprocess.Popen] = None
     news_worker_proc: Optional[subprocess.Popen] = None
+    crypto_worker_proc: Optional[subprocess.Popen] = None
+    tracked_worker_proc: Optional[subprocess.Popen] = None
+    autotrader_worker_proc: Optional[subprocess.Popen] = None
     backend_proc: Optional[subprocess.Popen] = None
     frontend_proc: Optional[subprocess.Popen] = None
 
@@ -509,6 +577,17 @@ class HomerunApp(App):
         self._frontend_starting = False
         # Prevent concurrent restart/update operations.
         self._service_op_in_progress = False
+        # Worker telemetry buffers for Home mini logs.
+        self._worker_logs: dict[str, collections.deque[str]] = {
+            name: collections.deque(maxlen=12) for name, _ in WORKER_STATUS_ORDER
+        }
+        self._worker_event_buf: collections.deque[tuple[str, str]] = collections.deque(
+            maxlen=2000
+        )
+        self._worker_state_cache: dict[str, dict] = {}
+        self._worker_last_state: dict[str, str] = {}
+        self._worker_last_activity: dict[str, str] = {}
+        self._worker_last_error: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -521,93 +600,42 @@ class HomerunApp(App):
 
     # ---- Home tab layout ----
     def _compose_home(self) -> ComposeResult:
-        yield Static(LOGO, id="logo")
-        yield Static(
-            "Autonomous Prediction Market Trading Platform",
-            id="subtitle",
-        )
-        with Horizontal(id="action-bar"):
-            yield Button("Restart", id="restart-btn", variant="warning")
-            yield Button("Update", id="update-btn", variant="success")
+        with Horizontal(id="hero-row"):
+            with Vertical(id="brand-panel"):
+                yield Static(LOGO, id="logo")
+                yield Static(
+                    "Autonomous Prediction Market Trading Platform",
+                    id="subtitle",
+                )
+                with Horizontal(id="action-bar"):
+                    yield Button("Restart", id="restart-btn", variant="warning")
+                    yield Button("Update", id="update-btn", variant="success")
+            with Vertical(id="platform-panel"):
+                yield Static("Platform", id="platform-title")
+                yield Static("[red]\u25cf[/] BACKEND   OFFLINE", id="svc-backend", classes="platform-item")
+                yield Static("[red]\u25cf[/] FRONTEND  OFFLINE", id="svc-frontend", classes="platform-item")
+                yield Static("[red]\u25cf[/] WS FEEDS  OFFLINE", id="svc-wsfeeds", classes="platform-item")
+                yield Static(f"Dashboard  http://localhost:{FRONTEND_PORT}", classes="platform-url")
+                yield Static(f"API        http://localhost:{BACKEND_PORT}", classes="platform-url")
+                yield Static(f"Docs       http://localhost:{BACKEND_PORT}/docs", classes="platform-url")
 
-        # Service status bar
-        with Horizontal(id="status-bar"):
-            yield Static(
-                "[@click=app.noop]BACKEND[/]  [bold red]OFF[/]",
-                id="svc-backend",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]FRONTEND[/]  [bold red]OFF[/]",
-                id="svc-frontend",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]SCANNER[/]  [bold red]OFF[/]",
-                id="svc-scanner",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]WEATHER[/]  [bold red]OFF[/]",
-                id="svc-weather",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]NEWS[/]  [bold red]OFF[/]",
-                id="svc-news",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]AUTO TRADER[/]  [bold red]OFF[/]",
-                id="svc-autotrader",
-                classes="status-item",
-            )
-            yield Static(
-                "[@click=app.noop]WS FEEDS[/]  [bold red]OFF[/]",
-                id="svc-wsfeeds",
-                classes="status-item",
-            )
-
-        # URLs
-        with Horizontal(id="url-bar"):
-            yield Static(
-                f"Dashboard  http://localhost:{FRONTEND_PORT}",
-                classes="url-item",
-            )
-            yield Static(
-                f"API  http://localhost:{BACKEND_PORT}",
-                classes="url-item",
-            )
-            yield Static(
-                f"Docs  http://localhost:{BACKEND_PORT}/docs",
-                classes="url-item",
-            )
-
-        # Stats grid
+        # Key metrics
         with Container(id="stats-grid"):
             yield StatCard("Opportunities", "--", card_id="stat-opps")
             yield StatCard("Tracked Wallets", "--", card_id="stat-wallets")
             yield StatCard("Auto Trades", "--", card_id="stat-trades")
             yield StatCard("Total Profit", "--", card_id="stat-profit")
-            yield StatCard("Copy Configs", "--", card_id="stat-copy")
-            yield StatCard("Trader Mode", "--", card_id="stat-mode")
             yield StatCard("Wallets Found", "--", card_id="stat-discovered")
             yield StatCard("Rate Limits", "--", card_id="stat-ratelimits")
 
-        # Sparkline: opportunity history
-        yield Static("  Opportunities (last 60 polls)", id="sparkline-label")
-        yield Sparkline([], id="opp-sparkline")
+        with Container(id="sparkline-wrap"):
+            yield Static("Opportunity Pulse (last 60 polls)", id="sparkline-label")
+            yield Sparkline([], id="opp-sparkline")
 
-        # Config section
-        with Container(id="config-section"):
-            yield ConfigCard("Scan Interval", "--", card_id="cfg-interval")
-            yield ConfigCard("Min Profit", "--", card_id="cfg-profit")
-            yield ConfigCard("Max Markets", "--", card_id="cfg-markets")
-
-        # Activity feed
-        with Vertical(id="activity-section"):
-            yield Static("  Recent Activity", id="activity-title")
-            yield RichLog(id="activity-log", markup=True, max_lines=50)
+        yield Static("Worker Command Center", id="workers-title")
+        with Container(id="workers-grid"):
+            for worker_name, worker_label in WORKER_STATUS_ORDER:
+                yield WorkerPanel(worker_name, worker_label)
 
         # Uptime
         yield Static("Uptime: starting...", id="uptime-bar")
@@ -762,6 +790,9 @@ class HomerunApp(App):
         """Called from worker threads. Appends to buffer; main-thread timer flushes."""
         with self._log_lock:
             self._log_buf.append((text, source, level))
+            worker_name = self._infer_worker_from_log(source, text)
+            if worker_name:
+                self._worker_event_buf.append((worker_name, text))
 
     def _flush_log_buffer(self) -> None:
         """Called on the main thread by a periodic timer. Flushes pending lines
@@ -787,11 +818,13 @@ class HomerunApp(App):
         ]
 
         if not matching:
+            self._flush_worker_event_buffer()
             return
 
         try:
             ta = self.query_one("#log-output", TextArea)
         except Exception:
+            self._flush_worker_event_buffer()
             return
 
         # Snapshot scroll state and selection BEFORE any mutation.
@@ -833,6 +866,21 @@ class HomerunApp(App):
 
         # Update header with line count & follow state
         self._update_log_header()
+        self._flush_worker_event_buffer()
+
+    def _flush_worker_event_buffer(self) -> None:
+        with self._log_lock:
+            if not self._worker_event_buf:
+                return
+            events = list(self._worker_event_buf)
+            self._worker_event_buf.clear()
+
+        touched: set[str] = set()
+        for worker_name, raw_line in events:
+            self._append_worker_log(worker_name, raw_line, update=False)
+            touched.add(worker_name)
+        for worker_name in touched:
+            self._render_worker_panel(worker_name)
 
     def _update_log_header(self) -> None:
         follow_label = (
@@ -868,6 +916,41 @@ class HomerunApp(App):
                 self._update_log_header()
         except Exception:
             pass
+
+    def _infer_worker_from_log(self, source: str, text: str) -> Optional[str]:
+        source_upper = source.upper()
+        direct = WORKER_TAG_TO_NAME.get(source_upper)
+        if direct:
+            return direct
+        if source_upper != "BACKEND":
+            return None
+        lowered = text.lower()
+        for hint, worker_name in WORKER_BACKEND_HINTS:
+            if hint in lowered:
+                return worker_name
+        return None
+
+    def _append_worker_log(self, worker_name: str, text: str, update: bool = True) -> None:
+        logs = self._worker_logs.get(worker_name)
+        if logs is None:
+            return
+        line = self._normalize_worker_log_line(text)
+        if not line:
+            return
+        if logs and logs[-1] == line:
+            return
+        logs.append(line)
+        if update:
+            self._render_worker_panel(worker_name)
+
+    def _normalize_worker_log_line(self, text: str) -> str:
+        line = text.strip()
+        if line.startswith("[") and "] " in line:
+            line = line.split("] ", 1)[1]
+        line = " ".join(line.split())
+        if len(line) > WORKER_MINI_LOG_WIDTH:
+            line = line[: WORKER_MINI_LOG_WIDTH - 3].rstrip() + "..."
+        return line
 
     # ---- Button / Select handlers ----
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -921,6 +1004,17 @@ class HomerunApp(App):
                 self.query_one(f"#{button_id}", Button).disabled = not enabled
             except Exception:
                 pass
+
+    def _reset_worker_telemetry(self) -> None:
+        with self._log_lock:
+            self._worker_event_buf.clear()
+        self._worker_last_state.clear()
+        self._worker_last_activity.clear()
+        self._worker_last_error.clear()
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            self._worker_logs[worker_name].clear()
+            self._worker_state_cache[worker_name] = {}
+            self._render_worker_panel(worker_name)
 
     @work(thread=True)
     def _restart_services(self) -> None:
@@ -1077,10 +1171,50 @@ class HomerunApp(App):
         self._level_filter = str(event.value)
         self._rebuild_log_view()
 
+    def _spawn_worker_process(
+        self,
+        venv_python: Path,
+        env: dict[str, str],
+        module_name: str,
+        tag: str,
+        label: str,
+    ) -> Optional[subprocess.Popen]:
+        self._enqueue_log(
+            f">>> Starting {label} worker...", source="BACKEND", level="INFO"
+        )
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(venv_python),
+                    "-m",
+                    module_name,
+                ],
+                cwd=str(BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            worker_stream = threading.Thread(
+                target=self._stream_output,
+                args=(proc, tag),
+                daemon=True,
+                name=f"{tag.lower()}-stream",
+            )
+            worker_stream.start()
+            return proc
+        except Exception as exc:
+            self._enqueue_log(
+                f"{label.capitalize()} worker failed to start (non-fatal): {exc}",
+                source="BACKEND",
+                level="WARNING",
+            )
+            return None
+
     # ---- Start backend & frontend as subprocesses ----
     @work(thread=True)
     def _start_services(self) -> None:
         self._log_activity("[bold cyan]Starting services...[/]")
+        self.call_from_thread(self._reset_worker_telemetry)
 
         # Kill stale processes
         kill_port(BACKEND_PORT)
@@ -1121,130 +1255,27 @@ class HomerunApp(App):
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
         env.setdefault("EMBEDDING_DEVICE", "cpu")
 
-        # Start scanner worker (writes opportunities to DB; API reads from DB)
-        self._enqueue_log(
-            ">>> Starting scanner worker...", source="BACKEND", level="INFO"
-        )
-        try:
-            self.scanner_worker_proc = subprocess.Popen(
-                [
-                    str(venv_python),
-                    "-m",
-                    "workers.scanner_worker",
-                ],
-                cwd=str(BACKEND_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
+        worker_specs: list[tuple[str, str, str, str]] = [
+            ("scanner_worker_proc", "workers.scanner_worker", "SCANNER", "scanner"),
+            ("discovery_worker_proc", "workers.discovery_worker", "DISCOVERY", "discovery"),
+            ("weather_worker_proc", "workers.weather_worker", "WEATHER", "weather"),
+            ("news_worker_proc", "workers.news_worker", "NEWS", "news"),
+            ("crypto_worker_proc", "workers.crypto_worker", "CRYPTO", "crypto"),
+            ("tracked_worker_proc", "workers.tracked_traders_worker", "TRACKED", "tracked-traders"),
+            ("autotrader_worker_proc", "workers.autotrader_worker", "AUTOTRADER", "autotrader"),
+        ]
+        for attr, module_name, tag, label in worker_specs:
+            setattr(
+                self,
+                attr,
+                self._spawn_worker_process(
+                    venv_python,
+                    env,
+                    module_name,
+                    tag,
+                    label,
+                ),
             )
-            # Stream scanner output in a daemon thread so we don't block starting the backend
-            scanner_stream = threading.Thread(
-                target=self._stream_output,
-                args=(self.scanner_worker_proc, "SCANNER"),
-                daemon=True,
-                name="scanner-stream",
-            )
-            scanner_stream.start()
-        except Exception as e:
-            self._enqueue_log(
-                f"Scanner worker failed to start (non-fatal): {e}",
-                source="BACKEND",
-                level="WARNING",
-            )
-            self.scanner_worker_proc = None
-
-        # Start discovery worker (wallet discovery + leaderboard refresh loop)
-        self._enqueue_log(
-            ">>> Starting discovery worker...", source="BACKEND", level="INFO"
-        )
-        try:
-            self.discovery_worker_proc = subprocess.Popen(
-                [
-                    str(venv_python),
-                    "-m",
-                    "workers.discovery_worker",
-                ],
-                cwd=str(BACKEND_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            discovery_stream = threading.Thread(
-                target=self._stream_output,
-                args=(self.discovery_worker_proc, "DISCOVERY"),
-                daemon=True,
-                name="discovery-stream",
-            )
-            discovery_stream.start()
-        except Exception as e:
-            self._enqueue_log(
-                f"Discovery worker failed to start (non-fatal): {e}",
-                source="BACKEND",
-                level="WARNING",
-            )
-            self.discovery_worker_proc = None
-
-        # Start weather worker (independent weather opportunities pipeline)
-        self._enqueue_log(
-            ">>> Starting weather worker...", source="BACKEND", level="INFO"
-        )
-        try:
-            self.weather_worker_proc = subprocess.Popen(
-                [
-                    str(venv_python),
-                    "-m",
-                    "workers.weather_worker",
-                ],
-                cwd=str(BACKEND_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            weather_stream = threading.Thread(
-                target=self._stream_output,
-                args=(self.weather_worker_proc, "WEATHER"),
-                daemon=True,
-                name="weather-stream",
-            )
-            weather_stream.start()
-        except Exception as e:
-            self._enqueue_log(
-                f"Weather worker failed to start (non-fatal): {e}",
-                source="BACKEND",
-                level="WARNING",
-            )
-            self.weather_worker_proc = None
-
-        # Start news worker (independent news workflow pipeline)
-        self._enqueue_log(
-            ">>> Starting news worker...", source="BACKEND", level="INFO"
-        )
-        try:
-            self.news_worker_proc = subprocess.Popen(
-                [
-                    str(venv_python),
-                    "-m",
-                    "workers.news_worker",
-                ],
-                cwd=str(BACKEND_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            news_stream = threading.Thread(
-                target=self._stream_output,
-                args=(self.news_worker_proc, "NEWS"),
-                daemon=True,
-                name="news-stream",
-            )
-            news_stream.start()
-        except Exception as e:
-            self._enqueue_log(
-                f"News worker failed to start (non-fatal): {e}",
-                source="BACKEND",
-                level="WARNING",
-            )
-            self.news_worker_proc = None
 
         self._enqueue_log(
             ">>> Starting backend (uvicorn)...", source="BACKEND", level="INFO"
@@ -1337,18 +1368,13 @@ class HomerunApp(App):
             if not self._shutting_down:
                 self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
 
-    # ---- Activity feed (small, uses RichLog -- markup is fine here) ----
+    # ---- Activity hooks (reserved for future system feed) ----
     def _log_activity(self, text: str) -> None:
-        """Thread-safe write to the activity feed."""
+        """Thread-safe activity hook."""
         self.call_from_thread(self._do_log_activity, text)
 
     def _do_log_activity(self, text: str) -> None:
-        try:
-            ts = datetime.now().strftime("%H:%M:%S")
-            activity = self.query_one("#activity-log", RichLog)
-            activity.write(f"[dim]{ts}[/]  {text}")
-        except Exception:
-            pass
+        _ = text
 
     # ---- Periodic health polling ----
     def _poll_health(self) -> None:
@@ -1374,27 +1400,23 @@ class HomerunApp(App):
         self.backend_healthy = True
         self.health_data = data
         services = data.get("services", {})
-        config = data.get("config", {})
+        workers = data.get("workers")
+        if workers is None:
+            workers = services.get("workers", {})
         rate_limits = data.get("rate_limits", {})
 
-        # --- Service status bar ---
+        # --- Platform status ---
         scanner = services.get("scanner", {})
         auto = services.get("auto_trader", {})
         ws = services.get("ws_feeds", {})
 
-        self._update_status("svc-backend", "BACKEND", True)
+        self._update_platform_item("svc-backend", "BACKEND", True)
         frontend_alive = self.frontend_proc is not None and self.frontend_proc.poll() is None
-        self._update_status("svc-frontend", "FRONTEND", frontend_alive)
-        self._update_status("svc-scanner", "SCANNER", scanner.get("running", False))
-        weather_alive = self.weather_worker_proc is not None and self.weather_worker_proc.poll() is None
-        self._update_status("svc-weather", "WEATHER", weather_alive)
-        news_alive = self.news_worker_proc is not None and self.news_worker_proc.poll() is None
-        self._update_status("svc-news", "NEWS", news_alive)
-        self._update_status("svc-autotrader", "AUTO TRADER", auto.get("running", False))
+        self._update_platform_item("svc-frontend", "FRONTEND", frontend_alive)
         ws_healthy = ws.get("healthy", False) if isinstance(ws, dict) else False
-        self._update_status("svc-wsfeeds", "WS FEEDS", ws_healthy)
+        self._update_platform_item("svc-wsfeeds", "WS FEEDS", ws_healthy)
 
-        # --- Stats ---
+        # --- Key metrics ---
         opp_count = scanner.get("opportunities_count", 0)
         self._update_stat("stat-opps", str(opp_count))
         self.opp_history.append(float(opp_count))
@@ -1404,20 +1426,20 @@ class HomerunApp(App):
         wallets = services.get("wallet_tracker", {})
         self._update_stat("stat-wallets", str(wallets.get("tracked_wallets", 0)))
 
-        auto_stats = auto.get("stats", {})
+        auto_stats = auto.get("stats", {}) if isinstance(auto, dict) else {}
         if isinstance(auto_stats, dict):
-            self._update_stat("stat-trades", str(auto_stats.get("total_trades", 0)))
-            profit = auto_stats.get("total_profit", 0)
+            trades = auto_stats.get("total_trades")
+            if trades is None:
+                trades = auto_stats.get("trades_count", 0)
+            self._update_stat("stat-trades", str(trades))
+
+            profit = auto_stats.get("total_profit")
+            if profit is None:
+                profit = auto_stats.get("daily_pnl", 0)
             self._update_stat("stat-profit", f"${profit:,.2f}" if profit else "$0.00")
         else:
             self._update_stat("stat-trades", "0")
             self._update_stat("stat-profit", "$0.00")
-
-        copy_cfg = services.get("copy_trader", {})
-        self._update_stat("stat-copy", str(copy_cfg.get("active_configs", 0)))
-
-        mode = auto.get("mode", "paper")
-        self._update_stat("stat-mode", mode.upper())
 
         discovery = services.get("wallet_discovery", {})
         self._update_stat(
@@ -1432,15 +1454,8 @@ class HomerunApp(App):
         else:
             self._update_stat("stat-ratelimits", "OK")
 
-        # --- Config ---
-        self._update_config("cfg-interval", f"{config.get('scan_interval', '?')}s")
-        self._update_config(
-            "cfg-profit",
-            f"{config.get('min_profit_threshold', 0) * 100:.1f}%"
-            if isinstance(config.get("min_profit_threshold"), (int, float))
-            else "?",
-        )
-        self._update_config("cfg-markets", str(config.get("max_markets", "?")))
+        # --- Worker command center ---
+        self._update_worker_panels(workers, services)
 
         # --- Sparkline ---
         try:
@@ -1451,22 +1466,17 @@ class HomerunApp(App):
 
     def _apply_health_offline(self) -> None:
         """Mark backend as offline."""
-        if self.backend_healthy:
-            self.backend_healthy = False
-            self._update_status("svc-backend", "BACKEND", False)
-            self._update_status("svc-scanner", "SCANNER", False)
-            self._update_status("svc-weather", "WEATHER", False)
-            self._update_status("svc-news", "NEWS", False)
-            self._update_status("svc-autotrader", "AUTO TRADER", False)
-            self._update_status("svc-wsfeeds", "WS FEEDS", False)
+        self.backend_healthy = False
+        self._update_platform_item("svc-backend", "BACKEND", False)
+        self._update_platform_item("svc-frontend", "FRONTEND", False)
+        self._update_platform_item("svc-wsfeeds", "WS FEEDS", False)
+        self._set_workers_offline()
 
-    def _update_status(self, widget_id: str, label: str, is_on: bool) -> None:
-        badge = "[bold green]ON[/]" if is_on else "[bold red]OFF[/]"
+    def _update_platform_item(self, widget_id: str, label: str, is_on: bool) -> None:
+        state = "ONLINE" if is_on else "OFFLINE"
         dot = "[green]\u25cf[/]" if is_on else "[red]\u25cf[/]"
         try:
-            self.query_one(f"#{widget_id}", Static).update(
-                f"{dot} {label}  {badge}"
-            )
+            self.query_one(f"#{widget_id}", Static).update(f"{dot} {label:<8} {state}")
         except Exception:
             pass
 
@@ -1476,11 +1486,168 @@ class HomerunApp(App):
         except Exception:
             pass
 
-    def _update_config(self, card_id: str, value: str) -> None:
+    def _normalize_workers_payload(self, workers: object, services: dict) -> dict[str, dict]:
+        by_name: dict[str, dict] = {}
+        if isinstance(workers, list):
+            by_name = {
+                str(item.get("worker_name")): item
+                for item in workers
+                if isinstance(item, dict) and item.get("worker_name")
+            }
+        elif isinstance(workers, dict):
+            by_name = {
+                str(name): item
+                for name, item in workers.items()
+                if isinstance(item, dict)
+            }
+        for worker_name, _ in WORKER_STATUS_ORDER:
+            if worker_name not in by_name:
+                by_name[worker_name] = self._fallback_worker_snapshot(worker_name, services)
+        return by_name
+
+    def _fallback_worker_snapshot(self, worker_name: str, services: dict) -> dict:
+        running = False
+        if worker_name == "scanner":
+            running = bool(services.get("scanner", {}).get("running", False))
+        elif worker_name == "discovery":
+            running = bool(services.get("wallet_discovery", {}).get("running", False))
+        elif worker_name == "weather":
+            running = bool(
+                self.weather_worker_proc is not None and self.weather_worker_proc.poll() is None
+            )
+        elif worker_name == "news":
+            running = bool(services.get("news_workflow", {}).get("running", False))
+        elif worker_name == "autotrader":
+            running = bool(services.get("auto_trader", {}).get("running", False))
+        elif worker_name == "crypto":
+            running = bool(
+                self.crypto_worker_proc is not None and self.crypto_worker_proc.poll() is None
+            )
+        elif worker_name == "tracked_traders":
+            running = bool(
+                self.tracked_worker_proc is not None and self.tracked_worker_proc.poll() is None
+            )
+        return {
+            "running": running,
+            "enabled": True,
+            "interval_seconds": None,
+            "last_run_at": None,
+            "lag_seconds": None,
+            "current_activity": None,
+            "last_error": None,
+        }
+
+    def _update_worker_panels(self, workers: object, services: dict) -> None:
+        by_name = self._normalize_workers_payload(workers, services)
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            snapshot = by_name.get(worker_name, {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+            self._worker_state_cache[worker_name] = snapshot
+            self._emit_worker_snapshot_events(worker_name, snapshot)
+            self._render_worker_panel(worker_name)
+
+    def _emit_worker_snapshot_events(self, worker_name: str, snapshot: dict) -> None:
+        state, _status_class = self._resolve_worker_state(snapshot)
+        prev_state = self._worker_last_state.get(worker_name)
+        if prev_state is not None and prev_state != state:
+            self._append_worker_log(worker_name, f"state changed to {state}", update=False)
+        self._worker_last_state[worker_name] = state
+
+        activity = snapshot.get("current_activity")
+        if isinstance(activity, str):
+            activity = activity.strip()
+        else:
+            activity = ""
+        if activity and activity != self._worker_last_activity.get(worker_name):
+            self._worker_last_activity[worker_name] = activity
+            self._append_worker_log(worker_name, activity, update=False)
+
+        last_error = snapshot.get("last_error")
+        if isinstance(last_error, str):
+            last_error = last_error.strip()
+        else:
+            last_error = ""
+        if last_error and last_error != self._worker_last_error.get(worker_name):
+            self._worker_last_error[worker_name] = last_error
+            self._append_worker_log(worker_name, f"ERROR: {last_error}", update=False)
+
+    def _render_worker_panel(self, worker_name: str) -> None:
+        snapshot = self._worker_state_cache.get(worker_name, {})
+        status, status_class = self._resolve_worker_state(snapshot)
+        meta = self._format_worker_meta(snapshot)
+        lines = list(self._worker_logs.get(worker_name, []))
         try:
-            self.query_one(f"#{card_id}", ConfigCard).update_value(value)
+            panel = self.query_one(f"#worker-{worker_name}", WorkerPanel)
+            panel.update_state(status, status_class, meta)
+            panel.update_logs(lines)
         except Exception:
             pass
+
+    def _set_workers_offline(self) -> None:
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            self._worker_state_cache[worker_name] = {}
+            self._render_worker_panel(worker_name)
+
+    def _resolve_worker_state(self, snapshot: dict) -> tuple[str, str]:
+        if not snapshot:
+            return ("OFFLINE", "status-off")
+        if bool(snapshot.get("running", False)):
+            return ("RUNNING", "status-on")
+        enabled = snapshot.get("enabled")
+        if enabled is False:
+            return ("PAUSED", "status-warn")
+        return ("IDLE", "status-idle")
+
+    def _format_worker_meta(self, snapshot: dict) -> str:
+        if not snapshot:
+            return "No telemetry yet"
+        parts: list[str] = []
+
+        interval_seconds = snapshot.get("interval_seconds")
+        if isinstance(interval_seconds, (int, float)) and interval_seconds > 0:
+            interval_int = int(interval_seconds)
+            if interval_int >= 60 and interval_int % 60 == 0:
+                parts.append(f"every {interval_int // 60}m")
+            else:
+                parts.append(f"every {interval_int}s")
+
+        lag_seconds = snapshot.get("lag_seconds")
+        if isinstance(lag_seconds, (int, float)):
+            parts.append(f"lag {float(lag_seconds):.1f}s")
+
+        last_run = snapshot.get("last_run_at")
+        if isinstance(last_run, str) and last_run:
+            relative = self._format_relative_age(last_run)
+            if relative:
+                parts.append(f"last {relative}")
+
+        if not parts:
+            return "No telemetry yet"
+        return " | ".join(parts)
+
+    def _format_relative_age(self, iso_text: str) -> Optional[str]:
+        try:
+            normalized = iso_text.strip()
+            if normalized.endswith("Z"):
+                normalized = normalized[:-1] + "+00:00"
+            ts = datetime.fromisoformat(normalized)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+            delta = int((datetime.now(timezone.utc) - ts).total_seconds())
+            if delta < 0:
+                delta = 0
+            if delta < 60:
+                return f"{delta}s ago"
+            if delta < 3600:
+                return f"{delta // 60}m ago"
+            if delta < 86400:
+                return f"{delta // 3600}h ago"
+            return f"{delta // 86400}d ago"
+        except Exception:
+            return None
 
     # ---- Uptime ticker ----
     def _update_uptime(self) -> None:
@@ -1518,6 +1685,9 @@ class HomerunApp(App):
                 self.discovery_worker_proc,
                 self.weather_worker_proc,
                 self.news_worker_proc,
+                self.crypto_worker_proc,
+                self.tracked_worker_proc,
+                self.autotrader_worker_proc,
                 self.backend_proc,
                 self.frontend_proc,
             )

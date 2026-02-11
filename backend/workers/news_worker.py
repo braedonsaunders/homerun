@@ -22,7 +22,9 @@ if os.getcwd() != _BACKEND:
 from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services.news import shared_state
+from services.signal_bus import emit_news_intent_signals
 from services.news.workflow_orchestrator import workflow_orchestrator
+from services.worker_state import write_worker_snapshot
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO")),
@@ -119,6 +121,17 @@ async def _run_loop() -> None:
                 },
                 stats={"pending_intents": pending},
             )
+            await write_worker_snapshot(
+                session,
+                "news",
+                running=True,
+                enabled=enabled and not paused,
+                current_activity="News worker started; first cycle pending.",
+                interval_seconds=interval,
+                last_run_at=None,
+                last_error=None,
+                stats={"pending_intents": int(pending), "signals_emitted_last_run": 0},
+            )
     except Exception:
         pass
 
@@ -190,6 +203,21 @@ async def _run_loop() -> None:
                             "degraded_mode": False,
                         },
                         stats={"pending_intents": pending},
+                    )
+                    await write_worker_snapshot(
+                        session,
+                        "news",
+                        running=True,
+                        enabled=enabled and not paused,
+                        current_activity=(
+                            "Paused"
+                            if paused
+                            else "Idle - waiting for next news workflow cycle."
+                        ),
+                        interval_seconds=interval,
+                        last_run_at=None,
+                        last_error=None,
+                        stats={"pending_intents": int(pending), "signals_emitted_last_run": 0},
                     )
             except Exception:
                 pass
@@ -274,6 +302,35 @@ async def _run_loop() -> None:
                     },
                     stats=cycle_stats,
                 )
+                pending_rows = await shared_state.list_news_intents(
+                    session, status_filter="pending", limit=2000
+                )
+                emitted = await emit_news_intent_signals(
+                    session,
+                    pending_rows,
+                    max_age_minutes=int(
+                        max(
+                            1,
+                            wf_settings.get("auto_trader_max_age_minutes", 120) or 120,
+                        )
+                    ),
+                )
+                await write_worker_snapshot(
+                    session,
+                    "news",
+                    running=True,
+                    enabled=enabled and not paused,
+                    current_activity="Idle - waiting for next news workflow cycle.",
+                    interval_seconds=interval,
+                    last_run_at=completed_at.replace(tzinfo=None),
+                    last_error=result.get("error") if result.get("status") == "error" else None,
+                    stats={
+                        "pending_intents": int(pending),
+                        "expired_intents": int(expired),
+                        "signals_emitted_last_run": int(emitted),
+                        "cycle_stats": cycle_stats,
+                    },
+                )
 
             logger.info(
                 "News cycle complete",
@@ -307,6 +364,17 @@ async def _run_loop() -> None:
                             "degraded_mode": True,
                         },
                         stats={"pending_intents": pending},
+                    )
+                    await write_worker_snapshot(
+                        session,
+                        "news",
+                        running=True,
+                        enabled=enabled and not paused,
+                        current_activity=f"Last news cycle error: {exc}",
+                        interval_seconds=interval,
+                        last_run_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                        last_error=str(exc),
+                        stats={"pending_intents": int(pending), "signals_emitted_last_run": 0},
                     )
             except Exception:
                 pass

@@ -377,7 +377,7 @@ export default function SearchFiltersFlyout({
         )}
 
         {/* Content */}
-        <div className="p-3 space-y-2">
+        <div className="p-3 space-y-2 pb-6">
 
           {/* ============================================================ */}
           {/* SECTION 1: GLOBAL FILTERS */}
@@ -837,13 +837,6 @@ export default function SearchFiltersFlyout({
             )}
           </CollapsibleSection>
 
-          {/* Bottom Save */}
-          <div className="flex items-center gap-2 pt-1 pb-4">
-            <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending} className="gap-1.5">
-              <Save className="w-3.5 h-3.5" />
-              {saveMutation.isPending ? 'Saving...' : 'Save All Settings'}
-            </Button>
-          </div>
         </div>
       </div>
     </>

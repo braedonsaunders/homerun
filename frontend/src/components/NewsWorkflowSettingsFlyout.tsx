@@ -13,6 +13,7 @@ import {
   Zap,
   Target,
   Timer,
+  Shield,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -95,10 +96,15 @@ const DEFAULTS: NewsWorkflowSettings = {
   scan_interval_seconds: 120,
   top_k: 8,
   rerank_top_n: 5,
-  similarity_threshold: 0.35,
+  similarity_threshold: 0.42,
   keyword_weight: 0.25,
   semantic_weight: 0.45,
   event_weight: 0.30,
+  require_verifier: true,
+  market_min_liquidity: 500,
+  market_max_days_to_resolution: 365,
+  min_keyword_signal: 0.04,
+  min_semantic_signal: 0.22,
   min_edge_percent: 8.0,
   min_confidence: 0.6,
   require_second_source: false,
@@ -201,7 +207,7 @@ export default function NewsWorkflowSettingsFlyout({
         )}
 
         {/* Content */}
-        <div className="p-3 space-y-2">
+        <div className="p-3 space-y-2 pb-6">
 
           {/* Pipeline */}
           <Section title="Pipeline" icon={Newspaper} color="text-orange-500">
@@ -247,6 +253,62 @@ export default function NewsWorkflowSettingsFlyout({
               <NumericField label="Keyword" help="BM25 weight" value={form.keyword_weight} onChange={(v) => set('keyword_weight', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
               <NumericField label="Semantic" help="Embedding weight" value={form.semantic_weight} onChange={(v) => set('semantic_weight', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
               <NumericField label="Event Type" help="Category affinity" value={form.event_weight} onChange={(v) => set('event_weight', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
+            </div>
+          </Section>
+
+          {/* Precision Guards */}
+          <Section title="Precision Guards" icon={Shield} color="text-cyan-500">
+            <p className="text-[10px] text-muted-foreground/60 -mt-1">
+              Fail-closed and strict market/article compatibility guards to reduce false positives.
+            </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium">Require Verifier</p>
+                <p className="text-[10px] text-muted-foreground">Drop candidates if LLM reranker verification is unavailable</p>
+              </div>
+              <Switch checked={form.require_verifier} onCheckedChange={(v) => set('require_verifier', v)} className="scale-75" disabled={!form.enabled} />
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <NumericField
+                label="Market Min Liquidity"
+                help="Exclude thin markets from matching universe"
+                value={form.market_min_liquidity}
+                onChange={(v) => set('market_min_liquidity', v)}
+                min={0}
+                max={1000000}
+                step={50}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Max Days To Resolution"
+                help="Ignore far-expiry markets for current news"
+                value={form.market_max_days_to_resolution}
+                onChange={(v) => set('market_max_days_to_resolution', v)}
+                min={1}
+                max={3650}
+                step={1}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Min Keyword Signal"
+                help="Minimum lexical strength to keep candidate"
+                value={form.min_keyword_signal}
+                onChange={(v) => set('min_keyword_signal', v)}
+                min={0}
+                max={1}
+                step={0.01}
+                disabled={!form.enabled}
+              />
+              <NumericField
+                label="Min Semantic Signal"
+                help="Minimum embedding similarity to keep candidate"
+                value={form.min_semantic_signal}
+                onChange={(v) => set('min_semantic_signal', v)}
+                min={0}
+                max={1}
+                step={0.01}
+                disabled={!form.enabled}
+              />
             </div>
           </Section>
 
@@ -370,13 +432,6 @@ export default function NewsWorkflowSettingsFlyout({
             </div>
           </Section>
 
-          {/* Bottom Save */}
-          <div className="flex items-center gap-2 pt-1 pb-4">
-            <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending} className="gap-1.5">
-              <Save className="w-3.5 h-3.5" />
-              {saveMutation.isPending ? 'Saving...' : 'Save All Settings'}
-            </Button>
-          </div>
         </div>
       </div>
     </>

@@ -58,7 +58,7 @@ class LLMSettings(BaseModel):
 
     provider: str = Field(
         default="none",
-        description="LLM provider: none, openai, anthropic, google, xai, deepseek",
+        description="LLM provider: none, openai, anthropic, google, xai, deepseek, ollama, lmstudio",
     )
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
     anthropic_api_key: Optional[str] = Field(
@@ -70,6 +70,18 @@ class LLMSettings(BaseModel):
     xai_api_key: Optional[str] = Field(default=None, description="xAI (Grok) API key")
     deepseek_api_key: Optional[str] = Field(
         default=None, description="DeepSeek API key"
+    )
+    ollama_api_key: Optional[str] = Field(
+        default=None, description="Ollama API key (optional)"
+    )
+    ollama_base_url: Optional[str] = Field(
+        default=None, description="Ollama base URL (default: http://localhost:11434)"
+    )
+    lmstudio_api_key: Optional[str] = Field(
+        default=None, description="LM Studio API key (optional)"
+    )
+    lmstudio_base_url: Optional[str] = Field(
+        default=None, description="LM Studio base URL (default: http://localhost:1234/v1)"
     )
     model: Optional[str] = Field(
         default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)"

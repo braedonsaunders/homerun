@@ -2,7 +2,7 @@
 Multi-provider LLM abstraction layer.
 
 Supports: OpenAI, Anthropic, Google (Gemini), xAI (Grok), DeepSeek,
-and any OpenAI-compatible API.
+Ollama, LM Studio, and other OpenAI-compatible APIs.
 
 Provider is detected by model name prefix:
 - gpt-*, o1-*, o3-*, o4-*, chatgpt-* -> OpenAI
@@ -10,7 +10,9 @@ Provider is detected by model name prefix:
 - gemini-* -> Google
 - grok-* -> xAI
 - deepseek-* -> DeepSeek
-- Any other -> tries OpenAI-compatible with OPENAI_API_BASE
+- ollama/* -> Ollama
+- lmstudio/* -> LM Studio
+- Any other -> selected provider, then first configured provider
 
 Usage:
     manager = LLMManager()
@@ -34,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -74,6 +77,10 @@ PRICING: dict[str, tuple[float, float]] = {
     "deepseek-chat": (0.14, 0.28),
     "deepseek-reasoner": (0.55, 2.19),
 }
+
+OPENAI_MODEL_PREFIXES: tuple[str, ...] = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+XAI_MODEL_PREFIXES: tuple[str, ...] = ("grok-",)
+DEEPSEEK_MODEL_PREFIXES: tuple[str, ...] = ("deepseek-",)
 
 
 # ==================== DATA CLASSES ====================
@@ -140,6 +147,157 @@ class LLMProvider(str, Enum):
     GOOGLE = "google"
     XAI = "xai"
     DEEPSEEK = "deepseek"
+    OLLAMA = "ollama"
+    LMSTUDIO = "lmstudio"
+
+
+def _ensure_openai_compatible_base_url(base_url: str, default_base_url: str) -> str:
+    """Normalize a base URL and ensure it targets an OpenAI-compatible `/v1` root."""
+    raw = (base_url or "").strip() if base_url is not None else ""
+    normalized = raw or default_base_url
+    normalized = normalized.rstrip("/")
+    if not normalized:
+        return default_base_url
+    if normalized.endswith("/v1"):
+        return normalized
+    return f"{normalized}/v1"
+
+
+def _strip_v1_suffix(base_url: str) -> str:
+    """Return base URL without trailing `/v1`."""
+    normalized = (base_url or "").rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized[: -len("/v1")]
+    return normalized
+
+
+def _normalize_model_name_for_provider(model: str, provider: LLMProvider) -> str:
+    """Strip optional provider prefixes from model names."""
+    model_name = (model or "").strip()
+    if provider == LLMProvider.OLLAMA and model_name.startswith("ollama/"):
+        return model_name[len("ollama/") :]
+    if provider == LLMProvider.LMSTUDIO and model_name.startswith("lmstudio/"):
+        return model_name[len("lmstudio/") :]
+    return model_name
+
+
+def _safe_response_json(response: httpx.Response) -> Any:
+    """Return parsed response JSON, or an empty dict when parsing fails."""
+    try:
+        return response.json()
+    except ValueError:
+        return {}
+
+
+def _extract_error_message(data: Any, fallback: str) -> str:
+    """Extract a readable API error message from varied payload formats."""
+    fallback_text = (fallback or "").strip()
+
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            for key in ("message", "detail", "error"):
+                value = error.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            if error:
+                try:
+                    return json.dumps(error)
+                except (TypeError, ValueError):
+                    return str(error)
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+        if error is not None:
+            return str(error)
+        for key in ("message", "detail"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    elif isinstance(data, str) and data.strip():
+        return data.strip()
+    elif data:
+        return str(data)
+
+    return fallback_text or "Unknown error"
+
+
+def _openai_json_schema_response_format(
+    schema: dict, name: str = "structured_output"
+) -> dict:
+    """Build OpenAI-compatible JSON schema response_format payload."""
+    safe_name = (
+        "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
+        or "structured_output"
+    )
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": safe_name,
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
+def _parse_structured_json_content(content: Any) -> Any:
+    """Parse JSON content from provider responses, handling common wrappers."""
+    if isinstance(content, dict):
+        return content
+
+    text: str
+    if isinstance(content, str):
+        text = content.strip()
+    elif isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                part_text = item.get("text")
+                if isinstance(part_text, str):
+                    text_parts.append(part_text)
+                elif isinstance(item.get("content"), str):
+                    text_parts.append(item["content"])
+        if text_parts:
+            text = "\n".join(text_parts).strip()
+        else:
+            return content
+    else:
+        text = str(content or "").strip()
+
+    if not text:
+        raise RuntimeError("LLM returned empty JSON content")
+
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+
+    obj_start = text.find("{")
+    obj_end = text.rfind("}")
+    if obj_start != -1 and obj_end > obj_start:
+        candidates.append(text[obj_start : obj_end + 1])
+
+    arr_start = text.find("[")
+    arr_end = text.rfind("]")
+    if arr_start != -1 and arr_end > arr_start:
+        candidates.append(text[arr_start : arr_end + 1])
+
+    seen = set()
+    last_error = None
+    for candidate in candidates:
+        normalized_candidate = candidate.strip()
+        if not normalized_candidate or normalized_candidate in seen:
+            continue
+        seen.add(normalized_candidate)
+        try:
+            return json.loads(normalized_candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise RuntimeError(f"LLM returned invalid JSON: {last_error}") from last_error
+    raise RuntimeError("LLM returned invalid JSON")
 
 
 # ==================== RETRY LOGIC ====================
@@ -220,7 +378,7 @@ class BaseLLMProvider(ABC):
     """
 
     provider: LLMProvider
-    api_key: str
+    api_key: Optional[str]
 
     @abstractmethod
     async def chat(
@@ -314,22 +472,41 @@ class OpenAIProvider(BaseLLMProvider):
 
     provider = LLMProvider.OPENAI
 
-    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = "https://api.openai.com/v1",
+        model_prefixes: Optional[tuple[str, ...]] = OPENAI_MODEL_PREFIXES,
+        structured_output_format: str = "json_schema",
+    ):
         """Initialize the OpenAI provider.
 
         Args:
-            api_key: OpenAI API key.
+            api_key: OpenAI API key (optional for local providers).
             base_url: API base URL (override for compatible providers).
+            model_prefixes: Optional model ID prefixes to filter listed models.
+                Set to None to return all models.
+            structured_output_format: OpenAI-compatible response_format type.
+                Supported values: "json_schema", "json_object", "text".
         """
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _ensure_openai_compatible_base_url(
+            base_url, "https://api.openai.com/v1"
+        )
+        self._model_prefixes = model_prefixes
+        if structured_output_format not in {"json_schema", "json_object", "text"}:
+            raise ValueError(
+                "structured_output_format must be one of: "
+                "'json_schema', 'json_object', 'text'"
+            )
+        self._structured_output_format = structured_output_format
 
     def _build_headers(self) -> dict[str, str]:
         """Build HTTP headers for OpenAI API requests."""
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def _format_messages(self, messages: list[LLMMessage]) -> list[dict]:
         """Convert LLMMessage objects to OpenAI API format.
@@ -344,13 +521,82 @@ class OpenAIProvider(BaseLLMProvider):
         for msg in messages:
             entry: dict[str, Any] = {"role": msg.role, "content": msg.content}
             if msg.tool_calls is not None:
-                entry["tool_calls"] = msg.tool_calls
+                normalized_tool_calls = self._normalize_tool_calls(msg.tool_calls)
+                if normalized_tool_calls:
+                    entry["tool_calls"] = normalized_tool_calls
             if msg.tool_call_id is not None:
                 entry["tool_call_id"] = msg.tool_call_id
             if msg.name is not None:
                 entry["name"] = msg.name
             formatted.append(entry)
         return formatted
+
+    def _normalize_tool_calls(self, tool_calls: list[Any]) -> list[dict[str, Any]]:
+        """Normalize internal tool-call representation to OpenAI API schema."""
+        normalized: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            normalized_tc = self._normalize_single_tool_call(tc)
+            if normalized_tc is not None:
+                normalized.append(normalized_tc)
+        return normalized
+
+    def _normalize_single_tool_call(self, tc: Any) -> Optional[dict[str, Any]]:
+        """Normalize one tool call into OpenAI-compatible format."""
+        call_id: Optional[str] = None
+        name: Optional[str] = None
+        arguments: Any = {}
+
+        if isinstance(tc, ToolCall):
+            call_id = tc.id or None
+            name = tc.name
+            arguments = tc.arguments
+        elif isinstance(tc, dict):
+            if isinstance(tc.get("function"), dict):
+                function = dict(tc["function"])
+                if not function.get("name") and tc.get("name"):
+                    function["name"] = tc["name"]
+                if "arguments" not in function and "arguments" in tc:
+                    function["arguments"] = tc["arguments"]
+                if not isinstance(function.get("arguments"), str):
+                    function["arguments"] = json.dumps(
+                        function.get("arguments", {}), default=str
+                    )
+                if not function.get("name"):
+                    return None
+
+                normalized = {
+                    "type": tc.get("type", "function"),
+                    "function": function,
+                }
+                if tc.get("id"):
+                    normalized["id"] = str(tc["id"])
+                return normalized
+
+            if isinstance(tc.get("name"), str):
+                call_id = str(tc.get("id")) if tc.get("id") is not None else None
+                name = tc["name"]
+                arguments = tc.get("arguments", {})
+            else:
+                return None
+        else:
+            name = getattr(tc, "name", None)
+            call_id_raw = getattr(tc, "id", None)
+            call_id = str(call_id_raw) if call_id_raw else None
+            arguments = getattr(tc, "arguments", {})
+
+        if not isinstance(name, str) or not name:
+            return None
+
+        arguments_str = (
+            arguments if isinstance(arguments, str) else json.dumps(arguments, default=str)
+        )
+        normalized = {
+            "type": "function",
+            "function": {"name": name, "arguments": arguments_str},
+        }
+        if call_id:
+            normalized["id"] = call_id
+        return normalized
 
     def _format_tools(self, tools: list[ToolDefinition]) -> list[dict]:
         """Convert ToolDefinition objects to OpenAI tools format.
@@ -384,18 +630,42 @@ class OpenAIProvider(BaseLLMProvider):
         """
         result = []
         for tc in raw_tool_calls:
-            try:
-                arguments = json.loads(tc["function"]["arguments"])
-            except (json.JSONDecodeError, KeyError):
+            function = tc.get("function", {}) if isinstance(tc, dict) else {}
+            if not isinstance(function, dict):
+                function = {}
+            raw_arguments = function.get("arguments", {})
+
+            if isinstance(raw_arguments, str):
+                try:
+                    arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+            elif isinstance(raw_arguments, dict):
+                arguments = raw_arguments
+            else:
                 arguments = {}
+
+            name = function.get("name", "")
+            if not isinstance(name, str):
+                name = ""
+
             result.append(
                 ToolCall(
-                    id=tc.get("id", ""),
-                    name=tc["function"]["name"],
+                    id=str(tc.get("id", "")),
+                    name=name,
                     arguments=arguments,
                 )
             )
         return result
+
+    def _build_structured_response_format(self, schema: dict, model: str) -> dict:
+        """Build the response_format payload for structured output."""
+        if self._structured_output_format == "json_schema":
+            return _openai_json_schema_response_format(
+                schema=schema,
+                name=f"{self.provider.value}_{model}_response",
+            )
+        return {"type": self._structured_output_format}
 
     async def list_models(self) -> list[dict[str, str]]:
         """Fetch available models from the OpenAI API."""
@@ -412,11 +682,12 @@ class OpenAIProvider(BaseLLMProvider):
             models = []
             for m in data.get("data", []):
                 model_id = m.get("id", "")
-                if any(
-                    model_id.startswith(p)
-                    for p in ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+                if self._model_prefixes and not any(
+                    model_id.startswith(p) for p in self._model_prefixes
                 ):
-                    models.append({"id": model_id, "name": model_id})
+                    continue
+                display_name = m.get("name") or model_id
+                models.append({"id": model_id, "name": display_name})
             models.sort(key=lambda x: x["id"])
             return models
         except Exception as exc:
@@ -464,10 +735,10 @@ class OpenAIProvider(BaseLLMProvider):
             )
 
         latency_ms = int(time.time() * 1000) - start_ms
-        data = response.json()
+        data = _safe_response_json(response)
 
         if response.status_code != 200:
-            error_msg = data.get("error", {}).get("message", response.text)
+            error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(
                 f"OpenAI API error ({response.status_code}): {error_msg}"
             )
@@ -505,8 +776,7 @@ class OpenAIProvider(BaseLLMProvider):
     ) -> dict:
         """Get structured JSON output from the OpenAI API.
 
-        Uses response_format with json_schema for models that support it,
-        falling back to a system prompt instruction approach.
+        Uses response_format with json_schema.
 
         Args:
             messages: Conversation messages.
@@ -539,7 +809,7 @@ class OpenAIProvider(BaseLLMProvider):
             "model": model,
             "messages": self._format_messages(augmented_messages),
             "temperature": temperature,
-            "response_format": {"type": "json_object"},
+            "response_format": self._build_structured_response_format(schema, model),
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -550,21 +820,25 @@ class OpenAIProvider(BaseLLMProvider):
                     json=payload,
                 )
             )
+            data = _safe_response_json(response)
+            if response.status_code != 200:
+                error_msg = _extract_error_message(data, response.text)
+                raise RuntimeError(
+                    f"OpenAI API error ({response.status_code}): {error_msg}"
+                )
 
-        data = response.json()
-
-        if response.status_code != 200:
-            error_msg = data.get("error", {}).get("message", response.text)
-            raise RuntimeError(
-                f"OpenAI API error ({response.status_code}): {error_msg}"
-            )
-
-        content = data["choices"][0]["message"].get("content", "")
         try:
-            return json.loads(content)
-        except json.JSONDecodeError as exc:
-            logger.error("Failed to parse structured output as JSON: %s", content[:500])
-            raise RuntimeError(f"LLM returned invalid JSON: {exc}") from exc
+            content = data["choices"][0]["message"].get("content", "")
+        except (TypeError, KeyError, IndexError) as exc:
+            raise RuntimeError("OpenAI API returned malformed response payload") from exc
+
+        try:
+            return _parse_structured_json_content(content)
+        except RuntimeError:
+            logger.error(
+                "Failed to parse structured output as JSON: %s", str(content)[:500]
+            )
+            raise
 
 
 # ==================== ANTHROPIC PROVIDER ====================
@@ -773,10 +1047,10 @@ class AnthropicProvider(BaseLLMProvider):
             )
 
         latency_ms = int(time.time() * 1000) - start_ms
-        data = response.json()
+        data = _safe_response_json(response)
 
         if response.status_code != 200:
-            error_msg = data.get("error", {}).get("message", response.text)
+            error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(
                 f"Anthropic API error ({response.status_code}): {error_msg}"
             )
@@ -1023,10 +1297,10 @@ class GoogleProvider(BaseLLMProvider):
             )
 
         latency_ms = int(time.time() * 1000) - start_ms
-        data = response.json()
+        data = _safe_response_json(response)
 
         if response.status_code != 200:
-            error_msg = data.get("error", {}).get("message", response.text)
+            error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(
                 f"Google API error ({response.status_code}): {error_msg}"
             )
@@ -1128,10 +1402,10 @@ class GoogleProvider(BaseLLMProvider):
                 )
             )
 
-        data = response.json()
+        data = _safe_response_json(response)
 
         if response.status_code != 200:
-            error_msg = data.get("error", {}).get("message", response.text)
+            error_msg = _extract_error_message(data, response.text)
             raise RuntimeError(
                 f"Google API error ({response.status_code}): {error_msg}"
             )
@@ -1169,13 +1443,15 @@ class XAIProvider(BaseLLMProvider):
             api_key: xAI API key.
         """
         self.api_key = api_key
-        self._delegate = OpenAIProvider(api_key=api_key, base_url="https://api.x.ai/v1")
+        self._delegate = OpenAIProvider(
+            api_key=api_key,
+            base_url="https://api.x.ai/v1",
+            model_prefixes=XAI_MODEL_PREFIXES,
+        )
 
     async def list_models(self) -> list[dict[str, str]]:
         """Fetch available models from the xAI API."""
-        models = await self._delegate.list_models()
-        # Filter to grok models only
-        return [m for m in models if m["id"].startswith("grok-")]
+        return await self._delegate.list_models()
 
     async def chat(
         self,
@@ -1246,14 +1522,15 @@ class DeepSeekProvider(BaseLLMProvider):
         """
         self.api_key = api_key
         self._delegate = OpenAIProvider(
-            api_key=api_key, base_url="https://api.deepseek.com/v1"
+            api_key=api_key,
+            base_url="https://api.deepseek.com/v1",
+            model_prefixes=DEEPSEEK_MODEL_PREFIXES,
+            structured_output_format="json_object",
         )
 
     async def list_models(self) -> list[dict[str, str]]:
         """Fetch available models from the DeepSeek API."""
-        models = await self._delegate.list_models()
-        # Filter to deepseek models only
-        return [m for m in models if m["id"].startswith("deepseek-")]
+        return await self._delegate.list_models()
 
     async def chat(
         self,
@@ -1304,6 +1581,249 @@ class DeepSeekProvider(BaseLLMProvider):
         )
 
 
+# ==================== OLLAMA PROVIDER ====================
+
+
+class OllamaProvider(BaseLLMProvider):
+    """Ollama provider using OpenAI-compatible `/v1` endpoints.
+
+    Uses the OpenAI-compatible API for chat/structured output and falls
+    back to Ollama's native `/api/tags` endpoint for model listing.
+    """
+
+    provider = LLMProvider.OLLAMA
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        api_key: Optional[str] = None,
+    ):
+        self.api_key = api_key
+        self.base_url = _ensure_openai_compatible_base_url(
+            base_url, "http://localhost:11434/v1"
+        )
+        self._native_base_url = _strip_v1_suffix(self.base_url)
+        self._delegate = OpenAIProvider(
+            api_key=api_key,
+            base_url=self.base_url,
+            model_prefixes=None,
+        )
+
+    async def list_models(self) -> list[dict[str, str]]:
+        """Fetch available models from Ollama."""
+        models = await self._delegate.list_models()
+        if models:
+            return models
+
+        # Fallback to Ollama native API for older builds without /v1/models.
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(f"{self._native_base_url}/api/tags")
+            if response.status_code != 200:
+                logger.warning("Failed to list Ollama models: %s", response.text[:200])
+                return []
+
+            data = response.json()
+            parsed = [
+                {
+                    "id": item.get("name", ""),
+                    "name": item.get("name", ""),
+                }
+                for item in data.get("models", [])
+                if item.get("name")
+            ]
+            parsed.sort(key=lambda x: x["id"])
+            return parsed
+        except Exception as exc:
+            logger.warning("Error listing Ollama models: %s", exc)
+            return []
+
+    async def chat(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        tools: Optional[list[ToolDefinition]] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
+        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
+        response.provider = self.provider.value
+        return response
+
+    def _format_native_messages(self, messages: list[LLMMessage]) -> list[dict[str, str]]:
+        """Convert messages to Ollama native /api/chat format."""
+        formatted: list[dict[str, str]] = []
+        for msg in messages:
+            role = msg.role if msg.role in {"system", "user", "assistant"} else "user"
+            formatted.append({"role": role, "content": msg.content})
+        return formatted
+
+    async def structured_output(
+        self,
+        messages: list[LLMMessage],
+        schema: dict,
+        model: str,
+        temperature: float = 0.0,
+    ) -> dict:
+        json_instruction = (
+            "You MUST respond with valid JSON matching this schema. "
+            "Do not include any text outside the JSON object.\n"
+            f"Schema: {json.dumps(schema)}"
+        )
+        augmented_messages = list(messages)
+        if augmented_messages and augmented_messages[0].role == "system":
+            augmented_messages[0] = LLMMessage(
+                role="system",
+                content=augmented_messages[0].content + "\n\n" + json_instruction,
+            )
+        else:
+            augmented_messages.insert(
+                0, LLMMessage(role="system", content=json_instruction)
+            )
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._format_native_messages(augmented_messages),
+            "stream": False,
+            "format": schema,
+            "options": {"temperature": temperature},
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await _retry_with_backoff(
+                lambda: client.post(
+                    f"{self._native_base_url}/api/chat",
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                )
+            )
+
+        data = _safe_response_json(response)
+        if response.status_code != 200:
+            error_msg = _extract_error_message(data, response.text)
+            raise RuntimeError(
+                f"Ollama API error ({response.status_code}): {error_msg}"
+            )
+
+        try:
+            content = data["message"].get("content", "")
+        except (TypeError, KeyError) as exc:
+            raise RuntimeError("Ollama API returned malformed response payload") from exc
+
+        try:
+            return _parse_structured_json_content(content)
+        except RuntimeError:
+            logger.error(
+                "Failed to parse Ollama structured output as JSON: %s",
+                str(content)[:500],
+            )
+            raise
+
+
+# ==================== LM STUDIO PROVIDER ====================
+
+
+class LMStudioProvider(BaseLLMProvider):
+    """LM Studio provider using OpenAI-compatible endpoints."""
+
+    provider = LLMProvider.LMSTUDIO
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:1234/v1",
+        api_key: Optional[str] = None,
+    ):
+        self.api_key = api_key
+        self.base_url = _ensure_openai_compatible_base_url(
+            base_url, "http://localhost:1234/v1"
+        )
+        self._delegate = OpenAIProvider(
+            api_key=api_key,
+            base_url=self.base_url,
+            model_prefixes=None,
+        )
+
+    async def list_models(self) -> list[dict[str, str]]:
+        return await self._delegate.list_models()
+
+    async def chat(
+        self,
+        messages: list[LLMMessage],
+        model: str,
+        tools: Optional[list[ToolDefinition]] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
+        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
+        response.provider = self.provider.value
+        return response
+
+    async def structured_output(
+        self,
+        messages: list[LLMMessage],
+        schema: dict,
+        model: str,
+        temperature: float = 0.0,
+    ) -> dict:
+        json_instruction = (
+            "You MUST respond with valid JSON matching this schema. "
+            "Do not include any text outside the JSON object.\n"
+            f"Schema: {json.dumps(schema)}"
+        )
+        augmented_messages = list(messages)
+        if augmented_messages and augmented_messages[0].role == "system":
+            augmented_messages[0] = LLMMessage(
+                role="system",
+                content=augmented_messages[0].content + "\n\n" + json_instruction,
+            )
+        else:
+            augmented_messages.insert(
+                0, LLMMessage(role="system", content=json_instruction)
+            )
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._delegate._format_messages(augmented_messages),
+            "temperature": temperature,
+            "response_format": _openai_json_schema_response_format(
+                schema=schema,
+                name=f"{self.provider.value}_{model}_response",
+            ),
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await _retry_with_backoff(
+                lambda: client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._delegate._build_headers(),
+                    json=payload,
+                )
+            )
+
+        data = _safe_response_json(response)
+        if response.status_code != 200:
+            error_msg = _extract_error_message(data, response.text)
+            raise RuntimeError(
+                f"LM Studio API error ({response.status_code}): {error_msg}"
+            )
+
+        try:
+            content = data["choices"][0]["message"].get("content", "")
+        except (TypeError, KeyError, IndexError) as exc:
+            raise RuntimeError(
+                "LM Studio API returned malformed response payload"
+            ) from exc
+
+        try:
+            return _parse_structured_json_content(content)
+        except RuntimeError:
+            logger.error(
+                "Failed to parse LM Studio structured output as JSON: %s",
+                str(content)[:500],
+            )
+            raise
+
+
 # ==================== LLM MANAGER ====================
 
 
@@ -1331,6 +1851,16 @@ class LLMManager:
         self._monthly_spend = 0.0
         self._spend_limit = 50.0
         self._default_model: str = "gpt-4o-mini"
+        self._preferred_provider: Optional[LLMProvider] = None
+
+    @staticmethod
+    def _parse_provider_name(provider_name: Optional[str]) -> Optional[LLMProvider]:
+        if not provider_name:
+            return None
+        try:
+            return LLMProvider(provider_name.strip().lower())
+        except ValueError:
+            return None
 
     async def initialize(self) -> None:
         """Load API keys from AppSettings database table and initialize providers.
@@ -1341,6 +1871,7 @@ class LLMManager:
         """
         # Reset providers so re-initialization picks up removed keys
         self._providers.clear()
+        self._preferred_provider = None
 
         try:
             async with AsyncSessionLocal() as session:
@@ -1360,6 +1891,11 @@ class LLMManager:
                 google_key = decrypt_secret(app_settings.google_api_key)
                 xai_key = decrypt_secret(app_settings.xai_api_key)
                 deepseek_key = decrypt_secret(app_settings.deepseek_api_key)
+                ollama_key = decrypt_secret(app_settings.ollama_api_key)
+                ollama_base_url = app_settings.ollama_base_url
+                lmstudio_key = decrypt_secret(app_settings.lmstudio_api_key)
+                lmstudio_base_url = app_settings.lmstudio_base_url
+                selected_provider = self._parse_provider_name(app_settings.llm_provider)
 
                 if openai_key:
                     self._providers[LLMProvider.OPENAI] = OpenAIProvider(
@@ -1391,6 +1927,35 @@ class LLMManager:
                     )
                     logger.info("Initialized DeepSeek LLM provider")
 
+                enable_ollama = selected_provider == LLMProvider.OLLAMA or bool(
+                    (ollama_base_url or "").strip()
+                )
+                if enable_ollama:
+                    self._providers[LLMProvider.OLLAMA] = OllamaProvider(
+                        base_url=ollama_base_url or "http://localhost:11434",
+                        api_key=ollama_key,
+                    )
+                    logger.info(
+                        "Initialized Ollama LLM provider (base_url=%s)",
+                        self._providers[LLMProvider.OLLAMA].base_url,
+                    )
+
+                enable_lmstudio = selected_provider == LLMProvider.LMSTUDIO or bool(
+                    (lmstudio_base_url or "").strip()
+                )
+                if enable_lmstudio:
+                    self._providers[LLMProvider.LMSTUDIO] = LMStudioProvider(
+                        base_url=lmstudio_base_url or "http://localhost:1234/v1",
+                        api_key=lmstudio_key,
+                    )
+                    logger.info(
+                        "Initialized LM Studio LLM provider (base_url=%s)",
+                        self._providers[LLMProvider.LMSTUDIO].base_url,
+                    )
+
+                if selected_provider in self._providers:
+                    self._preferred_provider = selected_provider
+
                 # Load spend settings
                 if app_settings.ai_max_monthly_spend is not None:
                     self._spend_limit = app_settings.ai_max_monthly_spend
@@ -1401,14 +1966,25 @@ class LLMManager:
                     LLMProvider.GOOGLE: "gemini-2.0-flash",
                     LLMProvider.XAI: "grok-3-mini",
                     LLMProvider.DEEPSEEK: "deepseek-chat",
+                    LLMProvider.OLLAMA: "llama3.2:latest",
+                    LLMProvider.LMSTUDIO: "local-model",
                 }
 
                 configured_model = (
                     app_settings.ai_default_model
                     or app_settings.llm_model
-                    or "gpt-4o-mini"
                 )
-                self._default_model = configured_model
+                if configured_model:
+                    self._default_model = configured_model
+                elif (
+                    self._preferred_provider
+                    and self._preferred_provider in _provider_default_models
+                ):
+                    self._default_model = _provider_default_models[
+                        self._preferred_provider
+                    ]
+                else:
+                    self._default_model = "gpt-4o-mini"
 
                 # Validate that the default model's provider is actually
                 # configured.  If not, fall back to the first available
@@ -1420,7 +1996,7 @@ class LLMManager:
                             logger.warning(
                                 "Selected model '%s' requires provider %s which is not configured. "
                                 "Falling back to '%s' (%s).",
-                                configured_model,
+                                configured_model or self._default_model,
                                 default_provider.value,
                                 m,
                                 p.value,
@@ -1463,25 +2039,34 @@ class LLMManager:
         Returns:
             The detected LLMProvider enum value.
         """
-        model_lower = model.lower()
+        model_lower = (model or "").lower().strip()
         if any(
-            model_lower.startswith(p) for p in ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+            model_lower.startswith(p) for p in OPENAI_MODEL_PREFIXES
         ):
             return LLMProvider.OPENAI
-        elif model_lower.startswith("claude-"):
+        if model_lower.startswith("claude-"):
             return LLMProvider.ANTHROPIC
-        elif model_lower.startswith("gemini-"):
+        if model_lower.startswith("gemini-"):
             return LLMProvider.GOOGLE
-        elif model_lower.startswith("grok-"):
+        if model_lower.startswith("grok-"):
             return LLMProvider.XAI
-        elif model_lower.startswith("deepseek-"):
+        if model_lower.startswith("deepseek-"):
             return LLMProvider.DEEPSEEK
-        else:
-            # Fall back to the first configured provider rather than
-            # assuming OpenAI is always available.
-            if self._providers:
-                return next(iter(self._providers))
-            return LLMProvider.OPENAI
+        if model_lower.startswith("ollama/"):
+            return LLMProvider.OLLAMA
+        if model_lower.startswith("lmstudio/"):
+            return LLMProvider.LMSTUDIO
+
+        # For generic local model names (e.g. llama3.2, qwen2.5),
+        # prefer the explicit provider selected in settings.
+        if self._preferred_provider and self._preferred_provider in self._providers:
+            return self._preferred_provider
+
+        # Fall back to the first configured provider rather than
+        # assuming OpenAI is always available.
+        if self._providers:
+            return next(iter(self._providers))
+        return LLMProvider.OPENAI
 
     def _get_provider(self, provider_enum: LLMProvider) -> BaseLLMProvider:
         """Get an initialized provider instance.
@@ -1499,7 +2084,7 @@ class LLMManager:
         if provider is None:
             raise RuntimeError(
                 f"LLM provider '{provider_enum.value}' is not configured. "
-                f"Add the API key in Settings to use this provider."
+                "Configure this provider in Settings."
             )
         return provider
 
@@ -1603,15 +2188,18 @@ class LLMManager:
         if not self._initialized:
             raise RuntimeError("LLM manager not initialized. Call initialize() first.")
 
-        model = model or self._default_model
-        provider_enum = self.detect_provider(model)
+        requested_model = model or self._default_model
+        provider_enum = self.detect_provider(requested_model)
+        model_for_provider = _normalize_model_name_for_provider(
+            requested_model, provider_enum
+        )
         provider = self._get_provider(provider_enum)
         self._check_spend_limit()
 
         try:
             response = await provider.chat(
                 messages=messages,
-                model=model,
+                model=model_for_provider,
                 tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -1621,13 +2209,13 @@ class LLMManager:
             cost = 0.0
             if response.usage:
                 cost = provider._estimate_cost(
-                    model,
+                    model_for_provider,
                     response.usage.input_tokens,
                     response.usage.output_tokens,
                 )
                 await self._log_usage(
                     provider=provider_enum.value,
-                    model=model,
+                    model=model_for_provider,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                     cost_usd=cost,
@@ -1637,8 +2225,9 @@ class LLMManager:
                 )
 
             logger.debug(
-                "LLM chat: model=%s, tokens=%d/%d, cost=$%.4f, latency=%dms",
-                model,
+                "LLM chat: model=%s (requested=%s), tokens=%d/%d, cost=$%.4f, latency=%dms",
+                model_for_provider,
+                requested_model,
                 response.usage.input_tokens if response.usage else 0,
                 response.usage.output_tokens if response.usage else 0,
                 cost,
@@ -1653,7 +2242,7 @@ class LLMManager:
             # Log the failed request
             await self._log_usage(
                 provider=provider_enum.value,
-                model=model,
+                model=model_for_provider,
                 input_tokens=0,
                 output_tokens=0,
                 cost_usd=0.0,
@@ -1692,8 +2281,11 @@ class LLMManager:
         if not self._initialized:
             raise RuntimeError("LLM manager not initialized. Call initialize() first.")
 
-        model = model or self._default_model
-        provider_enum = self.detect_provider(model)
+        requested_model = model or self._default_model
+        provider_enum = self.detect_provider(requested_model)
+        model_for_provider = _normalize_model_name_for_provider(
+            requested_model, provider_enum
+        )
         provider = self._get_provider(provider_enum)
         self._check_spend_limit()
 
@@ -1702,7 +2294,7 @@ class LLMManager:
             result = await provider.structured_output(
                 messages=messages,
                 schema=schema,
-                model=model,
+                model=model_for_provider,
                 temperature=temperature,
             )
 
@@ -1715,10 +2307,12 @@ class LLMManager:
                 + len(json.dumps(schema)) // 4
             )
             estimated_output = len(json.dumps(result)) // 4
-            cost = provider._estimate_cost(model, estimated_input, estimated_output)
+            cost = provider._estimate_cost(
+                model_for_provider, estimated_input, estimated_output
+            )
             await self._log_usage(
                 provider=provider_enum.value,
-                model=model,
+                model=model_for_provider,
                 input_tokens=estimated_input,
                 output_tokens=estimated_output,
                 cost_usd=cost,
@@ -1733,7 +2327,7 @@ class LLMManager:
             latency_ms = int((time.time() - start_time) * 1000)
             await self._log_usage(
                 provider=provider_enum.value,
-                model=model,
+                model=model_for_provider,
                 input_tokens=0,
                 output_tokens=0,
                 cost_usd=0.0,

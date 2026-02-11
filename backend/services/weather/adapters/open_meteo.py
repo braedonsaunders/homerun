@@ -30,6 +30,17 @@ def _temp_probability(value_c: float, threshold_c: float, operator: str) -> floa
     return max(0.0, min(1.0, _sigmoid(delta / scale_c)))
 
 
+def _temp_range_probability(value_c: float, low_c: float, high_c: float) -> float:
+    # Approximate a band probability as CDF(high) - CDF(low) with a smooth
+    # logistic CDF around the deterministic model value.
+    scale_c = 2.0
+    low = min(low_c, high_c)
+    high = max(low_c, high_c)
+    p_above_low = _sigmoid((value_c - low) / scale_c)
+    p_above_high = _sigmoid((value_c - high) / scale_c)
+    return max(0.0, min(1.0, p_above_low - p_above_high))
+
+
 def _precip_probability(value_mm: float, operator: str) -> float:
     # 0mm => very low rain probability, >=2mm => high probability.
     base = _sigmoid((value_mm - 0.8) / 0.5)
@@ -148,6 +159,13 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         return float(val if val is not None else 0.0)
 
     def _to_probability(self, model_value: float, contract: WeatherForecastInput) -> float:
+        if contract.metric == "temp_range":
+            low = contract.threshold_c_low
+            high = contract.threshold_c_high
+            if low is None or high is None:
+                return 0.5
+            return _temp_range_probability(model_value, low, high)
+
         if contract.metric.startswith("temp"):
             threshold = contract.threshold_c if contract.threshold_c is not None else 0.0
             return _temp_probability(model_value, threshold, contract.operator)

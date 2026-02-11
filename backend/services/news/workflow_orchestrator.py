@@ -3,7 +3,7 @@
 Worker-safe, DB-first pipeline:
   1) Fetch + sync articles
   2) Extract events (LLM/fallback)
-  3) Rebuild market watcher index from scanner snapshot markets
+  3) Rebuild market watcher index from active market metadata
   4) Hybrid retrieval
   5) Optional LLM reranking (adaptive)
   6) Optional LLM edge estimation (budget-guarded)
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -155,8 +156,18 @@ class WorkflowOrchestrator:
                     },
                 }
 
-            # 2) Market universe from scanner snapshot (DB source of truth).
-            market_infos = await self._build_market_infos(session)
+            market_min_liquidity = float(
+                wf_settings.get("market_min_liquidity", 500.0) or 500.0
+            )
+            market_max_days_to_resolution = int(
+                wf_settings.get("market_max_days_to_resolution", 365) or 365
+            )
+            # 2) Market universe from live markets first, scanner snapshot fallback.
+            market_infos = await self._build_market_infos(
+                session,
+                min_liquidity=market_min_liquidity,
+                max_days_to_resolution=market_max_days_to_resolution,
+            )
             if not market_infos:
                 return {
                     "status": "no_markets",
@@ -182,6 +193,8 @@ class WorkflowOrchestrator:
                     no_price=float(m.get("no_price", 0.5) or 0.5),
                     liquidity=float(m.get("liquidity", 0.0) or 0.0),
                     slug=m.get("slug", ""),
+                    end_date=m.get("end_date"),
+                    tags=list(m.get("tags") or []),
                 )
                 for m in market_infos
             ]
@@ -202,21 +215,48 @@ class WorkflowOrchestrator:
                     usage = await llm_manager.get_usage_stats()
             except Exception:
                 llm_manager = None
-            global_remaining = float(usage.get("spend_remaining_usd", 0.0) or 0.0)
+            if "spend_remaining_usd" in usage:
+                global_remaining = float(usage.get("spend_remaining_usd", 0.0) or 0.0)
+            else:
+                # If usage read fails but provider is up, don't hard-disable LLM.
+                global_remaining = (
+                    float("inf")
+                    if (llm_manager and llm_manager.is_available())
+                    else 0.0
+                )
             hourly_news_spend = await self._hourly_news_spend_usd(session)
+            cycle_llm_call_cap = int(wf_settings.get("cycle_llm_call_cap", 30) or 30)
             budget = CycleBudget(
                 llm_available=bool(llm_manager and llm_manager.is_available() and global_remaining > 0),
                 global_spend_remaining_usd=global_remaining,
                 cycle_spend_cap_usd=float(wf_settings.get("cycle_spend_cap_usd", 0.25) or 0.25),
                 hourly_spend_cap_usd=float(wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0),
                 hourly_news_spend_usd=hourly_news_spend,
-                cycle_llm_call_cap=int(wf_settings.get("cycle_llm_call_cap", 30) or 30),
+                cycle_llm_call_cap=cycle_llm_call_cap,
             )
 
             # 5) Event extraction with adaptive LLM usage.
+            # Reserve most LLM budget for rerank + edge estimation (where signal quality is decided).
+            event_llm_quota = (
+                max(0, min(len(articles), int(cycle_llm_call_cap * 0.2)))
+                if cycle_llm_call_cap >= 5
+                else 0
+            )
+            rerank_llm_quota = (
+                max(0, min(len(articles), int(cycle_llm_call_cap * 0.2)))
+                if cycle_llm_call_cap >= 5
+                else 0
+            )
+            event_llm_used = 0
+            rerank_llm_used = 0
+            alignment_dropped = 0
+
             events = []
             for article in articles:
-                allow_llm = budget.reserve_calls(1) == 1
+                allow_llm = False
+                if event_llm_used < event_llm_quota and budget.reserve_calls(1) == 1:
+                    allow_llm = True
+                    event_llm_used += 1
                 event = await event_extractor.extract(
                     title=article.title,
                     summary=article.summary or "",
@@ -236,6 +276,8 @@ class WorkflowOrchestrator:
                     "liquidity": m.get("liquidity", 0.0),
                     "yes_price": m.get("yes_price", 0.5),
                     "no_price": m.get("no_price", 0.5),
+                    "end_date": m.get("end_date"),
+                    "tags": m.get("tags") or [],
                     "token_ids": m.get("token_ids") or [],
                 }
                 for m in market_infos
@@ -246,7 +288,14 @@ class WorkflowOrchestrator:
             kw_weight = float(wf_settings.get("keyword_weight", 0.25) or 0.25)
             sem_weight = float(wf_settings.get("semantic_weight", 0.45) or 0.45)
             evt_weight = float(wf_settings.get("event_weight", 0.30) or 0.30)
-            sim_threshold = float(wf_settings.get("similarity_threshold", 0.35) or 0.35)
+            sim_threshold = float(wf_settings.get("similarity_threshold", 0.42) or 0.42)
+            min_keyword_signal = float(
+                wf_settings.get("min_keyword_signal", 0.04) or 0.04
+            )
+            min_semantic_signal = float(
+                wf_settings.get("min_semantic_signal", 0.22) or 0.22
+            )
+            require_verifier = bool(wf_settings.get("require_verifier", True))
             min_edge = float(wf_settings.get("min_edge_percent", 8.0) or 8.0)
             min_conf = float(wf_settings.get("min_confidence", 0.6) or 0.6)
             max_edge_evals_per_article = int(
@@ -258,7 +307,7 @@ class WorkflowOrchestrator:
             market_sources_seen: dict[str, set[str]] = defaultdict(set)
 
             for article, event in zip(articles, events):
-                if event.confidence < 0.1:
+                if event.confidence < 0.2:
                     continue
 
                 article_text = f"{article.title} {article.summary or ''}".strip()
@@ -269,13 +318,24 @@ class WorkflowOrchestrator:
                     keyword_weight=kw_weight,
                     semantic_weight=sem_weight,
                     event_weight=evt_weight,
+                    min_liquidity=market_min_liquidity,
                     similarity_threshold=sim_threshold,
+                    min_keyword_signal=min_keyword_signal,
+                    min_semantic_signal=min_semantic_signal,
+                    min_text_overlap_tokens=1,
                 )
                 if not candidates:
                     continue
 
-                use_llm_rerank = self._should_use_llm_rerank(candidates)
-                allow_llm_rerank = use_llm_rerank and budget.reserve_calls(1) == 1
+                use_llm_rerank = require_verifier or self._should_use_llm_rerank(candidates)
+                allow_llm_rerank = False
+                if (
+                    use_llm_rerank
+                    and rerank_llm_used < rerank_llm_quota
+                    and budget.reserve_calls(1) == 1
+                ):
+                    allow_llm_rerank = True
+                    rerank_llm_used += 1
                 reranked = await reranker.rerank(
                     article_title=article.title,
                     article_summary=article.summary or "",
@@ -287,12 +347,58 @@ class WorkflowOrchestrator:
                 if not reranked:
                     continue
 
+                if require_verifier:
+                    reranked, rejected = self._split_verified_candidates(
+                        article=article,
+                        event=event,
+                        reranked=reranked,
+                    )
+                    for finding in rejected:
+                        self._assign_finding_keys(finding)
+                        all_findings.append(finding)
+                    if not reranked:
+                        continue
+
                 reranked = [
                     r for r in reranked if r.rerank_score >= max(0.2, sim_threshold * 0.7)
                 ]
                 if not reranked:
                     continue
-                reranked = reranked[: max(1, max_edge_evals_per_article)]
+
+                aligned_reranked = []
+                for rc in reranked:
+                    if not self._is_temporally_compatible(article, event, rc.candidate):
+                        rejected = self._build_rejected_finding(
+                            article=article,
+                            event=event,
+                            rc=rc,
+                            reason="temporal_mismatch",
+                        )
+                        self._assign_finding_keys(rejected)
+                        all_findings.append(rejected)
+                        alignment_dropped += 1
+                        continue
+
+                    if self._has_event_market_alignment(event, rc.candidate):
+                        aligned_reranked.append(rc)
+                        continue
+
+                    # Allow very-strong semantic/LLM evidence even without token overlap.
+                    if rc.candidate.semantic_score >= 0.35 and rc.relevance >= 0.7:
+                        aligned_reranked.append(rc)
+                    else:
+                        rejected = self._build_rejected_finding(
+                            article=article,
+                            event=event,
+                            rc=rc,
+                            reason="entity_alignment_mismatch",
+                        )
+                        self._assign_finding_keys(rejected)
+                        all_findings.append(rejected)
+                        alignment_dropped += 1
+                if not aligned_reranked:
+                    continue
+                reranked = aligned_reranked[: max(1, max_edge_evals_per_article)]
 
                 # Source-diversity gate for expensive per-market edge calls.
                 diversity_gated = []
@@ -396,6 +502,11 @@ class WorkflowOrchestrator:
                 "intents": len(intents),
                 "llm_calls_used": budget.llm_calls_used,
                 "llm_calls_skipped": budget.llm_calls_skipped,
+                "event_llm_quota": event_llm_quota,
+                "event_llm_used": event_llm_used,
+                "rerank_llm_quota": rerank_llm_quota,
+                "rerank_llm_used": rerank_llm_used,
+                "alignment_dropped": alignment_dropped,
                 "elapsed_seconds": round(elapsed, 2),
                 "market_index": {
                     "initialized": market_watcher_index._initialized,
@@ -445,8 +556,135 @@ class WorkflowOrchestrator:
         finally:
             self._is_cycling = False
 
-    async def _build_market_infos(self, session: AsyncSession) -> list[dict]:
-        """Build market info from scanner DB snapshot opportunities."""
+    async def _build_market_infos(
+        self,
+        session: AsyncSession,
+        min_liquidity: float = 500.0,
+        max_days_to_resolution: int = 365,
+    ) -> list[dict]:
+        """Build market info from live markets with scanner fallback."""
+        try:
+            infos = await self._build_market_infos_from_polymarket(
+                min_liquidity=min_liquidity,
+                max_days_to_resolution=max_days_to_resolution,
+            )
+            if infos:
+                return infos
+        except Exception as exc:
+            logger.warning("Live market universe build failed: %s", exc)
+        logger.warning("Falling back to scanner snapshot for market universe")
+        return await self._build_market_infos_from_scanner(
+            session,
+            min_liquidity=min_liquidity,
+            max_days_to_resolution=max_days_to_resolution,
+        )
+
+    async def _build_market_infos_from_polymarket(
+        self,
+        min_liquidity: float,
+        max_days_to_resolution: int,
+    ) -> list[dict]:
+        from services.polymarket import polymarket_client
+
+        markets_task = polymarket_client.get_all_markets(active=True)
+        events_task = polymarket_client.get_all_events(closed=False)
+        markets, events = await asyncio.gather(markets_task, events_task)
+
+        event_by_slug: dict[str, dict] = {}
+        market_to_event: dict[str, dict] = {}
+        for event in events or []:
+            slug = str(getattr(event, "slug", "") or "")
+            title = str(getattr(event, "title", "") or "")
+            category = str(getattr(event, "category", "") or "")
+            tags = self._normalize_tags(getattr(event, "tags", []))
+            meta = {
+                "event_slug": slug,
+                "event_title": title,
+                "category": category,
+                "tags": tags,
+            }
+            if slug:
+                event_by_slug[slug] = meta
+            for ev_market in getattr(event, "markets", []) or []:
+                for key in [
+                    str(getattr(ev_market, "id", "") or ""),
+                    str(getattr(ev_market, "condition_id", "") or ""),
+                ]:
+                    if key:
+                        market_to_event[key] = meta
+
+        infos: list[dict] = []
+        seen: set[str] = set()
+        now = datetime.now(timezone.utc)
+
+        for market in markets or []:
+            if not bool(getattr(market, "active", True)):
+                continue
+
+            question = str(getattr(market, "question", "") or "").strip()
+            if len(question) < 20:
+                continue
+
+            liquidity = float(getattr(market, "liquidity", 0.0) or 0.0)
+            if liquidity < min_liquidity:
+                continue
+
+            market_end = self._coerce_datetime(getattr(market, "end_date", None))
+            if market_end is not None:
+                if market_end < now:
+                    continue
+                if max_days_to_resolution > 0:
+                    if (market_end - now) > timedelta(days=max_days_to_resolution):
+                        continue
+
+            market_id = str(getattr(market, "id", "") or "").strip()
+            if not market_id:
+                market_id = str(getattr(market, "condition_id", "") or "").strip()
+            if not market_id or market_id in seen:
+                continue
+            seen.add(market_id)
+
+            event_slug = str(getattr(market, "event_slug", "") or "").strip()
+            event_meta = (
+                event_by_slug.get(event_slug)
+                or market_to_event.get(market_id)
+                or market_to_event.get(str(getattr(market, "condition_id", "") or ""))
+                or {}
+            )
+            tags = self._normalize_tags(
+                list(getattr(market, "tags", []) or [])
+                + list(event_meta.get("tags", []) or [])
+            )
+            token_ids = [
+                str(t) for t in list(getattr(market, "clob_token_ids", []) or []) if t
+            ]
+
+            infos.append(
+                {
+                    "market_id": market_id,
+                    "question": question,
+                    "event_title": str(event_meta.get("event_title") or ""),
+                    "event_slug": event_slug or event_meta.get("event_slug"),
+                    "category": str(event_meta.get("category") or ""),
+                    "yes_price": float(getattr(market, "yes_price", 0.5) or 0.5),
+                    "no_price": float(getattr(market, "no_price", 0.5) or 0.5),
+                    "liquidity": liquidity,
+                    "slug": str(getattr(market, "slug", "") or ""),
+                    "token_ids": token_ids,
+                    "end_date": market_end.isoformat() if market_end else None,
+                    "tags": tags,
+                }
+            )
+
+        return infos
+
+    async def _build_market_infos_from_scanner(
+        self,
+        session: AsyncSession,
+        min_liquidity: float,
+        max_days_to_resolution: int,
+    ) -> list[dict]:
+        """Fallback market universe from scanner DB snapshot opportunities."""
         from services import shared_state as scanner_state
 
         opportunities = await scanner_state.get_opportunities_from_db(session, None)
@@ -462,7 +700,6 @@ class WorkflowOrchestrator:
                 market_id = str(m.get("id") or "").strip()
                 if not market_id or market_id in seen:
                     continue
-                seen.add(market_id)
 
                 # Try to infer token IDs from market payload and opportunity positions.
                 token_ids = []
@@ -486,22 +723,173 @@ class WorkflowOrchestrator:
                     if yes_token or no_token:
                         token_ids = [t for t in [yes_token, no_token] if t]
 
+                liquidity = float(m.get("liquidity", 0.0) or 0.0)
+                if liquidity < min_liquidity:
+                    continue
+
+                question = str(m.get("question") or "").strip()
+                if len(question) < 20:
+                    continue
+
+                market_end = self._coerce_datetime(m.get("end_date"))
+                if market_end is not None:
+                    now = datetime.now(timezone.utc)
+                    if market_end < now:
+                        continue
+                    if max_days_to_resolution > 0 and (
+                        market_end - now
+                    ) > timedelta(days=max_days_to_resolution):
+                        continue
+
+                seen.add(market_id)
                 infos.append(
                     {
                         "market_id": market_id,
-                        "question": str(m.get("question") or ""),
+                        "question": question,
                         "event_title": str(getattr(opp, "event_title", "") or ""),
                         "event_slug": event_slug,
                         "category": str(getattr(opp, "category", "") or ""),
                         "yes_price": float(m.get("yes_price", 0.5) or 0.5),
                         "no_price": float(m.get("no_price", 0.5) or 0.5),
-                        "liquidity": float(m.get("liquidity", 0.0) or 0.0),
+                        "liquidity": liquidity,
                         "slug": m.get("slug"),
                         "token_ids": token_ids,
+                        "end_date": market_end.isoformat() if market_end else None,
+                        "tags": self._normalize_tags(m.get("tags") or []),
                     }
                 )
 
         return infos
+
+    @staticmethod
+    def _normalize_tags(raw_tags) -> list[str]:
+        out: list[str] = []
+        if isinstance(raw_tags, (str, bytes)):
+            raw_tags = [raw_tags]
+        for tag in raw_tags or []:
+            value = ""
+            if isinstance(tag, str):
+                value = tag
+            elif isinstance(tag, dict):
+                value = str(tag.get("label") or tag.get("name") or "").strip()
+            if not value:
+                continue
+            if value not in out:
+                out.append(value)
+        return out
+
+    @staticmethod
+    def _coerce_datetime(value: object) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(text)
+            except ValueError:
+                for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+                    try:
+                        dt = datetime.strptime(text, fmt)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    return None
+        else:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    @classmethod
+    def _is_temporally_compatible(cls, article, event, candidate) -> bool:
+        market_end = cls._coerce_datetime(getattr(candidate, "end_date", None))
+        if market_end is None:
+            return True
+
+        event_date = cls._coerce_datetime(getattr(event, "date", None))
+        article_published = cls._coerce_datetime(getattr(article, "published", None))
+        article_fetched = cls._coerce_datetime(getattr(article, "fetched_at", None))
+        reference_dt = event_date or article_published or article_fetched
+        if reference_dt is None:
+            return True
+        return reference_dt <= (market_end + timedelta(hours=36))
+
+    @staticmethod
+    def _build_rejected_finding(article, event, rc, reason: str):
+        from services.news.edge_estimator import WorkflowFinding
+
+        c = rc.candidate
+        return WorkflowFinding(
+            article_id=article.article_id,
+            market_id=c.market_id,
+            article_title=article.title,
+            article_source=article.source,
+            article_url=article.url,
+            market_question=c.question,
+            market_price=float(c.yes_price or 0.5),
+            model_probability=float(c.yes_price or 0.5),
+            edge_percent=0.0,
+            direction="buy_yes",
+            confidence=0.0,
+            retrieval_score=float(c.combined_score or 0.0),
+            semantic_score=float(c.semantic_score or 0.0),
+            keyword_score=float(c.keyword_score or 0.0),
+            event_score=float(c.event_score or 0.0),
+            rerank_score=float(rc.rerank_score or 0.0),
+            event_graph={
+                "event_type": getattr(event, "event_type", "other"),
+                "actors": list(getattr(event, "actors", []) or []),
+                "action": getattr(event, "action", ""),
+                "date": getattr(event, "date", None),
+                "region": getattr(event, "region", None),
+                "impact_direction": getattr(event, "impact_direction", None),
+                "key_entities": list(getattr(event, "key_entities", []) or []),
+            },
+            evidence={
+                "retrieval": {
+                    "keyword_score": round(float(c.keyword_score or 0.0), 4),
+                    "semantic_score": round(float(c.semantic_score or 0.0), 4),
+                    "event_score": round(float(c.event_score or 0.0), 4),
+                    "combined_score": round(float(c.combined_score or 0.0), 4),
+                },
+                "rerank": {
+                    "relevance": round(float(rc.relevance or 0.0), 4),
+                    "rationale": rc.rationale,
+                    "rerank_score": round(float(rc.rerank_score or 0.0), 4),
+                    "used_llm": bool(getattr(rc, "used_llm", False)),
+                },
+                "rejection_reasons": [reason],
+            },
+            reasoning=f"Rejected before edge estimation: {reason}.",
+            actionable=False,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def _split_verified_candidates(self, article, event, reranked):
+        verified = []
+        rejected = []
+        for rc in reranked:
+            if getattr(rc, "used_llm", False):
+                verified.append(rc)
+                continue
+            rejected.append(
+                self._build_rejected_finding(
+                    article=article,
+                    event=event,
+                    rc=rc,
+                    reason="verifier_unavailable",
+                )
+            )
+        return verified, rejected
 
     async def _hourly_news_spend_usd(self, session: AsyncSession) -> float:
         cutoff = datetime.utcnow() - timedelta(hours=1)
@@ -528,6 +916,73 @@ class WorkflowOrchestrator:
         if top < 0.15:
             return False
         return True
+
+    @staticmethod
+    def _has_event_market_alignment(event, candidate) -> bool:
+        """Require at least one entity/action token overlap with market text."""
+        from services.news.market_watcher_index import _tokenize
+
+        generic_tokens = {
+            "news",
+            "media",
+            "daily",
+            "weekly",
+            "public",
+            "times",
+            "post",
+            "press",
+            "radio",
+            "television",
+            "report",
+            "reports",
+        }
+
+        def _source_like(value: str) -> bool:
+            text = value.strip().lower()
+            if not text:
+                return True
+            if "." in text and " " not in text:
+                return True
+            return bool(
+                re.search(r"\b(news|media|times|post|observer|press|radio|tv|herald)\b", text)
+            )
+
+        event_terms = []
+        for value in list(getattr(event, "key_entities", []) or []) + list(
+            getattr(event, "actors", []) or []
+        ):
+            if isinstance(value, str) and value.strip():
+                if _source_like(value):
+                    continue
+                event_terms.append(value)
+        action = getattr(event, "action", "")
+        if isinstance(action, str) and action.strip():
+            event_terms.append(action)
+
+        if not event_terms:
+            return False
+
+        event_tokens = {
+            tok for tok in _tokenize(" ".join(event_terms)) if tok not in generic_tokens
+        }
+        if not event_tokens:
+            return False
+
+        market_tokens = set(
+            _tokenize(
+                " ".join(
+                    [
+                        str(getattr(candidate, "question", "") or ""),
+                        str(getattr(candidate, "event_title", "") or ""),
+                        str(getattr(candidate, "slug", "") or ""),
+                        " ".join(list(getattr(candidate, "tags", []) or [])),
+                    ]
+                )
+            )
+        )
+        if not market_tokens:
+            return False
+        return len(event_tokens.intersection(market_tokens)) > 0
 
     @staticmethod
     def _cache_key(article_id: str, market_id: str, market_price: float) -> str:
@@ -594,6 +1049,7 @@ class WorkflowOrchestrator:
             select(NewsWorkflowFinding)
             .where(NewsWorkflowFinding.cache_key.in_(cache_keys))
             .where(NewsWorkflowFinding.created_at >= cutoff)
+            .where(NewsWorkflowFinding.confidence > 0.0)
             .order_by(NewsWorkflowFinding.created_at.desc())
         )
         rows = result.scalars().all()

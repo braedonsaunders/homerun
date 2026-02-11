@@ -362,6 +362,7 @@ function PositionsTable({ positions, platform, positionsCostBasis, positionsTota
       return buildKalshiMarketUrl({
         marketTicker: pos.market_id,
         eventTicker: (pos as any).event_slug,
+        eventSlug: (pos as any).market_slug,
       })
     }
     return buildPolymarketMarketUrl({

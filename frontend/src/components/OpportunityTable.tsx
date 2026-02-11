@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Opportunity, judgeOpportunity } from '../services/api'
+import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import Sparkline from './Sparkline'
@@ -96,18 +97,14 @@ function TableRow({
       : 'text-red-400'
 
   const market = opportunity.markets[0]
-  const sparkYes = useMemo(() => {
-    if (!market) return []
-    const history = Array.isArray(market.price_history) ? market.price_history : []
-    const points = history
-      .map((p) => Number(p?.yes))
-      .filter((v) => Number.isFinite(v))
-    if (points.length >= 2) return points
-
-    const yesNow = Number(market.yes_price)
-    if (Number.isFinite(yesNow)) return [yesNow, yesNow]
-    return []
-  }, [market?.id, market?.yes_price, market?.price_history])
+  const sparkData = useMemo(() => {
+    if (!market) return { yes: [], no: [] }
+    return buildYesNoSparklineSeries(
+      market.price_history,
+      market.yes_price,
+      market.no_price
+    )
+  }, [market?.id, market?.yes_price, market?.no_price, market?.price_history])
 
   const roiPositive = opportunity.roi_percent >= 0
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || '') : ''
@@ -126,6 +123,7 @@ function TableRow({
     ? buildKalshiMarketUrl({
         marketTicker: kalshiMarket.id,
         eventTicker: (kalshiMarket as any).event_slug,
+        eventSlug: (kalshiMarket as any).slug,
       })
     : null
 
@@ -160,12 +158,14 @@ function TableRow({
 
         {/* Sparkline */}
         <div className="px-1 py-1">
-          {sparkYes.length >= 2 && (
+          {sparkData.yes.length >= 2 && (
             <Sparkline
-              data={sparkYes}
+              data={sparkData.yes}
+              data2={sparkData.no}
               width={60}
               height={20}
-              color={roiPositive ? '#22c55e' : '#ef4444'}
+              color="#22c55e"
+              color2="#ef4444"
               lineWidth={1}
               showDots
             />

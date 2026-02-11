@@ -35,20 +35,6 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
-  discovery-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: polymarket-discovery-worker
-    command: ["python", "-m", "workers.discovery_worker"]
-    environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-
   weather-worker:
     build:
       context: ./backend
@@ -69,6 +55,62 @@ services:
       dockerfile: Dockerfile
     container_name: polymarket-news-worker
     command: ["python", "-m", "workers.news_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  crypto-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-crypto-worker
+    command: ["python", "-m", "workers.crypto_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  tracked-traders-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-tracked-traders-worker
+    command: ["python", "-m", "workers.tracked_traders_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  discovery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-discovery-worker
+    command: ["python", "-m", "workers.discovery_worker"]
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  autotrader-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: polymarket-autotrader-worker
+    command: ["python", "-m", "workers.autotrader_worker"]
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
     env_file:

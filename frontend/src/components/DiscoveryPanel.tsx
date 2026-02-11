@@ -17,6 +17,7 @@ import {
   UserPlus,
   Clock,
   PauseCircle,
+  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -46,6 +47,7 @@ type SortField =
   | 'composite_score'
   | 'quality_score'
   | 'activity_score'
+  | 'insider_score'
   | 'last_trade_at'
   | 'total_pnl'
   | 'win_rate'
@@ -125,6 +127,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('24h')
+  const [insiderOnly, setInsiderOnly] = useState(false)
+  const [minInsiderScore, setMinInsiderScore] = useState(0)
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [tagSearch, setTagSearch] = useState('')
@@ -133,7 +137,17 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
 
   useEffect(() => {
     setCurrentPage(0)
-  }, [sortBy, sortDir, minTrades, minPnl, recommendationFilter, timePeriod, selectedTags])
+  }, [
+    sortBy,
+    sortDir,
+    minTrades,
+    minPnl,
+    recommendationFilter,
+    timePeriod,
+    selectedTags,
+    insiderOnly,
+    minInsiderScore,
+  ])
 
   const { data: stats } = useQuery<DiscoveryStats>({
     queryKey: ['discovery-stats'],
@@ -166,6 +180,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
       recommendationFilter,
       selectedTagString,
       timePeriod,
+      insiderOnly,
+      minInsiderScore,
     ],
     queryFn: () =>
       discoveryApi.getLeaderboard({
@@ -175,6 +191,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
         offset: currentPage * ITEMS_PER_PAGE,
         min_trades: minTrades,
         min_pnl: minPnl || undefined,
+        insider_only: insiderOnly || undefined,
+        min_insider_score: minInsiderScore > 0 ? minInsiderScore : undefined,
         recommendation: recommendationFilter || undefined,
         tags: selectedTagString || undefined,
         time_period: timePeriod !== 'all' ? timePeriod : undefined,
@@ -500,6 +518,27 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
               <option value="avoid">Avoid</option>
             </select>
           </div>
+          <div className="w-44">
+            <label className="block text-xs text-muted-foreground mb-1">Min Insider Score</label>
+            <Input
+              type="number"
+              value={minInsiderScore}
+              onChange={e => setMinInsiderScore(Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))}
+              step={0.05}
+              min={0}
+              max={1}
+              className="bg-card border-border h-8 text-sm"
+            />
+          </div>
+          <label className="flex items-end gap-2 pb-1 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={insiderOnly}
+              onChange={e => setInsiderOnly(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-border"
+            />
+            Insider only
+          </label>
         </div>
 
         {leaderboardLoading ? (
@@ -546,6 +585,15 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
                       <SortButton
                         field="quality_score"
                         label="Quality"
+                        currentSort={sortBy}
+                        currentDir={sortDir}
+                        onSort={handleSort}
+                      />
+                    </TableHead>
+                    <TableHead>
+                      <SortButton
+                        field="insider_score"
+                        label="Insider"
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -895,6 +943,38 @@ function LeaderboardRow({
         >
           {(quality * 100).toFixed(1)}
         </span>
+      </TableCell>
+
+      <TableCell>
+        {wallet.insider_score != null ? (
+          <div className="space-y-0.5">
+            <span
+              className={cn(
+                'font-mono text-sm',
+                (wallet.insider_score || 0) >= 0.72
+                  ? 'text-red-400'
+                  : (wallet.insider_score || 0) >= 0.60
+                    ? 'text-yellow-400'
+                    : 'text-muted-foreground'
+              )}
+            >
+              {(wallet.insider_score || 0).toFixed(2)}
+            </span>
+            <div className="text-[10px] text-muted-foreground">
+              conf {(wallet.insider_confidence || 0).toFixed(2)} · n{wallet.insider_sample_size || 0}
+            </div>
+            {(wallet.insider_score || 0) >= 0.72 &&
+              (wallet.insider_confidence || 0) >= 0.60 &&
+              (wallet.insider_sample_size || 0) >= 25 && (
+                <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-300 border-red-500/20">
+                  <AlertTriangle className="w-2.5 h-2.5 mr-1" />
+                  Insider suspect
+                </Badge>
+              )}
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">--</span>
+        )}
       </TableCell>
 
       <TableCell>

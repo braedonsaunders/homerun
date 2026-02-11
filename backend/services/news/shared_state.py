@@ -337,13 +337,28 @@ async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
         "top_k": int(getattr(db, "news_workflow_top_k", 8) or 8),
         "rerank_top_n": int(getattr(db, "news_workflow_rerank_top_n", 5) or 5),
         "similarity_threshold": float(
-            getattr(db, "news_workflow_similarity_threshold", 0.35) or 0.35
+            getattr(db, "news_workflow_similarity_threshold", 0.42) or 0.42
         ),
         "keyword_weight": float(getattr(db, "news_workflow_keyword_weight", 0.25) or 0.25),
         "semantic_weight": float(
             getattr(db, "news_workflow_semantic_weight", 0.45) or 0.45
         ),
         "event_weight": float(getattr(db, "news_workflow_event_weight", 0.30) or 0.30),
+        "require_verifier": bool(
+            getattr(db, "news_workflow_require_verifier", True)
+        ),
+        "market_min_liquidity": float(
+            getattr(db, "news_workflow_market_min_liquidity", 500.0) or 500.0
+        ),
+        "market_max_days_to_resolution": int(
+            getattr(db, "news_workflow_market_max_days_to_resolution", 365) or 365
+        ),
+        "min_keyword_signal": float(
+            getattr(db, "news_workflow_min_keyword_signal", 0.04) or 0.04
+        ),
+        "min_semantic_signal": float(
+            getattr(db, "news_workflow_min_semantic_signal", 0.22) or 0.22
+        ),
         "min_edge_percent": float(
             getattr(db, "news_workflow_min_edge_percent", 8.0) or 8.0
         ),
@@ -395,6 +410,11 @@ async def update_news_settings(
         "keyword_weight": "news_workflow_keyword_weight",
         "semantic_weight": "news_workflow_semantic_weight",
         "event_weight": "news_workflow_event_weight",
+        "require_verifier": "news_workflow_require_verifier",
+        "market_min_liquidity": "news_workflow_market_min_liquidity",
+        "market_max_days_to_resolution": "news_workflow_market_max_days_to_resolution",
+        "min_keyword_signal": "news_workflow_min_keyword_signal",
+        "min_semantic_signal": "news_workflow_min_semantic_signal",
         "min_edge_percent": "news_workflow_min_edge_percent",
         "min_confidence": "news_workflow_min_confidence",
         "require_second_source": "news_workflow_require_second_source",

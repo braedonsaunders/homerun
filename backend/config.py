@@ -1,10 +1,17 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
+import logging
 from pathlib import Path
+from typing import Optional
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 
 # Get the directory where this config file is located (backend/)
 _BACKEND_DIR = Path(__file__).parent.resolve()
+_PROJECT_ROOT = _BACKEND_DIR.parent.resolve()
 _DEFAULT_DB_PATH = _BACKEND_DIR / "arbitrage.db"
+_SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
+_SQLITE_SYNC_PREFIX = "sqlite:///"
+_LOGGER = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -199,6 +206,11 @@ class Settings(BaseSettings):
     TIERED_SCANNING_ENABLED: bool = True  # Enable tiered scan loop
     FAST_SCAN_INTERVAL_SECONDS: int = 15  # Hot-tier poll frequency
     FULL_SCAN_INTERVAL_SECONDS: int = 120  # Full (baseline) scan frequency
+    # Opportunity card sparkline history (longer-term trend, not tick-level noise)
+    SCANNER_SPARKLINE_WINDOW_HOURS: int = 6
+    SCANNER_SPARKLINE_SAMPLE_SECONDS: int = 120
+    SCANNER_SPARKLINE_MAX_POINTS: int = 240
+    SCANNER_SPARKLINE_EXPORT_POINTS: int = 180
     HOT_TIER_MAX_AGE_SECONDS: int = 300  # Markets younger than this = HOT
     WARM_TIER_MAX_AGE_SECONDS: int = 1800  # Markets younger than this = WARM
     COLD_TIER_UNCHANGED_CYCLES: int = 5  # Consecutive unchanged cycles before COLD
@@ -291,8 +303,84 @@ class Settings(BaseSettings):
     CLEANUP_WALLET_TRADE_DAYS: int = 60  # Delete wallet trades older than X days
     CLEANUP_ANOMALY_DAYS: int = 30  # Delete resolved anomalies older than X days
 
+    @field_validator(
+        "GAMMA_API_URL",
+        "CLOB_API_URL",
+        "DATA_API_URL",
+        "CLOB_WS_URL",
+        "KALSHI_WS_URL",
+        "POLYGON_RPC_URL",
+        "POLYGON_WS_URL",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_url_field(cls, value: object) -> object:
+        """Trim accidental quotes/whitespace from URL env vars."""
+        if value is None:
+            return value
+        text = str(value).strip().strip('"').strip("'")
+        if not text:
+            return text
+        # Keep scheme://host normalization simple and deterministic.
+        return text.rstrip("/")
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        """Normalize DB URL so TUI/worker cwd changes never split databases."""
+        if value is None:
+            return value
+
+        text = str(value).strip().strip('"').strip("'")
+        if not text:
+            return text
+
+        # Convert relative SQLite paths to absolute project-root paths.
+        for prefix in (_SQLITE_ASYNC_PREFIX, _SQLITE_SYNC_PREFIX):
+            if not text.startswith(prefix):
+                continue
+            path_part = text[len(prefix) :]
+            if not path_part:
+                return text
+            # Already absolute (sqlite:///<absolute> => path starts with '/').
+            if path_part.startswith("/"):
+                return f"{prefix}{path_part}"
+            absolute = (_PROJECT_ROOT / path_part).resolve()
+
+            # Back-compat: if an env-relative DB path points to an empty/new file
+            # but the legacy backend DB is populated, prefer the populated file so
+            # API + workers stay on a single DB without manual env edits.
+            legacy_db = _DEFAULT_DB_PATH.resolve()
+            try:
+                absolute_size = absolute.stat().st_size if absolute.exists() else 0
+            except OSError:
+                absolute_size = 0
+            try:
+                legacy_size = legacy_db.stat().st_size if legacy_db.exists() else 0
+            except OSError:
+                legacy_size = 0
+
+            if absolute != legacy_db and absolute_size == 0 and legacy_size > 0:
+                _LOGGER.warning(
+                    "DATABASE_URL points to empty SQLite file; using populated legacy DB",
+                    extra={
+                        "configured_path": str(absolute),
+                        "legacy_path": str(legacy_db),
+                    },
+                )
+                return f"{prefix}{legacy_db}"
+
+            return f"{prefix}{absolute}"
+
+        return text
+
     class Config:
-        env_file = ".env"
+        # Load project-root .env first (common workflow), then backend/.env
+        # as an override if present.
+        env_file = (
+            str(_PROJECT_ROOT / ".env"),
+            str(_BACKEND_DIR / ".env"),
+        )
         env_file_encoding = "utf-8"
 
 

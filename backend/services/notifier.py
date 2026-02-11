@@ -229,13 +229,16 @@ class TelegramNotifier:
     # ── Callback registration ────────────────────────────────────
 
     def _register_callbacks(self):
-        """Hook into scanner and auto_trader callback systems."""
+        """Hook into scanner callbacks.
+
+        AutoTrader runtime is worker-owned and DB-backed; notifier integration
+        should consume persisted autotrader decisions/trades instead of
+        in-process callback wiring.
+        """
         from services.scanner import scanner
-        from services.auto_trader import auto_trader
 
         scanner.add_callback(self._on_opportunities)
-        auto_trader.add_callback(self._on_trade_event)
-        logger.info("Notifier callbacks registered with scanner and auto_trader")
+        logger.info("Notifier callbacks registered with scanner")
 
     # ── Scanner callback ─────────────────────────────────────────
 

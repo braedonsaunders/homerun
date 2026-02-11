@@ -91,7 +91,11 @@ class WeatherWorkflowOrchestrator:
                 if liquidity < min_liquidity:
                     continue
 
-                parsed = parse_weather_contract(market.question, market.end_date)
+                parsed = parse_weather_contract(
+                    market.question,
+                    market.end_date,
+                    getattr(market, "group_item_title", None),
+                )
                 if parsed is None:
                     continue
                 contracts_parsed += 1
@@ -102,6 +106,8 @@ class WeatherWorkflowOrchestrator:
                     metric=parsed.metric,
                     operator=parsed.operator,
                     threshold_c=parsed.threshold_c,
+                    threshold_c_low=parsed.threshold_c_low,
+                    threshold_c_high=parsed.threshold_c_high,
                 )
                 forecast = await self._adapter.forecast_probability(fc_input)
 
@@ -134,7 +140,11 @@ class WeatherWorkflowOrchestrator:
                             "metric": parsed.metric,
                             "operator": parsed.operator,
                             "threshold_c": parsed.threshold_c,
+                            "threshold_c_low": parsed.threshold_c_low,
+                            "threshold_c_high": parsed.threshold_c_high,
                             "raw_threshold": parsed.raw_threshold,
+                            "raw_threshold_low": parsed.raw_threshold_low,
+                            "raw_threshold_high": parsed.raw_threshold_high,
                             "raw_unit": parsed.raw_unit,
                             "target_time": parsed.target_time.isoformat(),
                             "gfs_value": forecast.gfs_value,
@@ -201,43 +211,98 @@ class WeatherWorkflowOrchestrator:
         }
 
     async def _fetch_weather_markets(self, limit: int) -> list:
-        events = await polymarket_client.get_all_events(closed=False)
-        weather_events = [
-            e for e in events if (e.category or "").strip().lower() == "weather"
-        ]
+        """Fetch markets that are parseable by the weather contract parser.
 
+        We intentionally avoid relying only on event category labels because
+        Polymarket tagging is often sparse or inconsistent for weather pages.
+        """
         markets: list = []
         seen: set[str] = set()
-        for ev in weather_events:
-            for m in ev.markets:
-                if m.closed or not m.active:
+        scanned_events = 0
+        offset = 0
+        page_size = 100
+        max_events_offset = 5000
+
+        while offset < max_events_offset and len(markets) < limit:
+            events = await polymarket_client.get_events(
+                closed=False, limit=page_size, offset=offset
+            )
+            if not events:
+                break
+            scanned_events += len(events)
+            offset += page_size
+
+            for ev in events:
+                for m in ev.markets:
+                    if m.closed or not m.active:
+                        continue
+                    cid = m.condition_id or m.id
+                    if cid in seen:
+                        continue
+                    seen.add(cid)
+
+                    if not m.event_slug:
+                        m.event_slug = ev.slug
+
+                    parsed = parse_weather_contract(
+                        m.question,
+                        m.end_date,
+                        getattr(m, "group_item_title", None),
+                    )
+                    if parsed is None:
+                        continue
+
+                    markets.append(m)
+                    if len(markets) >= limit:
+                        break
+                if len(markets) >= limit:
+                    break
+
+        if markets:
+            logger.info(
+                "Weather market discovery complete",
+                scanned_events=scanned_events,
+                parseable_markets=len(markets),
+            )
+            return markets
+
+        # Fallback path when event payloads are sparse for weather terms.
+        fallback_queries = [
+            "highest temperature in",
+            "lowest temperature in",
+            "will it rain in",
+            "weather",
+        ]
+        for query in fallback_queries:
+            searched = await polymarket_client.search_markets(
+                query, limit=min(max(limit * 2, 50), 300)
+            )
+            for m in searched:
+                if not m.active or m.closed:
                     continue
                 cid = m.condition_id or m.id
                 if cid in seen:
                     continue
                 seen.add(cid)
-                # Ensure event_slug/category stay attached even when event payload is sparse.
-                if not m.event_slug:
-                    m.event_slug = ev.slug
+                parsed = parse_weather_contract(
+                    m.question,
+                    m.end_date,
+                    getattr(m, "group_item_title", None),
+                )
+                if parsed is None:
+                    continue
                 markets.append(m)
                 if len(markets) >= limit:
-                    return markets
-
-        if markets:
-            return markets
-
-        # Fallback path when category metadata is sparse.
-        searched = await polymarket_client.search_markets("weather", limit=min(limit, 100))
-        for m in searched:
-            if not m.active or m.closed:
-                continue
-            cid = m.condition_id or m.id
-            if cid in seen:
-                continue
-            seen.add(cid)
-            markets.append(m)
+                    break
             if len(markets) >= limit:
                 break
+
+        logger.info(
+            "Weather market discovery complete",
+            scanned_events=scanned_events,
+            parseable_markets=len(markets),
+            used_fallback=True,
+        )
         return markets
 
     def _signal_to_opportunity(

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pathlib import Path
+from typing import Optional
 import traceback
 
 # Keep native ML/linear algebra threading conservative for long-running
@@ -38,22 +39,21 @@ from api.routes_plugins import router as plugins_router
 from api.routes_crypto import router as crypto_router
 from api.routes_news_workflow import router as news_workflow_router
 from api.routes_weather_workflow import router as weather_workflow_router
+from api.routes_signals import router as signals_router
+from api.routes_workers import router as workers_router
 from api.routes_validation import router as validation_router
 from services import wallet_tracker
 from services.copy_trader import copy_trader
 from services.trading import trading_service
-from services.auto_trader import auto_trader
 from services.wallet_discovery import wallet_discovery
-from services.wallet_intelligence import wallet_intelligence
-from services.smart_wallet_pool import smart_wallet_pool
 from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
-from services.notifier import notifier
-from services.opportunity_recorder import opportunity_recorder
 from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from models.database import AsyncSessionLocal, init_database
 from services import discovery_shared_state, shared_state
+from services.autotrader_state import read_autotrader_snapshot
+from services.worker_state import list_worker_snapshots
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
@@ -184,50 +184,6 @@ async def lifespan(app: FastAPI):
         wallet_task = asyncio.create_task(wallet_tracker.start_monitoring(30))
         tasks.append(wallet_task)
 
-        # Start WebSocket feeds for real-time price data
-        if settings.WS_FEED_ENABLED:
-            try:
-                from services.ws_feeds import get_feed_manager
-                from services.polymarket import polymarket_client
-
-                feed_manager = get_feed_manager()
-
-                # Register HTTP fallback for when WS data is stale
-                async def _http_book_fallback(token_id: str):
-                    """Fetch order book via HTTP when WS data is stale."""
-                    try:
-                        book = await polymarket_client.get_order_book(token_id)
-                        return book
-                    except Exception:
-                        return None
-
-                feed_manager.set_http_fallback(_http_book_fallback)
-                await feed_manager.start()
-                logger.info("WebSocket feeds started (real-time price data)")
-            except Exception as e:
-                logger.warning(f"WebSocket feeds failed to start (non-critical): {e}")
-
-        # Start Chainlink oracle price feed for crypto 15-min markets
-        try:
-            from services.chainlink_feed import get_chainlink_feed
-
-            chainlink_feed = get_chainlink_feed()
-            await chainlink_feed.start()
-            logger.info("Chainlink oracle price feed started")
-        except Exception as e:
-            logger.warning(f"Chainlink feed failed to start (non-critical): {e}")
-
-        # Start dedicated crypto fast-scan loop (worker process in full deploy)
-        try:
-            from services.crypto_service import get_crypto_service
-
-            crypto_svc = get_crypto_service()
-            crypto_scan_task = asyncio.create_task(crypto_svc.start_fast_scan(2.0))
-            tasks.append(crypto_scan_task)
-            logger.info("Crypto fast-scan loop started (2s interval)")
-        except Exception as e:
-            logger.warning(f"Crypto fast-scan loop failed to start (non-critical): {e}")
-
         # Start copy trading service
         await copy_trader.start()
 
@@ -252,20 +208,8 @@ async def lifespan(app: FastAPI):
                     "Trading service initialization failed - check credentials"
                 )
 
-        # Start wallet intelligence + smart pool (discovery runs in dedicated worker)
-        try:
-            await wallet_intelligence.initialize()
-            intelligence_task = asyncio.create_task(
-                wallet_intelligence.start_background(interval_minutes=30)
-            )
-            tasks.append(intelligence_task)
-            smart_pool_task = asyncio.create_task(smart_wallet_pool.start_background())
-            tasks.append(smart_pool_task)
-            logger.info("Wallet intelligence and smart pool started (discovery via worker)")
-        except Exception as e:
-            logger.warning(
-                f"Wallet intelligence/smart-pool startup failed (non-critical): {e}"
-            )
+        # Intelligence, crypto, tracked-trader, and autotrader runtimes are worker-owned.
+        logger.info("API runtime running in orchestration/read-only mode for worker-owned loops")
 
         # Start background cleanup if enabled
         if settings.AUTO_CLEANUP_ENABLED:
@@ -293,10 +237,21 @@ async def lifespan(app: FastAPI):
             # immediately for matching and search.
             await news_feed_service.load_from_db()
 
-            await asyncio.to_thread(semantic_matcher.initialize)
+            matcher_ready = False
+            try:
+                matcher_ready = await asyncio.wait_for(
+                    asyncio.to_thread(semantic_matcher.initialize),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Semantic matcher initialization timed out; continuing in deferred mode",
+                    timeout_seconds=5.0,
+                )
             logger.info(
                 "News intelligence layer initialized (worker-owned execution)",
-                ml_mode=semantic_matcher.is_ml_mode,
+                ml_mode=bool(semantic_matcher.is_ml_mode and matcher_ready),
+                deferred_init=not matcher_ready,
                 cached_articles=news_feed_service.article_count,
             )
         except Exception as e:
@@ -321,18 +276,10 @@ async def lifespan(app: FastAPI):
         # Cleanup
         logger.info("Shutting down...")
 
-        try:
-            from services.chainlink_feed import get_chainlink_feed
-            await get_chainlink_feed().stop()
-        except Exception:
-            pass
         await snapshot_broadcaster.stop()
         wallet_tracker.stop()
         copy_trader.stop()
-        auto_trader.stop()
         wallet_discovery.stop()
-        wallet_intelligence.stop()
-        smart_wallet_pool.stop()
         position_monitor.stop()
         maintenance_service.stop()
         try:
@@ -346,15 +293,6 @@ async def lifespan(app: FastAPI):
             from services.news.feed_service import news_feed_service
 
             news_feed_service.stop()
-        except Exception:
-            pass
-
-        # Stop WebSocket feeds
-        try:
-            from services.ws_feeds import get_feed_manager
-
-            feed_mgr = get_feed_manager()
-            await feed_mgr.stop()
         except Exception:
             pass
 
@@ -423,6 +361,8 @@ app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
 app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])
 app.include_router(news_workflow_router, prefix="/api", tags=["News Workflow"])
 app.include_router(weather_workflow_router, prefix="/api", tags=["Weather Workflow"])
+app.include_router(signals_router, prefix="/api", tags=["Signals"])
+app.include_router(workers_router, prefix="/api", tags=["Workers"])
 app.include_router(validation_router, prefix="/api", tags=["Validation"])
 
 
@@ -492,8 +432,13 @@ def _get_ai_status() -> dict:
         return {"enabled": False}
 
 
-def _get_ws_feeds_status() -> dict:
+def _get_ws_feeds_status(scanner_status: Optional[dict] = None) -> dict:
     """Get WebSocket feeds status for health check."""
+    if isinstance(scanner_status, dict):
+        snapshot_ws = scanner_status.get("ws_feeds")
+        if isinstance(snapshot_ws, dict):
+            # Scanner worker owns live WS feed lifecycle in production runs.
+            return snapshot_ws
     try:
         from services.ws_feeds import get_feed_manager
 
@@ -519,7 +464,10 @@ async def detailed_health_check():
             )
         except Exception:
             news_workflow_status = {}
-    smart_pool_stats = await smart_wallet_pool.get_pool_stats()
+        worker_status_rows = await list_worker_snapshots(session)
+        autotrader_snapshot = await read_autotrader_snapshot(session)
+    worker_status = {row.get("worker_name"): row for row in worker_status_rows}
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -544,9 +492,8 @@ async def detailed_health_check():
                 else None,
             },
             "auto_trader": {
-                "running": auto_trader._running,
-                "mode": auto_trader.config.mode.value,
-                "stats": auto_trader.get_stats(),
+                "running": bool(autotrader_snapshot.get("running", False)),
+                "stats": autotrader_snapshot,
             },
             "maintenance": {
                 "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
@@ -556,7 +503,7 @@ async def detailed_health_check():
             },
             "market_prioritizer": market_prioritizer.get_stats(),
             "ai_intelligence": _get_ai_status(),
-            "ws_feeds": _get_ws_feeds_status(),
+            "ws_feeds": _get_ws_feeds_status(scanner_status),
             "news_intelligence": _get_news_status(),
             "news_workflow": {
                 "running": bool(news_workflow_status.get("running", False)),
@@ -595,10 +542,7 @@ async def detailed_health_check():
                 "interval_minutes": discovery_status.get("run_interval_minutes"),
                 "paused": bool(discovery_status.get("paused", False)),
             },
-            "wallet_intelligence": {
-                "running": wallet_intelligence._running,
-            },
-            "smart_wallet_pool": smart_pool_stats,
+            "workers": worker_status,
         },
         "rate_limits": rate_limiter.get_status(),
         "config": {
@@ -615,6 +559,7 @@ async def metrics():
     """Prometheus-compatible metrics"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+        autotrader_snapshot = await read_autotrader_snapshot(session)
         try:
             from services.news import shared_state as news_shared_state
 
@@ -650,15 +595,15 @@ polymarket_trading_enabled {1 if settings.TRADING_ENABLED else 0}
 
 # HELP polymarket_auto_trader_running Auto trader running status
 # TYPE polymarket_auto_trader_running gauge
-polymarket_auto_trader_running {1 if auto_trader._running else 0}
+polymarket_auto_trader_running {1 if autotrader_snapshot.get("running", False) else 0}
 
 # HELP polymarket_auto_trader_trades Total auto trades executed
 # TYPE polymarket_auto_trader_trades counter
-polymarket_auto_trader_trades {auto_trader.stats.total_trades}
+polymarket_auto_trader_trades {autotrader_snapshot.get("trades_count", 0)}
 
 # HELP polymarket_auto_trader_profit Total auto trader profit
 # TYPE polymarket_auto_trader_profit gauge
-polymarket_auto_trader_profit {auto_trader.stats.total_profit}
+polymarket_auto_trader_profit {autotrader_snapshot.get("daily_pnl", 0.0)}
 
 # HELP polymarket_news_workflow_running News workflow worker running status
 # TYPE polymarket_news_workflow_running gauge

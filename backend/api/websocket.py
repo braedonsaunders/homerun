@@ -4,7 +4,9 @@ import json
 
 from models.database import AsyncSessionLocal
 from services import shared_state, wallet_tracker
+from services.autotrader_state import read_autotrader_snapshot
 from services.news import shared_state as news_shared_state
+from services.worker_state import list_worker_snapshots
 from services.weather import shared_state as weather_shared_state
 
 
@@ -59,6 +61,8 @@ async def handle_websocket(websocket: WebSocket):
         opportunities, status = await shared_state.read_scanner_snapshot(session)
         weather_opportunities, weather_status = await weather_shared_state.read_weather_snapshot(session)
         news_workflow_status = await news_shared_state.get_news_status_from_db(session)
+        worker_statuses = await list_worker_snapshots(session)
+        autotrader_status = await read_autotrader_snapshot(session)
     await manager.send_personal(
         websocket,
         {
@@ -72,6 +76,8 @@ async def handle_websocket(websocket: WebSocket):
                 },
                 "weather_status": weather_status,
                 "news_workflow_status": news_workflow_status,
+                "workers_status": worker_statuses,
+                "autotrader_status": autotrader_status,
             },
         },
     )
@@ -202,12 +208,3 @@ wallet_tracker.add_callback(broadcast_wallet_trade)
 from services.copy_trader import copy_trader as _copy_trader_instance
 
 _copy_trader_instance.set_ws_broadcast(broadcast_copy_trade_event)
-
-# Wire smart trader pool + confluence signal broadcasts.
-from services.smart_wallet_pool import smart_wallet_pool as _smart_wallet_pool_instance
-from services.wallet_intelligence import (
-    wallet_intelligence as _wallet_intelligence_instance,
-)
-
-_smart_wallet_pool_instance.set_ws_broadcast(broadcast_copy_trade_event)
-_wallet_intelligence_instance.confluence.set_ws_broadcast(broadcast_copy_trade_event)

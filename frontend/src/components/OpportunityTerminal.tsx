@@ -154,6 +154,7 @@ function TerminalEntry({
     ? buildKalshiMarketUrl({
         marketTicker: kalshiMarket.id,
         eventTicker: (kalshiMarket as any).event_slug,
+        eventSlug: (kalshiMarket as any).slug,
       })
     : null
 

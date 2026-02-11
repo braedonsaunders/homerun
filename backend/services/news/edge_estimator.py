@@ -253,29 +253,11 @@ class EdgeEstimator:
             )
 
         if llm_result is None:
-            # No LLM available; create a partial finding
-            return WorkflowFinding(
-                id=uuid.uuid4().hex[:16],
-                article_id=article_id,
-                market_id=c.market_id,
-                article_title=article_title,
-                article_source=article_source,
-                article_url=article_url,
-                market_question=c.question,
-                market_price=c.yes_price,
-                retrieval_score=c.combined_score,
-                semantic_score=c.semantic_score,
-                keyword_score=c.keyword_score,
-                event_score=c.event_score,
-                rerank_score=rc.rerank_score,
-                event_graph=event_graph,
-                evidence=evidence,
-                reasoning="LLM unavailable for probability estimation",
-                actionable=False,
-            )
+            # No probability estimate means no actionable signal.
+            return None
 
         # Filter irrelevant
-        if llm_result.get("news_relevance") == "none":
+        if llm_result.get("news_relevance") in {"none", "low"}:
             return None
 
         # Filter stale info (likely already priced in)
@@ -295,6 +277,8 @@ class EdgeEstimator:
         novelty = llm_result.get("information_novelty", "known")
         novelty_mult = {"breaking": 1.0, "recent": 0.85, "known": 0.5, "stale": 0.1}
         confidence *= novelty_mult.get(novelty, 0.5)
+        if confidence < 0.2:
+            return None
 
         evidence["llm"] = {
             "probability_yes": prob_yes,

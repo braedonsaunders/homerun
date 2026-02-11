@@ -126,6 +126,10 @@ export default function WeatherWorkflowSettingsFlyout({
     },
   })
 
+  const handleSave = () => {
+    saveMutation.mutate(form)
+  }
+
   if (!isOpen) return null
 
   return (
@@ -140,7 +144,7 @@ export default function WeatherWorkflowSettingsFlyout({
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              onClick={() => saveMutation.mutate(form)}
+              onClick={handleSave}
               disabled={saveMutation.isPending}
               className="gap-1 text-[10px] h-auto px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white"
             >
@@ -303,18 +307,6 @@ export default function WeatherWorkflowSettingsFlyout({
               />
             </div>
           </Card>
-
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => saveMutation.mutate(form)}
-              disabled={saveMutation.isPending}
-              className="gap-1.5"
-            >
-              <Save className="w-3.5 h-3.5" />
-              {saveMutation.isPending ? 'Saving...' : 'Save All Settings'}
-            </Button>
-          </div>
         </div>
       </div>
     </>

@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { normalizeUtcTimestampsInPlace } from '../lib/timestamps'
 
 const api = axios.create({
   baseURL: '/api',
@@ -8,6 +9,7 @@ const api = axios.create({
 // Debug interceptor — logs every response so issues are visible in browser console
 api.interceptors.response.use(
   (response) => {
+    normalizeUtcTimestampsInPlace(response.data)
     const count = Array.isArray(response.data) ? response.data.length : '?'
     console.debug(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status} (${count} items)`)
     return response
@@ -1212,7 +1214,11 @@ export interface AutoTraderConfig {
   max_position_size_usd: number
   max_daily_trades: number
   max_daily_loss_usd: number
+  max_concurrent_positions: number
+  execution_delay_seconds: number
   circuit_breaker_losses: number
+  circuit_breaker_duration_minutes: number
+  auto_retry_failed: boolean
   require_confirmation: boolean
   paper_account_capital?: number
   min_guaranteed_profit: number
@@ -1260,6 +1266,25 @@ export interface AutoTraderConfig {
 export interface AutoTraderStatus {
   mode: string
   running: boolean
+  trading_active: boolean
+  worker_running: boolean
+  control: {
+    is_enabled: boolean
+    is_paused: boolean
+    kill_switch: boolean
+    requested_run_at: string | null
+    run_interval_seconds: number
+    updated_at: string | null
+  }
+  snapshot: {
+    running: boolean
+    enabled: boolean
+    current_activity: string | null
+    interval_seconds: number
+    last_run_at: string | null
+    last_error: string | null
+    updated_at: string | null
+  }
   config: AutoTraderConfig
   stats: {
     total_trades: number
@@ -1280,6 +1305,58 @@ export interface AutoTraderStatus {
   }
 }
 
+export interface AutoTraderSourcePolicy {
+  enabled: boolean
+  weight: number
+  daily_budget_usd: number
+  max_open_positions: number
+  min_signal_score: number
+  size_multiplier: number
+  cooldown_seconds: number
+  max_daily_loss?: number | null
+  max_total_open_positions?: number | null
+  max_per_market_exposure?: number | null
+  max_per_event_exposure?: number | null
+  kill_switch?: boolean | null
+  metadata?: Record<string, any>
+}
+
+export interface WorkerStatus {
+  worker_name: string
+  running: boolean
+  enabled: boolean
+  current_activity: string | null
+  interval_seconds: number
+  last_run_at: string | null
+  lag_seconds: number | null
+  last_error: string | null
+  stats: Record<string, any>
+  updated_at: string | null
+  control?: Record<string, any>
+}
+
+export interface TradeSignal {
+  id: string
+  source: string
+  source_item_id: string | null
+  signal_type: string
+  strategy_type: string | null
+  market_id: string
+  market_question: string | null
+  direction: string | null
+  entry_price: number | null
+  effective_price: number | null
+  edge_percent: number | null
+  confidence: number | null
+  liquidity: number | null
+  expires_at: string | null
+  status: string
+  payload: Record<string, any> | null
+  dedupe_key: string
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface AutoTraderTrade {
   id: string
   opportunity_id: string
@@ -1290,57 +1367,419 @@ export interface AutoTraderTrade {
   actual_profit: number | null
   status: string
   mode: string
+  source?: string
+  market_id?: string
+  market_question?: string | null
+  direction?: string | null
+  reason?: string | null
+  created_at?: string | null
+}
+
+export interface AutoTraderExposure {
+  as_of: string | null
+  global: {
+    daily_budget_usd: number
+    budget_used_usd: number
+    budget_remaining_usd: number
+    budget_utilization_pct: number
+    max_total_open_positions: number
+    open_positions: number
+    max_per_market_exposure: number
+    max_per_event_exposure: number
+    kill_switch: boolean
+  }
+  sources: Array<{
+    source: string
+    enabled: boolean
+    daily_budget_usd: number
+    budget_used_usd: number
+    budget_remaining_usd: number
+    budget_utilization_pct: number
+    max_open_positions: number
+    open_positions: number
+    open_position_utilization_pct: number
+    weight: number
+    min_signal_score: number
+    size_multiplier: number
+    cooldown_seconds: number
+    metadata: Record<string, any>
+  }>
+  markets: Array<{
+    market_id: string
+    notional_usd: number
+    open_positions: number
+    directions: string[]
+  }>
+  events: Array<{
+    event_key: string
+    notional_usd: number
+    open_positions: number
+  }>
+}
+
+export interface AutoTraderSourceMetrics {
+  source: string
+  policy_enabled: boolean
+  pending_signals: number
+  decisions_total: number
+  selected: number
+  skipped: number
+  executed: number
+  submitted: number
+  failed: number
+  skip_rate: number
+  success_rate: number
+  trades: Record<string, number>
+  avg_decision_score: number
+  decisions_last_hour: number
+  throughput_per_minute: number
+  avg_decision_to_trade_latency_seconds: number
+  top_skip_reasons: Array<{ reason: string; count: number }>
+  last_decision_at: string | null
+  last_trade_at: string | null
+  last_pending_signal_at: string | null
+}
+
+export interface AutoTraderMetrics {
+  as_of: string | null
+  summary: {
+    sources_tracked: number
+    active_sources: number
+    decisions_last_hour: number
+  }
+  decision_funnel: {
+    seen: number
+    pending: number
+    selected: number
+    skipped: number
+    submitted: number
+    executed: number
+    failed: number
+  }
+  skip_reasons: Array<{ reason: string; count: number }>
+  sources: AutoTraderSourceMetrics[]
+}
+
+export interface AutoTraderDecision {
+  id: string
+  signal_id: string | null
+  source: string
+  decision: string
+  reason: string | null
+  score: number | null
+  policy_snapshot: Record<string, any>
+  risk_snapshot: Record<string, any>
+  payload: Record<string, any>
+  created_at: string | null
 }
 
 export const getAutoTraderStatus = async (): Promise<AutoTraderStatus> => {
   const { data } = await api.get('/auto-trader/status')
-  return data
+  const control = data.control || {}
+  const snapshot = data.snapshot || {}
+  const policies = data.policies || {}
+  const sources = policies.sources || {}
+  const tradingActive = Boolean(control.is_enabled) && !Boolean(control.is_paused) && !Boolean(control.kill_switch)
+  const workerRunning = Boolean(snapshot.running)
+
+  // Backward-compatible shape for existing UI components.
+  return {
+    mode: control.mode || 'paper',
+    running: tradingActive,
+    trading_active: tradingActive,
+    worker_running: workerRunning,
+    control: {
+      is_enabled: Boolean(control.is_enabled),
+      is_paused: Boolean(control.is_paused),
+      kill_switch: Boolean(control.kill_switch),
+      requested_run_at: control.requested_run_at || null,
+      run_interval_seconds: control.run_interval_seconds || 2,
+      updated_at: control.updated_at || null,
+    },
+    snapshot: {
+      running: workerRunning,
+      enabled: Boolean(snapshot.enabled),
+      current_activity: snapshot.current_activity || null,
+      interval_seconds: snapshot.interval_seconds || 2,
+      last_run_at: snapshot.last_run_at || null,
+      last_error: snapshot.last_error || null,
+      updated_at: snapshot.updated_at || null,
+    },
+    config: {
+      mode: control.mode || 'paper',
+      enabled_strategies: [],
+      min_roi_percent: 0,
+      max_risk_score: 1,
+      min_liquidity_usd: 0,
+      base_position_size_usd: 10,
+      max_position_size_usd: 100,
+      max_daily_trades: 0,
+      max_daily_loss_usd: policies.global?.max_daily_loss ?? 0,
+      max_concurrent_positions: policies.global?.max_total_open_positions ?? 0,
+      execution_delay_seconds: 0,
+      require_confirmation: false,
+      auto_retry_failed: false,
+      circuit_breaker_losses: 0,
+      circuit_breaker_duration_minutes: 0,
+      min_guaranteed_profit: 0,
+      use_profit_guarantee: false,
+      max_end_date_days: null,
+      min_end_date_days: null,
+      prefer_near_settlement: true,
+      priority_method: 'composite',
+      settlement_weight: 0,
+      roi_weight: 0,
+      liquidity_weight: 0,
+      risk_weight: 0,
+      max_trades_per_event: 0,
+      max_exposure_per_event_usd: policies.global?.max_per_event_exposure ?? 0,
+      excluded_categories: [],
+      excluded_keywords: [],
+      excluded_event_slugs: [],
+      min_volume_usd: 0,
+      take_profit_pct: 0,
+      stop_loss_pct: 0,
+      enable_spread_exits: false,
+      ai_resolution_gate: false,
+      ai_max_resolution_risk: 0,
+      ai_min_resolution_clarity: 0,
+      ai_resolution_block_avoid: false,
+      ai_resolution_model: null,
+      ai_skip_on_analysis_failure: false,
+      ai_position_sizing: false,
+      ai_min_score_to_trade: 0,
+      ai_score_size_multiplier: false,
+      ai_score_boost_threshold: 0,
+      ai_score_boost_multiplier: 1,
+      ai_judge_model: null,
+      news_workflow_enabled: Boolean(sources.news?.enabled ?? true),
+      news_workflow_min_edge: 0,
+      news_workflow_max_age_minutes: 0,
+      weather_workflow_enabled: Boolean(sources.weather?.enabled ?? true),
+      weather_workflow_min_edge: 0,
+      weather_workflow_max_age_minutes: 0,
+      llm_verify_trades: false,
+      llm_verify_strategies: [],
+      auto_ai_scoring: false,
+    },
+    stats: {
+      total_trades: snapshot.trades_count || 0,
+      winning_trades: 0,
+      losing_trades: 0,
+      win_rate: 0,
+      total_profit: snapshot.daily_pnl || 0,
+      total_invested: 0,
+      roi_percent: 0,
+      daily_trades: snapshot.trades_count || 0,
+      daily_profit: snapshot.daily_pnl || 0,
+      consecutive_losses: 0,
+      circuit_breaker_active: Boolean(control.kill_switch),
+      last_trade_at: snapshot.last_run_at || null,
+      opportunities_seen: snapshot.signals_seen || 0,
+      opportunities_executed: snapshot.signals_selected || 0,
+      opportunities_skipped: Math.max(
+        0,
+        (snapshot.signals_seen || 0) - (snapshot.signals_selected || 0)
+      ),
+    },
+  }
 }
 
 export const startAutoTrader = async (mode?: string, accountId?: string): Promise<{ status: string; mode: string; message: string }> => {
   const { data } = await api.post('/auto-trader/start', null, { params: { mode, account_id: accountId } })
-  return data
+  return {
+    status: data.status || 'started',
+    mode: data.control?.mode || mode || 'paper',
+    message: 'Auto-trader started from manual launch state.',
+  }
 }
 
 export const stopAutoTrader = async (): Promise<{ status: string }> => {
   const { data } = await api.post('/auto-trader/stop')
-  return data
+  return { status: data.status || 'stopped' }
 }
 
 export const updateAutoTraderConfig = async (config: Partial<AutoTraderConfig>): Promise<{ status: string; config: Record<string, any> }> => {
-  const { data } = await api.put('/auto-trader/config', config)
-  return data
+  const controlUpdates: Record<string, any> = {}
+  const policyUpdates: Record<string, any> = { sources: {} }
+
+  if (config.mode) controlUpdates.mode = config.mode
+  if (typeof config.max_daily_loss_usd === 'number') {
+    policyUpdates.global = { max_daily_loss: config.max_daily_loss_usd }
+  }
+  if (typeof config.max_concurrent_positions === 'number') {
+    policyUpdates.global = {
+      ...(policyUpdates.global || {}),
+      max_total_open_positions: config.max_concurrent_positions,
+    }
+  }
+  if (typeof config.news_workflow_enabled === 'boolean') {
+    policyUpdates.sources.news = {
+      ...(policyUpdates.sources.news || {}),
+      enabled: config.news_workflow_enabled,
+    }
+  }
+  if (typeof config.weather_workflow_enabled === 'boolean') {
+    policyUpdates.sources.weather = {
+      ...(policyUpdates.sources.weather || {}),
+      enabled: config.weather_workflow_enabled,
+    }
+  }
+
+  if (Object.keys(controlUpdates).length > 0) {
+    await api.put('/auto-trader/control', controlUpdates)
+  }
+  if (
+    policyUpdates.global ||
+    Object.keys(policyUpdates.sources as Record<string, any>).length > 0
+  ) {
+    await api.put('/auto-trader/policies', policyUpdates)
+  }
+
+  return { status: 'updated', config: config as Record<string, any> }
 }
 
 export const getAutoTraderTrades = async (limit = 100, status?: string): Promise<AutoTraderTrade[]> => {
   const { data } = await api.get('/auto-trader/trades', { params: { limit, status } })
-  return data
+  const trades = data.trades || []
+  return trades.map((t: any) => ({
+    id: t.id,
+    opportunity_id: t.signal_id,
+    strategy: t.source,
+    executed_at: t.executed_at || t.created_at,
+    total_cost: t.notional_usd || 0,
+    expected_profit: 0,
+    actual_profit: null,
+    status: t.status,
+    mode: t.mode,
+    source: t.source,
+    market_id: t.market_id,
+    market_question: t.market_question,
+    direction: t.direction,
+    reason: t.reason,
+    created_at: t.created_at,
+  }))
 }
 
 export const getAutoTraderStats = async (): Promise<AutoTraderStatus['stats']> => {
-  const { data } = await api.get('/auto-trader/stats')
-  return data
+  const status = await getAutoTraderStatus()
+  return status.stats
 }
 
 export const resetAutoTraderStats = async (): Promise<{ status: string; message: string }> => {
-  const { data } = await api.post('/auto-trader/reset-stats')
-  return data
+  return { status: 'noop', message: 'Auto-trader stats are persisted and audit-backed.' }
 }
 
 export const resetCircuitBreaker = async (): Promise<{ status: string; message: string }> => {
-  const { data } = await api.post('/auto-trader/reset-circuit-breaker')
-  return data
+  const { data } = await api.post('/auto-trader/kill-switch', null, {
+    params: { enabled: false },
+  })
+  return { status: data.status || 'updated', message: 'Kill switch disabled' }
 }
 
 export const enableLiveTrading = async (maxDailyLoss = 100): Promise<{ status: string; warning: string; max_daily_loss: number; config: Record<string, any> }> => {
-  const { data } = await api.post('/auto-trader/enable-live-trading', null, {
-    params: { confirm: true, max_daily_loss: maxDailyLoss }
+  await api.put('/auto-trader/policies', {
+    global: { max_daily_loss: maxDailyLoss },
   })
-  return data
+  const { data } = await api.post('/auto-trader/start', null, { params: { mode: 'live' } })
+  return {
+    status: data.status || 'started',
+    warning: 'Auto trader is now configured for live mode.',
+    max_daily_loss: maxDailyLoss,
+    config: data.control || {},
+  }
 }
 
 export const emergencyStopAutoTrader = async (): Promise<{ status: string; auto_trader: string; mode: string; cancelled_orders: number; message: string }> => {
-  const { data } = await api.post('/auto-trader/emergency-stop')
+  const { data } = await api.post('/auto-trader/kill-switch', null, {
+    params: { enabled: true },
+  })
+  return {
+    status: data.status || 'updated',
+    auto_trader: 'paused',
+    mode: 'kill_switch',
+    cancelled_orders: 0,
+    message: 'Kill switch enabled; autotrader worker will stop selecting trades.',
+  }
+}
+
+export const getAutoTraderDecisions = async (params?: {
+  source?: string
+  decision?: string
+  limit?: number
+}): Promise<{ total: number; decisions: AutoTraderDecision[] }> => {
+  const { data } = await api.get('/auto-trader/decisions', { params })
+  return data
+}
+
+export const getAutoTraderPolicies = async (): Promise<{
+  global: AutoTraderSourcePolicy
+  sources: Record<string, AutoTraderSourcePolicy>
+}> => {
+  const { data } = await api.get('/auto-trader/policies')
+  return data
+}
+
+export const getAutoTraderExposure = async (): Promise<AutoTraderExposure> => {
+  const { data } = await api.get('/auto-trader/exposure')
+  return data
+}
+
+export const getAutoTraderMetrics = async (): Promise<AutoTraderMetrics> => {
+  const { data } = await api.get('/auto-trader/metrics')
+  return data
+}
+
+export const updateAutoTraderPolicies = async (payload: {
+  global?: Partial<AutoTraderSourcePolicy>
+  sources?: Record<string, Partial<AutoTraderSourcePolicy>>
+}) => {
+  const { data } = await api.put('/auto-trader/policies', payload)
+  return data
+}
+
+export const getSignals = async (params?: {
+  source?: string
+  status?: string
+  limit?: number
+  offset?: number
+}): Promise<{ total: number; offset: number; limit: number; signals: TradeSignal[] }> => {
+  const { data } = await api.get('/signals', { params })
+  return data
+}
+
+export const getSignalStats = async (): Promise<{
+  totals: Record<string, number>
+  sources: Array<Record<string, any>>
+}> => {
+  const { data } = await api.get('/signals/stats')
+  return data
+}
+
+export const getWorkersStatus = async (): Promise<{ workers: WorkerStatus[] }> => {
+  const { data } = await api.get('/workers/status')
+  return data
+}
+
+export const startWorker = async (worker: string) => {
+  const { data } = await api.post(`/workers/${worker}/start`)
+  return data
+}
+
+export const pauseWorker = async (worker: string) => {
+  const { data } = await api.post(`/workers/${worker}/pause`)
+  return data
+}
+
+export const runWorkerOnce = async (worker: string) => {
+  const { data } = await api.post(`/workers/${worker}/run-once`)
+  return data
+}
+
+export const setWorkerInterval = async (worker: string, intervalSeconds: number) => {
+  const { data } = await api.post(`/workers/${worker}/interval`, null, {
+    params: { interval_seconds: intervalSeconds },
+  })
   return data
 }
 
@@ -1366,6 +1805,10 @@ export interface LLMSettings {
   google_api_key: string | null
   xai_api_key: string | null
   deepseek_api_key: string | null
+  ollama_api_key: string | null
+  ollama_base_url: string | null
+  lmstudio_api_key: string | null
+  lmstudio_base_url: string | null
   model: string | null
   max_monthly_spend: number | null
 }
@@ -2243,6 +2686,11 @@ export interface NewsWorkflowSettings {
   keyword_weight: number
   semantic_weight: number
   event_weight: number
+  require_verifier: boolean
+  market_min_liquidity: number
+  market_max_days_to_resolution: number
+  min_keyword_signal: number
+  min_semantic_signal: number
   min_edge_percent: number
   min_confidence: number
   require_second_source: boolean
@@ -2287,6 +2735,7 @@ export const setNewsWorkflowInterval = async (intervalSeconds: number): Promise<
 export const getNewsWorkflowFindings = async (params?: {
   min_edge?: number
   actionable_only?: boolean
+  include_debug_rejections?: boolean
   max_age_hours?: number
   limit?: number
   offset?: number

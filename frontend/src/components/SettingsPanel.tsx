@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
@@ -13,9 +13,7 @@ import {
   Eye,
   EyeOff,
   MessageSquare,
-  Activity,
   DollarSign,
-  Brain,
   Shield,
   ChevronDown,
   Puzzle,
@@ -37,7 +35,6 @@ import { Label } from './ui/label'
 import { Switch } from './ui/switch'
 import { Separator } from './ui/separator'
 import { Badge } from './ui/badge'
-import ValidationEnginePanel from './ValidationEnginePanel'
 import {
   getSettings,
   updateSettings,
@@ -45,9 +42,6 @@ import {
   testTradingProxy,
   getLLMModels,
   refreshLLMModels,
-  getAutoTraderStatus,
-  updateAutoTraderConfig,
-  getStrategies,
   getPlugins,
   createPlugin,
   updatePlugin,
@@ -57,11 +51,9 @@ import {
   reloadPlugin,
   getPluginDocs,
   type LLMModelOption,
-  type AutoTraderConfig,
-  type Strategy,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'autotrader' | 'validation' | 'plugins' | 'maintenance'
+type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'plugins' | 'maintenance'
 
 function SecretInput({
   label,
@@ -119,6 +111,10 @@ export default function SettingsPanel() {
     google_api_key: '',
     xai_api_key: '',
     deepseek_api_key: '',
+    ollama_api_key: '',
+    ollama_base_url: '',
+    lmstudio_api_key: '',
+    lmstudio_base_url: '',
     model: '',
     max_monthly_spend: 50.0
   })
@@ -164,14 +160,6 @@ export default function SettingsPanel() {
     require_vpn: true
   })
 
-  const [autotraderAiForm, setAutotraderAiForm] = useState({
-    llm_verify_trades: false,
-    llm_verify_strategies: '',
-    auto_ai_scoring: false,
-    enabled_strategies: [] as string[],
-  })
-  const [autotraderAiDirty, setAutotraderAiDirty] = useState(false)
-
   const [pluginForm, setPluginForm] = useState<{
     slug: string
     source_code: string
@@ -196,12 +184,6 @@ export default function SettingsPanel() {
     queryFn: getSettings,
   })
 
-  const { data: autoTraderStatus } = useQuery({
-    queryKey: ['auto-trader-status'],
-    queryFn: getAutoTraderStatus,
-    refetchInterval: 10000,
-  })
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: pluginDocs } = useQuery<Record<string, any>>({
     queryKey: ['plugin-docs'],
@@ -214,24 +196,6 @@ export default function SettingsPanel() {
     queryFn: getPlugins,
   })
 
-  const { data: strategyList = [] } = useQuery({
-    queryKey: ['strategies'],
-    queryFn: getStrategies,
-  })
-
-  const strategyOptions = useMemo(() => {
-    const dedup = new Map<string, string>()
-    for (const strategy of strategyList as Strategy[]) {
-      const key =
-        strategy.is_plugin && strategy.plugin_slug
-          ? strategy.plugin_slug
-          : strategy.type
-      if (!dedup.has(key)) {
-        dedup.set(key, strategy.name)
-      }
-    }
-    return Array.from(dedup.entries()).map(([key, label]) => ({ key, label }))
-  }, [strategyList])
 
   // Expand plugins when navigating from Search Filters flyout
   useEffect(() => {
@@ -244,33 +208,6 @@ export default function SettingsPanel() {
     return () => window.removeEventListener('navigate-settings-section', handler as EventListener)
   }, [])
 
-  const autoTraderConfigMutation = useMutation({
-    mutationFn: (updates: Partial<AutoTraderConfig>) => updateAutoTraderConfig(updates),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
-      setAutotraderAiDirty(false)
-      setSaveMessage({ type: 'success', text: 'Auto-Trader AI settings saved' })
-      setTimeout(() => setSaveMessage(null), 3000)
-    },
-    onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save auto-trader settings' })
-      setTimeout(() => setSaveMessage(null), 5000)
-    }
-  })
-
-  // Sync auto-trader AI form from server config
-  useEffect(() => {
-    if (autoTraderStatus?.config && !autotraderAiDirty) {
-      const cfg = autoTraderStatus.config
-      setAutotraderAiForm({
-        llm_verify_trades: cfg.llm_verify_trades ?? false,
-        llm_verify_strategies: (cfg.llm_verify_strategies ?? []).join(', '),
-        auto_ai_scoring: cfg.auto_ai_scoring ?? false,
-        enabled_strategies: cfg.enabled_strategies ?? [],
-      })
-    }
-  }, [autoTraderStatus?.config, autotraderAiDirty])
-
   // Sync form state with loaded settings
   useEffect(() => {
     if (settings) {
@@ -281,6 +218,10 @@ export default function SettingsPanel() {
         google_api_key: '',
         xai_api_key: '',
         deepseek_api_key: '',
+        ollama_api_key: '',
+        ollama_base_url: settings.llm.ollama_base_url || '',
+        lmstudio_api_key: '',
+        lmstudio_base_url: settings.llm.lmstudio_base_url || '',
         model: settings.llm.model || '',
         max_monthly_spend: settings.llm.max_monthly_spend ?? 50.0
       })
@@ -338,7 +279,8 @@ export default function SettingsPanel() {
   const handleRefreshModels = async () => {
     setIsRefreshingModels(true)
     try {
-      const res = await refreshLLMModels()
+      const provider = llmForm.provider !== 'none' ? llmForm.provider : undefined
+      const res = await refreshLLMModels(provider)
       if (res.models) setAvailableModels(res.models)
     } catch {
       // ignore
@@ -472,13 +414,17 @@ export default function SettingsPanel() {
         updates.llm = {
           provider: llmForm.provider,
           model: llmForm.model || null,
-          max_monthly_spend: llmForm.max_monthly_spend
+          max_monthly_spend: llmForm.max_monthly_spend,
+          ollama_base_url: llmForm.ollama_base_url || null,
+          lmstudio_base_url: llmForm.lmstudio_base_url || null,
         }
         if (llmForm.openai_api_key) updates.llm.openai_api_key = llmForm.openai_api_key
         if (llmForm.anthropic_api_key) updates.llm.anthropic_api_key = llmForm.anthropic_api_key
         if (llmForm.google_api_key) updates.llm.google_api_key = llmForm.google_api_key
         if (llmForm.xai_api_key) updates.llm.xai_api_key = llmForm.xai_api_key
         if (llmForm.deepseek_api_key) updates.llm.deepseek_api_key = llmForm.deepseek_api_key
+        if (llmForm.ollama_api_key) updates.llm.ollama_api_key = llmForm.ollama_api_key
+        if (llmForm.lmstudio_api_key) updates.llm.lmstudio_api_key = llmForm.lmstudio_api_key
         break
       case 'notifications':
         updates.notifications = {
@@ -513,19 +459,6 @@ export default function SettingsPanel() {
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
-      case 'autotrader': {
-        const strategies = autotraderAiForm.llm_verify_strategies
-          .split(',')
-          .map(s => s.trim())
-          .filter(s => s.length > 0)
-        autoTraderConfigMutation.mutate({
-          llm_verify_trades: autotraderAiForm.llm_verify_trades,
-          llm_verify_strategies: strategies,
-          auto_ai_scoring: autotraderAiForm.auto_ai_scoring,
-          enabled_strategies: autotraderAiForm.enabled_strategies,
-        })
-        return
-      }
     }
 
     saveMutation.mutate(updates)
@@ -568,14 +501,8 @@ export default function SettingsPanel() {
         return tradingForm.trading_enabled ? 'Live' : 'Disabled'
       case 'vpn':
         return vpnForm.enabled ? 'Active' : 'Disabled'
-      case 'autotrader': {
-        const count = autotraderAiForm.enabled_strategies.length
-        return count > 0 ? `${count} strateg${count !== 1 ? 'ies' : 'y'}` : 'No strategies'
-      }
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
-      case 'validation':
-        return 'Backtests'
       case 'plugins':
         return `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''}`
       default:
@@ -595,12 +522,8 @@ export default function SettingsPanel() {
         return tradingForm.trading_enabled ? 'text-yellow-400 bg-yellow-500/10' : 'text-muted-foreground bg-muted'
       case 'vpn':
         return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
-      case 'autotrader':
-        return autotraderAiForm.enabled_strategies.length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? 'text-red-400 bg-red-500/10' : 'text-muted-foreground bg-muted'
-      case 'validation':
-        return 'text-emerald-400 bg-emerald-500/10'
       case 'plugins':
         return plugins.length > 0 ? 'text-violet-400 bg-violet-500/10' : 'text-muted-foreground bg-muted'
       default:
@@ -614,8 +537,6 @@ export default function SettingsPanel() {
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
-    { id: 'autotrader', icon: Brain, label: 'Auto Trader AI', description: 'LLM verification & scoring' },
-    { id: 'validation', icon: Activity, label: 'Validation Engine', description: 'Backtests, optimization, calibration' },
     { id: 'plugins', icon: Puzzle, label: 'Strategy Plugins', description: 'Custom strategy code' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
@@ -713,6 +634,8 @@ export default function SettingsPanel() {
                             <option value="google">Google (Gemini)</option>
                             <option value="xai">xAI (Grok)</option>
                             <option value="deepseek">DeepSeek</option>
+                            <option value="ollama">Ollama (Local)</option>
+                            <option value="lmstudio">LM Studio (Local)</option>
                           </select>
                         </div>
 
@@ -769,6 +692,58 @@ export default function SettingsPanel() {
                             showSecret={showSecrets['deepseek_key']}
                             onToggle={() => toggleSecret('deepseek_key')}
                           />
+                        )}
+
+                        {(llmForm.provider === 'ollama' || llmForm.provider === 'none') && (
+                          <>
+                            <div>
+                              <Label className="text-xs text-muted-foreground">Ollama Base URL</Label>
+                              <Input
+                                type="text"
+                                value={llmForm.ollama_base_url}
+                                onChange={(e) => setLlmForm(p => ({ ...p, ollama_base_url: e.target.value }))}
+                                placeholder="http://localhost:11434"
+                                className="mt-1 text-sm font-mono"
+                              />
+                              <p className="text-[11px] text-muted-foreground/70 mt-1">
+                                Uses the OpenAI-compatible endpoint at /v1. Leave blank for default localhost URL.
+                              </p>
+                            </div>
+                            <SecretInput
+                              label="Ollama API Key (Optional)"
+                              value={llmForm.ollama_api_key}
+                              placeholder={settings?.llm.ollama_api_key || 'Optional'}
+                              onChange={(v) => setLlmForm(p => ({ ...p, ollama_api_key: v }))}
+                              showSecret={showSecrets['ollama_key']}
+                              onToggle={() => toggleSecret('ollama_key')}
+                            />
+                          </>
+                        )}
+
+                        {(llmForm.provider === 'lmstudio' || llmForm.provider === 'none') && (
+                          <>
+                            <div>
+                              <Label className="text-xs text-muted-foreground">LM Studio Base URL</Label>
+                              <Input
+                                type="text"
+                                value={llmForm.lmstudio_base_url}
+                                onChange={(e) => setLlmForm(p => ({ ...p, lmstudio_base_url: e.target.value }))}
+                                placeholder="http://localhost:1234/v1"
+                                className="mt-1 text-sm font-mono"
+                              />
+                              <p className="text-[11px] text-muted-foreground/70 mt-1">
+                                OpenAI-compatible server URL. Leave blank for default localhost URL.
+                              </p>
+                            </div>
+                            <SecretInput
+                              label="LM Studio API Key (Optional)"
+                              value={llmForm.lmstudio_api_key}
+                              placeholder={settings?.llm.lmstudio_api_key || 'Optional'}
+                              onChange={(v) => setLlmForm(p => ({ ...p, lmstudio_api_key: v }))}
+                              showSecret={showSecrets['lmstudio_key']}
+                              onToggle={() => toggleSecret('lmstudio_key')}
+                            />
+                          </>
                         )}
 
                         <div>
@@ -1201,163 +1176,6 @@ export default function SettingsPanel() {
                         )}
                       </div>
                     </div>
-                  )}
-
-                  {/* Auto Trader AI Settings */}
-                  {section.id === 'autotrader' && (
-                    <div className="space-y-4">
-                      <div className="space-y-3">
-                        {/* LLM Verify Before Trading */}
-                        <Card className="bg-muted">
-                          <CardContent className="flex items-center justify-between p-3">
-                            <div>
-                              <p className="font-medium text-sm">LLM Verify Before Trading</p>
-                              <p className="text-xs text-muted-foreground">Consult AI before executing each auto-trade. Trades scored as &quot;skip&quot; or &quot;strong_skip&quot; are blocked.</p>
-                            </div>
-                            <Switch
-                              checked={autotraderAiForm.llm_verify_trades}
-                              onCheckedChange={(checked) => {
-                                setAutotraderAiForm(p => ({ ...p, llm_verify_trades: checked }))
-                                setAutotraderAiDirty(true)
-                              }}
-                            />
-                          </CardContent>
-                        </Card>
-
-                        {/* Strategies to LLM-Verify */}
-                        {autotraderAiForm.llm_verify_trades && (
-                          <div>
-                            <Label className="text-xs text-muted-foreground">Strategies to LLM-Verify</Label>
-                            <Input
-                              type="text"
-                              value={autotraderAiForm.llm_verify_strategies}
-                              onChange={(e) => {
-                                setAutotraderAiForm(p => ({ ...p, llm_verify_strategies: e.target.value }))
-                                setAutotraderAiDirty(true)
-                              }}
-                              placeholder="e.g. basic, negrisk, miracle (empty = verify all)"
-                              className="mt-1 text-sm"
-                            />
-                            <p className="text-[11px] text-muted-foreground/70 mt-1">
-                              Comma-separated list of strategy types to verify. Leave empty to verify all strategies.
-                            </p>
-                          </div>
-                        )}
-
-                        <Separator className="opacity-30" />
-
-                        {/* Auto AI Scoring */}
-                        <Card className="bg-muted">
-                          <CardContent className="flex items-center justify-between p-3">
-                            <div>
-                              <p className="font-medium text-sm">Auto AI Scoring</p>
-                              <p className="text-xs text-muted-foreground">Automatically AI-score all opportunities after each scan. Manual analysis per opportunity is always available regardless of this setting.</p>
-                            </div>
-                            <Switch
-                              checked={autotraderAiForm.auto_ai_scoring}
-                              onCheckedChange={(checked) => {
-                                setAutotraderAiForm(p => ({ ...p, auto_ai_scoring: checked }))
-                                setAutotraderAiDirty(true)
-                              }}
-                            />
-                          </CardContent>
-                        </Card>
-
-                        {/* Info Note */}
-                        <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded-lg">
-                          <Activity className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
-                          <p className="text-xs text-muted-foreground">
-                            When LLM Verify is enabled, the auto-trader will consult AI before executing trades. Disable for faster execution.
-                            Additional auto-trader settings (position sizing, risk management, spread exits, AI resolution gate) are available under Trading &gt; Auto Trader &gt; Settings.
-                          </p>
-                        </div>
-                      </div>
-
-                      <Separator className="opacity-30" />
-
-                      {/* Enabled Strategies */}
-                      <div className="space-y-3">
-                        <div>
-                          <h4 className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Enabled Strategies</h4>
-                          <p className="text-xs text-muted-foreground">Select which strategies the auto trader should use</p>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {strategyOptions.map(s => {
-                            const enabled = autotraderAiForm.enabled_strategies.includes(s.key)
-                            return (
-                              <button
-                                key={s.key}
-                                type="button"
-                                onClick={() => {
-                                  setAutotraderAiForm(prev => ({
-                                    ...prev,
-                                    enabled_strategies: enabled
-                                      ? prev.enabled_strategies.filter(k => k !== s.key)
-                                      : [...prev.enabled_strategies, s.key]
-                                  }))
-                                  setAutotraderAiDirty(true)
-                                }}
-                                className={cn(
-                                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
-                                  enabled
-                                    ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                                    : "bg-muted text-muted-foreground border-border hover:border-emerald-500/20"
-                                )}
-                              >
-                                {s.label}
-                              </button>
-                            )
-                          })}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-xs h-7"
-                            onClick={() => {
-                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: strategyOptions.map(s => s.key) }))
-                              setAutotraderAiDirty(true)
-                            }}
-                          >
-                            Select All
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-xs h-7"
-                            onClick={() => {
-                              setAutotraderAiForm(p => ({ ...p, enabled_strategies: [] }))
-                              setAutotraderAiDirty(true)
-                            }}
-                          >
-                            Clear All
-                          </Button>
-                        </div>
-                      </div>
-
-                      <Separator className="opacity-30" />
-
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Button
-                          size="sm"
-                          onClick={() => handleSaveSection('autotrader')}
-                          disabled={autoTraderConfigMutation.isPending || !autotraderAiDirty}
-                        >
-                          <Save className="w-3.5 h-3.5 mr-1.5" />
-                          {autoTraderConfigMutation.isPending ? 'Saving...' : 'Save'}
-                        </Button>
-                        {autotraderAiDirty && (
-                          <Badge variant="outline" className="text-[10px] text-yellow-400 border-yellow-500/30 bg-yellow-500/10">
-                            Unsaved changes
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Plugins Settings */}
-                  {section.id === 'validation' && (
-                    <ValidationEnginePanel />
                   )}
 
                   {/* Plugins Settings */}

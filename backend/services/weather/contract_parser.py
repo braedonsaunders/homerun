@@ -13,7 +13,11 @@ class ParsedWeatherContract:
     metric: str
     operator: str
     threshold_c: Optional[float]
+    threshold_c_low: Optional[float]
+    threshold_c_high: Optional[float]
     raw_threshold: Optional[float]
+    raw_threshold_low: Optional[float]
+    raw_threshold_high: Optional[float]
     raw_unit: Optional[str]
 
 
@@ -31,6 +35,17 @@ def _normalize_operator(text: str) -> str:
     if t in {"below", "under", "<", "<=", "at most"}:
         return "lt"
     return "gt"
+
+
+def _detect_unit(text: str) -> Optional[str]:
+    m = re.search(r"\b([FC])\b", text, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    if "°f" in text.lower():
+        return "F"
+    if "°c" in text.lower():
+        return "C"
+    return None
 
 
 def _parse_date_from_question(question: str) -> Optional[datetime]:
@@ -70,13 +85,140 @@ def _parse_location(question: str) -> Optional[str]:
     return loc or None
 
 
+def _build_temp_threshold_contract(
+    location: str,
+    target_time: datetime,
+    op_text: str,
+    raw_value: float,
+    unit: str,
+) -> ParsedWeatherContract:
+    unit_up = unit.upper()
+    return ParsedWeatherContract(
+        location=location,
+        target_time=target_time,
+        metric="temp_threshold",
+        operator=_normalize_operator(op_text),
+        threshold_c=_to_celsius(raw_value, unit_up),
+        threshold_c_low=None,
+        threshold_c_high=None,
+        raw_threshold=raw_value,
+        raw_threshold_low=None,
+        raw_threshold_high=None,
+        raw_unit=unit_up,
+    )
+
+
+def _build_temp_range_contract(
+    location: str,
+    target_time: datetime,
+    raw_low: float,
+    raw_high: float,
+    unit: str,
+) -> ParsedWeatherContract:
+    unit_up = unit.upper()
+    low = min(raw_low, raw_high)
+    high = max(raw_low, raw_high)
+    return ParsedWeatherContract(
+        location=location,
+        target_time=target_time,
+        metric="temp_range",
+        operator="between",
+        threshold_c=None,
+        threshold_c_low=_to_celsius(low, unit_up),
+        threshold_c_high=_to_celsius(high, unit_up),
+        raw_threshold=None,
+        raw_threshold_low=low,
+        raw_threshold_high=high,
+        raw_unit=unit_up,
+    )
+
+
+def _parse_temperature_band(
+    text: str, default_unit: Optional[str]
+) -> tuple[str, float, Optional[float], str] | None:
+    """Parse threshold/range bands from group labels or market text.
+
+    Returns:
+      ("threshold", value, None, unit) for one-sided thresholds
+      ("range", low, high, unit) for bounded ranges
+    """
+    if not text:
+        return None
+
+    t = text.strip()
+    t_norm = (
+        t.replace("º", "°")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("−", "-")
+        .replace(" to ", "-")
+    )
+    unit = _detect_unit(t_norm) or default_unit
+    if unit is None:
+        return None
+
+    # e.g. "40-41°F", "40 - 41 F", "between 40 & 41 F"
+    range_match = re.search(
+        r"(-?\d+(?:\.\d+)?)\s*(?:°?\s*[FC])?\s*(?:-|&)\s*(-?\d+(?:\.\d+)?)\s*(?:°?\s*([FC]))?",
+        t_norm,
+        flags=re.IGNORECASE,
+    )
+    if range_match:
+        low = float(range_match.group(1))
+        high = float(range_match.group(2))
+        explicit = range_match.group(3).upper() if range_match.group(3) else None
+        return ("range", low, high, explicit or unit)
+
+    # e.g. "36°F or higher", "36F+", ">= 36F", "above 36F"
+    high_match = re.search(
+        r"(?:>=?|above|over|at least)?\s*(-?\d+(?:\.\d+)?)\s*(?:°?\s*([FC]))?\s*(?:\+|or higher|or above|and above)?",
+        t_norm,
+        flags=re.IGNORECASE,
+    )
+    if high_match and any(
+        k in t_norm.lower() for k in [">", "above", "over", "at least", "higher", "+"]
+    ):
+        val = float(high_match.group(1))
+        explicit = high_match.group(2).upper() if high_match.group(2) else None
+        return ("threshold_gt", val, None, explicit or unit)
+
+    # e.g. "32°C or below", "< 32C", "under 32C"
+    low_match = re.search(
+        r"(?:<=?|below|under|at most)?\s*(-?\d+(?:\.\d+)?)\s*(?:°?\s*([FC]))?\s*(?:or lower|or below|and below)?",
+        t_norm,
+        flags=re.IGNORECASE,
+    )
+    if low_match and any(
+        k in t_norm.lower() for k in ["<", "below", "under", "at most", "lower"]
+    ):
+        val = float(low_match.group(1))
+        explicit = low_match.group(2).upper() if low_match.group(2) else None
+        return ("threshold_lt", val, None, explicit or unit)
+
+    # e.g. "12°C" exact bucket => treat as a narrow band.
+    exact_match = re.fullmatch(
+        r"\s*(-?\d+(?:\.\d+)?)\s*(?:°?\s*([FC]))\s*",
+        t_norm,
+        flags=re.IGNORECASE,
+    )
+    if exact_match:
+        center = float(exact_match.group(1))
+        explicit = exact_match.group(2).upper()
+        return ("range", center - 0.5, center + 0.5, explicit)
+
+    return None
+
+
 def parse_weather_contract(
-    question: str, resolution_date: Optional[datetime] = None
+    question: str,
+    resolution_date: Optional[datetime] = None,
+    group_item_title: Optional[str] = None,
 ) -> Optional[ParsedWeatherContract]:
     """Parse a weather market question into forecastable contract details.
 
     Supported forms:
     - temperature thresholds (above/below X F/C)
+    - grouped temperature ranges (e.g. "Highest temperature ...", bucket in group item)
     - rain/snow/precipitation occurrence
     """
     if not question:
@@ -97,7 +239,9 @@ def parse_weather_contract(
         else:
             target_time = datetime.now(timezone.utc)
 
-    # Temperature contract.
+    default_unit = _detect_unit(q) or _detect_unit(group_item_title or "") or "F"
+
+    # Temperature contract with explicit threshold in question.
     temp_match = re.search(
         r"(?:temperature|high|low)[^\d]*(above|over|below|under|at least|at most)\s*(-?\d+(?:\.\d+)?)\s*°?\s*([FC])",
         q,
@@ -105,21 +249,73 @@ def parse_weather_contract(
     )
     if temp_match:
         op_text, raw_val, unit = temp_match.groups()
-        raw_threshold = float(raw_val)
-        return ParsedWeatherContract(
+        return _build_temp_threshold_contract(
             location=location,
             target_time=target_time,
-            metric="temp_threshold",
-            operator=_normalize_operator(op_text),
-            threshold_c=_to_celsius(raw_threshold, unit),
-            raw_threshold=raw_threshold,
-            raw_unit=unit.upper(),
+            op_text=op_text,
+            raw_value=float(raw_val),
+            unit=unit,
         )
 
+    # Generic weather page style contracts use the main question for context
+    # and group outcome label for the actual temperature bucket.
+    # Example: "Highest temperature in New York City on February 11?" + "40-41°F"
+    if re.search(r"\b(?:highest|lowest|max(?:imum)?|min(?:imum)?)\s+temperature\b", q_lower):
+        band = _parse_temperature_band(group_item_title or "", default_unit=default_unit)
+        if band is not None:
+            kind, left, right, unit = band
+            if kind == "range" and right is not None:
+                return _build_temp_range_contract(
+                    location=location,
+                    target_time=target_time,
+                    raw_low=left,
+                    raw_high=right,
+                    unit=unit,
+                )
+            if kind == "threshold_gt":
+                return _build_temp_threshold_contract(
+                    location=location,
+                    target_time=target_time,
+                    op_text="above",
+                    raw_value=left,
+                    unit=unit,
+                )
+            if kind == "threshold_lt":
+                return _build_temp_threshold_contract(
+                    location=location,
+                    target_time=target_time,
+                    op_text="below",
+                    raw_value=left,
+                    unit=unit,
+                )
+
     # Rain/snow/precip occurrence contract.
-    if any(k in q_lower for k in ["rain", "snow", "precip", "precipitation"]):
+    rain_or_snow_occurrence = re.search(
+        r"\b(?:will it rain|will it snow|rain in .* on|snow in .* on|rain on|snow on)\b",
+        q_lower,
+        flags=re.IGNORECASE,
+    )
+    precip_occurrence = re.search(
+        r"\b(?:will there be precipitation|precipitation expected|precip expected)\b",
+        q_lower,
+        flags=re.IGNORECASE,
+    )
+    if rain_or_snow_occurrence or precip_occurrence:
+        # Quantitative precipitation amount contracts are not supported by the
+        # current adapter (which models occurrence probability only).
+        if re.search(
+            r"\b(?:inch|inches|mm|cm|between|more than|less than|at least|at most|total precipitation)\b",
+            q_lower,
+            flags=re.IGNORECASE,
+        ):
+            return None
+
         operator = "gt"
-        if any(k in q_lower for k in ["no rain", "without rain", "won't rain", "will not rain"]):
+        if re.search(
+            r"\b(?:no rain|without rain|won['’]t rain|will not rain|no snow|without snow)\b",
+            q_lower,
+            flags=re.IGNORECASE,
+        ):
             operator = "lt"
         return ParsedWeatherContract(
             location=location,
@@ -127,7 +323,11 @@ def parse_weather_contract(
             metric="precip_occurrence",
             operator=operator,
             threshold_c=None,
+            threshold_c_low=None,
+            threshold_c_high=None,
             raw_threshold=None,
+            raw_threshold_low=None,
+            raw_threshold_high=None,
             raw_unit=None,
         )
 

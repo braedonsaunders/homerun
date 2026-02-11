@@ -19,6 +19,15 @@ function normalizeKalshiTicker(value: NullableString): string {
   return cleanSegment(value).replace(/_(yes|no)$/i, '')
 }
 
+function normalizeKalshiSlug(value: NullableString): string {
+  return cleanSegment(value)
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 export function deriveKalshiEventTicker(marketTicker: NullableString): string {
   const ticker = normalizeKalshiTicker(marketTicker)
   if (!ticker) return ''
@@ -55,6 +64,7 @@ export function buildPolymarketMarketUrl(params: {
 export function buildKalshiMarketUrl(params: {
   marketTicker?: NullableString
   eventTicker?: NullableString
+  eventSlug?: NullableString
 }): string | null {
   const marketTicker = normalizeKalshiTicker(params.marketTicker)
   if (!marketTicker) return null
@@ -62,5 +72,17 @@ export function buildKalshiMarketUrl(params: {
   const eventTicker = cleanSegment(params.eventTicker) || deriveKalshiEventTicker(marketTicker)
   if (!eventTicker) return null
 
-  return `${KALSHI_BASE_URL}/markets/${encodeSegment(eventTicker.toLowerCase())}/${encodeSegment(marketTicker.toLowerCase())}`
+  const eventTickerSegment = encodeSegment(eventTicker.toLowerCase())
+  const marketTickerSegment = encodeSegment(marketTicker.toLowerCase())
+  const eventSlug = normalizeKalshiSlug(params.eventSlug)
+  const eventSlugSegment = encodeSegment(eventSlug || eventTicker.toLowerCase())
+
+  if (eventTicker.toLowerCase() === marketTicker.toLowerCase()) {
+    if (eventSlug) {
+      return `${KALSHI_BASE_URL}/markets/${eventTickerSegment}/${eventSlugSegment}`
+    }
+    return `${KALSHI_BASE_URL}/markets/${eventTickerSegment}`
+  }
+
+  return `${KALSHI_BASE_URL}/markets/${eventTickerSegment}/${eventSlugSegment}/${marketTickerSegment}`
 }

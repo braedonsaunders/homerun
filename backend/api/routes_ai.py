@@ -129,6 +129,19 @@ async def judge_opportunity(
         if result.get("judged_at")
         else datetime.utcnow(),
     )
+    try:
+        await shared_state.update_opportunity_ai_analysis_in_snapshot(
+            session=session,
+            opportunity_id=opp.id,
+            stable_id=opp.stable_id,
+            ai_analysis=opp.ai_analysis.model_dump(mode="json"),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to persist inline ai_analysis into snapshot for %s: %s",
+            opp.id,
+            e,
+        )
 
     return result
 
@@ -184,6 +197,15 @@ async def judge_opportunities_bulk(
                 if result.get("judged_at")
                 else datetime.utcnow(),
             )
+            try:
+                await shared_state.update_opportunity_ai_analysis_in_snapshot(
+                    session=session,
+                    opportunity_id=opp.id,
+                    stable_id=opp.stable_id,
+                    ai_analysis=opp.ai_analysis.model_dump(mode="json"),
+                )
+            except Exception:
+                pass
             results.append(result)
         except Exception as e:
             errors.append({"opportunity_id": opp.id, "error": str(e)})
@@ -728,7 +750,7 @@ async def ai_chat(
         if not manager.is_available():
             raise HTTPException(
                 status_code=503,
-                detail="No AI provider configured. Add an API key in Settings.",
+                detail="No AI provider configured. Configure an LLM provider in Settings.",
             )
 
         chat_session = None

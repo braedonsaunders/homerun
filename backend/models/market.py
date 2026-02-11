@@ -19,6 +19,7 @@ class Market(BaseModel):
     condition_id: str
     question: str
     slug: str
+    group_item_title: str = ""
     event_slug: str = ""
     tokens: list[Token] = []
     clob_token_ids: list[str] = []
@@ -29,6 +30,7 @@ class Market(BaseModel):
     volume: float = 0.0
     liquidity: float = 0.0
     end_date: Optional[datetime] = None
+    tags: list[str] = []
     platform: str = "polymarket"  # "polymarket" or "kalshi"
 
     @classmethod
@@ -91,11 +93,25 @@ class Market(BaseModel):
         if not event_slug:
             event_slug = data.get("event_slug", "") or data.get("eventSlug", "")
 
+        tags = []
+        raw_tags = data.get("tags", [])
+        if isinstance(raw_tags, list):
+            for tag in raw_tags:
+                if isinstance(tag, str):
+                    tags.append(tag)
+                elif isinstance(tag, dict):
+                    value = tag.get("label") or tag.get("name")
+                    if value:
+                        tags.append(str(value))
+        elif isinstance(raw_tags, str) and raw_tags.strip():
+            tags.append(raw_tags.strip())
+
         return cls(
             id=str(data.get("id", "")),
             condition_id=data.get("condition_id", data.get("conditionId", "")),
             question=data.get("question", ""),
             slug=data.get("slug", ""),
+            group_item_title=data.get("groupItemTitle", data.get("group_item_title", "")),
             event_slug=event_slug,
             tokens=tokens,
             clob_token_ids=clob_token_ids,
@@ -110,6 +126,7 @@ class Market(BaseModel):
                 data.get("liquidity") or data.get("liquidityNum") or 0
             ),
             end_date=data.get("endDate"),
+            tags=tags,
         )
 
     @property
@@ -135,6 +152,7 @@ class Event(BaseModel):
     title: str
     description: str = ""
     category: Optional[str] = None
+    tags: list[str] = []
     markets: list[Market] = []
     neg_risk: bool = False
     active: bool = True
@@ -172,12 +190,26 @@ class Event(BaseModel):
             elif isinstance(tags, str):
                 category = tags
 
+        event_tags = []
+        raw_tags = data.get("tags", [])
+        if isinstance(raw_tags, list):
+            for tag in raw_tags:
+                if isinstance(tag, str):
+                    event_tags.append(tag)
+                elif isinstance(tag, dict):
+                    value = tag.get("label") or tag.get("name")
+                    if value:
+                        event_tags.append(str(value))
+        elif isinstance(raw_tags, str) and raw_tags.strip():
+            event_tags.append(raw_tags.strip())
+
         return cls(
             id=str(data.get("id", "")),
             slug=data.get("slug", ""),
             title=data.get("title", ""),
             description=data.get("description", ""),
             category=category,
+            tags=event_tags,
             markets=markets,
             neg_risk=data.get("negRisk", False),
             active=data.get("active", True),

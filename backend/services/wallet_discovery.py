@@ -1095,6 +1095,8 @@ class WalletDiscoveryEngine:
         offset: int = 0,
         min_trades: int = 0,
         min_pnl: float = 0.0,
+        insider_only: bool = False,
+        min_insider_score: float | None = None,
         sort_by: str = "rank_score",
         sort_dir: str = "desc",
         tags: list[str] | None = None,
@@ -1128,6 +1130,12 @@ class WalletDiscoveryEngine:
                 DiscoveredWallet.total_trades >= min_trades,
                 DiscoveredWallet.total_pnl >= min_pnl,
             ]
+            if insider_only:
+                base_filter.append(DiscoveredWallet.insider_score >= 0.60)
+                base_filter.append(DiscoveredWallet.insider_confidence >= 0.50)
+                base_filter.append(DiscoveredWallet.insider_sample_size >= 15)
+            if min_insider_score is not None:
+                base_filter.append(DiscoveredWallet.insider_score >= min_insider_score)
             if recommendation:
                 base_filter.append(DiscoveredWallet.recommendation == recommendation)
             if active_within_hours is not None:
@@ -1341,6 +1349,17 @@ class WalletDiscoveryEngine:
             "source_flags": w.source_flags or {},
             # Clustering
             "cluster_id": w.cluster_id,
+            # Insider detection
+            "insider_score": w.insider_score or 0.0,
+            "insider_confidence": w.insider_confidence or 0.0,
+            "insider_sample_size": w.insider_sample_size or 0,
+            "insider_last_scored_at": (
+                w.insider_last_scored_at.isoformat()
+                if w.insider_last_scored_at
+                else None
+            ),
+            "insider_metrics": w.insider_metrics_json,
+            "insider_reasons": w.insider_reasons_json or [],
         }
 
     @staticmethod

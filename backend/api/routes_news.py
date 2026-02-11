@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -22,6 +23,31 @@ from services import shared_state
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _to_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _to_iso_utc_z(value: Optional[datetime]) -> Optional[str]:
+    dt = _to_utc_datetime(value)
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None).isoformat() + "Z"
+
+
+def _article_recency_timestamp(article) -> float:
+    published_ts = _to_utc_datetime(getattr(article, "published", None))
+    if published_ts is not None:
+        return published_ts.timestamp()
+    fetched_ts = _to_utc_datetime(getattr(article, "fetched_at", None))
+    if fetched_ts is not None:
+        return fetched_ts.timestamp()
+    return 0.0
 
 
 async def _build_market_infos_from_scanner(session):
@@ -94,7 +120,7 @@ async def trigger_news_fetch():
                     "source": a.source,
                     "feed_source": a.feed_source,
                     "url": a.url,
-                    "published": a.published.isoformat() if a.published else None,
+                    "published": _to_iso_utc_z(a.published),
                     "category": a.category,
                 }
                 for a in new_articles[:20]  # Return first 20
@@ -120,7 +146,8 @@ async def get_articles(
     if source:
         articles = [a for a in articles if a.feed_source == source]
 
-    articles.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
+    # Feed order is recency-first by publish time, with fetched_at fallback.
+    articles.sort(key=_article_recency_timestamp, reverse=True)
 
     total = len(articles)
     page = articles[offset : offset + limit]
@@ -137,11 +164,11 @@ async def get_articles(
                 "source": a.source,
                 "feed_source": a.feed_source,
                 "url": a.url,
-                "published": a.published.isoformat() if a.published else None,
+                "published": _to_iso_utc_z(a.published),
                 "category": a.category,
                 "summary": a.summary[:200] if a.summary else "",
                 "has_embedding": a.embedding is not None,
-                "fetched_at": a.fetched_at.isoformat(),
+                "fetched_at": _to_iso_utc_z(a.fetched_at),
             }
             for a in page
         ],
@@ -170,11 +197,11 @@ async def search_articles(
                 "source": a.source,
                 "feed_source": a.feed_source,
                 "url": a.url,
-                "published": a.published.isoformat() if a.published else None,
+                "published": _to_iso_utc_z(a.published),
                 "category": a.category,
                 "summary": a.summary[:200] if a.summary else "",
                 "has_embedding": a.embedding is not None,
-                "fetched_at": a.fetched_at.isoformat(),
+                "fetched_at": _to_iso_utc_z(a.fetched_at),
             }
             for a in results
         ],
@@ -301,7 +328,7 @@ def _serialize_edge(e):
         "confidence": round(e.confidence, 2),
         "reasoning": e.reasoning,
         "similarity": round(e.match.similarity, 4),
-        "estimated_at": e.estimated_at.isoformat(),
+        "estimated_at": _to_iso_utc_z(e.estimated_at),
     }
 
 

@@ -13,6 +13,7 @@ made available for semantic matching against active markets.
 from __future__ import annotations
 
 import asyncio
+import html
 import hashlib
 import logging
 import re
@@ -75,6 +76,11 @@ class NewsFeedService:
         self._articles: dict[str, NewsArticle] = {}  # article_id -> article
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._ingest_stats: dict[str, int] = {
+            "articles_dropped_low_text_quality": 0,
+            "gdelt_summary_url_filtered": 0,
+            "google_summary_parsed": 0,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -82,6 +88,7 @@ class NewsFeedService:
 
     async def fetch_all(self) -> list[NewsArticle]:
         """Fetch from all enabled sources. Returns only NEW articles."""
+        self._reset_ingest_stats()
         new_articles: list[NewsArticle] = []
 
         tasks = [self._fetch_google_news_topics()]
@@ -99,6 +106,9 @@ class NewsFeedService:
                 continue
             if isinstance(result, list):
                 for article in result:
+                    if not _has_min_text_quality(article.title, article.summary):
+                        self._inc_ingest_stat("articles_dropped_low_text_quality")
+                        continue
                     if article.article_id not in self._articles:
                         self._articles[article.article_id] = article
                         new_articles.append(article)
@@ -107,9 +117,16 @@ class NewsFeedService:
         self._prune_old_articles()
 
         logger.info(
-            "News fetch complete: %d new, %d total in store",
+            (
+                "News fetch complete: %d new, %d total in store "
+                "(articles_dropped_low_text_quality=%d, gdelt_summary_url_filtered=%d, "
+                "google_summary_parsed=%d)"
+            ),
             len(new_articles),
             len(self._articles),
+            self._ingest_stats["articles_dropped_low_text_quality"],
+            self._ingest_stats["gdelt_summary_url_filtered"],
+            self._ingest_stats["google_summary_parsed"],
         )
         return new_articles
 
@@ -238,6 +255,7 @@ class NewsFeedService:
                     link = item.findtext("link", "").strip()
                     pub_date = item.findtext("pubDate", "").strip()
                     source = item.findtext("source", "").strip()
+                    description = item.findtext("description", "").strip()
 
                     if not link:
                         continue
@@ -248,9 +266,13 @@ class NewsFeedService:
                         if len(parts) == 2:
                             title = parts[0].strip()
                             source = parts[1].strip()
+                    title = _strip_title_source_suffix(title, source)
 
                     published = _parse_rss_date(pub_date)
                     article_id = _make_article_id(link)
+                    summary = _clean_summary_text(description, max_len=500)
+                    if summary:
+                        self._inc_ingest_stat("google_summary_parsed")
 
                     articles.append(
                         NewsArticle(
@@ -259,6 +281,7 @@ class NewsFeedService:
                             url=link,
                             source=source or "Google News",
                             published=published,
+                            summary=summary,
                             feed_source="google_news",
                             category=query,
                         )
@@ -326,6 +349,7 @@ class NewsFeedService:
 
                     published = _parse_gdelt_date(date_str)
                     article_id = _make_article_id(art_url)
+                    summary = self._pick_gdelt_summary(raw)
 
                     articles.append(
                         NewsArticle(
@@ -334,7 +358,7 @@ class NewsFeedService:
                             url=art_url,
                             source=source,
                             published=published,
-                            summary=raw.get("socialimage", ""),
+                            summary=summary,
                             feed_source="gdelt",
                             category=query,
                         )
@@ -554,6 +578,28 @@ class NewsFeedService:
         matches.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
         return matches[:limit]
 
+    def _reset_ingest_stats(self) -> None:
+        self._ingest_stats = {
+            "articles_dropped_low_text_quality": 0,
+            "gdelt_summary_url_filtered": 0,
+            "google_summary_parsed": 0,
+        }
+
+    def _inc_ingest_stat(self, key: str, delta: int = 1) -> None:
+        self._ingest_stats[key] = int(self._ingest_stats.get(key, 0)) + int(delta)
+
+    def _pick_gdelt_summary(self, raw: dict) -> str:
+        for key in ("snippet", "description", "excerpt", "summary", "content"):
+            value = raw.get(key)
+            cleaned = _clean_summary_text(value, max_len=500)
+            if not cleaned:
+                continue
+            if _looks_like_url(cleaned):
+                self._inc_ingest_stat("gdelt_summary_url_filtered")
+                continue
+            return cleaned
+        return ""
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -622,6 +668,44 @@ def _parse_gdelt_date(date_str: str) -> Optional[datetime]:
 def _strip_html(text: str) -> str:
     """Remove HTML tags from a string."""
     return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _looks_like_url(value: str) -> bool:
+    if not value:
+        return False
+    return bool(re.match(r"^https?://", value.strip(), flags=re.IGNORECASE))
+
+
+def _clean_summary_text(value: object, max_len: int = 500) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = html.unescape(_strip_html(value))
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    return text[:max_len]
+
+
+def _strip_title_source_suffix(title: str, source: str) -> str:
+    if not title or not source:
+        return title
+    source_norm = source.strip()
+    if not source_norm:
+        return title
+    suffix = f" - {source_norm}"
+    if title.endswith(suffix):
+        return title[: -len(suffix)].strip()
+    return title
+
+
+def _has_min_text_quality(title: str, summary: str) -> bool:
+    full = f"{title or ''} {summary or ''}".strip()
+    alnum_chars = len(re.sub(r"[^A-Za-z0-9]", "", full))
+    if alnum_chars < 80:
+        return False
+    if not (summary or "").strip() and len((title or "").strip()) < 35:
+        return False
+    return True
 
 
 # ======================================================================

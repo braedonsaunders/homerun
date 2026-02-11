@@ -64,6 +64,11 @@ function formatPrice(n: number | null | undefined, decimals = 2): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 // ─── Countdown Timer ─────────────────────────────────────
 
 function LiveCountdown({ endTime }: { endTime: string | null }) {
@@ -166,6 +171,20 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
     eventSlug: market.event_slug,
   })
 
+  const oracleSeries = useMemo(() => {
+    const raw = Array.isArray(market.oracle_history) ? market.oracle_history : []
+    const points = raw
+      .map((pt) => toFiniteNumber((pt as { p?: unknown; price?: unknown })?.p ?? (pt as { price?: unknown })?.price))
+      .filter((v): v is number => Number.isFinite(v))
+
+    if (points.length >= 2) {
+      return points
+    }
+
+    const now = toFiniteNumber(market.oracle_price)
+    return now !== null ? [now, now] : []
+  }, [market.oracle_history, market.oracle_price])
+
   // Parse time window from title (e.g. "Bitcoin Up or Down - February 10, 10:45AM-11:00AM ET")
   const timeWindow = market.event_title?.match(/(\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)\s*ET/)?.[0] || ''
 
@@ -211,7 +230,7 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
 
         {/* Oracle price sparkline chart */}
         <div ref={chartRef} className="relative h-14 w-full bg-muted/10 rounded-lg overflow-hidden">
-          {market.oracle_history && market.oracle_history.length > 2 ? (
+          {oracleSeries.length >= 2 ? (
             <>
               {market.price_to_beat !== null && (
                 <div className="absolute inset-0 flex items-center">
@@ -219,7 +238,7 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
                 </div>
               )}
               <Sparkline
-                data={market.oracle_history.map(h => h.p)}
+                data={oracleSeries}
                 width={chartWidth}
                 height={56}
                 color={market.oracle_price !== null && market.price_to_beat !== null

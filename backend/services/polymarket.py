@@ -681,6 +681,90 @@ class PolymarketClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_prices_history(
+        self,
+        token_id: str,
+        interval: Optional[str] = None,
+        fidelity: Optional[int] = None,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        use_trading_proxy: bool = False,
+    ) -> list[dict[str, float]]:
+        """Get historical prices for a token from CLOB ``/prices-history``.
+
+        Returns a normalized list of ``{"t": epoch_ms, "p": price}`` points.
+        """
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
+
+        params: dict[str, object] = {"market": token_id}
+        if interval:
+            params["interval"] = interval
+        if fidelity is not None:
+            params["fidelity"] = int(fidelity)
+        if start_ts is not None:
+            # CLOB expects unix seconds for startTs/endTs.
+            # Accept ms input too and normalize here.
+            start_val = int(start_ts)
+            if start_val > 10_000_000_000:
+                start_val //= 1000
+            params["startTs"] = start_val
+        if end_ts is not None:
+            end_val = int(end_ts)
+            if end_val > 10_000_000_000:
+                end_val //= 1000
+            params["endTs"] = end_val
+
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/prices-history",
+            client=client,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        # CLOB returns {"history": [{"t": ..., "p": ...}, ...]}.
+        # Keep parsing defensive in case payload shape drifts.
+        raw_history = payload
+        if isinstance(payload, dict):
+            raw_history = (
+                payload.get("history")
+                or payload.get("prices")
+                or payload.get("data")
+                or []
+            )
+        if not isinstance(raw_history, list):
+            return []
+
+        out: list[dict[str, float]] = []
+        for item in raw_history:
+            if not isinstance(item, dict):
+                continue
+            t_raw = (
+                item.get("t")
+                or item.get("timestamp")
+                or item.get("time")
+                or item.get("ts")
+            )
+            p_raw = item.get("p")
+            if p_raw is None:
+                p_raw = item.get("price")
+
+            try:
+                t = float(t_raw)
+                p = float(p_raw)
+            except (TypeError, ValueError):
+                continue
+
+            # Handle seconds-vs-milliseconds timestamps.
+            if t < 10_000_000_000:
+                t *= 1000.0
+            out.append({"t": t, "p": p})
+
+        out.sort(key=lambda x: x["t"])
+        return out
+
     async def get_prices_batch(self, token_ids: list[str]) -> dict[str, dict]:
         """Get prices for multiple tokens efficiently"""
         prices = {}
@@ -692,9 +776,12 @@ class PolymarketClient:
             async with semaphore:
                 try:
                     mid = await self.get_midpoint(token_id)
-                    prices[token_id] = {"mid": mid}
-                except Exception as e:
-                    prices[token_id] = {"mid": 0, "error": str(e)}
+                    if 0 <= float(mid) <= 1:
+                        prices[token_id] = {"mid": float(mid)}
+                except Exception:
+                    # Skip failed tokens so downstream logic can fall back to
+                    # market model prices instead of treating failures as 0.
+                    return
 
         await asyncio.gather(*[fetch_price(tid) for tid in token_ids])
         return prices

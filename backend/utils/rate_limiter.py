@@ -64,6 +64,9 @@ class RateLimiter:
         "clob_markets_batch": RateLimitConfig(
             requests_per_window=500, window_seconds=10
         ),
+        "clob_prices_history": RateLimitConfig(
+            requests_per_window=1000, window_seconds=10
+        ),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
         "data_positions": RateLimitConfig(requests_per_window=150, window_seconds=10),
@@ -148,6 +151,8 @@ def endpoint_for_url(url: str) -> str:
             return "gamma_search"
         return "gamma_general"
     elif "clob" in url:
+        if "/prices-history" in url:
+            return "clob_prices_history"
         # Batch endpoints (/books, /prices, /midprices) have a lower limit
         if "/books" in url or "/prices" in url or "/midprices" in url:
             return "clob_markets_batch"

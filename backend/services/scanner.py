@@ -135,9 +135,29 @@ class ArbitrageScanner:
 
         # Real yes/no price history for opportunity card sparklines.
         # market_id -> [{t: epoch_ms, yes: float, no: float}, ...]
+        spark_window_hours = max(1, int(settings.SCANNER_SPARKLINE_WINDOW_HOURS))
+        spark_sample_seconds = max(10, int(settings.SCANNER_SPARKLINE_SAMPLE_SECONDS))
+        spark_max_points = max(30, int(settings.SCANNER_SPARKLINE_MAX_POINTS))
+        spark_export_points = max(20, int(settings.SCANNER_SPARKLINE_EXPORT_POINTS))
+
         self._market_price_history: dict[str, list[dict[str, float]]] = {}
-        self._market_history_max_points: int = 120
-        self._market_history_retention_seconds: int = 3600
+        self._market_history_retention_seconds: int = spark_window_hours * 3600
+        retention_points = int(
+            self._market_history_retention_seconds / spark_sample_seconds
+        ) + 2
+        self._market_history_max_points: int = max(spark_max_points, retention_points)
+        self._market_history_export_points: int = min(
+            self._market_history_max_points, spark_export_points
+        )
+        # Keep one sample per interval even if price is unchanged, so cards
+        # show multi-hour trend shape rather than a single refreshed point.
+        self._market_history_sample_interval_ms: int = spark_sample_seconds * 1000
+        self._market_token_ids: dict[str, tuple[str, str]] = {}
+        self._market_history_backfill_done: set[str] = set()
+        self._market_history_backfill_attempt_ms: dict[str, int] = {}
+        self._market_history_backfill_retry_ms: int = 5 * 60 * 1000
+        self._market_history_backfill_concurrency: int = 8
+        self._market_history_backfill_max_markets: int = 120
 
         # Reactive scanning: event set by WS price changes to trigger immediate scan
         self._reactive_trigger = asyncio.Event()
@@ -218,18 +238,22 @@ class ArbitrageScanner:
         """Extract a usable midpoint-like value from a price payload."""
         if not isinstance(raw, dict):
             return None
+        # Failed price fetches are represented as {"error": "..."}; these
+        # must not be treated as valid 0.0 prices.
+        if raw.get("error") is not None:
+            return None
         for key in ("mid", "yes", "price"):
             val = raw.get(key)
-            if isinstance(val, (float, int)) and val > 0:
+            if isinstance(val, (float, int)) and 0 <= val <= 1:
                 return float(val)
         bid = raw.get("bid")
         ask = raw.get("ask")
         if isinstance(bid, (float, int)) and isinstance(ask, (float, int)):
-            if bid > 0 and ask > 0:
+            if 0 <= bid <= 1 and 0 <= ask <= 1:
                 return float((bid + ask) / 2.0)
-            if bid > 0:
+            if 0 <= bid <= 1:
                 return float(bid)
-            if ask > 0:
+            if 0 <= ask <= 1:
                 return float(ask)
         return None
 
@@ -278,7 +302,9 @@ class ArbitrageScanner:
             yes, no = self._extract_market_yes_no_prices(market, prices)
             if yes is None or no is None:
                 continue
-            if yes <= 0 or no <= 0:
+            if yes < 0 or no < 0:
+                continue
+            if yes > 1.01 or no > 1.01:
                 continue
 
             point = {
@@ -293,8 +319,10 @@ class ArbitrageScanner:
                     abs(last.get("yes", 0.0) - point["yes"]) < 1e-9
                     and abs(last.get("no", 0.0) - point["no"]) < 1e-9
                 ):
-                    last["t"] = point["t"]
-                    continue
+                    last_t = float(last.get("t", 0.0) or 0.0)
+                    if (point["t"] - last_t) < self._market_history_sample_interval_ms:
+                        last["t"] = point["t"]
+                        continue
             history.append(point)
 
             while history and history[0].get("t", 0) < cutoff_ms:
@@ -302,8 +330,286 @@ class ArbitrageScanner:
             if len(history) > self._market_history_max_points:
                 del history[: len(history) - self._market_history_max_points]
 
+    def _remember_market_tokens(self, markets: list) -> None:
+        """Cache YES/NO token IDs per market for historical backfill calls."""
+        for market in markets:
+            market_id = str(getattr(market, "id", "") or "")
+            if not market_id:
+                continue
+            platform = str(getattr(market, "platform", "polymarket") or "polymarket")
+            if platform != "polymarket":
+                continue
+            token_ids = getattr(market, "clob_token_ids", None) or []
+            if len(token_ids) < 2:
+                continue
+            yes_token = str(token_ids[0] or "")
+            no_token = str(token_ids[1] or "")
+            # Polymarket token IDs are long hashes; skip synthetic IDs.
+            if len(yes_token) <= 20 or len(no_token) <= 20:
+                continue
+            self._market_token_ids[market_id] = (yes_token, no_token)
+
+    def _merge_market_history_points(
+        self, market_id: str, incoming: list[dict[str, float]], now_ms: int
+    ) -> int:
+        """Merge incoming history into in-memory store and return merged length."""
+        if not incoming:
+            return len(self._market_price_history.get(market_id, []))
+
+        cutoff_ms = now_ms - int(self._market_history_retention_seconds * 1000)
+        merged_by_ts: dict[int, dict[str, float]] = {}
+
+        for point in self._market_price_history.get(market_id, []):
+            try:
+                ts = int(float(point.get("t", 0)))
+                yes = float(point.get("yes", 0))
+                no = float(point.get("no", 0))
+            except (TypeError, ValueError):
+                continue
+            if ts < cutoff_ms:
+                continue
+            if not (0 <= yes <= 1.01 and 0 <= no <= 1.01):
+                continue
+            merged_by_ts[ts] = {"t": float(ts), "yes": yes, "no": no}
+
+        for point in incoming:
+            try:
+                ts = int(float(point.get("t", 0)))
+                yes = float(point.get("yes", 0))
+                no = float(point.get("no", 0))
+            except (TypeError, ValueError):
+                continue
+            if ts < cutoff_ms:
+                continue
+            if not (0 <= yes <= 1.01 and 0 <= no <= 1.01):
+                continue
+            merged_by_ts[ts] = {
+                "t": float(ts),
+                "yes": float(round(min(1.0, max(0.0, yes)), 6)),
+                "no": float(round(min(1.0, max(0.0, no)), 6)),
+            }
+
+        merged = [merged_by_ts[k] for k in sorted(merged_by_ts.keys())]
+        if len(merged) > self._market_history_max_points:
+            merged = merged[-self._market_history_max_points :]
+        self._market_price_history[market_id] = merged
+        return len(merged)
+
+    async def _backfill_market_history_for_opportunities(
+        self, opportunities: list[ArbitrageOpportunity], now: datetime
+    ) -> None:
+        """Backfill multi-hour YES/NO history for visible opportunities."""
+        if not opportunities:
+            return
+
+        # Local imports avoid circular initialization ordering with the provider layer.
+        from services.kalshi_client import kalshi_client
+        from services.polymarket import polymarket_client
+
+        now_ms = int(now.timestamp() * 1000)
+        window_ms = int(self._market_history_retention_seconds * 1000)
+        start_ms = now_ms - window_ms
+        start_s = start_ms // 1000
+        now_s = now_ms // 1000
+        sample_ms = self._market_history_sample_interval_ms
+
+        polymarket_candidates: list[str] = []
+        kalshi_candidates: list[str] = []
+        seen: set[str] = set()
+        for opp in opportunities:
+            for market in opp.markets:
+                market_id = str(market.get("id", "") or "")
+                if not market_id or market_id in seen:
+                    continue
+                seen.add(market_id)
+                if market_id in self._market_history_backfill_done:
+                    continue
+                last_attempt = self._market_history_backfill_attempt_ms.get(market_id, 0)
+                if (now_ms - last_attempt) < self._market_history_backfill_retry_ms:
+                    continue
+                platform = str(market.get("platform", "polymarket") or "polymarket").lower()
+                if platform == "kalshi":
+                    kalshi_candidates.append(market_id)
+                else:
+                    if market_id not in self._market_token_ids:
+                        continue
+                    polymarket_candidates.append(market_id)
+                if (
+                    len(polymarket_candidates) + len(kalshi_candidates)
+                    >= self._market_history_backfill_max_markets
+                ):
+                    break
+            if (
+                len(polymarket_candidates) + len(kalshi_candidates)
+                >= self._market_history_backfill_max_markets
+            ):
+                break
+
+        total_candidates = len(polymarket_candidates) + len(kalshi_candidates)
+        if total_candidates == 0:
+            return
+
+        semaphore = asyncio.Semaphore(self._market_history_backfill_concurrency)
+
+        async def _fetch_polymarket(
+            market_id: str,
+        ) -> tuple[str, list[dict[str, float]], bool]:
+            async with semaphore:
+                self._market_history_backfill_attempt_ms[market_id] = now_ms
+                yes_token, no_token = self._market_token_ids[market_id]
+                yes_res, no_res = await asyncio.gather(
+                    polymarket_client.get_prices_history(
+                        yes_token,
+                        start_ts=start_s,
+                        end_ts=now_s,
+                    ),
+                    polymarket_client.get_prices_history(
+                        no_token,
+                        start_ts=start_s,
+                        end_ts=now_s,
+                    ),
+                    return_exceptions=True,
+                )
+
+                yes_hist = []
+                no_hist = []
+                if not isinstance(yes_res, Exception):
+                    yes_hist = yes_res
+                if not isinstance(no_res, Exception):
+                    no_hist = no_res
+                if not yes_hist and not no_hist:
+                    return market_id, [], False
+
+                yes_by_bucket: dict[int, float] = {}
+                no_by_bucket: dict[int, float] = {}
+
+                for point in yes_hist:
+                    t = point.get("t")
+                    p = point.get("p")
+                    if t is None or p is None:
+                        continue
+                    try:
+                        ts = int(float(t))
+                        price = float(p)
+                    except (TypeError, ValueError):
+                        continue
+                    if ts < start_ms or ts > now_ms or not (0 <= price <= 1.01):
+                        continue
+                    bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
+                    yes_by_bucket[bucket] = price
+
+                for point in no_hist:
+                    t = point.get("t")
+                    p = point.get("p")
+                    if t is None or p is None:
+                        continue
+                    try:
+                        ts = int(float(t))
+                        price = float(p)
+                    except (TypeError, ValueError):
+                        continue
+                    if ts < start_ms or ts > now_ms or not (0 <= price <= 1.01):
+                        continue
+                    bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
+                    no_by_bucket[bucket] = price
+
+                buckets = sorted(set(yes_by_bucket.keys()) | set(no_by_bucket.keys()))
+                merged: list[dict[str, float]] = []
+                for bucket in buckets:
+                    yes = yes_by_bucket.get(bucket)
+                    no = no_by_bucket.get(bucket)
+                    if yes is None and no is None:
+                        continue
+                    if yes is None and no is not None and 0 <= no <= 1:
+                        yes = 1.0 - no
+                    if no is None and yes is not None and 0 <= yes <= 1:
+                        no = 1.0 - yes
+                    if yes is None or no is None:
+                        continue
+                    merged.append(
+                        {
+                            "t": float(bucket),
+                            "yes": float(round(min(1.0, max(0.0, yes)), 6)),
+                            "no": float(round(min(1.0, max(0.0, no)), 6)),
+                        }
+                    )
+                return market_id, merged, True
+
+        results: list[tuple[str, list[dict[str, float]], bool]] = []
+        if polymarket_candidates:
+            poly_results = await asyncio.gather(
+                *[_fetch_polymarket(mid) for mid in polymarket_candidates]
+            )
+            results.extend(poly_results)
+
+        # Kalshi provides batched candlestick history by market ticker.
+        if kalshi_candidates:
+            batch_size = 80
+            period_minutes = max(
+                1,
+                int(self._market_history_sample_interval_ms // 60000),
+            )
+            for i in range(0, len(kalshi_candidates), batch_size):
+                batch = kalshi_candidates[i : i + batch_size]
+                for market_id in batch:
+                    self._market_history_backfill_attempt_ms[market_id] = now_ms
+
+                try:
+                    history_map = await kalshi_client.get_market_candlesticks_batch(
+                        batch,
+                        start_ts=start_s,
+                        end_ts=now_s,
+                        period_interval=period_minutes,
+                        include_latest_before_start=True,
+                    )
+                    fetch_success = True
+                except Exception:
+                    history_map = {}
+                    fetch_success = False
+
+                for market_id in batch:
+                    raw_points = history_map.get(market_id, [])
+                    by_bucket: dict[int, dict[str, float]] = {}
+                    for point in raw_points:
+                        try:
+                            ts = int(float(point.get("t", 0)))
+                            yes = float(point.get("yes", 0))
+                            no = float(point.get("no", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        if ts < start_ms or ts > now_ms:
+                            continue
+                        if not (0.0 <= yes <= 1.01 and 0.0 <= no <= 1.01):
+                            continue
+                        bucket = start_ms + ((ts - start_ms) // sample_ms) * sample_ms
+                        by_bucket[bucket] = {
+                            "t": float(bucket),
+                            "yes": float(round(min(1.0, max(0.0, yes)), 6)),
+                            "no": float(round(min(1.0, max(0.0, no)), 6)),
+                        }
+                    merged_points = [by_bucket[k] for k in sorted(by_bucket.keys())]
+                    market_fetch_success = fetch_success and market_id in history_map
+                    results.append((market_id, merged_points, market_fetch_success))
+
+        updated = 0
+        completed = 0
+        for market_id, points, success in results:
+            if success:
+                completed += 1
+            if points:
+                merged_len = self._merge_market_history_points(market_id, points, now_ms)
+                if merged_len >= 2:
+                    updated += 1
+                    self._market_history_backfill_done.add(market_id)
+
+        if updated > 0:
+            print(
+                f"  Sparkline backfill: hydrated {updated}/{total_candidates} markets "
+                f"({completed} successful history fetches)"
+            )
+
     def get_market_history_for_opportunities(
-        self, opportunities: list[ArbitrageOpportunity], max_points: int = 40
+        self, opportunities: list[ArbitrageOpportunity], max_points: Optional[int] = None
     ) -> dict[str, list[dict[str, float]]]:
         """Return compact market history map for markets present in opportunities."""
         market_ids: set[str] = set()
@@ -314,7 +620,10 @@ class ArbitrageScanner:
                     market_ids.add(mid)
 
         out: dict[str, list[dict[str, float]]] = {}
-        limit = max(2, min(300, max_points))
+        export_points = (
+            self._market_history_export_points if max_points is None else max_points
+        )
+        limit = max(2, min(self._market_history_max_points, int(export_points)))
         for mid in market_ids:
             hist = self._market_price_history.get(mid, [])
             if hist:
@@ -444,7 +753,13 @@ class ArbitrageScanner:
     def _get_all_strategies(self) -> list:
         """Return built-in strategies + loaded plugin strategies."""
         plugin_strategies = plugin_loader.get_all_strategy_instances()
-        return self.strategies + plugin_strategies
+        # BTC 15-minute high-frequency logic is isolated to crypto-worker.
+        # Scanner strategy set must not run btc_eth_highfreq.
+        return [
+            s
+            for s in (self.strategies + plugin_strategies)
+            if self._strategy_key(s) != "btc_eth_highfreq"
+        ]
 
     @staticmethod
     def _strategy_key(strategy) -> str:
@@ -581,6 +896,7 @@ class ArbitrageScanner:
             self._cached_events = list(events)
             self._cached_markets = list(markets)
             self._cached_prices = dict(prices)
+            self._remember_market_tokens(markets)
             self._update_market_price_history(markets, prices, now)
 
             # Subscribe to WebSocket feeds for active market tokens
@@ -719,6 +1035,17 @@ class ArbitrageScanner:
                 pass
 
             self._opportunities = self._merge_opportunities(all_opportunities)
+            try:
+                await asyncio.wait_for(
+                    self._backfill_market_history_for_opportunities(
+                        self._opportunities, now
+                    ),
+                    timeout=12,
+                )
+            except asyncio.TimeoutError:
+                print("  Sparkline backfill timed out (12s), continuing with live history")
+            except Exception as e:
+                print(f"  Sparkline backfill error (non-fatal): {e}")
             self._last_scan = datetime.now(timezone.utc)
             print(f"  Stored {len(self._opportunities)} opportunities")
 
@@ -868,6 +1195,7 @@ class ArbitrageScanner:
 
             # Merge with cached prices
             merged_prices = {**self._cached_prices, **hot_prices}
+            self._remember_market_tokens(self._cached_markets)
             self._update_market_price_history(hot_markets, merged_prices, now)
 
             # 6. Change detection: only evaluate markets whose prices moved (CPU-bound)
@@ -951,6 +1279,17 @@ class ArbitrageScanner:
             if fast_opportunities:
                 await self._attach_ai_judgments(fast_opportunities)
                 self._opportunities = self._merge_opportunities(fast_opportunities)
+                try:
+                    await asyncio.wait_for(
+                        self._backfill_market_history_for_opportunities(
+                            self._opportunities, now
+                        ),
+                        timeout=6,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    pass
 
             self._last_scan = now
             self._last_fast_scan = now

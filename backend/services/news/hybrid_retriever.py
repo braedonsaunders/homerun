@@ -20,7 +20,7 @@ from typing import Optional
 
 import numpy as np
 
-from services.news.event_extractor import ExtractedEvent, EVENT_CATEGORY_AFFINITY
+from services.news.event_extractor import ExtractedEvent
 from services.news.market_watcher_index import (
     MarketWatcherIndex,
     SearchResult,
@@ -42,6 +42,8 @@ class RetrievalCandidate:
     no_price: float
     liquidity: float
     slug: str
+    end_date: Optional[str]
+    tags: list[str]
     keyword_score: float
     semantic_score: float
     event_score: float
@@ -63,7 +65,10 @@ class HybridRetriever:
         semantic_weight: float = 0.45,
         event_weight: float = 0.30,
         min_liquidity: float = 0.0,
-        similarity_threshold: float = 0.05,
+        similarity_threshold: float = 0.42,
+        min_keyword_signal: float = 0.04,
+        min_semantic_signal: float = 0.22,
+        min_text_overlap_tokens: int = 1,
     ) -> list[RetrievalCandidate]:
         """Retrieve candidate markets for an event.
 
@@ -76,6 +81,9 @@ class HybridRetriever:
             event_weight: Weight for event-type category affinity.
             min_liquidity: Minimum liquidity filter.
             similarity_threshold: Minimum combined score to include.
+            min_keyword_signal: Floor for lexical signal.
+            min_semantic_signal: Floor for semantic signal.
+            min_text_overlap_tokens: Minimum overlap between event and market tokens.
 
         Returns:
             List of RetrievalCandidate sorted by combined_score desc.
@@ -90,6 +98,7 @@ class HybridRetriever:
 
         # Category filter based on event type affinity
         affinity_categories = event.category_affinities
+        event_tokens = self._event_alignment_tokens(event)
 
         # Search the index (keyword + semantic)
         # Don't category-filter at the index level -- we'll boost by affinity instead
@@ -113,8 +122,29 @@ class HybridRetriever:
             if affinity_categories and market.category:
                 if market.category in affinity_categories:
                     event_score = 1.0
-                else:
-                    event_score = 0.1  # Small boost for any active market
+
+            has_textual_signal = (
+                result.keyword_score >= min_keyword_signal
+                or result.semantic_score >= min_semantic_signal
+            )
+            if not has_textual_signal:
+                continue
+
+            market_tokens = set(
+                _tokenize(
+                    " ".join(
+                        [
+                            market.question,
+                            market.event_title,
+                            market.slug,
+                            " ".join(market.tags or []),
+                        ]
+                    )
+                )
+            )
+            overlap_count = len(event_tokens.intersection(market_tokens))
+            if min_text_overlap_tokens > 0 and overlap_count < min_text_overlap_tokens:
+                continue
 
             # Weighted combination
             combined = (
@@ -134,6 +164,8 @@ class HybridRetriever:
                         no_price=market.no_price,
                         liquidity=market.liquidity,
                         slug=market.slug,
+                        end_date=market.end_date,
+                        tags=list(market.tags or []),
                         keyword_score=result.keyword_score,
                         semantic_score=result.semantic_score,
                         event_score=event_score,
@@ -143,3 +175,12 @@ class HybridRetriever:
 
         candidates.sort(key=lambda c: c.combined_score, reverse=True)
         return candidates[:top_k]
+
+    @staticmethod
+    def _event_alignment_tokens(event: ExtractedEvent) -> set[str]:
+        terms = []
+        terms.extend(event.key_entities or [])
+        terms.extend(event.actors or [])
+        if event.action:
+            terms.append(event.action)
+        return set(_tokenize(" ".join(t for t in terms if isinstance(t, str))))

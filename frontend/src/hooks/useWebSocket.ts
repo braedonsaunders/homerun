@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { normalizeUtcTimestampsInPlace } from '../lib/timestamps'
 
 interface WebSocketMessage {
   type: string
@@ -48,6 +49,7 @@ function sharedConnect(url: string) {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
+        normalizeUtcTimestampsInPlace(message)
         listeners.forEach((fn) => fn(message))
       } catch {
         // ignore malformed messages

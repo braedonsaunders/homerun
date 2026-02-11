@@ -81,6 +81,7 @@ class IndexedMarket:
     liquidity: float = 0.0
     slug: str = ""
     end_date: Optional[str] = None
+    tags: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     embedding: Optional[np.ndarray] = None
 
@@ -170,6 +171,9 @@ class MarketWatcherIndex:
                 return self._model is not None
             if _HAS_TRANSFORMERS:
                 try:
+                    # Avoid startup hangs when DNS/network is unavailable.
+                    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
                     device = os.environ.get("EMBEDDING_DEVICE", "cpu")
                     self._model = SentenceTransformer(self._model_name, device=device)
                     self._model.encode(
@@ -204,13 +208,17 @@ class MarketWatcherIndex:
         # Tokenize for keyword search
         tokens_list = []
         for m in markets:
-            text = f"{m.question} {m.event_title} {m.category}"
+            tags_text = " ".join(m.tags or [])
+            text = f"{m.question} {m.event_title} {m.category} {tags_text} {m.slug}"
             m.keywords = _tokenize(text)
             tokens_list.append(m.keywords)
 
         # Embed for semantic search
         if self._model is not None and markets:
-            texts = [f"{m.question} {m.event_title}" for m in markets]
+            texts = [
+                f"{m.question} {m.event_title} {m.category} {' '.join(m.tags or [])} {m.slug}"
+                for m in markets
+            ]
             try:
                 embs = self._model.encode(
                     texts, show_progress_bar=False, normalize_embeddings=True

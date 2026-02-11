@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Enum as SQLEnum,
     Index,
+    UniqueConstraint,
     event,
     inspect as sa_inspect,
     text,
@@ -681,11 +682,17 @@ class AppSettings(Base):
     # LLM/AI Service Settings
     openai_api_key = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
-    llm_provider = Column(String, default="none")  # none, openai, anthropic
+    llm_provider = Column(
+        String, default="none"
+    )  # none, openai, anthropic, google, xai, deepseek, ollama, lmstudio
     llm_model = Column(String, nullable=True)
     google_api_key = Column(String, nullable=True)
     xai_api_key = Column(String, nullable=True)
     deepseek_api_key = Column(String, nullable=True)
+    ollama_api_key = Column(String, nullable=True)
+    ollama_base_url = Column(String, nullable=True)
+    lmstudio_api_key = Column(String, nullable=True)
+    lmstudio_base_url = Column(String, nullable=True)
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
@@ -840,10 +847,15 @@ class AppSettings(Base):
     news_workflow_auto_run = Column(Boolean, default=True)
     news_workflow_top_k = Column(Integer, default=8)
     news_workflow_rerank_top_n = Column(Integer, default=5)
-    news_workflow_similarity_threshold = Column(Float, default=0.35)
+    news_workflow_similarity_threshold = Column(Float, default=0.42)
     news_workflow_keyword_weight = Column(Float, default=0.25)
     news_workflow_semantic_weight = Column(Float, default=0.45)
     news_workflow_event_weight = Column(Float, default=0.30)
+    news_workflow_require_verifier = Column(Boolean, default=True)
+    news_workflow_market_min_liquidity = Column(Float, default=500.0)
+    news_workflow_market_max_days_to_resolution = Column(Integer, default=365)
+    news_workflow_min_keyword_signal = Column(Float, default=0.04)
+    news_workflow_min_semantic_signal = Column(Float, default=0.22)
     news_workflow_min_edge_percent = Column(Float, default=8.0)
     news_workflow_min_confidence = Column(Float, default=0.6)
     news_workflow_require_second_source = Column(Boolean, default=False)
@@ -931,7 +943,7 @@ class LLMModelCache(Base):
     id = Column(String, primary_key=True)
     provider = Column(
         String, nullable=False
-    )  # openai, anthropic, google, xai, deepseek
+    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model_id = Column(String, nullable=False)  # The model identifier used in API calls
     display_name = Column(String, nullable=True)  # Human-readable name
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1216,7 +1228,7 @@ class LLMUsageLog(Base):
     id = Column(String, primary_key=True)
     provider = Column(
         String, nullable=False
-    )  # openai, anthropic, google, xai, deepseek
+    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model = Column(String, nullable=False)
 
     # Usage
@@ -1338,6 +1350,14 @@ class DiscoveredWallet(Base):
     # Entity clustering
     cluster_id = Column(String, nullable=True)  # Which cluster this wallet belongs to
 
+    # Insider detection (balanced mode)
+    insider_score = Column(Float, default=0.0)
+    insider_confidence = Column(Float, default=0.0)
+    insider_sample_size = Column(Integer, default=0)
+    insider_last_scored_at = Column(DateTime, nullable=True)
+    insider_metrics_json = Column(JSON, nullable=True)
+    insider_reasons_json = Column(JSON, default=list)
+
     __table_args__ = (
         Index("idx_discovered_rank", "rank_score"),
         Index("idx_discovered_pnl", "total_pnl"),
@@ -1349,6 +1369,7 @@ class DiscoveredWallet(Base):
         Index("idx_discovered_composite", "composite_score"),
         Index("idx_discovered_in_pool", "in_top_pool"),
         Index("idx_discovered_last_trade", "last_trade_at"),
+        Index("idx_discovered_insider_score", "insider_score"),
     )
 
 
@@ -1399,6 +1420,50 @@ class WalletCluster(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (Index("idx_cluster_pnl", "combined_pnl"),)
+
+
+class TraderGroup(Base):
+    """User-defined or auto-suggested group of traders to monitor together."""
+
+    __tablename__ = "trader_groups"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    source_type = Column(String, default="manual")  # manual, suggested_cluster, suggested_tag, suggested_pool
+    suggestion_key = Column(String, nullable=True)
+    criteria = Column(JSON, default=dict)
+    auto_track_members = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_trader_group_active", "is_active"),
+        Index("idx_trader_group_source", "source_type"),
+    )
+
+
+class TraderGroupMember(Base):
+    """Member wallet within a tracked trader group."""
+
+    __tablename__ = "trader_group_members"
+
+    id = Column(String, primary_key=True)
+    group_id = Column(
+        String, ForeignKey("trader_groups.id", ondelete="CASCADE"), nullable=False
+    )
+    wallet_address = Column(String, nullable=False)
+    source = Column(String, default="manual")  # manual, suggested, imported
+    confidence = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "wallet_address", name="uq_group_wallet"),
+        Index("idx_trader_group_member_group", "group_id"),
+        Index("idx_trader_group_member_wallet", "wallet_address"),
+    )
 
 
 class MarketConfluenceSignal(Base):
@@ -1737,6 +1802,252 @@ class WeatherTradeIntent(Base):
     )
 
 
+class InsiderTradeIntent(Base):
+    """Execution-oriented insider trade intent generated from wallet behavior signals."""
+
+    __tablename__ = "insider_trade_intents"
+
+    id = Column(String, primary_key=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=False)
+    direction = Column(String, nullable=False)  # buy_yes | buy_no
+    entry_price = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    insider_score = Column(Float, nullable=True)
+    wallet_addresses_json = Column(JSON, default=list)
+    suggested_size_usd = Column(Float, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    signal_key = Column(String, nullable=True, index=True)
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_insider_intent_created", "created_at"),
+        Index("idx_insider_intent_status", "status"),
+        Index("idx_insider_intent_market", "market_id"),
+        Index("idx_insider_intent_signal", "signal_key", unique=True),
+    )
+
+
+# ==================== NORMALIZED TRADE SIGNAL BUS ====================
+
+
+class TradeSignal(Base):
+    """Normalized cross-source trade signal emitted by domain workers."""
+
+    __tablename__ = "trade_signals"
+
+    id = Column(String, primary_key=True)
+    source = Column(String, nullable=False, index=True)
+    source_item_id = Column(String, nullable=True)
+    signal_type = Column(String, nullable=False)
+    strategy_type = Column(String, nullable=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=True)
+    direction = Column(String, nullable=True)  # buy_yes | buy_no | hold
+    entry_price = Column(Float, nullable=True)
+    effective_price = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    liquidity = Column(Float, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    status = Column(
+        String, nullable=False, default="pending"
+    )  # pending | selected | submitted | executed | skipped | expired | failed
+    payload_json = Column(JSON, nullable=True)
+    dedupe_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_trade_signals_created", "created_at"),
+        Index("idx_trade_signals_source_status", "source", "status"),
+        Index("idx_trade_signals_market_status", "market_id", "status"),
+        UniqueConstraint("source", "dedupe_key", name="uq_trade_signals_source_dedupe"),
+    )
+
+
+class TradeSignalSnapshot(Base):
+    """Aggregated signal counts/freshness per source for UI and health."""
+
+    __tablename__ = "trade_signal_snapshots"
+
+    source = Column(String, primary_key=True)
+    pending_count = Column(Integer, default=0)
+    selected_count = Column(Integer, default=0)
+    submitted_count = Column(Integer, default=0)
+    executed_count = Column(Integer, default=0)
+    skipped_count = Column(Integer, default=0)
+    expired_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    latest_signal_at = Column(DateTime, nullable=True)
+    oldest_pending_at = Column(DateTime, nullable=True)
+    freshness_seconds = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    stats_json = Column(JSON, default=dict)
+
+
+# ==================== WORKER RUNTIME STATE ====================
+
+
+class WorkerControl(Base):
+    """Generic worker control row for independently owned worker loops."""
+
+    __tablename__ = "worker_control"
+
+    worker_name = Column(String, primary_key=True)
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    interval_seconds = Column(Integer, default=60)
+    requested_run_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WorkerSnapshot(Base):
+    """Latest worker status snapshot for API/websocket health surfaces."""
+
+    __tablename__ = "worker_snapshot"
+
+    worker_name = Column(String, primary_key=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    running = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    current_activity = Column(String, nullable=True)
+    interval_seconds = Column(Integer, default=60)
+    lag_seconds = Column(Float, nullable=True)
+    last_error = Column(Text, nullable=True)
+    stats_json = Column(JSON, default=dict)
+
+
+# ==================== AUTOTRADER PERSISTENCE ====================
+
+
+class AutoTraderControl(Base):
+    """Control flags for the dedicated autotrader worker loop."""
+
+    __tablename__ = "auto_trader_control"
+
+    id = Column(String, primary_key=True, default="default")
+    is_enabled = Column(Boolean, default=False)
+    is_paused = Column(Boolean, default=True)
+    mode = Column(String, default="paper")
+    run_interval_seconds = Column(Integer, default=2)
+    requested_run_at = Column(DateTime, nullable=True)
+    kill_switch = Column(Boolean, default=False)
+    settings_json = Column(JSON, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutoTraderSnapshot(Base):
+    """Latest autotrader status/performance snapshot."""
+
+    __tablename__ = "auto_trader_snapshot"
+
+    id = Column(String, primary_key=True, default="latest")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    running = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=False)
+    current_activity = Column(String, nullable=True)
+    interval_seconds = Column(Integer, default=2)
+    signals_seen = Column(Integer, default=0)
+    signals_selected = Column(Integer, default=0)
+    decisions_count = Column(Integer, default=0)
+    trades_count = Column(Integer, default=0)
+    open_positions = Column(Integer, default=0)
+    daily_pnl = Column(Float, default=0.0)
+    last_error = Column(Text, nullable=True)
+    stats_json = Column(JSON, default=dict)
+
+
+class AutoTraderPolicy(Base):
+    """Source-level and global policies used by autotrader selection/risk engine."""
+
+    __tablename__ = "auto_trader_policies"
+
+    policy_key = Column(String, primary_key=True)  # global | source:<name>
+    source = Column(String, nullable=True, index=True)  # null when global policy row
+    enabled = Column(Boolean, default=True)
+    weight = Column(Float, default=1.0)
+    daily_budget_usd = Column(Float, default=100.0)
+    max_open_positions = Column(Integer, default=10)
+    min_signal_score = Column(Float, default=0.0)
+    size_multiplier = Column(Float, default=1.0)
+    cooldown_seconds = Column(Integer, default=0)
+    max_daily_loss = Column(Float, nullable=True)
+    max_total_open_positions = Column(Integer, nullable=True)
+    max_per_market_exposure = Column(Float, nullable=True)
+    max_per_event_exposure = Column(Float, nullable=True)
+    kill_switch = Column(Boolean, nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutoTraderDecision(Base):
+    """Audit log for all autotrader decisions, including skipped signals."""
+
+    __tablename__ = "auto_trader_decisions"
+
+    id = Column(String, primary_key=True)
+    signal_id = Column(
+        String, ForeignKey("trade_signals.id", ondelete="SET NULL"), nullable=True
+    )
+    source = Column(String, nullable=False, index=True)
+    decision = Column(String, nullable=False)  # selected | skipped | submitted | executed | failed
+    reason = Column(Text, nullable=True)
+    score = Column(Float, nullable=True)
+    policy_snapshot_json = Column(JSON, default=dict)
+    risk_snapshot_json = Column(JSON, default=dict)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_auto_trader_decisions_created", "created_at"),
+        Index("idx_auto_trader_decisions_signal", "signal_id"),
+        Index("idx_auto_trader_decisions_decision", "decision"),
+    )
+
+
+class AutoTraderTrade(Base):
+    """Persisted execution records tied back to originating normalized signals."""
+
+    __tablename__ = "auto_trader_trades"
+
+    id = Column(String, primary_key=True)
+    signal_id = Column(String, ForeignKey("trade_signals.id"), nullable=False, index=True)
+    decision_id = Column(
+        String, ForeignKey("auto_trader_decisions.id", ondelete="SET NULL"), nullable=True
+    )
+    source = Column(String, nullable=False, index=True)
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=True)
+    direction = Column(String, nullable=True)
+    mode = Column(String, nullable=False, default="paper")
+    status = Column(String, nullable=False, default="submitted")
+    notional_usd = Column(Float, nullable=True)
+    entry_price = Column(Float, nullable=True)
+    effective_price = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    reason = Column(Text, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    executed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_auto_trader_trades_created", "created_at"),
+        Index("idx_auto_trader_trades_status", "status"),
+    )
+
+
 # ==================== DATABASE SETUP ====================
 
 # SQLite-specific: improve concurrency (WAL + busy_timeout applied in _set_sqlite_pragma)
@@ -1828,7 +2139,7 @@ def _fix_enum_values(connection):
 
 
 def _prepare_news_uniqueness(connection):
-    """Best-effort cleanup so unique news indexes can be created safely."""
+    """Best-effort cleanup so unique intent/finding indexes can be created safely."""
     inspector = sa_inspect(connection)
     existing_tables = set(inspector.get_table_names())
     dialect = connection.dialect.name
@@ -1873,6 +2184,24 @@ def _prepare_news_uniqueness(connection):
                 )
             )
 
+    if "insider_trade_intents" in existing_tables:
+        cols = {c["name"] for c in inspector.get_columns("insider_trade_intents")}
+        if "signal_key" in cols:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM insider_trade_intents
+                    WHERE signal_key IS NOT NULL
+                      AND rowid NOT IN (
+                        SELECT MAX(rowid)
+                        FROM insider_trade_intents
+                        WHERE signal_key IS NOT NULL
+                        GROUP BY signal_key
+                      )
+                    """
+                )
+            )
+
 
 def _migrate_schema(connection):
     """Add missing columns to existing tables (SQLite ALTER TABLE ADD COLUMN)."""
@@ -1899,6 +2228,30 @@ def _migrate_schema(connection):
             connection.execute(text(stmt))
 
     _fix_enum_values(connection)
+
+    # Backfill new news workflow precision guard settings for legacy rows.
+    if "app_settings" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    """
+                    UPDATE app_settings
+                    SET
+                        news_workflow_similarity_threshold = CASE
+                            WHEN news_workflow_similarity_threshold IS NULL THEN 0.42
+                            WHEN news_workflow_similarity_threshold = 0.35 THEN 0.42
+                            ELSE news_workflow_similarity_threshold
+                        END,
+                        news_workflow_require_verifier = COALESCE(news_workflow_require_verifier, 1),
+                        news_workflow_market_min_liquidity = COALESCE(news_workflow_market_min_liquidity, 500.0),
+                        news_workflow_market_max_days_to_resolution = COALESCE(news_workflow_market_max_days_to_resolution, 365),
+                        news_workflow_min_keyword_signal = COALESCE(news_workflow_min_keyword_signal, 0.04),
+                        news_workflow_min_semantic_signal = COALESCE(news_workflow_min_semantic_signal, 0.22)
+                    """
+                )
+            )
+        except Exception as e:
+            logger.debug("app_settings news precision backfill skipped: %s", e)
 
     # Ensure composite index for usage stats (requested_at, success)
     if "llm_usage_log" in existing_tables:
@@ -1934,6 +2287,17 @@ def _migrate_schema(connection):
             )
         except Exception as e:
             logger.debug("idx_news_intent_signal may already exist: %s", e)
+
+    if "insider_trade_intents" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_insider_intent_signal "
+                    "ON insider_trade_intents(signal_key)"
+                )
+            )
+        except Exception as e:
+            logger.debug("idx_insider_intent_signal may already exist: %s", e)
 
 
 async def init_database():

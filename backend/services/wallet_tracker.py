@@ -66,8 +66,26 @@ class WalletTracker:
 
         return None
 
-    async def add_wallet(self, address: str, label: str = None):
-        """Add a wallet to track (persisted to database)"""
+    async def add_wallet(
+        self,
+        address: str,
+        label: str = None,
+        *,
+        fetch_initial: bool = True,
+    ):
+        """Add a wallet to track (persisted to database).
+
+        Parameters
+        ----------
+        address : str
+            Wallet address to track.
+        label : str | None
+            Optional display label.
+        fetch_initial : bool
+            When True, fetch username/positions/trades immediately.
+            Group operations can set this to False to avoid expensive
+            N-wallet bootstrap calls in a single request.
+        """
         await self._ensure_initialized()
         address_lower = address.lower()
 
@@ -81,8 +99,9 @@ class WalletTracker:
                 session.add(wallet)
                 await session.commit()
 
-        # Look up username
-        username = await self._lookup_username(address)
+        username = None
+        if fetch_initial:
+            username = await self._lookup_username(address)
 
         # Add to in-memory cache
         self.tracked_wallets[address_lower] = {
@@ -94,8 +113,9 @@ class WalletTracker:
             "recent_trades": [],
         }
 
-        # Fetch initial state
-        await self._update_wallet(address)
+        # Fetch initial state only when requested.
+        if fetch_initial:
+            await self._update_wallet(address)
 
     async def remove_wallet(self, address: str):
         """Remove a wallet from tracking"""

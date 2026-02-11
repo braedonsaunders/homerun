@@ -107,8 +107,6 @@ class NewsMarketMatch:
 
 # Default model: small, fast, runs on CPU, 384 dimensions
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
-
-
 class SemanticMatcher:
     """
     Matches news articles to prediction markets using vector similarity.
@@ -139,6 +137,10 @@ class SemanticMatcher:
                 return self._model is not None
             if _HAS_TRANSFORMERS:
                 try:
+                    # Force local-cache/offline model loading so DNS/network
+                    # failures never block startup.
+                    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
                     # Force CPU to avoid MPS/CUDA segfaults in threaded context
                     device = os.environ.get("EMBEDDING_DEVICE", "cpu")
                     self._model = SentenceTransformer(self._model_name, device=device)

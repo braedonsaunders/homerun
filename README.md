@@ -193,7 +193,7 @@ Don't build a strategy — copy someone who already has one.
 
 ### AI Intelligence Layer
 
-LLM-powered analysis with multi-provider support (OpenAI, Claude, Gemini, Grok, DeepSeek):
+LLM-powered analysis with multi-provider support (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio):
 
 - **ReAct agent loop** — reasoning + tool use for market analysis
 - **LLM-as-judge scoring** — profit viability, resolution safety, execution feasibility
@@ -458,7 +458,7 @@ tui.py                           # Terminal UI (Textual + Rich)
 | **Database** | SQLite (zero-config, auto-created) |
 | **Real-time** | WebSockets · React Query · Framer Motion |
 | **Trading** | Polymarket CLOB · Kalshi API · Polygon RPC |
-| **AI** | Multi-provider LLM (OpenAI, Claude, Gemini, Grok, DeepSeek) · ReAct agent |
+| **AI** | Multi-provider LLM (OpenAI, Claude, Gemini, Grok, DeepSeek, Ollama, LM Studio) · ReAct agent |
 | **ML** | Custom logistic regression · FAISS (optional) · sentence-transformers (optional) |
 | **Crypto** | Chainlink oracle feeds · Binary market scanner |
 | **Notifications** | Telegram Bot API |

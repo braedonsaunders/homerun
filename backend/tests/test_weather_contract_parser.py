@@ -22,6 +22,34 @@ def test_parse_temperature_contract_with_location_and_threshold():
     assert parsed.threshold_c is not None
 
 
+def test_parse_grouped_temperature_range_contract():
+    parsed = parse_weather_contract(
+        "Highest temperature in New York City on February 11?",
+        group_item_title="40-41°F",
+    )
+    assert parsed is not None
+    assert parsed.metric == "temp_range"
+    assert parsed.location == "New York City"
+    assert parsed.raw_threshold_low == 40.0
+    assert parsed.raw_threshold_high == 41.0
+    assert parsed.raw_unit == "F"
+    assert parsed.threshold_c_low is not None
+    assert parsed.threshold_c_high is not None
+
+
+def test_parse_grouped_temperature_threshold_contract():
+    parsed = parse_weather_contract(
+        "Highest temperature in Berlin on Feb 11?",
+        group_item_title="12°C or above",
+    )
+    assert parsed is not None
+    assert parsed.metric == "temp_threshold"
+    assert parsed.operator == "gt"
+    assert parsed.location == "Berlin"
+    assert parsed.raw_threshold == 12.0
+    assert parsed.raw_unit == "C"
+
+
 def test_parse_precipitation_contract():
     parsed = parse_weather_contract(
         "Will it rain in Seattle on February 14, 2026?"
@@ -32,9 +60,21 @@ def test_parse_precipitation_contract():
     assert parsed.location == "Seattle"
 
 
+def test_parse_quantitative_precipitation_contract_returns_none():
+    parsed = parse_weather_contract(
+        "Will NYC have between 3 and 4 inches of precipitation in February?"
+    )
+    assert parsed is None
+
+
 def test_parse_unsupported_contract_returns_none():
     parsed = parse_weather_contract("Will Bitcoin be above $100k by Friday?")
     assert parsed is None
+
+
+def test_parse_precipitation_does_not_match_substrings():
+    assert parse_weather_contract("Will Ukraine qualify for the 2026 FIFA World Cup?") is None
+    assert parse_weather_contract("Will Train Dreams win Best Picture?") is None
 
 
 def test_parse_uses_resolution_date_when_question_has_no_date():

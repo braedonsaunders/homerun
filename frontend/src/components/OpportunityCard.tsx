@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
+import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import { Opportunity, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
@@ -206,27 +207,11 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const market = opportunity.markets[0]
   const sparkData = useMemo(() => {
     if (!market) return { yes: [], no: [] }
-
-    const history = Array.isArray(market.price_history) ? market.price_history : []
-    const yesFromHistory = history
-      .map((p) => Number(p?.yes))
-      .filter((v) => Number.isFinite(v))
-    const noFromHistory = history
-      .map((p) => Number(p?.no))
-      .filter((v) => Number.isFinite(v))
-
-    if (yesFromHistory.length >= 2 && noFromHistory.length >= 2) {
-      return { yes: yesFromHistory, no: noFromHistory }
-    }
-
-    // Flat fallback with current live values (real data, single-point history).
-    const yesNow = Number(market.yes_price)
-    const noNow = Number(market.no_price)
-    if (Number.isFinite(yesNow) && Number.isFinite(noNow)) {
-      return { yes: [yesNow, yesNow], no: [noNow, noNow] }
-    }
-
-    return { yes: [], no: [] }
+    return buildYesNoSparklineSeries(
+      market.price_history,
+      market.yes_price,
+      market.no_price
+    )
   }, [market?.id, market?.yes_price, market?.no_price, market?.price_history])
 
   // Accent bar color
@@ -247,6 +232,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
     ? buildKalshiMarketUrl({
         marketTicker: kalshiMarket.id,
         eventTicker: (kalshiMarket as any).event_slug,
+        eventSlug: (kalshiMarket as any).slug,
       })
     : null
 
@@ -601,6 +587,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                     ? buildKalshiMarketUrl({
                         marketTicker: mkt.id,
                         eventTicker: (mkt as any).event_slug,
+                        eventSlug: (mkt as any).slug,
                       })
                     : buildPolymarketMarketUrl({
                         eventSlug: (mkt as any).event_slug || opportunity.event_slug,
@@ -706,6 +693,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                         ? buildKalshiMarketUrl({
                             marketTicker: mkt.id,
                             eventTicker: (mkt as any).event_slug,
+                            eventSlug: (mkt as any).slug,
                           })
                         : buildPolymarketMarketUrl({
                             eventSlug: (mkt as any).event_slug || opportunity.event_slug,

@@ -28,6 +28,7 @@ class RerankedCandidate:
     relevance: float  # 0-1 from LLM
     rationale: str
     rerank_score: float  # Final combined score
+    used_llm: bool = False
 
     @property
     def market_id(self) -> str:
@@ -117,6 +118,7 @@ class Reranker:
                 relevance=c.combined_score,
                 rationale="Retrieval score (LLM unavailable)",
                 rerank_score=c.combined_score,
+                used_llm=False,
             )
             for c in candidates
         ]
@@ -150,7 +152,9 @@ class Reranker:
             "the market is asking about.\n"
             "- A score of 0.5 means the article is tangentially related.\n"
             "- A score of 0.0 means the article has nothing to do with the market.\n"
-            "- Be strict: most articles are NOT directly relevant to most markets."
+            "- Be strict: most articles are NOT directly relevant to most markets.\n"
+            "- Only score high when the article and market reference the same "
+            "underlying event, not just the same broad category."
         )
 
         # Build market list
@@ -206,6 +210,7 @@ class Reranker:
                         relevance=relevance,
                         rationale=rationale,
                         rerank_score=rerank_score,
+                        used_llm=True,
                     )
                 )
 
@@ -219,6 +224,7 @@ class Reranker:
                             relevance=0.0,
                             rationale="Not scored by LLM",
                             rerank_score=c.combined_score * 0.3,
+                            used_llm=False,
                         )
                     )
 

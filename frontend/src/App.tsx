@@ -27,7 +27,6 @@ import {
   Brain,
   Sparkles,
   Command,
-  Copy,
   Globe,
   LayoutGrid,
   List,
@@ -74,7 +73,6 @@ import SimulationPanel from './components/SimulationPanel'
 import LiveAccountPanel from './components/LiveAccountPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
-import CopyTradingPanel from './components/CopyTradingPanel'
 import PositionsPanel from './components/PositionsPanel'
 import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
@@ -96,7 +94,6 @@ import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
-type TradingSubTab = 'auto' | 'copy'
 
 const ITEMS_PER_PAGE = 20
 
@@ -116,7 +113,6 @@ function App() {
   const [accountMode] = useAtom(accountModeAtom)
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
-  const [tradingSubTab, setTradingSubTab] = useState<TradingSubTab>('auto')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(0)
@@ -693,7 +689,7 @@ function App() {
                       )}
                     >
                       <Activity className="w-3.5 h-3.5" />
-                      Tracked Traders
+                      Traders
                     </Button>
                     <Button
                       variant="outline"
@@ -1035,6 +1031,7 @@ function App() {
                     <WeatherOpportunitiesPanel onExecute={setExecutingOpportunity} />
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
+                      mode="opportunities"
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
                         setActiveTab('traders')
@@ -1308,44 +1305,8 @@ function App() {
             {/* ==================== Trading ==================== */}
             {activeTab === 'trading' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
-                {/* Sub-tab bar */}
-                <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTradingSubTab('auto')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      tradingSubTab === 'auto'
-                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <Bot className="w-3.5 h-3.5" />
-                    Auto Trader
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setTradingSubTab('copy')}
-                    className={cn(
-                      "gap-1.5 text-xs h-8",
-                      tradingSubTab === 'copy'
-                        ? "bg-purple-500/20 text-purple-400 border-purple-500/30 hover:bg-purple-500/30 hover:text-purple-400"
-                        : "bg-card text-muted-foreground hover:text-foreground border-border"
-                    )}
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    Copy Trading
-                  </Button>
-                </div>
-                <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className={tradingSubTab === 'auto' ? '' : 'hidden'}>
-                    <TradingPanel />
-                  </div>
-                  <div className={tradingSubTab === 'copy' ? '' : 'hidden'}>
-                    <CopyTradingPanel />
-                  </div>
+                <div className="flex-1 overflow-hidden px-6 py-4 min-h-0">
+                  <TradingPanel />
                 </div>
               </div>
             )}

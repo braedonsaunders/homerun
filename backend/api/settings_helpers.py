@@ -115,6 +115,10 @@ def llm_payload(settings: AppSettings) -> dict[str, Any]:
         "google_api_key": mask_stored_secret(settings.google_api_key),
         "xai_api_key": mask_stored_secret(settings.xai_api_key),
         "deepseek_api_key": mask_stored_secret(settings.deepseek_api_key),
+        "ollama_api_key": mask_stored_secret(settings.ollama_api_key),
+        "ollama_base_url": settings.ollama_base_url,
+        "lmstudio_api_key": mask_stored_secret(settings.lmstudio_api_key),
+        "lmstudio_base_url": settings.lmstudio_base_url,
         "model": settings.llm_model,
         "max_monthly_spend": settings.ai_max_monthly_spend,
     }
@@ -213,6 +217,14 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             set_encrypted_secret(settings, "xai_api_key", llm.xai_api_key)
         if llm.deepseek_api_key is not None:
             set_encrypted_secret(settings, "deepseek_api_key", llm.deepseek_api_key)
+        if llm.ollama_api_key is not None:
+            set_encrypted_secret(settings, "ollama_api_key", llm.ollama_api_key)
+        if llm.ollama_base_url is not None:
+            settings.ollama_base_url = (llm.ollama_base_url or "").strip() or None
+        if llm.lmstudio_api_key is not None:
+            set_encrypted_secret(settings, "lmstudio_api_key", llm.lmstudio_api_key)
+        if llm.lmstudio_base_url is not None:
+            settings.lmstudio_base_url = (llm.lmstudio_base_url or "").strip() or None
         if llm.model is not None:
             settings.llm_model = llm.model or None
             settings.ai_default_model = llm.model or None

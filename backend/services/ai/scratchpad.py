@@ -215,7 +215,7 @@ class ScratchpadService:
             await db.execute(
                 update(ResearchSession)
                 .where(ResearchSession.id == session_id)
-                .values(**update_values)
+                .values(update_values)
             )
 
             await db.commit()

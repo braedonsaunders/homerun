@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _to_iso_utc_z(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.replace(tzinfo=None).isoformat() + "Z"
+
+
 class WorkflowSettingsRequest(BaseModel):
     """Update workflow settings."""
 
@@ -34,6 +44,11 @@ class WorkflowSettingsRequest(BaseModel):
     keyword_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
     semantic_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
     event_weight: Optional[float] = Field(None, ge=0.0, le=1.0)
+    require_verifier: Optional[bool] = None
+    market_min_liquidity: Optional[float] = Field(None, ge=0.0, le=1_000_000.0)
+    market_max_days_to_resolution: Optional[int] = Field(None, ge=1, le=3650)
+    min_keyword_signal: Optional[float] = Field(None, ge=0.0, le=1.0)
+    min_semantic_signal: Optional[float] = Field(None, ge=0.0, le=1.0)
     min_edge_percent: Optional[float] = Field(None, ge=0.0, le=100.0)
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     require_second_source: Optional[bool] = None
@@ -77,7 +92,7 @@ async def _build_status_payload(session: AsyncSession) -> dict:
         "budget_remaining": status.get("budget_remaining"),
         "pending_intents": pending,
         "requested_scan_at": (
-            control.get("requested_scan_at").isoformat()
+            _to_iso_utc_z(control.get("requested_scan_at"))
             if control.get("requested_scan_at")
             else None
         ),
@@ -129,6 +144,9 @@ async def set_workflow_interval(
 async def get_findings(
     min_edge: float = Query(0.0, ge=0, description="Minimum edge %"),
     actionable_only: bool = Query(False, description="Only actionable findings"),
+    include_debug_rejections: bool = Query(
+        False, description="Include non-actionable debug rejection rows"
+    ),
     max_age_hours: int = Query(24, ge=1, le=336, description="Max age in hours"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -144,6 +162,11 @@ async def get_findings(
 
     if actionable_only:
         query = query.where(NewsWorkflowFinding.actionable == True)  # noqa: E712
+    elif not include_debug_rejections:
+        query = query.where(
+            (NewsWorkflowFinding.actionable == True)  # noqa: E712
+            | (NewsWorkflowFinding.confidence > 0.0)
+        )
 
     query = query.order_by(desc(NewsWorkflowFinding.created_at))
 
@@ -180,7 +203,7 @@ async def get_findings(
             "reasoning": r.reasoning,
             "actionable": r.actionable,
             "consumed_by_auto_trader": r.consumed_by_auto_trader,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "created_at": _to_iso_utc_z(r.created_at),
         }
         for r in rows
     ]
@@ -220,8 +243,8 @@ async def get_intents(
             "suggested_size_usd": r.suggested_size_usd,
             "metadata": r.metadata_json,
             "status": r.status,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "consumed_at": r.consumed_at.isoformat() if r.consumed_at else None,
+            "created_at": _to_iso_utc_z(r.created_at),
+            "consumed_at": _to_iso_utc_z(r.consumed_at),
         }
         for r in rows
     ]

@@ -661,20 +661,19 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
             )}
           </div>
 
-          {/* Recent Trades Feed */}
-          {wallets.length > 0 && (
-            <div className="mt-6">
-              <RecentTradesPanel
-                onNavigateToWallet={(address) => {
-                  if (onNavigateToWallet) {
-                    onNavigateToWallet(address)
-                  } else if (onAnalyzeWallet) {
-                    onAnalyzeWallet(address)
-                  }
-                }}
-              />
-            </div>
-          )}
+          {/* Trader Group + List Management */}
+          <div className="mt-6">
+            <RecentTradesPanel
+              mode="management"
+              onNavigateToWallet={(address) => {
+                if (onNavigateToWallet) {
+                  onNavigateToWallet(address)
+                } else if (onAnalyzeWallet) {
+                  onAnalyzeWallet(address)
+                }
+              }}
+            />
+          </div>
         </>
       )}
 

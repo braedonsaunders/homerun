@@ -27,6 +27,7 @@ from services.discovery_shared_state import (
 )
 from services.pause_state import global_pause_state
 from services.wallet_discovery import wallet_discovery
+from services.worker_state import write_worker_snapshot
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO")),
@@ -44,7 +45,7 @@ async def _run_loop() -> None:
             await write_discovery_snapshot(
                 session,
                 {
-                    "running": False,
+                    "running": True,
                     "enabled": True,
                     "run_interval_minutes": settings.DISCOVERY_RUN_INTERVAL_MINUTES,
                     "last_run_at": None,
@@ -52,6 +53,17 @@ async def _run_loop() -> None:
                     "wallets_discovered_last_run": 0,
                     "wallets_analyzed_last_run": 0,
                 },
+            )
+            await write_worker_snapshot(
+                session,
+                "discovery",
+                running=True,
+                enabled=True,
+                current_activity="Discovery worker started; first run pending.",
+                interval_seconds=settings.DISCOVERY_RUN_INTERVAL_MINUTES * 60,
+                last_run_at=None,
+                last_error=None,
+                stats={"wallets_discovered_last_run": 0, "wallets_analyzed_last_run": 0},
             )
     except Exception:
         pass
@@ -86,6 +98,28 @@ async def _run_loop() -> None:
         should_run = requested or should_run_scheduled
 
         if not should_run:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await write_worker_snapshot(
+                        session,
+                        "discovery",
+                        running=True,
+                        enabled=enabled and not paused and not global_pause_state.is_paused,
+                        current_activity=(
+                            "Paused"
+                            if paused or global_pause_state.is_paused
+                            else "Idle - waiting for next discovery cycle."
+                        ),
+                        interval_seconds=interval_minutes * 60,
+                        last_run_at=None,
+                        last_error=None,
+                        stats={
+                            "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
+                            "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                        },
+                    )
+            except Exception:
+                pass
             await asyncio.sleep(10)
             continue
 
@@ -100,6 +134,20 @@ async def _run_loop() -> None:
                         "current_activity": "Scanning trader wallets...",
                     },
                 )
+                await write_worker_snapshot(
+                    session,
+                    "discovery",
+                    running=True,
+                    enabled=not paused,
+                    current_activity="Scanning trader wallets...",
+                    interval_seconds=interval_minutes * 60,
+                    last_run_at=None,
+                    last_error=None,
+                    stats={
+                        "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
+                        "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                    },
+                )
 
             await wallet_discovery.run_discovery(
                 max_markets=settings.DISCOVERY_MAX_MARKETS_PER_RUN,
@@ -111,7 +159,7 @@ async def _run_loop() -> None:
                 await write_discovery_snapshot(
                     session,
                     {
-                        "running": False,
+                        "running": True,
                         "enabled": not paused,
                         "run_interval_minutes": interval_minutes,
                         "last_run_at": wallet_discovery._last_run_at.isoformat()
@@ -122,15 +170,31 @@ async def _run_loop() -> None:
                         "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
                     },
                 )
+                await write_worker_snapshot(
+                    session,
+                    "discovery",
+                    running=True,
+                    enabled=not paused,
+                    current_activity="Idle - waiting for next discovery cycle.",
+                    interval_seconds=interval_minutes * 60,
+                    last_run_at=wallet_discovery._last_run_at.replace(tzinfo=None)
+                    if wallet_discovery._last_run_at
+                    else None,
+                    last_error=None,
+                    stats={
+                        "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
+                        "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                    },
+                )
 
             next_scheduled_run_at = datetime.now(timezone.utc).replace(
                 microsecond=0
             ) + timedelta(minutes=interval_minutes)
             logger.info(
-                "Discovery cycle complete",
-                wallets_discovered=wallet_discovery._wallets_discovered_last_run,
-                wallets_analyzed=wallet_discovery._wallets_analyzed_last_run,
-                next_run_at=next_scheduled_run_at.isoformat(),
+                "Discovery cycle complete: wallets_discovered=%s wallets_analyzed=%s next_run_at=%s",
+                wallet_discovery._wallets_discovered_last_run,
+                wallet_discovery._wallets_analyzed_last_run,
+                next_scheduled_run_at.isoformat(),
             )
         except asyncio.CancelledError:
             raise
@@ -141,11 +205,25 @@ async def _run_loop() -> None:
                 await write_discovery_snapshot(
                     session,
                     {
-                        "running": False,
+                        "running": True,
                         "enabled": not paused,
                         "run_interval_minutes": interval_minutes,
                         "last_run_at": datetime.now(timezone.utc).isoformat(),
                         "current_activity": f"Last discovery run error: {exc}",
+                        "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
+                        "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                    },
+                )
+                await write_worker_snapshot(
+                    session,
+                    "discovery",
+                    running=True,
+                    enabled=not paused,
+                    current_activity=f"Last discovery run error: {exc}",
+                    interval_seconds=interval_minutes * 60,
+                    last_run_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    last_error=str(exc),
+                    stats={
                         "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
                         "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
                     },

@@ -63,9 +63,21 @@ type SubView = 'edges' | 'feed' | 'matches' | 'workflow'
 
 // ─── Helpers ────────────────────────────────────────────────
 
+const ISO_HAS_TIMEZONE_RE = /(Z|[+-]\d{2}:\d{2})$/i
+
+function parseUtcDate(dateStr: string | null | undefined): Date | null {
+  if (!dateStr) return null
+  const trimmed = dateStr.trim()
+  if (!trimmed) return null
+  const normalized = ISO_HAS_TIMEZONE_RE.test(trimmed) ? trimmed : `${trimmed}Z`
+  const date = new Date(normalized)
+  if (isNaN(date.getTime())) return null
+  return date
+}
+
 function timeAgo(dateStr: string | null | undefined): string {
-  if (!dateStr) return ''
-  const date = new Date(dateStr)
+  const date = parseUtcDate(dateStr)
+  if (!date) return ''
   const ms = date.getTime()
   if (isNaN(ms)) return ''
   const seconds = Math.floor((Date.now() - ms) / 1000)
@@ -74,6 +86,12 @@ function timeAgo(dateStr: string | null | undefined): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
   return `${Math.floor(seconds / 86400)}d ago`
+}
+
+function articleRecencyMs(article: NewsArticle): number {
+  return parseUtcDate(article.published)?.getTime()
+    ?? parseUtcDate(article.fetched_at)?.getTime()
+    ?? 0
 }
 
 function edgeColor(edge: number): string {
@@ -234,7 +252,10 @@ function EdgeCard({ edge, onForecast }: { edge: NewsEdge; onForecast: (edge: New
 // ─── Article Row ────────────────────────────────────────────
 
 function ArticleRow({ article }: { article: NewsArticle }) {
-  const timeStr = timeAgo(article.published) || timeAgo(article.fetched_at)
+  const publishedAgo = timeAgo(article.published)
+  const fetchedAgo = timeAgo(article.fetched_at)
+  const timeStr = publishedAgo || fetchedAgo
+  const timeLabel = publishedAgo ? `Published ${timeStr}` : `Added ${timeStr}`
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30 rounded-lg transition-colors group">
       <div className="shrink-0 text-base">{CATEGORY_ICONS[article.category] || '📰'}</div>
@@ -253,7 +274,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
             {article.feed_source.replace('_', ' ')}
           </Badge>
           <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">{article.source}</span>
-          {timeStr && <span className="text-[10px] text-muted-foreground font-data shrink-0">{timeStr}</span>}
+          {timeStr && <span className="text-[10px] text-muted-foreground font-data shrink-0">{timeLabel}</span>}
         </div>
       </div>
       <div className="shrink-0 flex items-center gap-2">
@@ -426,6 +447,10 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
   const [expanded, setExpanded] = useState(false)
   const isBuyYes = finding.direction === 'buy_yes'
   const eventGraph = finding.event_graph as Record<string, unknown> | null
+  const evidence = finding.evidence as Record<string, unknown> | null
+  const rejectionReasons = Array.isArray(evidence?.rejection_reasons)
+    ? evidence.rejection_reasons.filter((reason): reason is string => typeof reason === 'string')
+    : []
   const eventType = typeof eventGraph?.event_type === 'string' ? eventGraph.event_type : null
   const eventAction = typeof eventGraph?.action === 'string' ? eventGraph.action : null
   const eventRegion = typeof eventGraph?.region === 'string' ? eventGraph.region : null
@@ -451,6 +476,9 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
             </Badge>
             {finding.actionable && (
               <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">Actionable</Badge>
+            )}
+            {!finding.actionable && rejectionReasons.length > 0 && (
+              <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-400 border-amber-500/20">Rejected</Badge>
             )}
             {eventType && (
               <Badge variant="outline" className="text-[10px] bg-violet-500/10 text-violet-400 border-violet-500/20">
@@ -516,6 +544,14 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
           <div className="mt-3 pt-3 border-t border-border/30 space-y-2">
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">AI Reasoning</div>
             <p className="text-xs text-muted-foreground leading-relaxed">{finding.reasoning}</p>
+            {rejectionReasons.length > 0 && (
+              <div>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 mt-2">Rejection Reasons</div>
+                <div className="text-[10px] text-amber-300/90 font-mono bg-amber-500/5 border border-amber-500/20 p-2 rounded-lg">
+                  {rejectionReasons.join(', ')}
+                </div>
+              </div>
+            )}
             {eventGraph && (
               <div>
                 <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 mt-2">Event Graph</div>
@@ -607,6 +643,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [showDebugMatches, setShowDebugMatches] = useState(false)
 
   // ─── Workflow Queries ─────────────────────────────────────
 
@@ -617,8 +654,13 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   })
 
   const { data: workflowFindingsData, isLoading: findingsLoading } = useQuery({
-    queryKey: ['news-workflow-findings'],
-    queryFn: () => getNewsWorkflowFindings({ actionable_only: false, max_age_hours: 24, limit: 100 }),
+    queryKey: ['news-workflow-findings', showDebugMatches],
+    queryFn: () => getNewsWorkflowFindings({
+      actionable_only: !showDebugMatches,
+      include_debug_rejections: showDebugMatches,
+      max_age_hours: 24,
+      limit: 100,
+    }),
     refetchInterval: 30000,
     enabled: subView === 'workflow',
   })
@@ -797,15 +839,37 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   // ─── Derived data ─────────────────────────────────────────
 
   // Flatten paginated articles
-  const articles = useMemo(
+  const unsortedArticles = useMemo(
     () => articlesPages?.pages.flatMap(p => p.articles) || [],
     [articlesPages],
+  )
+  const articles = useMemo(
+    () => [...unsortedArticles].sort((a, b) => articleRecencyMs(b) - articleRecencyMs(a)),
+    [unsortedArticles],
   )
   const articlesTotalCount = articlesPages?.pages[0]?.total ?? 0
   const articlesLoadedCount = articles.length
 
   const edges = edgesData?.edges || []
   const matches = matchesData?.matches || []
+  const workflowFindings = useMemo(() => {
+    const findings = workflowFindingsData?.findings || []
+    return [...findings].sort((a, b) => {
+      if (a.actionable !== b.actionable) return a.actionable ? -1 : 1
+      const createdDelta =
+        (parseUtcDate(b.created_at)?.getTime() || 0)
+        - (parseUtcDate(a.created_at)?.getTime() || 0)
+      if (createdDelta !== 0) return createdDelta
+      return b.edge_percent - a.edge_percent
+    })
+  }, [workflowFindingsData])
+  const actionableFindingsCount = useMemo(
+    () => workflowFindings.filter(f => f.actionable).length,
+    [workflowFindings],
+  )
+  const pendingIntentsCount = Number(workflowStatus?.pending_intents ?? 0)
+  const surfacedOpportunities =
+    Number(workflowStatus?.stats?.actionable ?? actionableFindingsCount)
 
   const filteredEdges = useMemo(() => {
     let result = [...edges]
@@ -843,6 +907,10 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
       m.article_title.toLowerCase().includes(q)
     )
   }, [matches, searchFilter])
+
+  const latestFilteredArticle = filteredArticles[0]
+  const latestPublishedAgo = latestFilteredArticle ? timeAgo(latestFilteredArticle.published) : ''
+  const latestAddedAgo = latestFilteredArticle ? timeAgo(latestFilteredArticle.fetched_at) : ''
 
   // ─── Source breakdown ─────────────────────────────────────
 
@@ -922,11 +990,11 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
         <div className="bg-card/60 rounded-xl border border-border/30 p-3">
           <div className="flex items-center gap-2 mb-1">
             <Zap className="w-3.5 h-3.5 text-green-400" />
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Edges Found</span>
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Opportunities</span>
           </div>
-          <div className="text-xl font-bold font-data text-green-400">{edgesData?.total_edges ?? 0}</div>
+          <div className="text-xl font-bold font-data text-green-400">{surfacedOpportunities}</div>
           <div className="text-[10px] text-muted-foreground mt-1">
-            {edges.filter(e => e.edge_percent >= 15).length} high-conviction
+            {pendingIntentsCount} pending intents
           </div>
         </div>
 
@@ -1213,8 +1281,11 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
                   {searchFilter ? ` of ${articlesLoadedCount} loaded` : ''}
                   {articlesTotalCount > articlesLoadedCount ? ` (${articlesTotalCount} total)` : ''}
                 </span>
-                {articles.length > 0 && articles[0].published && (
-                  <span className="font-data">Latest: {timeAgo(articles[0].published) || timeAgo(articles[0].fetched_at)}</span>
+                {latestFilteredArticle && (
+                  <span className="font-data">
+                    {latestPublishedAgo ? `Latest published: ${latestPublishedAgo}` : `Latest added: ${latestAddedAgo || 'n/a'}`}
+                    {latestPublishedAgo && latestAddedAgo ? ` • Latest added: ${latestAddedAgo}` : ''}
+                  </span>
                 )}
               </div>
 
@@ -1521,6 +1592,17 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
             </div>
           )}
 
+          <div className="mb-2 flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-[10px] h-6 px-2 border-border/40"
+              onClick={() => setShowDebugMatches((v) => !v)}
+            >
+              {showDebugMatches ? 'Hide Debug' : 'Debug Matches'}
+            </Button>
+          </div>
+
           {/* Findings */}
           {findingsLoading || runWorkflowMutation.isPending ? (
             <div className="flex flex-col items-center justify-center py-16">
@@ -1534,7 +1616,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
                 </p>
               )}
             </div>
-          ) : (workflowFindingsData?.findings?.length ?? 0) === 0 ? (
+          ) : workflowFindings.length === 0 ? (
             <div className="text-center py-16">
               <Target className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
               <p className="text-muted-foreground">No workflow findings yet</p>
@@ -1547,12 +1629,13 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
               <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <Zap className="w-3 h-3 text-green-400" />
                 Findings ({workflowFindingsData?.total ?? 0})
-                {workflowFindingsData?.findings.filter(f => f.actionable).length
-                  ? ` / ${workflowFindingsData.findings.filter(f => f.actionable).length} actionable`
+                {actionableFindingsCount
+                  ? ` / ${actionableFindingsCount} actionable`
                   : ''}
+                {showDebugMatches ? ' / debug on' : ''}
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
-                {workflowFindingsData?.findings.map((finding) => (
+                {workflowFindings.map((finding) => (
                   <FindingCard key={finding.id} finding={finding} />
                 ))}
               </div>

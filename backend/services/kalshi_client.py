@@ -1,7 +1,7 @@
 import httpx
 import asyncio
 import time
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 
 from models import Market, Event, Token
@@ -316,6 +316,77 @@ class KalshiClient:
             closed=False,
         )
 
+    @staticmethod
+    def _to_number(value: Any) -> Optional[float]:
+        """Best-effort finite float parse."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        if out != out or out in (float("inf"), float("-inf")):
+            return None
+        return out
+
+    @staticmethod
+    def _normalize_probability(value: Any) -> Optional[float]:
+        """Normalize cents/dollars payloads into 0..1 probability."""
+        n = KalshiClient._to_number(value)
+        if n is None:
+            return None
+        if n > 1.0 and n <= 100.0:
+            n = n / 100.0
+        if not (0.0 <= n <= 1.01):
+            return None
+        return max(0.0, min(1.0, n))
+
+    @staticmethod
+    def _extract_candle_yes_price(candle: dict) -> Optional[float]:
+        """Extract a YES close price from Kalshi candlestick payload variants."""
+        if not isinstance(candle, dict):
+            return None
+
+        price_obj = candle.get("price")
+        price_map = price_obj if isinstance(price_obj, dict) else {}
+
+        # Preferred modern schema first (price.close_dollars).
+        candidate_values = [
+            price_map.get("close_dollars"),
+            price_map.get("close"),
+            candle.get("close_dollars"),
+            candle.get("close"),
+            candle.get("last_price"),
+            candle.get("last"),
+        ]
+        for value in candidate_values:
+            prob = KalshiClient._normalize_probability(value)
+            if prob is not None:
+                return prob
+
+        # Fallback: midpoint from YES bid/ask close levels if present.
+        yes_bid = KalshiClient._normalize_probability(
+            price_map.get("yes_bid_close_dollars")
+            or price_map.get("yes_bid_close")
+            or candle.get("yes_bid_close_dollars")
+            or candle.get("yes_bid_close")
+            or candle.get("yes_bid")
+        )
+        yes_ask = KalshiClient._normalize_probability(
+            price_map.get("yes_ask_close_dollars")
+            or price_map.get("yes_ask_close")
+            or candle.get("yes_ask_close_dollars")
+            or candle.get("yes_ask_close")
+            or candle.get("yes_ask")
+        )
+        if yes_bid is not None and yes_ask is not None:
+            return max(0.0, min(1.0, (yes_bid + yes_ask) / 2.0))
+        return yes_bid if yes_bid is not None else yes_ask
+
     # ------------------------------------------------------------------ #
     #  Public API: events
     # ------------------------------------------------------------------ #
@@ -558,6 +629,108 @@ class KalshiClient:
                 "Failed to parse Kalshi market", ticker=market_id, error=str(exc)
             )
             return None
+
+    async def get_market_candlesticks_batch(
+        self,
+        market_tickers: list[str],
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        period_interval: int = 1,
+        include_latest_before_start: bool = True,
+    ) -> dict[str, list[dict[str, float]]]:
+        """Fetch historical YES/NO points for one or more Kalshi markets.
+
+        Uses Kalshi's batch candlesticks endpoint:
+        GET /trade-api/v2/markets/candlesticks
+
+        Returns:
+            {ticker: [{"t": epoch_ms, "yes": float, "no": float}, ...], ...}
+        """
+        tickers = [str(t or "").strip() for t in market_tickers if str(t or "").strip()]
+        if not tickers:
+            return {}
+
+        params: dict[str, Any] = {
+            "market_tickers": ",".join(tickers),
+            "period_interval": max(1, int(period_interval)),
+            "include_latest_candle": "true" if include_latest_before_start else "false",
+        }
+        if start_ts is not None:
+            params["start_ts"] = int(start_ts)
+        if end_ts is not None:
+            params["end_ts"] = int(end_ts)
+
+        try:
+            payload = await self._get("/markets/candlesticks", params=params)
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Kalshi candlesticks request failed",
+                status=exc.response.status_code,
+                detail=exc.response.text[:200],
+                tickers=len(tickers),
+            )
+            return {}
+        except Exception as exc:
+            logger.error(
+                "Kalshi candlesticks request error",
+                error=str(exc),
+                tickers=len(tickers),
+            )
+            return {}
+
+        rows = payload.get("markets", [])
+        if not isinstance(rows, list):
+            return {}
+
+        out: dict[str, list[dict[str, float]]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(
+                row.get("market_ticker")
+                or row.get("ticker")
+                or ""
+            ).strip()
+            if not ticker:
+                continue
+
+            candles = row.get("candlesticks", [])
+            if not isinstance(candles, list):
+                continue
+
+            points: list[dict[str, float]] = []
+            for candle in candles:
+                if not isinstance(candle, dict):
+                    continue
+                ts_raw = (
+                    candle.get("end_period_ts")
+                    or candle.get("period_end_ts")
+                    or candle.get("end_ts")
+                    or candle.get("ts")
+                    or candle.get("t")
+                )
+                ts_num = self._to_number(ts_raw)
+                if ts_num is None:
+                    continue
+                # API timestamps are seconds; tolerate pre-normalized ms input.
+                ts_ms = int(ts_num * 1000.0) if ts_num < 10_000_000_000 else int(ts_num)
+                yes = self._extract_candle_yes_price(candle)
+                if yes is None:
+                    continue
+                no = max(0.0, min(1.0, 1.0 - yes))
+                points.append(
+                    {
+                        "t": float(ts_ms),
+                        "yes": float(round(yes, 6)),
+                        "no": float(round(no, 6)),
+                    }
+                )
+
+            if points:
+                points.sort(key=lambda p: p["t"])
+                out[ticker] = points
+
+        return out
 
     # ------------------------------------------------------------------ #
     #  Public API: batch prices

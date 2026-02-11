@@ -330,6 +330,70 @@ def _default_status() -> dict[str, Any]:
     }
 
 
+def _stable_id_from_opportunity_id(opportunity_id: Optional[str]) -> Optional[str]:
+    """Best-effort stable_id extraction from <stable_id>_<timestamp> IDs."""
+    if not opportunity_id:
+        return None
+    text = str(opportunity_id).strip()
+    if not text:
+        return None
+    parts = text.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return text
+
+
+async def update_opportunity_ai_analysis_in_snapshot(
+    session: AsyncSession,
+    opportunity_id: str,
+    stable_id: Optional[str],
+    ai_analysis: dict[str, Any],
+) -> bool:
+    """Persist ai_analysis into scanner snapshot + opportunity_state for one opportunity."""
+    sid = (stable_id or "").strip() or _stable_id_from_opportunity_id(opportunity_id)
+    oid = (opportunity_id or "").strip()
+    if not oid and not sid:
+        return False
+
+    updated = False
+
+    result = await session.execute(
+        select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
+    )
+    row = result.scalar_one_or_none()
+    if row is not None and isinstance(row.opportunities_json, list):
+        patched_payload: list[dict[str, Any]] = []
+        for item in row.opportunities_json:
+            if not isinstance(item, dict):
+                patched_payload.append(item)
+                continue
+            item_id = str(item.get("id") or "").strip()
+            item_sid = str(item.get("stable_id") or "").strip()
+            if (oid and item_id == oid) or (sid and item_sid == sid):
+                patched = dict(item)
+                patched["ai_analysis"] = ai_analysis
+                patched_payload.append(patched)
+                updated = True
+            else:
+                patched_payload.append(item)
+        if updated:
+            row.opportunities_json = patched_payload
+            row.updated_at = datetime.utcnow()
+
+    if sid:
+        state_row = await session.get(OpportunityState, sid)
+        if state_row is not None and isinstance(state_row.opportunity_json, dict):
+            patched_state = dict(state_row.opportunity_json)
+            patched_state["ai_analysis"] = ai_analysis
+            state_row.opportunity_json = patched_state
+            state_row.last_seen_at = datetime.utcnow()
+            updated = True
+
+    if updated:
+        await session.commit()
+    return updated
+
+
 async def get_opportunities_from_db(
     session: AsyncSession,
     filter: Optional[OpportunityFilter] = None,

@@ -1141,7 +1141,7 @@ class WalletTagger:
         - consistent: roi_std < 15 and sharpe_ratio > 1.0 (if available)
         - high_risk: max_drawdown > 0.3 or anomaly_score > 0.6
         - fading: rolling_pnl["30d"] < 0 when total_pnl > 0
-        - insider_suspect: anomaly_score > 0.7 and "insider_pattern" in strategies
+        - insider_suspect: insider_score >= 0.72 and insider_confidence >= 0.60
         - new_talent: days_active < 30, total_trades >= 20, win_rate > 0.6, total_pnl > 0
         """
         tags = []
@@ -1158,6 +1158,9 @@ class WalletTagger:
         max_drawdown = wallet.max_drawdown
         rolling_pnl = wallet.rolling_pnl or {}
         days_active = wallet.days_active or 0
+        insider_score = wallet.insider_score or 0.0
+        insider_confidence = wallet.insider_confidence or 0.0
+        insider_sample = wallet.insider_sample_size or 0
 
         # smart_predictor
         if (
@@ -1199,7 +1202,7 @@ class WalletTagger:
             tags.append("fading")
 
         # insider_suspect
-        if anomaly_score > 0.7 and "insider_pattern" in strategies:
+        if insider_score >= 0.72 and insider_confidence >= 0.60 and insider_sample >= 25:
             tags.append("insider_suspect")
 
         # new_talent

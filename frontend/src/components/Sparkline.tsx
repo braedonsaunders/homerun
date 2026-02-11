@@ -5,6 +5,8 @@ interface SparklineProps {
   data2?: number[]
   width?: number
   height?: number
+  minValue?: number
+  maxValue?: number
   color?: string
   color2?: string
   lineWidth?: number
@@ -18,6 +20,8 @@ export default function Sparkline({
   data2,
   width = 120,
   height = 32,
+  minValue,
+  maxValue,
   color = '#22c55e',
   color2 = '#3b82f6',
   lineWidth = 1.5,
@@ -45,26 +49,51 @@ export default function Sparkline({
 
     // Combine all data for consistent scaling
     const allData = [...data, ...(data2 || [])]
-    const min = Math.min(...allData)
-    const max = Math.max(...allData)
-    const range = max - min || 1
+    const hasManualScale =
+      Number.isFinite(minValue)
+      && Number.isFinite(maxValue)
+      && Number(maxValue) > Number(minValue)
+    let min = hasManualScale ? Number(minValue) : Math.min(...allData)
+    let max = hasManualScale ? Number(maxValue) : Math.max(...allData)
+    if (!hasManualScale && Number.isFinite(min) && Number.isFinite(max)) {
+      const dynamicRange = max - min
+      const minVisualRange = 0.01
+      if (dynamicRange > 0 && dynamicRange < minVisualRange) {
+        const mid = (min + max) / 2
+        min = mid - minVisualRange / 2
+        max = mid + minVisualRange / 2
+      }
+    }
+    const range = max - min
 
-    const padding = 2
+    const padding = 3
 
-    const drawLine = (points: number[], strokeColor: string) => {
+    const toY = (value: number): number => {
+      if (!(range > 0)) return height / 2
+      return padding + (height - padding * 2) * (1 - (value - min) / range)
+    }
+
+    const drawLine = (
+      points: number[],
+      strokeColor: string,
+      options: { drawFill?: boolean; drawDot?: boolean; width?: number } = {}
+    ) => {
       if (points.length < 2) return
 
       const xStep = (width - padding * 2) / (points.length - 1)
+      const drawFill = options.drawFill ?? true
+      const drawDot = options.drawDot ?? showDots
+      const strokeWidth = options.width ?? lineWidth
 
       ctx.beginPath()
       ctx.strokeStyle = strokeColor
-      ctx.lineWidth = lineWidth
+      ctx.lineWidth = strokeWidth
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
 
       points.forEach((value, i) => {
         const x = padding + i * xStep
-        const y = padding + (height - padding * 2) * (1 - (value - min) / range)
+        const y = toY(value)
 
         if (i === 0) {
           ctx.moveTo(x, y)
@@ -76,9 +105,9 @@ export default function Sparkline({
       ctx.stroke()
 
       // Draw end dot
-      if (showDots && points.length > 0) {
+      if (drawDot && points.length > 0) {
         const lastX = padding + (points.length - 1) * xStep
-        const lastY = padding + (height - padding * 2) * (1 - (points[points.length - 1] - min) / range)
+        const lastY = toY(points[points.length - 1])
         ctx.beginPath()
         ctx.arc(lastX, lastY, 2, 0, Math.PI * 2)
         ctx.fillStyle = strokeColor
@@ -86,6 +115,7 @@ export default function Sparkline({
       }
 
       // Draw gradient fill
+      if (!drawFill) return
       const gradient = ctx.createLinearGradient(0, 0, 0, height)
       gradient.addColorStop(0, strokeColor + '20')
       gradient.addColorStop(1, strokeColor + '00')
@@ -93,7 +123,7 @@ export default function Sparkline({
       ctx.beginPath()
       points.forEach((value, i) => {
         const x = padding + i * xStep
-        const y = padding + (height - padding * 2) * (1 - (value - min) / range)
+        const y = toY(value)
         if (i === 0) ctx.moveTo(x, y)
         else ctx.lineTo(x, y)
       })
@@ -104,12 +134,16 @@ export default function Sparkline({
       ctx.fill()
     }
 
-    // Draw lines
-    drawLine(data, color)
+    // Draw secondary first, then primary so YES is never visually hidden.
     if (data2 && data2.length >= 2) {
-      drawLine(data2, color2)
+      drawLine(data2, color2, {
+        drawFill: false,
+        drawDot: false,
+        width: Math.max(1, lineWidth - 0.2),
+      })
     }
-  }, [data, data2, width, height, color, color2, lineWidth, showDots, animated])
+    drawLine(data, color, { drawFill: true, drawDot: showDots, width: lineWidth })
+  }, [data, data2, width, height, minValue, maxValue, color, color2, lineWidth, showDots, animated])
 
   if (data.length < 2) {
     return <div className={className} style={{ width, height }} />

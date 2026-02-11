@@ -15,6 +15,8 @@ class WeatherForecastInput:
     metric: str
     operator: str
     threshold_c: Optional[float] = None
+    threshold_c_low: Optional[float] = None
+    threshold_c_high: Optional[float] = None
 
 
 @dataclass
