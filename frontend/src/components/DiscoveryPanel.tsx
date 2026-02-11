@@ -368,19 +368,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
           <Card className="border-border">
             <CardContent className="p-3">
               <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
-              <p className="text-sm font-semibold">{poolStats.active_1h} ({poolStats.active_1h_pct.toFixed(1)}%)</p>
+              <p className="text-sm font-semibold">{poolStats.active_1h ?? 0} ({(poolStats.active_1h_pct ?? 0).toFixed(1)}%)</p>
             </CardContent>
           </Card>
           <Card className="border-border">
             <CardContent className="p-3">
               <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
-              <p className="text-sm font-semibold">{poolStats.active_24h} ({poolStats.active_24h_pct.toFixed(1)}%)</p>
+              <p className="text-sm font-semibold">{poolStats.active_24h ?? 0} ({(poolStats.active_24h_pct ?? 0).toFixed(1)}%)</p>
             </CardContent>
           </Card>
           <Card className="border-border">
             <CardContent className="p-3">
               <p className="text-xs text-muted-foreground">Hourly Churn</p>
-              <p className="text-sm font-semibold">{(poolStats.churn_rate * 100).toFixed(2)}%</p>
+              <p className="text-sm font-semibold">{((poolStats.churn_rate ?? 0) * 100).toFixed(2)}%</p>
             </CardContent>
           </Card>
           <Card className="border-border">
