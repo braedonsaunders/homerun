@@ -37,7 +37,9 @@ from textual.widgets import (
 # ---------------------------------------------------------------------------
 BACKEND_PORT = 8000
 FRONTEND_PORT = 3000
-HEALTH_URL = f"http://localhost:{BACKEND_PORT}/health/detailed"
+# Use 127.0.0.1 instead of localhost; on Windows, localhost can resolve to
+# ::1 (IPv6) first while uvicorn only binds 0.0.0.0 (IPv4), causing timeouts.
+HEALTH_URL = f"http://127.0.0.1:{BACKEND_PORT}/health/detailed"
 PROJECT_ROOT = Path(__file__).parent.resolve()
 BACKEND_DIR = PROJECT_ROOT / "backend"
 
@@ -1323,13 +1325,16 @@ class HomerunApp(App):
         )
         self._log_activity("[cyan]Frontend starting...[/]")
         try:
+            # On Windows, npm is a .cmd script; resolve it via shutil.which so
+            # we can avoid shell=True (which wraps in cmd.exe and breaks pipe
+            # handling and process-tree cleanup).
+            npm_bin = shutil.which("npm") or "npm"
             self.frontend_proc = subprocess.Popen(
-                ["npm", "run", "dev"],
+                [npm_bin, "run", "dev"],
                 cwd=str(PROJECT_ROOT / "frontend"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                shell=(sys.platform == "win32"),
             )
         except Exception as e:
             self._enqueue_log(
@@ -1465,12 +1470,16 @@ class HomerunApp(App):
             pass
 
     def _apply_health_offline(self) -> None:
-        """Mark backend as offline."""
+        """Mark backend as offline; check worker/frontend processes directly."""
         self.backend_healthy = False
         self._update_platform_item("svc-backend", "BACKEND", False)
-        self._update_platform_item("svc-frontend", "FRONTEND", False)
+        # Frontend and WS feeds depend on backend, mark offline
+        frontend_alive = self.frontend_proc is not None and self.frontend_proc.poll() is None
+        self._update_platform_item("svc-frontend", "FRONTEND", frontend_alive)
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", False)
-        self._set_workers_offline()
+        # Workers are separate processes; check them individually instead of
+        # blanket-marking everything offline when only the backend is down.
+        self._update_workers_from_processes()
 
     def _update_platform_item(self, widget_id: str, label: str, is_on: bool) -> None:
         state = "ONLINE" if is_on else "OFFLINE"
@@ -1589,6 +1598,32 @@ class HomerunApp(App):
             self._worker_state_cache[worker_name] = {}
             self._render_worker_panel(worker_name)
 
+    # Map worker names to their Popen attribute on self
+    _WORKER_PROC_ATTR: dict[str, str] = {
+        "scanner": "scanner_worker_proc",
+        "discovery": "discovery_worker_proc",
+        "weather": "weather_worker_proc",
+        "news": "news_worker_proc",
+        "crypto": "crypto_worker_proc",
+        "tracked_traders": "tracked_worker_proc",
+        "autotrader": "autotrader_worker_proc",
+    }
+
+    def _update_workers_from_processes(self) -> None:
+        """Update worker panels based on whether their OS process is still alive.
+
+        This is used when the backend health endpoint is unreachable so we
+        cannot get rich telemetry, but the worker subprocesses may still be
+        running fine (they are independent of the API server).
+        """
+        for worker_name, _worker_label in WORKER_STATUS_ORDER:
+            attr = self._WORKER_PROC_ATTR.get(worker_name)
+            proc: Optional[subprocess.Popen] = getattr(self, attr, None) if attr else None
+            alive = proc is not None and proc.poll() is None
+            snapshot: dict = {"running": alive, "enabled": True}
+            self._worker_state_cache[worker_name] = snapshot
+            self._render_worker_panel(worker_name)
+
     def _resolve_worker_state(self, snapshot: dict) -> tuple[str, str]:
         if not snapshot:
             return ("OFFLINE", "status-off")
@@ -1693,10 +1728,19 @@ class HomerunApp(App):
             )
             if p and p.poll() is None
         ]
-        # SIGKILL all first (non-blocking)
+        # Kill all child processes (non-blocking).
+        # On Windows, proc.kill() only kills the direct child; use taskkill /T
+        # to terminate the entire process tree (npm → node, etc.).
         for proc in procs:
             try:
-                proc.kill()
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                else:
+                    proc.kill()
             except Exception:
                 pass
         # Close stdout pipes to unblock readline() in reader threads
