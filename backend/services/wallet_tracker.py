@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 from sqlalchemy import select
 
@@ -215,7 +216,7 @@ class WalletTracker:
                     new_trades = await self.check_all_wallets()
                     if new_trades:
                         print(
-                            f"[{datetime.utcnow().isoformat()}] {len(new_trades)} new trades detected"
+                            f"[{utcnow().isoformat()}] {len(new_trades)} new trades detected"
                         )
                 except Exception as e:
                     print(f"Wallet monitor error: {e}")

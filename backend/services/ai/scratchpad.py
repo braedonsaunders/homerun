@@ -13,6 +13,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import select, func, update, delete, and_, desc
@@ -119,7 +120,7 @@ class ScratchpadService:
                 total_output_tokens=0,
                 total_cost_usd=0.0,
                 model_used=model,
-                started_at=datetime.utcnow(),
+                started_at=utcnow(),
             )
             db.add(session)
             await db.commit()
@@ -189,7 +190,7 @@ class ScratchpadService:
                 output_data=output_data,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                created_at=datetime.utcnow(),
+                created_at=utcnow(),
             )
             db.add(entry)
 
@@ -249,7 +250,7 @@ class ScratchpadService:
             error: Error message (on failure).
         """
         ResearchSession, _ = _get_models()
-        now = datetime.utcnow()
+        now = utcnow()
 
         async with AsyncSessionLocal() as db:
             # Fetch started_at so we can compute duration
@@ -516,7 +517,7 @@ class ScratchpadService:
             Number of sessions deleted.
         """
         ResearchSession, ScratchpadEntry = _get_models()
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
 
         async with AsyncSessionLocal() as db:
             # Find sessions to delete

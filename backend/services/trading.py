@@ -18,6 +18,7 @@ Setup:
 
 import asyncio
 from datetime import datetime
+from utils.utcnow import utcnow
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
@@ -123,7 +124,7 @@ class TradingService:
         self._orders: dict[str, Order] = {}
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
-        self._daily_volume_reset = datetime.utcnow().date()
+        self._daily_volume_reset = utcnow().date()
         self._market_positions: dict[str, float] = {}  # token_id -> USD exposure
         self.MAX_PER_MARKET_USD = settings.MAX_PER_MARKET_USD
 
@@ -201,7 +202,7 @@ class TradingService:
 
     def _check_daily_reset(self):
         """Reset daily counters if it's a new day"""
-        today = datetime.utcnow().date()
+        today = utcnow().date()
         if today != self._daily_volume_reset:
             self._stats.daily_volume = 0.0
             self._stats.daily_pnl = 0.0
@@ -341,7 +342,7 @@ class TradingService:
                 self._stats.total_trades += 1
                 self._stats.daily_volume += size_usd
                 self._stats.total_volume += size_usd
-                self._stats.last_trade_at = datetime.utcnow()
+                self._stats.last_trade_at = utcnow()
                 logger.info(f"Order placed successfully: {order.clob_order_id}")
 
                 # Update per-market position tracking
@@ -358,7 +359,7 @@ class TradingService:
             order.error_message = str(e)
             logger.error(f"Order execution error: {e}")
 
-        order.updated_at = datetime.utcnow()
+        order.updated_at = utcnow()
         self._orders[order_id] = order
         return order
 
@@ -459,14 +460,14 @@ class TradingService:
 
         if not order.clob_order_id:
             order.status = OrderStatus.CANCELLED
-            order.updated_at = datetime.utcnow()
+            order.updated_at = utcnow()
             return True
 
         try:
             response = self._client.cancel(order.clob_order_id)
             if response.get("canceled"):
                 order.status = OrderStatus.CANCELLED
-                order.updated_at = datetime.utcnow()
+                order.updated_at = utcnow()
                 logger.info(f"Order cancelled: {order_id}")
                 return True
             else:
@@ -487,7 +488,7 @@ class TradingService:
             for order in self._orders.values():
                 if order.status in [OrderStatus.OPEN, OrderStatus.PENDING]:
                     order.status = OrderStatus.CANCELLED
-                    order.updated_at = datetime.utcnow()
+                    order.updated_at = utcnow()
 
             logger.info(f"Cancelled {cancelled} orders")
         except Exception as e:
@@ -513,7 +514,7 @@ class TradingService:
                             order.status = OrderStatus.FILLED
                         elif order.filled_size > 0:
                             order.status = OrderStatus.PARTIALLY_FILLED
-                        order.updated_at = datetime.utcnow()
+                        order.updated_at = utcnow()
         except Exception as e:
             logger.error(f"Get orders error: {e}")
 

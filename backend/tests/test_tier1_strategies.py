@@ -18,6 +18,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import pytest
 from datetime import datetime, timezone, timedelta
+from utils.utcnow import utcnow
 
 from models.market import Market, Event, Token
 from models.opportunity import ArbitrageOpportunity, StrategyType
@@ -781,7 +782,7 @@ class TestBaseStrategyRiskScore:
         """A naive (no tzinfo) resolution date should be treated as UTC."""
         markets = [make_market()]
         # Create a naive datetime 3 days from now
-        naive_future = datetime.utcnow() + timedelta(days=3)
+        naive_future = utcnow() + timedelta(days=3)
         score, factors = self.strategy.calculate_risk_score(markets, naive_future)
         # 3 days is in the <7 range => 0.2
         assert score == pytest.approx(0.2)

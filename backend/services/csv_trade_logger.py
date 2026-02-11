@@ -11,6 +11,7 @@ whale_price,bot_price,status,fill_percent,slippage_bps,opportunity_id,strategy
 import csv
 import asyncio
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from pathlib import Path
 from utils.logger import get_logger
@@ -117,7 +118,7 @@ class CSVTradeLogger:
         **kwargs,
     ):
         entry = TradeLogEntry(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=utcnow().isoformat() + "Z",
             context=context,
             token_id=token_id,
             side=side,

@@ -20,6 +20,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -892,7 +893,7 @@ class WorkflowOrchestrator:
         return verified, rejected
 
     async def _hourly_news_spend_usd(self, session: AsyncSession) -> float:
-        cutoff = datetime.utcnow() - timedelta(hours=1)
+        cutoff = utcnow() - timedelta(hours=1)
         result = await session.execute(
             select(func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0)).where(
                 LLMUsageLog.requested_at >= cutoff,

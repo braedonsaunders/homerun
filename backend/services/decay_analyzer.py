@@ -13,6 +13,7 @@ can act on the fastest-closing opportunities first.
 import uuid
 import asyncio
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Set
 
@@ -129,7 +130,7 @@ class DecayAnalyzer:
             The full set of opportunities returned by the latest scan.
         """
         async with self._lock:
-            now = datetime.utcnow()
+            now = utcnow()
             incoming_ids: Set[str] = {opp.id for opp in opportunities}
             incoming_map: Dict[str, ArbitrageOpportunity] = {
                 opp.id: opp for opp in opportunities
@@ -270,7 +271,7 @@ class DecayAnalyzer:
         liquidity_score = self._score_liquidity(liquidity)
 
         # --- Factor 4: time of day (UTC) ---
-        hour = datetime.utcnow().hour
+        hour = utcnow().hour
         time_score = self._score_time_of_day(hour)
 
         # Weighted combination
@@ -315,7 +316,7 @@ class DecayAnalyzer:
         async with self._lock:
             if opportunity_id in self._active:
                 tracked = self._active.pop(opportunity_id)
-                now = datetime.utcnow()
+                now = utcnow()
                 lifetime = (now - tracked.first_seen).total_seconds()
                 await self._persist_closed(tracked, now, lifetime, "resolved")
                 self._stats_cache_valid = False
@@ -324,7 +325,7 @@ class DecayAnalyzer:
         """Close any tracked opportunity older than *max_age_seconds* that
         is still marked active.  Returns the number of entries expired."""
         async with self._lock:
-            now = datetime.utcnow()
+            now = utcnow()
             cutoff = now - timedelta(seconds=max_age_seconds)
             expired_ids = [
                 oid for oid, t in self._active.items() if t.first_seen < cutoff

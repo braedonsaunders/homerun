@@ -69,9 +69,9 @@ async def write_scanner_snapshot(
             last_scan = _parse_iso_datetime(last_scan)
         except Exception as e:
             logger.warning("Invalid last_scan timestamp in snapshot status: %s", e)
-            last_scan = datetime.utcnow()
+            last_scan = utcnow()
     elif last_scan is None:
-        last_scan = datetime.utcnow()
+        last_scan = utcnow()
 
     payload: list[dict[str, Any]] = []
     skipped = 0
@@ -99,7 +99,7 @@ async def write_scanner_snapshot(
     if row is None:
         row = ScannerSnapshot(id=SNAPSHOT_ID)
         session.add(row)
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     row.last_scan_at = last_scan
     row.opportunities_json = payload
     row.running = status.get("running", True)
@@ -272,7 +272,7 @@ async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
         if row.current_activity == activity:
             return
         row.current_activity = activity
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utcnow()
     await session.commit()
 
 
@@ -378,7 +378,7 @@ async def update_opportunity_ai_analysis_in_snapshot(
                 patched_payload.append(item)
         if updated:
             row.opportunities_json = patched_payload
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow()
 
     if sid:
         state_row = await session.get(OpportunityState, sid)
@@ -386,7 +386,7 @@ async def update_opportunity_ai_analysis_in_snapshot(
             patched_state = dict(state_row.opportunity_json)
             patched_state["ai_analysis"] = ai_analysis
             state_row.opportunity_json = patched_state
-            state_row.last_seen_at = datetime.utcnow()
+            state_row.last_seen_at = utcnow()
             updated = True
 
     if updated:
@@ -467,7 +467,7 @@ async def set_scanner_paused(session: AsyncSession, paused: bool) -> None:
     """Set scanner pause state (API: pause/resume)."""
     row = await ensure_scanner_control(session)
     row.is_paused = paused
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
@@ -475,14 +475,14 @@ async def set_scanner_interval(session: AsyncSession, interval_seconds: int) -> 
     """Set scan interval (API)."""
     row = await ensure_scanner_control(session)
     row.scan_interval_seconds = max(10, min(3600, interval_seconds))
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def request_one_scan(session: AsyncSession) -> None:
     """Set requested_scan_at so worker runs one scan on next loop (API: scan now)."""
     row = await ensure_scanner_control(session)
-    row.requested_scan_at = datetime.utcnow()
+    row.requested_scan_at = utcnow()
     await session.commit()
 
 
@@ -528,6 +528,7 @@ def _remove_old_opportunities(
 ) -> list[ArbitrageOpportunity]:
     """Drop opportunities older than max_age_minutes."""
     from datetime import timedelta, timezone
+from utils.utcnow import utcnow
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
     def ok(o: ArbitrageOpportunity) -> bool:
         d = o.detected_at

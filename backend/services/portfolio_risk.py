@@ -11,6 +11,7 @@ overlapping market IDs, and their recommended sizes are discounted accordingly.
 
 from dataclasses import dataclass
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 
 from config import settings
@@ -198,7 +199,7 @@ class PortfolioRiskManager:
             event_id=opportunity.event_id,
             category=opportunity.category,
             size_usd=size_usd,
-            entry_time=datetime.utcnow(),
+            entry_time=utcnow(),
             expected_roi=opportunity.roi_percent,
             risk_score=opportunity.risk_score,
         )

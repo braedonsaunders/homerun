@@ -13,6 +13,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Callable, Optional
 
 import httpx
@@ -742,7 +743,7 @@ class WalletWebSocketMonitor:
             block_number: The block number this log belongs to.
             block_timestamp: Unix timestamp of the block.
         """
-        detected_at = datetime.utcnow()
+        detected_at = utcnow()
 
         parsed = _parse_order_filled_log(log)
         if parsed is None:
@@ -769,7 +770,7 @@ class WalletWebSocketMonitor:
 
         # Calculate block timestamp as datetime
         if block_timestamp > 0:
-            block_dt = datetime.utcfromtimestamp(block_timestamp)
+            block_dt = utcfromtimestamp(block_timestamp)
         else:
             block_dt = detected_at
 

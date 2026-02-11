@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -72,7 +73,7 @@ async def write_discovery_snapshot(
         row = DiscoverySnapshot(id=DISCOVERY_SNAPSHOT_ID)
         session.add(row)
 
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     row.last_run_at = last_run or row.last_run_at
     row.running = bool(status.get("running", row.running))
     row.enabled = bool(status.get("enabled", row.enabled))
@@ -158,26 +159,26 @@ async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
 async def set_discovery_paused(session: AsyncSession, paused: bool) -> None:
     row = await ensure_discovery_control(session)
     row.is_paused = paused
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def set_discovery_interval(session: AsyncSession, interval_minutes: int) -> None:
     row = await ensure_discovery_control(session)
     row.run_interval_minutes = max(5, min(1440, int(interval_minutes)))
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def request_one_discovery_run(session: AsyncSession) -> None:
     row = await ensure_discovery_control(session)
-    row.requested_run_at = datetime.utcnow()
-    row.updated_at = datetime.utcnow()
+    row.requested_run_at = utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def clear_discovery_run_request(session: AsyncSession) -> None:
     row = await ensure_discovery_control(session)
     row.requested_run_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()

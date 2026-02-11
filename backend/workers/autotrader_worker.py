@@ -19,6 +19,7 @@ if _BACKEND not in sys.path:
 if os.getcwd() != _BACKEND:
     os.chdir(_BACKEND)
 
+from utils.utcnow import utcnow
 from models.database import (
     AsyncSessionLocal,
     AutoTraderDecision,
@@ -170,7 +171,7 @@ def _size_for_signal(
 
 
 async def _load_exposure_state(session) -> dict[str, Any]:
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     source_rows = (
         (
@@ -306,7 +307,7 @@ async def _execute_live_trade(
 
 async def _run_cycle() -> dict[str, Any]:
     worker_name = "autotrader"
-    now = datetime.utcnow()
+    now = utcnow()
 
     async with AsyncSessionLocal() as session:
         await ensure_default_autotrader_policies(session)
@@ -779,7 +780,7 @@ async def _run_loop() -> None:
         )
 
     while True:
-        cycle_started = datetime.utcnow()
+        cycle_started = utcnow()
         cycle = await _run_cycle()
         interval = int(cycle.get("interval") or 2)
 

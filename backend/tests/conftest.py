@@ -9,6 +9,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import pytest
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from unittest.mock import AsyncMock, MagicMock
 import json
 
@@ -222,7 +223,7 @@ def expired_opportunity():
         roi_percent=3.16,
         risk_score=0.5,
         markets=[{"id": "old1"}],
-        resolution_date=datetime.utcnow() - timedelta(days=1),
+        resolution_date=utcnow() - timedelta(days=1),
     )
 
 
@@ -241,7 +242,7 @@ def old_opportunity():
         roi_percent=3.16,
         risk_score=0.5,
         markets=[{"id": "old2"}],
-        detected_at=datetime.utcnow() - timedelta(hours=2),
+        detected_at=utcnow() - timedelta(hours=2),
     )
 
 

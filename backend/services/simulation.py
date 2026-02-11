@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -300,7 +301,7 @@ class SimulationService:
             trade.actual_payout = net_payout
             trade.actual_pnl = pnl
             trade.fees_paid = fee
-            trade.resolved_at = datetime.utcnow()
+            trade.resolved_at = utcnow()
 
             # Update account
             account.current_capital += net_payout

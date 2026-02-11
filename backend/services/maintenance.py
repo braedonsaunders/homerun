@@ -6,6 +6,7 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 
 import asyncio
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 from sqlalchemy import select, delete, func, and_
 
@@ -122,7 +123,7 @@ class MaintenanceService:
         Returns:
             Dict with deletion counts
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = utcnow() - timedelta(days=older_than_days)
 
         async with AsyncSessionLocal() as session:
             # Build conditions
@@ -195,7 +196,7 @@ class MaintenanceService:
         Returns:
             Dict with count of expired trades
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = utcnow() - timedelta(days=older_than_days)
 
         async with AsyncSessionLocal() as session:
             # Update old open trades to cancelled
@@ -212,7 +213,7 @@ class MaintenanceService:
             expired_count = 0
             for trade in trades:
                 trade.status = TradeStatus.CANCELLED
-                trade.resolved_at = datetime.utcnow()
+                trade.resolved_at = utcnow()
                 trade.actual_pnl = -trade.total_cost  # Consider as total loss
                 expired_count += 1
 
@@ -256,7 +257,7 @@ class MaintenanceService:
         Returns:
             Dict with deletion count
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = utcnow() - timedelta(days=older_than_days)
 
         async with AsyncSessionLocal() as session:
             conditions = [WalletTrade.timestamp < cutoff_date]
@@ -291,7 +292,7 @@ class MaintenanceService:
         Returns:
             Dict with deletion count
         """
-        cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_date = utcnow() - timedelta(days=older_than_days)
 
         async with AsyncSessionLocal() as session:
             conditions = [DetectedAnomaly.detected_at < cutoff_date]

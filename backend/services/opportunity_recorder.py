@@ -10,6 +10,7 @@ and opportunity decay analysis.
 import asyncio
 import json
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import select, func, and_, case
@@ -139,7 +140,7 @@ class OpportunityRecorder:
 
     async def _check_resolutions(self):
         """Check unresolved opportunities against the Polymarket API."""
-        cutoff = datetime.utcnow() - timedelta(days=_MAX_RESOLUTION_AGE_DAYS)
+        cutoff = utcnow() - timedelta(days=_MAX_RESOLUTION_AGE_DAYS)
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -168,7 +169,7 @@ class OpportunityRecorder:
                         if row:
                             row.was_profitable = was_profitable
                             row.actual_roi = actual_roi
-                            row.expired_at = datetime.utcnow()
+                            row.expired_at = utcnow()
                             await session.commit()
                     resolved_count += 1
             except Exception:
@@ -374,7 +375,7 @@ class OpportunityRecorder:
                 ]
             }
         """
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
 
         filters = [
             OpportunityHistory.actual_roi.isnot(None),
@@ -583,7 +584,7 @@ class OpportunityRecorder:
                 ]
             }
         """
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
 
         filters = [
             OpportunityHistory.expired_at.isnot(None),
@@ -666,7 +667,7 @@ class OpportunityRecorder:
         """Populate the in-memory dedup set from the database on startup."""
         try:
             async with AsyncSessionLocal() as session:
-                cutoff = datetime.utcnow() - timedelta(days=7)
+                cutoff = utcnow() - timedelta(days=7)
                 result = await session.execute(
                     select(OpportunityHistory.id).where(
                         OpportunityHistory.detected_at >= cutoff

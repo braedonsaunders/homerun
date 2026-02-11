@@ -42,6 +42,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from utils.utcnow import utcnow
 from enum import Enum
 from typing import Any, Optional
 
@@ -2005,7 +2006,7 @@ class LLMManager:
                             break
 
                 # Load current month's spend
-                now = datetime.utcnow()
+                now = utcnow()
                 month_start = now.replace(
                     day=1, hour=0, minute=0, second=0, microsecond=0
                 )
@@ -2144,7 +2145,7 @@ class LLMManager:
                         cost_usd=cost_usd,
                         purpose=purpose,
                         session_id=session_id,
-                        requested_at=datetime.utcnow(),
+                        requested_at=utcnow(),
                         latency_ms=latency_ms,
                         success=success,
                         error=error,
@@ -2347,7 +2348,7 @@ class LLMManager:
         month. Uses one query for totals+errors (conditional aggregation),
         one for provider breakdown, one for model breakdown.
         """
-        now = datetime.utcnow()
+        now = utcnow()
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         try:

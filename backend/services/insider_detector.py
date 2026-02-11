@@ -7,6 +7,7 @@ import math
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import func, or_, select, update
@@ -114,7 +115,7 @@ class InsiderDetectorService:
         max_wallets: Optional[int] = None,
     ) -> dict[str, Any]:
         """Rescore eligible wallets and persist insider metrics."""
-        now = datetime.utcnow()
+        now = utcnow()
         stale_cutoff = now - timedelta(minutes=max(1, stale_minutes))
 
         async with AsyncSessionLocal() as session:
@@ -192,7 +193,7 @@ class InsiderDetectorService:
 
     async def generate_intents(self) -> dict[str, Any]:
         """Generate/upsert insider trade intents from recent flagged-wallet activity."""
-        now = datetime.utcnow()
+        now = utcnow()
         cutoff_recent = now - timedelta(minutes=RECENT_TRADE_WINDOW_MINUTES)
 
         async with AsyncSessionLocal() as session:
@@ -430,7 +431,7 @@ class InsiderDetectorService:
             if direction:
                 query = query.where(InsiderTradeIntent.direction == direction)
             if max_age_minutes:
-                cutoff = datetime.utcnow() - timedelta(minutes=max(1, max_age_minutes))
+                cutoff = utcnow() - timedelta(minutes=max(1, max_age_minutes))
                 query = query.where(InsiderTradeIntent.created_at >= cutoff)
 
             count_q = select(func.count()).select_from(query.subquery())
@@ -460,7 +461,7 @@ class InsiderDetectorService:
                 wallet_map = {w.address.lower(): w for w in wallets_res.scalars().all()}
 
             opportunities: list[dict[str, Any]] = []
-            now = datetime.utcnow()
+            now = utcnow()
             for row in intents:
                 wallet_addresses = [
                     str(addr).lower()
@@ -1051,7 +1052,7 @@ class InsiderDetectorService:
                     suggested_size_usd=suggested_size_usd,
                     metadata_json=metadata,
                     status="pending",
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow(),
                 )
             )
             return True
@@ -1078,19 +1079,19 @@ class InsiderDetectorService:
         *,
         max_age_minutes: int,
     ) -> int:
-        cutoff = datetime.utcnow() - timedelta(minutes=max(1, max_age_minutes))
+        cutoff = utcnow() - timedelta(minutes=max(1, max_age_minutes))
         result = await session.execute(
             update(InsiderTradeIntent)
             .where(
                 InsiderTradeIntent.status == "pending",
                 InsiderTradeIntent.created_at < cutoff,
             )
-            .values(status="expired", consumed_at=datetime.utcnow())
+            .values(status="expired", consumed_at=utcnow())
         )
         return int(result.rowcount or 0)
 
     async def _get_market_context(self, market_id: str) -> dict[str, Any]:
-        now = datetime.utcnow()
+        now = utcnow()
         cached = self._market_context_cache.get(market_id)
         if cached:
             cached_at, payload = cached

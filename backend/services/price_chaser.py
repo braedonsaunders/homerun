@@ -16,6 +16,7 @@ All retry attempts are logged to the database for post-hoc analysis.
 import asyncio
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -293,7 +294,7 @@ class PriceChaserService:
                 order_type=order_type,
                 result=outcome,
                 fill_size=fill_size,
-                attempted_at=datetime.utcnow(),
+                attempted_at=utcnow(),
             )
             attempts.append(retry_record)
 

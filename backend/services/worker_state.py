@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -23,7 +24,7 @@ DEFAULT_WORKER_INTERVALS: dict[str, int] = {
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return utcnow()
 
 
 def _to_iso(dt: Optional[datetime]) -> Optional[str]:

@@ -19,6 +19,7 @@ post-trade review.
 
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 
 from sqlalchemy import Column, String, Float, DateTime, Index
@@ -401,7 +402,7 @@ class CategoryBufferService:
                     base_position_size=adjustments.get("base_position_size"),
                     adjusted_position_size=adjustments.get("adjusted_position_size"),
                     price_buffer_applied=adjustments.get("price_buffer_applied"),
-                    applied_at=datetime.utcnow(),
+                    applied_at=utcnow(),
                 )
                 session.add(record)
                 await session.commit()

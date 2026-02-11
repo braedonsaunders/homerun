@@ -3,6 +3,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
+from utils.utcnow import utcnow
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -382,7 +383,7 @@ async def health_check():
 @app.get("/health/live")
 async def liveness_check():
     """Liveness probe - is the service running?"""
-    return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "alive", "timestamp": utcnow().isoformat()}
 
 
 @app.get("/health/ready")
@@ -401,7 +402,7 @@ async def readiness_check():
     return {
         "status": "ready" if all_ready else "not_ready",
         "checks": checks,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
     }
 
 
@@ -470,7 +471,7 @@ async def detailed_health_check():
 
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
         "services": {
             "scanner": {
                 "running": scanner_status.get("running", False),

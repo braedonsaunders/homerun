@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
 from typing import Optional, Callable, List
 
 from config import settings
@@ -684,7 +685,7 @@ class ArbitrageScanner:
                 if settings_row:
                     settings_row.is_enabled = self._enabled
                     settings_row.scan_interval_seconds = self._interval_seconds
-                    settings_row.updated_at = datetime.utcnow()
+                    settings_row.updated_at = utcnow()
                 else:
                     settings_row = ScannerSettings(
                         id="default",
@@ -788,7 +789,7 @@ class ArbitrageScanner:
 
     async def scan_once(self) -> list[ArbitrageOpportunity]:
         """Perform a single scan for arbitrage opportunities"""
-        print(f"[{datetime.utcnow().isoformat()}] Starting arbitrage scan...")
+        print(f"[{utcnow().isoformat()}] Starting arbitrage scan...")
         await self._set_activity("Fetching Polymarket events and markets...")
         loop = asyncio.get_running_loop()
 
@@ -1096,7 +1097,7 @@ class ArbitrageScanner:
                 scan_suffix = f" ({unchanged_count} unchanged markets detected)"
 
             print(
-                f"[{datetime.utcnow().isoformat()}] Scan complete. "
+                f"[{utcnow().isoformat()}] Scan complete. "
                 f"{len(all_opportunities)} detected this scan, "
                 f"{len(self._opportunities)} total in pool{scan_suffix}"
             )
@@ -1107,7 +1108,7 @@ class ArbitrageScanner:
             return self._opportunities
 
         except Exception as e:
-            print(f"[{datetime.utcnow().isoformat()}] Scan error: {e}")
+            print(f"[{utcnow().isoformat()}] Scan error: {e}")
             await self._set_activity(f"Scan error: {e}")
             raise
 
@@ -1315,7 +1316,7 @@ class ArbitrageScanner:
             return self._opportunities
 
         except Exception as e:
-            print(f"[{datetime.utcnow().isoformat()}] Fast scan error: {e}")
+            print(f"[{utcnow().isoformat()}] Fast scan error: {e}")
             await self._set_activity(f"Fast scan error: {e}")
             raise
 

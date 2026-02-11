@@ -15,6 +15,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import math
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -120,7 +121,7 @@ class TestAutoTraderCircuitBreaker:
                 id=tid,
                 opportunity_id=opp.id,
                 strategy=opp.strategy,
-                executed_at=datetime.utcnow(),
+                executed_at=utcnow(),
                 positions=opp.positions_to_take,
                 total_cost=10.0,
                 expected_profit=0.5,
@@ -143,7 +144,7 @@ class TestAutoTraderCircuitBreaker:
                 id=tid,
                 opportunity_id="opp",
                 strategy=StrategyType.BASIC,
-                executed_at=datetime.utcnow(),
+                executed_at=utcnow(),
                 positions=[],
                 total_cost=10,
                 expected_profit=1,
@@ -158,7 +159,7 @@ class TestAutoTraderCircuitBreaker:
             id=tid,
             opportunity_id="opp",
             strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=[],
             total_cost=10,
             expected_profit=1,
@@ -170,7 +171,7 @@ class TestAutoTraderCircuitBreaker:
         trader = _fresh_auto_trader(circuit_breaker_losses=2)
 
         # Set circuit breaker to already-expired time
-        trader.stats.circuit_breaker_until = datetime.utcnow() - timedelta(seconds=1)
+        trader.stats.circuit_breaker_until = utcnow() - timedelta(seconds=1)
         trader.stats.consecutive_losses = 5  # stale value
 
         can_trade, _ = trader._check_circuit_breaker()
@@ -219,7 +220,7 @@ class TestAutoTraderDailyDrawdown:
         trader.stats.daily_profit = -999
         trader.stats.daily_invested = 5000
         # Force yesterday
-        trader._daily_reset_date = (datetime.utcnow() - timedelta(days=1)).date()
+        trader._daily_reset_date = (utcnow() - timedelta(days=1)).date()
 
         trader._check_daily_reset()
 
@@ -334,7 +335,7 @@ class TestAutoTraderMaxOpenPositions:
                 id=tid,
                 opportunity_id=f"opp_{i}",
                 strategy=StrategyType.BASIC,
-                executed_at=datetime.utcnow(),
+                executed_at=utcnow(),
                 positions=[],
                 total_cost=10,
                 expected_profit=1,
@@ -354,7 +355,7 @@ class TestAutoTraderMaxOpenPositions:
             id="open_1",
             opportunity_id="o1",
             strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=[],
             total_cost=10,
             expected_profit=1,
@@ -364,7 +365,7 @@ class TestAutoTraderMaxOpenPositions:
             id="resolved_1",
             opportunity_id="o2",
             strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=[],
             total_cost=10,
             expected_profit=1,
@@ -1529,7 +1530,7 @@ class TestAutoTraderRecordTradeResult:
             id=tid,
             opportunity_id="o1",
             strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=[],
             total_cost=10,
             expected_profit=1,
@@ -1547,7 +1548,7 @@ class TestAutoTraderRecordTradeResult:
             id=tid,
             opportunity_id="o1",
             strategy=StrategyType.BASIC,
-            executed_at=datetime.utcnow(),
+            executed_at=utcnow(),
             positions=[],
             total_cost=10,
             expected_profit=1,
@@ -1603,7 +1604,7 @@ class TestAutoTraderGetTrades:
                 id=tid,
                 opportunity_id=f"o_{i}",
                 strategy=StrategyType.BASIC,
-                executed_at=datetime.utcnow() + timedelta(seconds=i),
+                executed_at=utcnow() + timedelta(seconds=i),
                 positions=[],
                 total_cost=10,
                 expected_profit=1,

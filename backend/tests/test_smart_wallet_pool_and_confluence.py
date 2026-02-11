@@ -10,6 +10,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from utils.utcnow import utcnow
 from services.smart_wallet_pool import (  # noqa: E402
     SmartWalletPoolService,
     TARGET_POOL_SIZE,
@@ -67,7 +68,7 @@ class TestSmartWalletPoolScoring:
 
     def test_activity_score_decays_with_recency(self):
         svc = SmartWalletPoolService()
-        now = datetime.utcnow()
+        now = utcnow()
 
         fresh_score = svc._score_activity(
             trades_1h=6,

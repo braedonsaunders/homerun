@@ -15,6 +15,7 @@ import asyncio
 import math
 import uuid
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import select, text, update, func
@@ -69,7 +70,7 @@ class ConfluenceDetector:
     async def scan_for_confluence(self) -> list[dict]:
         """Scan recent wallet activity rollups and upsert confluence signals."""
         logger.info("Starting confluence scan...")
-        now = datetime.utcnow()
+        now = utcnow()
         cutoff_60m = now - timedelta(minutes=60)
         cutoff_15m = now - timedelta(minutes=15)
 
@@ -417,7 +418,7 @@ class ConfluenceDetector:
         market_volume_24h: Optional[float] = None,
     ):
         """Create or update a confluence signal in the database."""
-        now = datetime.utcnow()
+        now = utcnow()
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(MarketConfluenceSignal).where(
@@ -559,7 +560,7 @@ class ConfluenceDetector:
 
     async def expire_old_signals(self):
         """Mark signals inactive when not reinforced within decay window."""
-        cutoff = datetime.utcnow() - timedelta(minutes=self.SIGNAL_DECAY_MINUTES)
+        cutoff = utcnow() - timedelta(minutes=self.SIGNAL_DECAY_MINUTES)
         async with AsyncSessionLocal() as session:
             await session.execute(
                 update(MarketConfluenceSignal)
@@ -571,7 +572,7 @@ class ConfluenceDetector:
                     )
                     < cutoff,
                 )
-                .values(is_active=False, expired_at=datetime.utcnow())
+                .values(is_active=False, expired_at=utcnow())
             )
             await session.commit()
 
@@ -895,8 +896,8 @@ class EntityClusterer:
                         "members": member_addrs,
                         "root": root_addr,
                     },
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
                 )
                 session.add(cluster)
 
@@ -1111,7 +1112,7 @@ class WalletTagger:
                         category=tag_def["category"],
                         color=tag_def["color"],
                         criteria=tag_def,
-                        created_at=datetime.utcnow(),
+                        created_at=utcnow(),
                     )
                     session.add(tag)
                 else:
@@ -1541,7 +1542,7 @@ class CrossPlatformTracker:
             if existing:
                 existing.matching_markets = matching_markets
                 existing.cross_platform_arb = cross_platform_arb
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = utcnow()
             else:
                 # Try to get PnL from DiscoveredWallet
                 wallet_result = await session.execute(
@@ -1561,8 +1562,8 @@ class CrossPlatformTracker:
                     cross_platform_arb=cross_platform_arb,
                     matching_markets=matching_markets,
                     confidence=0.5,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
                 )
                 session.add(entity)
 

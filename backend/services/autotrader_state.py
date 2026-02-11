@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import uuid
 from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import and_, desc, func, select
@@ -107,7 +108,7 @@ DEFAULT_GLOBAL_POLICY: dict[str, Any] = {
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return utcnow()
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -429,7 +430,7 @@ async def get_autotrader_exposure(session: AsyncSession) -> dict[str, Any]:
     global_policy = policies.get("global", {}) if isinstance(policies, dict) else {}
     source_policies = policies.get("sources", {}) if isinstance(policies, dict) else {}
 
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     source_rows = (
         (

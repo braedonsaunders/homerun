@@ -2,6 +2,7 @@ import asyncio
 import random
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Optional
 from sqlalchemy import select, and_
 
@@ -284,7 +285,7 @@ class CopyTradingService:
             for k in sorted_keys[: _DEDUP_CACHE_MAX // 2]:
                 del self._realtime_dedup_cache[k]
 
-        self._realtime_dedup_cache[dedup_key] = datetime.utcnow()
+        self._realtime_dedup_cache[dedup_key] = utcnow()
         return False
 
     # ==================== REAL-TIME EVENT PROCESSING ====================
@@ -298,7 +299,7 @@ class CopyTradingService:
 
         Target latency: <500ms from block detection to copy execution.
         """
-        start_time = datetime.utcnow()
+        start_time = utcnow()
 
         # Build a trade dict from the WalletTradeEvent fields
         trade = {
@@ -376,7 +377,7 @@ class CopyTradingService:
             return
 
         # Calculate total pipeline latency
-        execution_time = datetime.utcnow()
+        execution_time = utcnow()
         pipeline_latency_ms = (execution_time - start_time).total_seconds() * 1000.0
         total_latency_ms = (
             event.latency_ms + pipeline_latency_ms
@@ -717,7 +718,7 @@ class CopyTradingService:
         if source_ts_raw:
             try:
                 if isinstance(source_ts_raw, (int, float)):
-                    source_timestamp = datetime.utcfromtimestamp(source_ts_raw)
+                    source_timestamp = utcfromtimestamp(source_ts_raw)
                 else:
                     source_timestamp = datetime.fromisoformat(
                         str(source_ts_raw).replace("Z", "+00:00")
@@ -997,7 +998,7 @@ class CopyTradingService:
         if source_ts_raw:
             try:
                 if isinstance(source_ts_raw, (int, float)):
-                    source_timestamp = datetime.utcfromtimestamp(source_ts_raw)
+                    source_timestamp = utcfromtimestamp(source_ts_raw)
                 else:
                     source_timestamp = datetime.fromisoformat(
                         str(source_ts_raw).replace("Z", "+00:00")
@@ -1254,7 +1255,7 @@ class CopyTradingService:
                     sim_trade.actual_payout = sell_value - fee
                     sim_trade.actual_pnl = pnl
                     sim_trade.fees_paid = fee
-                    sim_trade.resolved_at = datetime.utcnow()
+                    sim_trade.resolved_at = utcnow()
 
             await session.commit()
 
@@ -1392,7 +1393,7 @@ class CopyTradingService:
                 simulation_trade_id=simulation_trade_id,
                 error_message=error,
                 source_timestamp=source_timestamp,
-                executed_at=datetime.utcnow() if status == "executed" else None,
+                executed_at=utcnow() if status == "executed" else None,
                 realized_pnl=realized_pnl,
             )
             session.add(copied)

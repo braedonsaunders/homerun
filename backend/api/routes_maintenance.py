@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
+from utils.utcnow import utcnow
 
 from services.maintenance import maintenance_service
 from models.database import TradeStatus
@@ -88,7 +89,7 @@ async def get_database_stats():
         stats = await maintenance_service.get_database_stats()
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "stats": stats,
         }
     except Exception as e:
@@ -122,7 +123,7 @@ async def run_cleanup(request: CleanupRequest = CleanupRequest()):
         )
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "results": results,
         }
     except Exception as e:
@@ -151,7 +152,7 @@ async def expire_old_trades(
         )
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **result,
         }
     except Exception as e:
@@ -215,7 +216,7 @@ async def delete_trades(request: DeleteTradesRequest):
 
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **results,
         }
     except HTTPException:
@@ -248,7 +249,7 @@ async def delete_wallet_trades(
         )
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **result,
         }
     except Exception as e:
@@ -277,7 +278,7 @@ async def delete_anomalies(
         )
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **result,
         }
     except Exception as e:
@@ -309,7 +310,7 @@ async def cleanup_resolved_only(
         )
         return {
             "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **result,
         }
     except Exception as e:
@@ -345,7 +346,7 @@ async def reset_all_trades(
             "message": "All trades deleted"
             if not account_id
             else f"All trades for account {account_id} deleted",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             **result,
         }
     except Exception as e:

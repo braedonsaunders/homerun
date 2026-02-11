@@ -11,6 +11,7 @@ Inspired by terauss trade_monitor binary.
 import uuid
 import asyncio
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Callable
 from sqlalchemy import Column, String, Float, DateTime, Index, select, func
@@ -153,7 +154,7 @@ class FillMonitor:
                         if order.size > 0
                         else 0,
                         fee=0.0,
-                        detected_at=datetime.utcnow(),
+                        detected_at=utcnow(),
                     )
 
                     logger.info(

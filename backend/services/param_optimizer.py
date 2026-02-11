@@ -17,6 +17,7 @@ import uuid
 import asyncio
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from enum import Enum
 from typing import Any, Optional
 
@@ -756,7 +757,7 @@ class ParameterOptimizer:
                     parameters=params,
                     backtest_results=backtest_results,
                     is_active=is_active,
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow(),
                 )
                 session.add(ps)
         logger.info("Parameter set saved", id=set_id, name=name, active=is_active)

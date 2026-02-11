@@ -10,6 +10,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import case, func, or_, select
@@ -24,7 +25,7 @@ SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
 
 
 def _utc_now() -> datetime:
-    return datetime.utcnow()
+    return utcnow()
 
 
 def _to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:

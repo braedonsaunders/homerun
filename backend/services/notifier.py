@@ -17,6 +17,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 
 import httpx
@@ -82,7 +83,7 @@ class DailyStats:
     strategy_breakdown: dict = field(default_factory=dict)
 
     def reset(self):
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = utcnow().strftime("%Y-%m-%d")
         self.date = today
         self.opportunities_detected = 0
         self.opportunities_acted_on = 0
@@ -558,7 +559,7 @@ class TelegramNotifier:
         """Send a daily summary at ~00:00 UTC and reset counters."""
         while self._running:
             try:
-                now = datetime.utcnow()
+                now = utcnow()
                 # Next midnight UTC
                 tomorrow = (now + timedelta(days=1)).replace(
                     hour=0, minute=0, second=0, microsecond=0

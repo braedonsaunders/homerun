@@ -14,6 +14,7 @@ All depth check results are persisted to the database for auditing.
 
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -184,7 +185,7 @@ class DepthAnalyzer:
             Detailed depth analysis including VWAP, slippage, and a
             boolean ``has_sufficient_depth`` flag.
         """
-        now = datetime.utcnow()
+        now = utcnow()
         side_upper = side.upper()
 
         try:

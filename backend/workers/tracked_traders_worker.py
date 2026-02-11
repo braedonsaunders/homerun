@@ -18,6 +18,7 @@ if _BACKEND not in sys.path:
 if os.getcwd() != _BACKEND:
     os.chdir(_BACKEND)
 
+from utils.utcnow import utcnow
 from models.database import AsyncSessionLocal, init_database
 from services.insider_detector import insider_detector
 from services.signal_bus import emit_insider_intent_signals, emit_tracked_trader_signals
@@ -49,7 +50,7 @@ async def _run_loop() -> None:
     worker_name = "tracked_traders"
     logger.info("Tracked-traders worker started")
 
-    now = datetime.utcnow()
+    now = utcnow()
     next_full_sweep = now
     next_incremental = now
     next_reconcile = now
@@ -113,7 +114,7 @@ async def _run_loop() -> None:
             await asyncio.sleep(min(10, interval))
             continue
 
-        cycle_started = datetime.utcnow()
+        cycle_started = utcnow()
         emitted = 0
         insider_emitted = 0
         confluence_count = 0
@@ -121,7 +122,7 @@ async def _run_loop() -> None:
         insider_pending = 0
 
         try:
-            now = datetime.utcnow()
+            now = utcnow()
             activity_labels: list[str] = []
 
             if requested or now >= next_full_sweep:

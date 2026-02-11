@@ -13,6 +13,7 @@ import math
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
 
 from sqlalchemy import select, func
@@ -111,7 +112,7 @@ class SmartWalletPoolService:
         while self._running:
             try:
                 if not global_pause_state.is_paused:
-                    now = datetime.utcnow()
+                    now = utcnow()
 
                     if self._is_due("last_full_sweep_at", FULL_SWEEP_INTERVAL, now):
                         await self.run_full_sweep()
@@ -209,7 +210,7 @@ class SmartWalletPoolService:
             await self._upsert_candidate_wallets(candidate_sources)
             inserted = await self._persist_activity_events(events)
 
-            self._stats["last_full_sweep_at"] = datetime.utcnow().isoformat()
+            self._stats["last_full_sweep_at"] = utcnow().isoformat()
             self._stats["candidates_last_sweep"] = len(candidate_sources)
             self._stats["events_last_reconcile"] = inserted
 
@@ -241,7 +242,7 @@ class SmartWalletPoolService:
             await self._upsert_candidate_wallets(candidate_sources)
             await self._persist_activity_events(events)
 
-            self._stats["last_incremental_refresh_at"] = datetime.utcnow().isoformat()
+            self._stats["last_incremental_refresh_at"] = utcnow().isoformat()
             logger.info(
                 "Smart wallet incremental refresh complete",
                 candidates=len(candidate_sources),
@@ -262,7 +263,7 @@ class SmartWalletPoolService:
             await self._upsert_candidate_wallets(candidate_sources)
             inserted = await self._persist_activity_events(events)
 
-            self._stats["last_activity_reconciliation_at"] = datetime.utcnow().isoformat()
+            self._stats["last_activity_reconciliation_at"] = utcnow().isoformat()
             self._stats["events_last_reconcile"] = inserted
 
             logger.info(
@@ -274,10 +275,10 @@ class SmartWalletPoolService:
     async def recompute_pool(self):
         """Recompute scoring, apply churn guard, and update pool membership."""
         async with self._lock:
-            now = datetime.utcnow()
+            now = utcnow()
             churn = await self._refresh_metrics_and_apply_pool(now)
             self._stats["churn_rate"] = round(churn, 4)
-            self._stats["last_pool_recompute_at"] = datetime.utcnow().isoformat()
+            self._stats["last_pool_recompute_at"] = utcnow().isoformat()
 
             pool_size = await self._count_pool_wallets()
             self._stats["pool_size"] = pool_size
@@ -287,7 +288,7 @@ class SmartWalletPoolService:
                     "pool_size": pool_size,
                     "target_pool_size": TARGET_POOL_SIZE,
                     "churn_rate": round(churn, 4),
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": utcnow().isoformat(),
                 },
             )
             logger.info(
@@ -461,7 +462,7 @@ class SmartWalletPoolService:
                             else (
                                 s.last_seen_at.isoformat()
                                 if s.last_seen_at
-                                else datetime.utcnow().isoformat()
+                                else utcnow().isoformat()
                             )
                         ),
                         "is_active": bool(s.is_active),
@@ -695,7 +696,7 @@ class SmartWalletPoolService:
             except Exception:
                 continue
 
-            now = datetime.utcnow()
+            now = utcnow()
             for holder in holders:
                 address = (
                     holder.get("proxyWallet")
@@ -747,7 +748,7 @@ class SmartWalletPoolService:
                 if wallet is None:
                     wallet = DiscoveredWallet(
                         address=address,
-                        discovered_at=datetime.utcnow(),
+                        discovered_at=utcnow(),
                         discovery_source="smart_pool",
                         source_flags=dict(flags),
                     )
@@ -767,7 +768,7 @@ class SmartWalletPoolService:
         if not events:
             return 0
 
-        now = datetime.utcnow()
+        now = utcnow()
         self._trim_activity_cache(now)
 
         inserts: list[dict] = []
@@ -1119,7 +1120,7 @@ class SmartWalletPoolService:
             side=(event.side or "").upper() or "TRADE",
             size=float(event.size or 0),
             price=float(event.price or 0),
-            traded_at=event.timestamp or datetime.utcnow(),
+            traded_at=event.timestamp or utcnow(),
             source="ws",
             tx_hash=event.tx_hash,
         )
@@ -1160,13 +1161,13 @@ class SmartWalletPoolService:
             return raw
         if isinstance(raw, (int, float)):
             try:
-                return datetime.utcfromtimestamp(float(raw))
+                return utcfromtimestamp(float(raw))
             except (OSError, ValueError):
                 return None
         if isinstance(raw, str):
             try:
                 if raw.replace(".", "", 1).isdigit():
-                    return datetime.utcfromtimestamp(float(raw))
+                    return utcfromtimestamp(float(raw))
                 return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(
                     tzinfo=None
                 )

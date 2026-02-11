@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select, desc, func
@@ -271,7 +272,7 @@ class OpportunityJudge:
         reasoning, risk_factors, ml_agreement, session_id.
         """
         session_id = uuid.uuid4().hex[:16]
-        started_at = datetime.utcnow()
+        started_at = utcnow()
 
         try:
             # 1. Build context prompt with opportunity details
@@ -883,7 +884,7 @@ class OpportunityJudge:
     ) -> None:
         """Persist the judgment to the database."""
         try:
-            completed_at = datetime.utcnow()
+            completed_at = utcnow()
             duration = (completed_at - started_at).total_seconds()
 
             async with AsyncSessionLocal() as session:
@@ -955,7 +956,7 @@ class OpportunityJudge:
     ) -> None:
         """Record a failed research session for observability."""
         try:
-            completed_at = datetime.utcnow()
+            completed_at = utcnow()
             duration = (completed_at - started_at).total_seconds()
 
             async with AsyncSessionLocal() as session:

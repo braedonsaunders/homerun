@@ -18,6 +18,7 @@ if _BACKEND not in sys.path:
 if os.getcwd() != _BACKEND:
     os.chdir(_BACKEND)
 
+from utils.utcnow import utcnow
 from models.database import AsyncSessionLocal, init_database
 from services.chainlink_feed import get_chainlink_feed
 from services.crypto_service import get_crypto_service
@@ -148,7 +149,7 @@ async def _run_loop() -> None:
             await asyncio.sleep(min(5, interval))
             continue
 
-        run_at = datetime.utcnow()
+        run_at = utcnow()
         markets_payload: list[dict] = []
         emitted = 0
         err_text = None

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Optional
 
@@ -100,7 +101,7 @@ class TokenCircuitBreaker:
         3. Count trades >= large_trade_threshold_shares in window
         4. If count >= consecutive_trigger, trip the token
         """
-        now = datetime.utcnow()
+        now = utcnow()
 
         trade_record = {
             "size": size,
@@ -188,7 +189,7 @@ class TokenCircuitBreaker:
         Returns:
             A TokenTripEvent if the error threshold was reached, None otherwise.
         """
-        now = datetime.utcnow()
+        now = utcnow()
         if token_id not in self._api_errors:
             self._api_errors[token_id] = []
 
@@ -231,7 +232,7 @@ class TokenCircuitBreaker:
             return False, None
 
         event = self._trips[token_id]
-        now = datetime.utcnow()
+        now = utcnow()
 
         if now >= event.expires_at:
             # Trip has expired, auto-clear it
@@ -254,7 +255,7 @@ class TokenCircuitBreaker:
         trade_count: int = 0,
     ) -> TokenTripEvent:
         """Manually trip a token (e.g., on API error during depth check)."""
-        now = datetime.utcnow()
+        now = utcnow()
         expires_at = now + timedelta(seconds=self.config.trip_duration_seconds)
 
         event = TokenTripEvent(
@@ -297,7 +298,7 @@ class TokenCircuitBreaker:
 
     def get_active_trips(self) -> list[TokenTripEvent]:
         """Get all currently active (non-expired) trips."""
-        now = datetime.utcnow()
+        now = utcnow()
         active = []
         expired_tokens = []
 
@@ -319,7 +320,7 @@ class TokenCircuitBreaker:
 
     def get_trip_stats(self) -> dict:
         """Get statistics on trips."""
-        now = datetime.utcnow()
+        now = utcnow()
         active_trips = self.get_active_trips()
 
         # Count trips by reason across all history

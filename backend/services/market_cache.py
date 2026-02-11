@@ -11,6 +11,7 @@ lookups on the hot path) and the SQL database (for persistence across restarts).
 """
 
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 from typing import Optional
 
 from sqlalchemy import (
@@ -136,7 +137,7 @@ class MarketCacheService:
         # Persist to database
         try:
             async with AsyncSessionLocal() as session:
-                now = datetime.utcnow()
+                now = utcnow()
                 # Separate known columns from extra data
                 known_keys = {
                     "question",
@@ -190,7 +191,7 @@ class MarketCacheService:
         # Persist to database in a single transaction
         try:
             async with AsyncSessionLocal() as session:
-                now = datetime.utcnow()
+                now = utcnow()
                 known_keys = {
                     "question",
                     "slug",
@@ -248,7 +249,7 @@ class MarketCacheService:
 
         try:
             async with AsyncSessionLocal() as session:
-                now = datetime.utcnow()
+                now = utcnow()
                 stmt = sqlite_upsert(CachedUsername).values(
                     address=addr_lower,
                     username=username,
@@ -282,7 +283,7 @@ class MarketCacheService:
 
         try:
             async with AsyncSessionLocal() as session:
-                now = datetime.utcnow()
+                now = utcnow()
                 for addr, uname in normalised.items():
                     stmt = sqlite_upsert(CachedUsername).values(
                         address=addr,
@@ -355,7 +356,7 @@ class MarketCacheService:
 
     async def cleanup_old_entries(self, max_age_days: int = 30):
         """Remove entries older than max_age_days from both DB and memory."""
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+        cutoff = utcnow() - timedelta(days=max_age_days)
         removed_markets = 0
         removed_usernames = 0
 

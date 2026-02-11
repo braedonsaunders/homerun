@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from utils.utcnow import utcnow
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -66,9 +67,9 @@ async def write_weather_snapshot(
         try:
             last_scan = _parse_iso_datetime(last_scan)
         except Exception:
-            last_scan = datetime.utcnow()
+            last_scan = utcnow()
     elif last_scan is None:
-        last_scan = datetime.utcnow()
+        last_scan = utcnow()
 
     payload: list[dict[str, Any]] = []
     for o in opportunities:
@@ -85,7 +86,7 @@ async def write_weather_snapshot(
         row = WeatherSnapshot(id=WEATHER_SNAPSHOT_ID)
         session.add(row)
 
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     row.last_scan_at = last_scan
     row.opportunities_json = payload
     row.running = status.get("running", True)
@@ -212,28 +213,28 @@ async def read_weather_control(session: AsyncSession) -> dict[str, Any]:
 async def set_weather_paused(session: AsyncSession, paused: bool) -> None:
     row = await ensure_weather_control(session)
     row.is_paused = paused
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def set_weather_interval(session: AsyncSession, interval_seconds: int) -> None:
     row = await ensure_weather_control(session)
     row.scan_interval_seconds = max(300, min(86400, interval_seconds))
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def request_one_weather_scan(session: AsyncSession) -> None:
     row = await ensure_weather_control(session)
-    row.requested_scan_at = datetime.utcnow()
-    row.updated_at = datetime.utcnow()
+    row.requested_scan_at = utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
 async def clear_weather_scan_request(session: AsyncSession) -> None:
     row = await ensure_weather_control(session)
     row.requested_scan_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = utcnow()
     await session.commit()
 
 
@@ -399,6 +400,6 @@ async def update_weather_settings(
             continue
         setattr(db, mapping[key], value)
 
-    db.updated_at = datetime.utcnow()
+    db.updated_at = utcnow()
     await session.commit()
     return await get_weather_settings(session)

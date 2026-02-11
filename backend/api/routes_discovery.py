@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
+from utils.utcnow import utcnow
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -576,7 +577,7 @@ async def get_traders_overview(
     """Broader traders view: tracked traders + discovery confluence + groups."""
     try:
         tracked_wallets = await wallet_tracker.get_all_wallets()
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = utcnow() - timedelta(hours=hours)
 
         tracked_rows: list[dict] = []
         total_recent_trades = 0

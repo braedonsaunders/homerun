@@ -14,6 +14,7 @@ import logging
 import urllib.parse
 import uuid
 from datetime import datetime
+from utils.utcnow import utcnow
 from typing import Any, Optional
 from xml.etree import ElementTree
 
@@ -375,7 +376,7 @@ class NewsSentimentAnalyzer:
         # Attach market metadata
         result["market_id"] = market_id
         result["market_question"] = market_question
-        result["monitored_at"] = datetime.utcnow().isoformat()
+        result["monitored_at"] = utcnow().isoformat()
 
         return result
 
