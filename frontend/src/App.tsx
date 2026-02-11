@@ -91,8 +91,9 @@ import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
+import WorldIntelligencePanel from './components/WorldIntelligencePanel'
 
-type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
+type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'world' | 'settings'
 type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
 
 const ITEMS_PER_PAGE = 20
@@ -105,7 +106,8 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
   { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '5' },
   { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '6' },
   { id: 'ai', icon: Brain, label: 'AI', shortcut: '7' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '8' },
+  { id: 'world', icon: Globe, label: 'World', shortcut: '8' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '9' },
 ]
 
 function App() {
@@ -391,7 +393,8 @@ function App() {
     { key: '5', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
     { key: '6', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
     { key: '7', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
-    { key: '8', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
+    { key: '8', description: 'Go to World', category: 'Navigation', action: () => setActiveTab('world') },
+    { key: '9', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
     { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
     { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => scanMutation.mutate() },
     { key: '/', description: 'Focus Search', category: 'Actions', action: () => {
@@ -1431,6 +1434,13 @@ function App() {
             {activeTab === 'ai' && (
               <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
                 <AIPanel />
+              </div>
+            )}
+
+            {/* ==================== World Intelligence ==================== */}
+            {activeTab === 'world' && (
+              <div className="flex-1 overflow-hidden section-enter">
+                <WorldIntelligencePanel />
               </div>
             )}
 

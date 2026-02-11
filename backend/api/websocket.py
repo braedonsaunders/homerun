@@ -200,6 +200,25 @@ async def broadcast_weather_status(status: dict):
     await manager.broadcast({"type": "weather_status", "data": status})
 
 
+async def broadcast_world_intelligence_update(signals: list[dict], summary: dict):
+    """Broadcast world intelligence signal updates to all clients."""
+    await manager.broadcast(
+        {
+            "type": "world_intelligence_update",
+            "data": {
+                "count": len(signals),
+                "signals": signals[:50],
+                "summary": summary,
+            },
+        }
+    )
+
+
+async def broadcast_world_intelligence_status(status: dict):
+    """Broadcast world intelligence worker status changes."""
+    await manager.broadcast({"type": "world_intelligence_status", "data": status})
+
+
 # Register callbacks (scanner runs in worker process; no scanner callbacks here)
 # Frontend gets opportunities/status via polling or init; or add API polling→broadcast later
 wallet_tracker.add_callback(broadcast_wallet_trade)

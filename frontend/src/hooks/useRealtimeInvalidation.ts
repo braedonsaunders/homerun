@@ -67,6 +67,15 @@ export function useRealtimeInvalidation(
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-status'] })
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-performance'] })
     }
+    if (lastMessage?.type === 'world_intelligence_update' || lastMessage?.type === 'world_intelligence_status') {
+      queryClient.invalidateQueries({ queryKey: ['world-signals'] })
+      queryClient.invalidateQueries({ queryKey: ['world-instability'] })
+      queryClient.invalidateQueries({ queryKey: ['world-tensions'] })
+      queryClient.invalidateQueries({ queryKey: ['world-convergences'] })
+      queryClient.invalidateQueries({ queryKey: ['world-anomalies'] })
+      queryClient.invalidateQueries({ queryKey: ['world-intelligence-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['world-intelligence-status'] })
+    }
     if (lastMessage?.type === 'worker_status_update') {
       queryClient.invalidateQueries({ queryKey: ['workers-status'] })
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })

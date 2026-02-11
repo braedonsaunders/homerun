@@ -40,6 +40,7 @@ from api.routes_plugins import router as plugins_router
 from api.routes_crypto import router as crypto_router
 from api.routes_news_workflow import router as news_workflow_router
 from api.routes_weather_workflow import router as weather_workflow_router
+from api.routes_world_intelligence import router as world_intelligence_router
 from api.routes_signals import router as signals_router
 from api.routes_workers import router as workers_router
 from api.routes_validation import router as validation_router
@@ -365,6 +366,7 @@ app.include_router(weather_workflow_router, prefix="/api", tags=["Weather Workfl
 app.include_router(signals_router, prefix="/api", tags=["Signals"])
 app.include_router(workers_router, prefix="/api", tags=["Workers"])
 app.include_router(validation_router, prefix="/api", tags=["Validation"])
+app.include_router(world_intelligence_router, prefix="/api", tags=["World Intelligence"])
 
 
 # WebSocket endpoint
