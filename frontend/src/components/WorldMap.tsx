@@ -10,14 +10,43 @@ import {
   type ConvergenceZone,
 } from '../services/worldIntelligenceApi'
 
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-// Carto dark-matter basemap — free, no token required
-const BASEMAP_STYLE =
-  'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+// Inline dark style so the map works without external style JSON fetches.
+// Uses OSM raster tiles which are broadly accessible.
+const DARK_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  name: 'dark-base',
+  sources: {
+    'osm-tiles': {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+      ],
+      tileSize: 256,
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+      maxzoom: 18,
+    },
+  },
+  layers: [
+    {
+      id: 'background',
+      type: 'background',
+      paint: { 'background-color': '#0a0e17' },
+    },
+    {
+      id: 'osm-tiles',
+      type: 'raster',
+      source: 'osm-tiles',
+      paint: { 'raster-opacity': 0.85 },
+    },
+  ],
+  glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
+}
 
 // Military hotspot bounding boxes (mirrors backend HOTSPOT_BBOXES)
 const HOTSPOT_BBOXES: Record<string, [number, number, number, number]> = {
@@ -43,8 +72,8 @@ const CHOKEPOINTS: Array<{ name: string; lat: number; lon: number }> = [
 const SIGNAL_COLORS: Record<string, string> = {
   conflict: '#f87171',    // red-400
   tension: '#fb923c',     // orange-400
-  instability: '#facc15',  // yellow-400
-  convergence: '#c084fc',  // purple-400
+  instability: '#facc15', // yellow-400
+  convergence: '#c084fc', // purple-400
   anomaly: '#22d3ee',     // cyan-400
   military: '#60a5fa',    // blue-400
   infrastructure: '#34d399', // emerald-400
@@ -196,6 +225,108 @@ function MapStats({ signalCount, convergenceCount, surgeRegions }: { signalCount
 }
 
 // ---------------------------------------------------------------------------
+// Helpers to add data layers once style is loaded
+// ---------------------------------------------------------------------------
+
+function addDataLayers(map: maplibregl.Map) {
+  // Military hotspot regions
+  map.addSource('hotspots', { type: 'geojson', data: hotspotsToGeoJSON() })
+  map.addLayer({
+    id: 'hotspots-fill',
+    type: 'fill',
+    source: 'hotspots',
+    paint: { 'fill-color': '#60a5fa', 'fill-opacity': 0.06 },
+  })
+  map.addLayer({
+    id: 'hotspots-outline',
+    type: 'line',
+    source: 'hotspots',
+    paint: { 'line-color': '#60a5fa', 'line-width': 1, 'line-opacity': 0.4, 'line-dasharray': [4, 3] },
+  })
+  map.addLayer({
+    id: 'hotspots-label',
+    type: 'symbol',
+    source: 'hotspots',
+    layout: { 'text-field': ['get', 'name'], 'text-size': 10, 'text-anchor': 'center', 'text-allow-overlap': false },
+    paint: { 'text-color': '#60a5fa', 'text-opacity': 0.5, 'text-halo-color': '#000000', 'text-halo-width': 1 },
+  })
+
+  // Chokepoints
+  map.addSource('chokepoints', { type: 'geojson', data: chokepointsToGeoJSON() })
+  map.addLayer({
+    id: 'chokepoints-icon',
+    type: 'circle',
+    source: 'chokepoints',
+    paint: { 'circle-radius': 5, 'circle-color': '#34d399', 'circle-stroke-color': '#064e3b', 'circle-stroke-width': 1.5, 'circle-opacity': 0.8 },
+  })
+  map.addLayer({
+    id: 'chokepoints-label',
+    type: 'symbol',
+    source: 'chokepoints',
+    layout: { 'text-field': ['get', 'name'], 'text-size': 9, 'text-offset': [0, 1.4], 'text-anchor': 'top', 'text-allow-overlap': false },
+    paint: { 'text-color': '#34d399', 'text-opacity': 0.7, 'text-halo-color': '#000000', 'text-halo-width': 1 },
+  })
+
+  // Signals (empty initially, updated by data)
+  map.addSource('signals', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({
+    id: 'signals-glow',
+    type: 'circle',
+    source: 'signals',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 6, 0.5, 10, 1, 18],
+      'circle-color': ['get', 'color'],
+      'circle-opacity': 0.15,
+      'circle-blur': 1,
+    },
+  })
+  map.addLayer({
+    id: 'signals-dot',
+    type: 'circle',
+    source: 'signals',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 3, 0.5, 5, 1, 8],
+      'circle-color': ['get', 'color'],
+      'circle-opacity': 0.85,
+      'circle-stroke-color': '#000000',
+      'circle-stroke-width': 0.5,
+    },
+  })
+
+  // Convergence zones
+  map.addSource('convergences', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({
+    id: 'convergences-ring',
+    type: 'circle',
+    source: 'convergences',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 20, 50, 30, 100, 45],
+      'circle-color': 'transparent',
+      'circle-stroke-color': '#c084fc',
+      'circle-stroke-width': 2,
+      'circle-opacity': 0.7,
+    },
+  })
+  map.addLayer({
+    id: 'convergences-fill',
+    type: 'circle',
+    source: 'convergences',
+    paint: {
+      'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 20, 50, 30, 100, 45],
+      'circle-color': '#c084fc',
+      'circle-opacity': 0.08,
+    },
+  })
+  map.addLayer({
+    id: 'convergences-label',
+    type: 'symbol',
+    source: 'convergences',
+    layout: { 'text-field': ['concat', ['get', 'signal_count'], ' signals'], 'text-size': 9, 'text-anchor': 'center', 'text-allow-overlap': true },
+    paint: { 'text-color': '#c084fc', 'text-opacity': 0.8, 'text-halo-color': '#000000', 'text-halo-width': 1 },
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -204,6 +335,7 @@ export default function WorldMap() {
   const mapRef = useRef<maplibregl.Map | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const [mapReady, setMapReady] = useState(false)
+  const [mapError, setMapError] = useState<string | null>(null)
 
   // Fetch data
   const { data: signalsData } = useQuery({
@@ -228,173 +360,49 @@ export default function WorldMap() {
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: BASEMAP_STYLE,
-      center: [30, 25],
-      zoom: 2.2,
-      minZoom: 1.5,
-      maxZoom: 12,
-      attributionControl: false,
-    })
+    const container = containerRef.current
+    // Ensure the container has non-zero dimensions before creating the map
+    const { offsetWidth, offsetHeight } = container
+    if (offsetWidth === 0 || offsetHeight === 0) {
+      // Retry on next animation frame when layout has settled
+      const raf = requestAnimationFrame(() => {
+        if (!mapRef.current && containerRef.current) {
+          // Force a re-render to retry
+          setMapError(null)
+        }
+      })
+      return () => cancelAnimationFrame(raf)
+    }
+
+    let map: maplibregl.Map
+    try {
+      map = new maplibregl.Map({
+        container,
+        style: DARK_STYLE,
+        center: [30, 25],
+        zoom: 2.2,
+        minZoom: 1.5,
+        maxZoom: 12,
+        attributionControl: false,
+      })
+    } catch (err) {
+      setMapError(`Map init failed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
 
     map.on('load', () => {
-      // --- Static layers ---
-
-      // Military hotspot regions
-      map.addSource('hotspots', { type: 'geojson', data: hotspotsToGeoJSON() })
-      map.addLayer({
-        id: 'hotspots-fill',
-        type: 'fill',
-        source: 'hotspots',
-        paint: {
-          'fill-color': '#60a5fa',
-          'fill-opacity': 0.06,
-        },
-      })
-      map.addLayer({
-        id: 'hotspots-outline',
-        type: 'line',
-        source: 'hotspots',
-        paint: {
-          'line-color': '#60a5fa',
-          'line-width': 1,
-          'line-opacity': 0.4,
-          'line-dasharray': [4, 3],
-        },
-      })
-      map.addLayer({
-        id: 'hotspots-label',
-        type: 'symbol',
-        source: 'hotspots',
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-size': 10,
-          'text-anchor': 'center',
-          'text-allow-overlap': false,
-        },
-        paint: {
-          'text-color': '#60a5fa',
-          'text-opacity': 0.5,
-          'text-halo-color': '#000000',
-          'text-halo-width': 1,
-        },
-      })
-
-      // Chokepoints
-      map.addSource('chokepoints', { type: 'geojson', data: chokepointsToGeoJSON() })
-      map.addLayer({
-        id: 'chokepoints-icon',
-        type: 'circle',
-        source: 'chokepoints',
-        paint: {
-          'circle-radius': 5,
-          'circle-color': '#34d399',
-          'circle-stroke-color': '#064e3b',
-          'circle-stroke-width': 1.5,
-          'circle-opacity': 0.8,
-        },
-      })
-      map.addLayer({
-        id: 'chokepoints-label',
-        type: 'symbol',
-        source: 'chokepoints',
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-size': 9,
-          'text-offset': [0, 1.4],
-          'text-anchor': 'top',
-          'text-allow-overlap': false,
-        },
-        paint: {
-          'text-color': '#34d399',
-          'text-opacity': 0.7,
-          'text-halo-color': '#000000',
-          'text-halo-width': 1,
-        },
-      })
-
-      // --- Dynamic layers (empty initially, updated by data) ---
-
-      // Signals (circles)
-      map.addSource('signals', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] },
-      })
-      map.addLayer({
-        id: 'signals-glow',
-        type: 'circle',
-        source: 'signals',
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 6, 0.5, 10, 1, 18],
-          'circle-color': ['get', 'color'],
-          'circle-opacity': 0.15,
-          'circle-blur': 1,
-        },
-      })
-      map.addLayer({
-        id: 'signals-dot',
-        type: 'circle',
-        source: 'signals',
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 3, 0.5, 5, 1, 8],
-          'circle-color': ['get', 'color'],
-          'circle-opacity': 0.85,
-          'circle-stroke-color': '#000000',
-          'circle-stroke-width': 0.5,
-        },
-      })
-
-      // Convergence zones (pulsing rings)
-      map.addSource('convergences', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] },
-      })
-      map.addLayer({
-        id: 'convergences-ring',
-        type: 'circle',
-        source: 'convergences',
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 20, 50, 30, 100, 45],
-          'circle-color': 'transparent',
-          'circle-stroke-color': '#c084fc',
-          'circle-stroke-width': 2,
-          'circle-opacity': 0.7,
-        },
-      })
-      map.addLayer({
-        id: 'convergences-fill',
-        type: 'circle',
-        source: 'convergences',
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'urgency_score'], 0, 20, 50, 30, 100, 45],
-          'circle-color': '#c084fc',
-          'circle-opacity': 0.08,
-        },
-      })
-      map.addLayer({
-        id: 'convergences-label',
-        type: 'symbol',
-        source: 'convergences',
-        layout: {
-          'text-field': ['concat', ['get', 'signal_count'], ' signals'],
-          'text-size': 9,
-          'text-anchor': 'center',
-          'text-allow-overlap': true,
-        },
-        paint: {
-          'text-color': '#c084fc',
-          'text-opacity': 0.8,
-          'text-halo-color': '#000000',
-          'text-halo-width': 1,
-        },
-      })
-
+      addDataLayers(map)
+      map.resize()
       mapRef.current = map
       setMapReady(true)
+    })
+
+    map.on('error', (e) => {
+      // Log tile/style errors but don't crash the map
+      console.warn('[WorldMap] MapLibre error:', e.error?.message || e)
     })
 
     return () => {
@@ -402,40 +410,41 @@ export default function WorldMap() {
       mapRef.current = null
       setMapReady(false)
     }
-  }, [])
+  // mapError in deps so the raf retry triggers a new attempt
+  }, [mapError])
+
+  // Resize when container dimensions change (e.g. sidebar toggle)
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !containerRef.current) return
+    const map = mapRef.current
+    const ro = new ResizeObserver(() => map.resize())
+    ro.observe(containerRef.current)
+    return () => ro.disconnect()
+  }, [mapReady])
 
   // Update signal layer when data changes
   useEffect(() => {
     if (!mapReady || !mapRef.current) return
-    const map = mapRef.current
-    const source = map.getSource('signals') as maplibregl.GeoJSONSource | undefined
+    const source = mapRef.current.getSource('signals') as maplibregl.GeoJSONSource | undefined
     if (!source) return
-
-    const signals = signalsData?.signals || []
-    source.setData(signalsToGeoJSON(signals))
+    source.setData(signalsToGeoJSON(signalsData?.signals || []))
   }, [mapReady, signalsData])
 
   // Update convergence layer when data changes
   useEffect(() => {
     if (!mapReady || !mapRef.current) return
-    const map = mapRef.current
-    const source = map.getSource('convergences') as maplibregl.GeoJSONSource | undefined
+    const source = mapRef.current.getSource('convergences') as maplibregl.GeoJSONSource | undefined
     if (!source) return
-
-    const zones = convergenceData?.zones || []
-    source.setData(convergencesToGeoJSON(zones))
+    source.setData(convergencesToGeoJSON(convergenceData?.zones || []))
   }, [mapReady, convergenceData])
 
   // Popup on click
   const handleSignalClick = useCallback(
     (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       if (!mapRef.current || !e.features || e.features.length === 0) return
-
       const f = e.features[0]
       const coords = (f.geometry as GeoJSON.Point).coordinates.slice() as [number, number]
       const props = f.properties
-
-      // Close previous popup
       popupRef.current?.remove()
 
       const html = `
@@ -449,17 +458,10 @@ export default function WorldMap() {
         </div>
       `
 
-      const popup = new maplibregl.Popup({
-        closeButton: true,
-        closeOnClick: true,
-        maxWidth: '280px',
-        className: 'world-map-popup',
-      })
+      popupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '280px', className: 'world-map-popup' })
         .setLngLat(coords)
         .setHTML(html)
         .addTo(mapRef.current!)
-
-      popupRef.current = popup
     },
     [],
   )
@@ -467,11 +469,9 @@ export default function WorldMap() {
   const handleConvergenceClick = useCallback(
     (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       if (!mapRef.current || !e.features || e.features.length === 0) return
-
       const f = e.features[0]
       const coords = (f.geometry as GeoJSON.Point).coordinates.slice() as [number, number]
       const props = f.properties
-
       popupRef.current?.remove()
 
       const html = `
@@ -486,17 +486,10 @@ export default function WorldMap() {
         </div>
       `
 
-      const popup = new maplibregl.Popup({
-        closeButton: true,
-        closeOnClick: true,
-        maxWidth: '280px',
-        className: 'world-map-popup',
-      })
+      popupRef.current = new maplibregl.Popup({ closeButton: true, closeOnClick: true, maxWidth: '280px', className: 'world-map-popup' })
         .setLngLat(coords)
         .setHTML(html)
         .addTo(mapRef.current!)
-
-      popupRef.current = popup
     },
     [],
   )
@@ -509,7 +502,6 @@ export default function WorldMap() {
     map.on('click', 'signals-dot', handleSignalClick)
     map.on('click', 'convergences-ring', handleConvergenceClick)
 
-    // Cursor change on hover
     const pointerOn = () => { map.getCanvas().style.cursor = 'pointer' }
     const pointerOff = () => { map.getCanvas().style.cursor = '' }
 
@@ -535,10 +527,14 @@ export default function WorldMap() {
   return (
     <div className="absolute inset-0">
       <div ref={containerRef} className="absolute inset-0" />
+      {mapError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
+          <div className="text-sm text-red-400 font-mono text-center p-4">{mapError}</div>
+        </div>
+      )}
       <MapLegend />
       <MapStats signalCount={signalCount} convergenceCount={convergenceCount} surgeRegions={surgeRegions} />
 
-      {/* Popup dark theme override */}
       <style>{`
         .world-map-popup .maplibregl-popup-content {
           background: #0f172a;
