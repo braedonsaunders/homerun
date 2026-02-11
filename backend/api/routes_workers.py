@@ -28,6 +28,7 @@ ALLOWED_WORKERS = {
     "tracked_traders",
     "autotrader",
     "discovery",
+    "world_intelligence",
 }
 
 
@@ -45,6 +46,8 @@ def _normalize_worker_name(raw: str) -> str:
         "autotrader": "autotrader",
         "auto_trader": "autotrader",
         "discovery": "discovery",
+        "world_intelligence": "world_intelligence",
+        "worldintelligence": "world_intelligence",
     }
     return alias.get(name, name)
 

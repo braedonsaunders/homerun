@@ -319,6 +319,10 @@ class TensionTracker:
         await self.update_tensions([(country_a, country_b)])
         return self._current.get(pair)
 
+    def get_all_tensions(self) -> list[CountryPairTension]:
+        """Return all currently tracked tension pairs."""
+        return list(self._current.values())
+
     def get_high_tension_pairs(self, threshold: float = 60.0) -> list[CountryPairTension]:
         """Return all tracked pairs whose tension score is at or above *threshold*."""
         return [

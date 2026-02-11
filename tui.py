@@ -57,6 +57,7 @@ WORKER_STATUS_ORDER: list[tuple[str, str]] = [
     ("crypto", "CRYPTO"),
     ("tracked_traders", "TRACKED"),
     ("autotrader", "AUTOTRADER"),
+    ("world_intelligence", "WORLD INTEL"),
 ]
 
 WORKER_TAG_TO_NAME: dict[str, str] = {
@@ -67,6 +68,7 @@ WORKER_TAG_TO_NAME: dict[str, str] = {
     "CRYPTO": "crypto",
     "TRACKED": "tracked_traders",
     "AUTOTRADER": "autotrader",
+    "WORLDINTEL": "world_intelligence",
 }
 
 WORKER_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
@@ -77,6 +79,7 @@ WORKER_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
     ("crypto_worker", "crypto"),
     ("tracked_traders_worker", "tracked_traders"),
     ("autotrader_worker", "autotrader"),
+    ("world_intelligence_worker", "world_intelligence"),
 )
 
 WORKER_MINI_LOG_LINES = 2
@@ -1339,6 +1342,7 @@ class HomerunApp(App):
             ("crypto_worker_proc", "workers.crypto_worker", "CRYPTO", "crypto"),
             ("tracked_worker_proc", "workers.tracked_traders_worker", "TRACKED", "tracked-traders"),
             ("autotrader_worker_proc", "workers.autotrader_worker", "AUTOTRADER", "autotrader"),
+            ("world_intel_worker_proc", "workers.world_intelligence_worker", "WORLDINTEL", "world-intelligence"),
         ]
         for attr, module_name, tag, label in worker_specs:
             setattr(
