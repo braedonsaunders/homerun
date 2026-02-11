@@ -506,7 +506,7 @@ async def _build_context_pack(
 ) -> dict[str, Any]:
     """Build a compact context pack for AI chat and UI context inspection."""
     from datetime import datetime, timedelta, timezone
-from utils.utcnow import utcnow
+    from utils.utcnow import utcnow
     from sqlalchemy import desc, select
     from models.database import (
         NewsTradeIntent,

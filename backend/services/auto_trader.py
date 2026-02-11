@@ -1431,7 +1431,7 @@ class AutoTrader:
         from models.database import AsyncSessionLocal, WeatherTradeIntent
         from sqlalchemy import select
         from datetime import timedelta
-from utils.utcnow import utcnow
+        from utils.utcnow import utcnow
 
         cutoff = datetime.now(timezone.utc) - timedelta(
             minutes=self.config.weather_workflow_max_age_minutes
