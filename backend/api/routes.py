@@ -3,6 +3,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from typing import Optional
 from datetime import datetime, timezone
+from utils.utcnow import utcnow
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
@@ -555,7 +556,6 @@ async def get_all_recent_trades(
     """
     try:
         from datetime import timedelta
-from utils.utcnow import utcnow
 
         wallets = await wallet_tracker.get_all_wallets()
         all_trades = []

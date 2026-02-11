@@ -528,7 +528,7 @@ def _remove_old_opportunities(
 ) -> list[ArbitrageOpportunity]:
     """Drop opportunities older than max_age_minutes."""
     from datetime import timedelta, timezone
-from utils.utcnow import utcnow
+    from utils.utcnow import utcnow
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
     def ok(o: ArbitrageOpportunity) -> bool:
         d = o.detected_at
