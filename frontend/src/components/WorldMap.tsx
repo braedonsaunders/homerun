@@ -9,7 +9,7 @@ import {
   type WorldSignal,
   type ConvergenceZone,
 } from '../services/worldIntelligenceApi'
-import { cn } from '../lib/utils'
+
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -199,7 +199,7 @@ function MapStats({ signalCount, convergenceCount, surgeRegions }: { signalCount
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function WorldMap({ className }: { className?: string }) {
+export default function WorldMap() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
@@ -533,7 +533,7 @@ export default function WorldMap({ className }: { className?: string }) {
   const surgeRegions: string[] = militaryData?.surge_regions || []
 
   return (
-    <div className={cn('relative w-full h-full', className)}>
+    <div className="absolute inset-0">
       <div ref={containerRef} className="absolute inset-0" />
       <MapLegend />
       <MapStats signalCount={signalCount} convergenceCount={convergenceCount} surgeRegions={surgeRegions} />
