@@ -99,6 +99,9 @@ class NewsFeedService:
         if settings.NEWS_RSS_FEEDS:
             tasks.append(self._fetch_custom_rss_feeds())
 
+        if settings.WORLD_INTEL_GOV_RSS_ENABLED:
+            tasks.append(self._fetch_gov_rss())
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
@@ -450,6 +453,35 @@ class NewsFeedService:
 
         except Exception as e:
             logger.debug("Custom RSS fetch failed for '%s': %s", feed_url, e)
+            return []
+
+    # ------------------------------------------------------------------
+    # Government RSS feeds (world intelligence integration)
+    # ------------------------------------------------------------------
+
+    async def _fetch_gov_rss(self) -> list[NewsArticle]:
+        """Fetch from US government RSS feeds via world intelligence module."""
+        try:
+            from services.world_intelligence.gov_rss_feeds import gov_rss_service
+
+            gov_articles = await gov_rss_service.fetch_all()
+            articles: list[NewsArticle] = []
+            for ga in gov_articles:
+                articles.append(
+                    NewsArticle(
+                        article_id=ga.article_id,
+                        title=ga.title,
+                        url=ga.url,
+                        source=ga.source,
+                        published=ga.published,
+                        summary=ga.summary,
+                        feed_source="gov_rss",
+                        category=ga.agency,
+                    )
+                )
+            return articles
+        except Exception as e:
+            logger.debug("Gov RSS integration failed: %s", e)
             return []
 
     # ------------------------------------------------------------------

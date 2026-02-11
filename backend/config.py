@@ -295,6 +295,22 @@ class Settings(BaseSettings):
     WEATHER_WORKFLOW_DEFAULT_SIZE_USD: float = 10.0
     WEATHER_WORKFLOW_MAX_SIZE_USD: float = 50.0
 
+    # World Intelligence Settings
+    WORLD_INTELLIGENCE_ENABLED: bool = True
+    WORLD_INTELLIGENCE_INTERVAL_SECONDS: int = 300  # 5 minutes
+    ACLED_API_KEY: Optional[str] = None  # ACLED API key (free registration)
+    ACLED_EMAIL: Optional[str] = None  # Email for ACLED API auth
+    OPENSKY_USERNAME: Optional[str] = None  # OpenSky Network credentials (optional)
+    OPENSKY_PASSWORD: Optional[str] = None
+    CLOUDFLARE_RADAR_TOKEN: Optional[str] = None  # Cloudflare Radar API token
+    WORLD_INTEL_CONVERGENCE_MIN_TYPES: int = 3  # Min signal types for convergence
+    WORLD_INTEL_ANOMALY_THRESHOLD: float = 2.0  # Z-score threshold for anomalies
+    WORLD_INTEL_INSTABILITY_CRITICAL: float = 60.0  # CII threshold for critical alerts
+    WORLD_INTEL_TENSION_CRITICAL: float = 70.0  # Tension score threshold for alerts
+    WORLD_INTEL_GOV_RSS_ENABLED: bool = True  # Enable US government RSS feeds
+    WORLD_INTEL_USGS_ENABLED: bool = True  # Enable earthquake monitoring
+    WORLD_INTEL_MILITARY_ENABLED: bool = True  # Enable military flight tracking
+
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
     CLEANUP_INTERVAL_HOURS: int = 24  # Run cleanup every X hours

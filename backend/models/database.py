@@ -2048,6 +2048,118 @@ class AutoTraderTrade(Base):
     )
 
 
+# ==================== WORLD INTELLIGENCE ====================
+
+
+class WorldIntelligenceSignal(Base):
+    """Aggregated world intelligence signal from any source."""
+
+    __tablename__ = "world_intelligence_signals"
+
+    id = Column(String, primary_key=True)
+    signal_type = Column(String, nullable=False)  # conflict, tension, instability, convergence, anomaly, military, infrastructure
+    severity = Column(Float, nullable=False, default=0.0)  # 0-1 normalized
+    country = Column(String, nullable=True)
+    iso3 = Column(String, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    title = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    source = Column(String, nullable=True)
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    related_market_ids = Column(JSON, nullable=True)  # list of market IDs
+    market_relevance_score = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_wi_signal_type", "signal_type"),
+        Index("idx_wi_severity", "severity"),
+        Index("idx_wi_country", "country"),
+        Index("idx_wi_detected", "detected_at"),
+    )
+
+
+class CountryInstabilityRecord(Base):
+    """Historical country instability index snapshots."""
+
+    __tablename__ = "country_instability_records"
+
+    id = Column(String, primary_key=True)
+    country = Column(String, nullable=False)
+    iso3 = Column(String, nullable=False)
+    score = Column(Float, nullable=False)  # 0-100
+    components = Column(JSON, nullable=True)  # sub-score breakdown
+    trend = Column(String, nullable=True)  # rising/falling/stable
+    computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_cii_country", "country"),
+        Index("idx_cii_iso3", "iso3"),
+        Index("idx_cii_computed", "computed_at"),
+        Index("idx_cii_score", "score"),
+    )
+
+
+class TensionPairRecord(Base):
+    """Historical country-pair tension snapshots."""
+
+    __tablename__ = "tension_pair_records"
+
+    id = Column(String, primary_key=True)
+    country_a = Column(String, nullable=False)
+    country_b = Column(String, nullable=False)
+    tension_score = Column(Float, nullable=False)  # 0-100
+    event_count = Column(Integer, nullable=True)
+    avg_goldstein_scale = Column(Float, nullable=True)
+    trend = Column(String, nullable=True)
+    computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_tension_pair", "country_a", "country_b"),
+        Index("idx_tension_computed", "computed_at"),
+    )
+
+
+class ConflictEventRecord(Base):
+    """Cached ACLED conflict event data."""
+
+    __tablename__ = "conflict_event_records"
+
+    id = Column(String, primary_key=True)
+    event_type = Column(String, nullable=False)
+    sub_event_type = Column(String, nullable=True)
+    country = Column(String, nullable=False)
+    iso3 = Column(String, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    fatalities = Column(Integer, default=0)
+    event_date = Column(DateTime, nullable=True)
+    source = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    severity_score = Column(Float, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_conflict_country", "country"),
+        Index("idx_conflict_type", "event_type"),
+        Index("idx_conflict_date", "event_date"),
+        Index("idx_conflict_fetched", "fetched_at"),
+    )
+
+
+class WorldIntelligenceSnapshot(Base):
+    """Worker snapshot for world intelligence collector."""
+
+    __tablename__ = "world_intelligence_snapshots"
+
+    id = Column(String, primary_key=True, default="latest")
+    status = Column(JSON, nullable=True)
+    signals_json = Column(JSON, nullable=True)  # last batch of signals
+    stats = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ==================== DATABASE SETUP ====================
 
 # SQLite-specific: improve concurrency (WAL + busy_timeout applied in _set_sqlite_pragma)
