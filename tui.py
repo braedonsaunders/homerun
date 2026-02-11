@@ -1565,6 +1565,10 @@ class HomerunApp(App):
             running = bool(
                 self.tracked_worker_proc is not None and self.tracked_worker_proc.poll() is None
             )
+        elif worker_name == "world_intelligence":
+            running = bool(
+                self.world_intel_worker_proc is not None and self.world_intel_worker_proc.poll() is None
+            )
         return {
             "running": running,
             "enabled": True,
@@ -1636,6 +1640,7 @@ class HomerunApp(App):
         "crypto": "crypto_worker_proc",
         "tracked_traders": "tracked_worker_proc",
         "autotrader": "autotrader_worker_proc",
+        "world_intelligence": "world_intel_worker_proc",
     }
 
     def _update_workers_from_processes(self) -> None:
