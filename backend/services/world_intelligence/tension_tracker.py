@@ -42,8 +42,9 @@ DEFAULT_HOT_PAIRS: list[tuple[str, str]] = [
     ("SA", "IR"),
 ]
 
-# Rate limiting: GDELT is generous but we keep it reasonable
-_RATE_LIMIT_DELAY_SECONDS = 1.5
+# Rate limiting: GDELT enforces strict rate limits on the free tier;
+# 5 seconds between queries avoids 429 responses.
+_RATE_LIMIT_DELAY_SECONDS = 5.0
 
 # Rolling history retention
 _HISTORY_MAX_DAYS = 90
@@ -167,6 +168,7 @@ class TensionTracker:
     ) -> list[dict]:
         """Query GDELT v2 doc API for articles mentioning both countries.
 
+        Retries up to 2 times on HTTP 429 with exponential backoff.
         Returns a list of article dicts (may be empty).
         """
         query = f'"{country_a}" "{country_b}"'
@@ -179,16 +181,28 @@ class TensionTracker:
             "maxrecords": "250",
         }
 
-        try:
-            resp = await self._client.get(GDELT_DOC_API, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("GDELT query failed for %s-%s: %s", country_a, country_b, exc)
-            return []
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self._client.get(GDELT_DOC_API, params=params)
+                if resp.status_code == 429:
+                    if attempt < max_retries:
+                        backoff = _RATE_LIMIT_DELAY_SECONDS * (2 ** attempt)
+                        logger.debug("GDELT 429 for %s-%s, retrying in %.0fs", country_a, country_b, backoff)
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.warning("GDELT 429 for %s-%s after %d retries, skipping", country_a, country_b, max_retries)
+                    return []
+                resp.raise_for_status()
+                data = resp.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("GDELT query failed for %s-%s: %s", country_a, country_b, exc)
+                return []
 
-        articles = data.get("articles", [])
-        return articles if isinstance(articles, list) else []
+            articles = data.get("articles", [])
+            return articles if isinstance(articles, list) else []
+
+        return []
 
     def _score_articles(self, articles: list[dict]) -> tuple[float, float, list[str]]:
         """Extract base tone score, event count, and top themes from articles.
