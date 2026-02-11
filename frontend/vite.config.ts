@@ -20,6 +20,11 @@ logger.error = (msg, options) => {
 export default defineConfig({
   plugins: [react()],
   customLogger: logger,
+  optimizeDeps: {
+    esbuildOptions: {
+      target: 'es2022',
+    },
+  },
   server: {
     port: 3000,
     strictPort: true,

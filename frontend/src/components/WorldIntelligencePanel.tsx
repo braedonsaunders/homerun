@@ -445,7 +445,7 @@ export default function WorldIntelligencePanel() {
   return (
     <div className="h-full flex flex-col">
       {/* Sub-navigation */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-card/50 overflow-x-auto">
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-card/50 overflow-x-auto shrink-0">
         {SUB_NAV.map((item) => (
           <Button
             key={item.id}
