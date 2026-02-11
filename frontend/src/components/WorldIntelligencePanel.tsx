@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Globe,
@@ -15,10 +15,13 @@ import {
   Swords,
   Waves,
   Wifi,
+  Map as MapIcon,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
+
+const WorldMap = lazy(() => import('./WorldMap'))
 import {
   getWorldSignals,
   getInstabilityScores,
@@ -34,7 +37,7 @@ import {
   TemporalAnomaly,
 } from '../services/worldIntelligenceApi'
 
-type WorldSubView = 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
+type WorldSubView = 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
 
 const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; label: string }> = {
   conflict: { icon: Swords, color: 'text-red-400', label: 'Conflict' },
@@ -427,6 +430,7 @@ function AnomaliesView() {
 // ==================== MAIN COMPONENT ====================
 
 const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = [
+  { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'overview', label: 'Overview', icon: Globe },
   { id: 'signals', label: 'Signals', icon: Radio },
   { id: 'countries', label: 'Countries', icon: MapPin },
@@ -436,7 +440,7 @@ const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = 
 ]
 
 export default function WorldIntelligencePanel() {
-  const [subView, setSubView] = useState<WorldSubView>('overview')
+  const [subView, setSubView] = useState<WorldSubView>('map')
 
   return (
     <div className="h-full flex flex-col">
@@ -457,14 +461,22 @@ export default function WorldIntelligencePanel() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {subView === 'overview' && <OverviewView />}
-        {subView === 'signals' && <SignalsView />}
-        {subView === 'countries' && <CountriesView />}
-        {subView === 'tensions' && <TensionsView />}
-        {subView === 'convergences' && <ConvergencesView />}
-        {subView === 'anomalies' && <AnomaliesView />}
-      </div>
+      {subView === 'map' ? (
+        <div className="flex-1 relative">
+          <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground">Loading map...</div>}>
+            <WorldMap className="h-full" />
+          </Suspense>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4">
+          {subView === 'overview' && <OverviewView />}
+          {subView === 'signals' && <SignalsView />}
+          {subView === 'countries' && <CountriesView />}
+          {subView === 'tensions' && <TensionsView />}
+          {subView === 'convergences' && <ConvergencesView />}
+          {subView === 'anomalies' && <AnomaliesView />}
+        </div>
+      )}
     </div>
   )
 }
