@@ -45,7 +45,7 @@ const DARK_STYLE: maplibregl.StyleSpecification = {
       paint: { 'raster-opacity': 0.85 },
     },
   ],
-  glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
+  glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
 }
 
 // Military hotspot bounding boxes (mirrors backend HOTSPOT_BBOXES)
@@ -243,14 +243,6 @@ function addDataLayers(map: maplibregl.Map) {
     source: 'hotspots',
     paint: { 'line-color': '#60a5fa', 'line-width': 1, 'line-opacity': 0.4, 'line-dasharray': [4, 3] },
   })
-  map.addLayer({
-    id: 'hotspots-label',
-    type: 'symbol',
-    source: 'hotspots',
-    layout: { 'text-field': ['get', 'name'], 'text-size': 10, 'text-anchor': 'center', 'text-allow-overlap': false },
-    paint: { 'text-color': '#60a5fa', 'text-opacity': 0.5, 'text-halo-color': '#000000', 'text-halo-width': 1 },
-  })
-
   // Chokepoints
   map.addSource('chokepoints', { type: 'geojson', data: chokepointsToGeoJSON() })
   map.addLayer({
@@ -259,14 +251,6 @@ function addDataLayers(map: maplibregl.Map) {
     source: 'chokepoints',
     paint: { 'circle-radius': 5, 'circle-color': '#34d399', 'circle-stroke-color': '#064e3b', 'circle-stroke-width': 1.5, 'circle-opacity': 0.8 },
   })
-  map.addLayer({
-    id: 'chokepoints-label',
-    type: 'symbol',
-    source: 'chokepoints',
-    layout: { 'text-field': ['get', 'name'], 'text-size': 9, 'text-offset': [0, 1.4], 'text-anchor': 'top', 'text-allow-overlap': false },
-    paint: { 'text-color': '#34d399', 'text-opacity': 0.7, 'text-halo-color': '#000000', 'text-halo-width': 1 },
-  })
-
   // Signals (empty initially, updated by data)
   map.addSource('signals', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
   map.addLayer({
@@ -316,13 +300,6 @@ function addDataLayers(map: maplibregl.Map) {
       'circle-color': '#c084fc',
       'circle-opacity': 0.08,
     },
-  })
-  map.addLayer({
-    id: 'convergences-label',
-    type: 'symbol',
-    source: 'convergences',
-    layout: { 'text-field': ['concat', ['get', 'signal_count'], ' signals'], 'text-size': 9, 'text-anchor': 'center', 'text-allow-overlap': true },
-    paint: { 'text-color': '#c084fc', 'text-opacity': 0.8, 'text-halo-color': '#000000', 'text-halo-width': 1 },
   })
 }
 
@@ -526,7 +503,7 @@ export default function WorldMap() {
 
   return (
     <div className="absolute inset-0">
-      <div ref={containerRef} className="absolute inset-0" />
+      <div ref={containerRef} className="absolute inset-0" style={{ background: '#0a0e17' }} />
       {mapError && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
           <div className="text-sm text-red-400 font-mono text-center p-4">{mapError}</div>
