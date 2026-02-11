@@ -10,10 +10,8 @@ import {
   MapPin,
   Radio,
   ChevronRight,
-  RefreshCw,
   Flame,
   Swords,
-  Waves,
   Wifi,
   Map as MapIcon,
 } from 'lucide-react'
@@ -31,10 +29,6 @@ import {
   getWorldIntelligenceSummary,
   getWorldIntelligenceStatus,
   WorldSignal,
-  InstabilityScore,
-  TensionPair,
-  ConvergenceZone,
-  TemporalAnomaly,
 } from '../services/worldIntelligenceApi'
 
 type WorldSubView = 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
@@ -462,9 +456,9 @@ export default function WorldIntelligencePanel() {
 
       {/* Content */}
       {subView === 'map' ? (
-        <div className="flex-1 relative">
+        <div className="flex-1 min-h-0 relative overflow-hidden">
           <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground">Loading map...</div>}>
-            <WorldMap className="h-full" />
+            <WorldMap />
           </Suspense>
         </div>
       ) : (
