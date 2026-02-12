@@ -19,6 +19,8 @@ from typing import Optional
 import httpx
 
 from config import settings
+from .tension_pair_catalog import tension_pair_catalog
+from .taxonomy_catalog import taxonomy_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +30,16 @@ logger = logging.getLogger(__name__)
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 
-# Default geopolitical hot-pairs to track (ISO-2 codes)
-DEFAULT_HOT_PAIRS: list[tuple[str, str]] = [
-    ("US", "CN"),
-    ("US", "RU"),
-    ("RU", "UA"),
-    ("IL", "IR"),
-    ("CN", "TW"),
-    ("IN", "PK"),
-    ("KP", "KR"),
-    ("US", "IR"),
-    ("CN", "PH"),
-    ("SA", "IR"),
-]
-
-# Rate limiting: GDELT enforces strict rate limits on the free tier;
-# 5 seconds between queries avoids 429 responses.
-_RATE_LIMIT_DELAY_SECONDS = 5.0
+# GDELT publicly requests a minimum of one request every 5 seconds.
+_GDELT_MIN_DELAY_SECONDS = 5.0
+# Rate limiting: configurable minimum spacing between requests.
+_RATE_LIMIT_DELAY_SECONDS = float(
+    max(
+        _GDELT_MIN_DELAY_SECONDS,
+        getattr(settings, "WORLD_INTEL_GDELT_QUERY_DELAY_SECONDS", _GDELT_MIN_DELAY_SECONDS)
+        or _GDELT_MIN_DELAY_SECONDS,
+    )
+)
 
 # Rolling history retention
 _HISTORY_MAX_DAYS = 90
@@ -102,6 +97,39 @@ class TensionTracker:
 
         # Rolling daily history per pair (up to 90 days)
         self._history: dict[tuple[str, str], list[_DailySnapshot]] = defaultdict(list)
+        self._query_lock = asyncio.Lock()
+        self._last_query_ts = 0.0
+        self._last_error: Optional[str] = None
+
+    def _default_pairs(self) -> list[tuple[str, str]]:
+        configured = list(getattr(settings, "WORLD_INTEL_TENSION_PAIRS", []) or [])
+        parsed: list[tuple[str, str]] = []
+        for raw in configured:
+            text = str(raw).strip().upper()
+            if "-" in text:
+                a, b = text.split("-", 1)
+            elif ":" in text:
+                a, b = text.split(":", 1)
+            else:
+                continue
+            a = a.strip()
+            b = b.strip()
+            if len(a) == 2 and len(b) == 2 and a != b:
+                parsed.append((a, b))
+        if parsed:
+            return parsed
+        catalog_pairs = tension_pair_catalog.default_pairs()
+        if catalog_pairs:
+            return catalog_pairs
+        return sorted(self._current.keys())
+
+    @staticmethod
+    def _gdelt_query_term(country: str) -> str:
+        text = str(country or "").strip()
+        if not text:
+            return text
+        lookup = tension_pair_catalog.query_names()
+        return lookup.get(text.upper(), text)
 
     # -- Helpers -------------------------------------------------------------
 
@@ -171,7 +199,9 @@ class TensionTracker:
         Retries up to 2 times on HTTP 429 with exponential backoff.
         Returns a list of article dicts (may be empty).
         """
-        query = f'"{country_a}" "{country_b}"'
+        query_a = self._gdelt_query_term(country_a).replace('"', "")
+        query_b = self._gdelt_query_term(country_b).replace('"', "")
+        query = f'"{query_a}" "{query_b}"'
         params: dict[str, str] = {
             "query": query,
             "mode": "artlist",
@@ -182,27 +212,77 @@ class TensionTracker:
         }
 
         max_retries = 2
+        rate_limit_hint = "Please limit requests to one every 5 seconds"
         for attempt in range(max_retries + 1):
             try:
+                await self._throttle_query()
                 resp = await self._client.get(GDELT_DOC_API, params=params)
                 if resp.status_code == 429:
                     if attempt < max_retries:
-                        backoff = _RATE_LIMIT_DELAY_SECONDS * (2 ** attempt)
+                        backoff = max(1.0, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
                         logger.debug("GDELT 429 for %s-%s, retrying in %.0fs", country_a, country_b, backoff)
                         await asyncio.sleep(backoff)
                         continue
                     logger.warning("GDELT 429 for %s-%s after %d retries, skipping", country_a, country_b, max_retries)
+                    self._last_error = f"429 rate-limited for {country_a}-{country_b}"
+                    return []
+                text = (resp.text or "").strip()
+                if rate_limit_hint in text:
+                    if attempt < max_retries:
+                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
+                        logger.debug(
+                            "GDELT soft rate-limit for %s-%s, retrying in %.0fs",
+                            country_a,
+                            country_b,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.warning(
+                        "GDELT soft rate-limit for %s-%s after %d retries, skipping",
+                        country_a,
+                        country_b,
+                        max_retries,
+                    )
+                    self._last_error = f"soft rate-limited for {country_a}-{country_b}"
                     return []
                 resp.raise_for_status()
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except ValueError as exc:
+                    if attempt < max_retries:
+                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
+                        logger.debug(
+                            "GDELT non-JSON payload for %s-%s, retrying in %.0fs",
+                            country_a,
+                            country_b,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.warning("GDELT invalid JSON for %s-%s: %s", country_a, country_b, exc)
+                    self._last_error = f"invalid json for {country_a}-{country_b}"
+                    return []
             except (httpx.HTTPError, ValueError) as exc:
                 logger.warning("GDELT query failed for %s-%s: %s", country_a, country_b, exc)
+                self._last_error = str(exc)
                 return []
 
             articles = data.get("articles", [])
+            self._last_error = None
             return articles if isinstance(articles, list) else []
 
         return []
+
+    async def _throttle_query(self) -> None:
+        if _RATE_LIMIT_DELAY_SECONDS <= 0:
+            return
+        async with self._query_lock:
+            now = time.monotonic()
+            wait = _RATE_LIMIT_DELAY_SECONDS - (now - self._last_query_ts)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_query_ts = time.monotonic()
 
     def _score_articles(self, articles: list[dict]) -> tuple[float, float, list[str]]:
         """Extract base tone score, event count, and top themes from articles.
@@ -227,7 +307,7 @@ class TensionTracker:
 
             # Collect themes
             title = str(art.get("title", ""))
-            for keyword in ["conflict", "military", "sanctions", "war", "attack", "threat", "nuclear"]:
+            for keyword in taxonomy_catalog.tension_title_keywords():
                 if keyword in title.lower():
                     themes[keyword] += 1
 
@@ -257,60 +337,65 @@ class TensionTracker:
         Queries GDELT for each pair, computes the composite tension score,
         stores the result, and returns all updated tensions.
         """
-        pairs = country_pairs or DEFAULT_HOT_PAIRS
-        results: list[CountryPairTension] = []
+        pairs = country_pairs or self._default_pairs()
+        concurrency = int(
+            max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3)
+        )
+        semaphore = asyncio.Semaphore(concurrency)
 
-        for country_a, country_b in pairs:
-            articles = await self._fetch_pair_articles(country_a, country_b)
-            base_tone_score, avg_goldstein, top_themes = self._score_articles(articles)
-            event_count = len(articles)
+        async def _compute_pair(country_a: str, country_b: str) -> Optional[CountryPairTension]:
+            async with semaphore:
+                articles = await self._fetch_pair_articles(country_a, country_b)
+                base_tone_score, avg_goldstein, top_themes = self._score_articles(articles)
+                event_count = len(articles)
 
-            # Event volume factor: logarithmic bonus for high-volume coverage
-            # 0 articles = 0, 10 = ~15, 50 = ~25, 250 = ~35
-            if event_count > 0:
-                import math
-                volume_factor = min(35.0, 10.0 * math.log1p(event_count / 3.0))
-            else:
-                volume_factor = 0.0
+                if event_count > 0:
+                    import math
 
-            pair = self._canonical_pair(country_a, country_b)
-            escalation_factor = self._compute_escalation_factor(pair, event_count)
+                    volume_factor = min(35.0, 10.0 * math.log1p(event_count / 3.0))
+                else:
+                    volume_factor = 0.0
 
-            # Final tension score: sum of components, capped at 100
-            tension_score = min(
-                100.0,
-                base_tone_score + volume_factor + escalation_factor,
-            )
-
-            trend = self._compute_trend(pair, tension_score)
-
-            tension = CountryPairTension(
-                country_a=country_a,
-                country_b=country_b,
-                tension_score=round(tension_score, 1),
-                event_count=event_count,
-                avg_goldstein_scale=round(avg_goldstein, 2),
-                trend=trend,
-                last_updated=datetime.now(timezone.utc),
-                top_event_types=top_themes,
-            )
-
-            self._current[pair] = tension
-
-            # Append daily snapshot
-            self._history[pair].append(
-                _DailySnapshot(
-                    date=datetime.now(timezone.utc),
-                    tension_score=tension_score,
-                    event_count=event_count,
+                pair = self._canonical_pair(country_a, country_b)
+                escalation_factor = self._compute_escalation_factor(pair, event_count)
+                tension_score = min(
+                    100.0,
+                    base_tone_score + volume_factor + escalation_factor,
                 )
-            )
-            self._prune_history(pair)
+                trend = self._compute_trend(pair, tension_score)
 
-            results.append(tension)
+                tension = CountryPairTension(
+                    country_a=country_a,
+                    country_b=country_b,
+                    tension_score=round(tension_score, 1),
+                    event_count=event_count,
+                    avg_goldstein_scale=round(avg_goldstein, 2),
+                    trend=trend,
+                    last_updated=datetime.now(timezone.utc),
+                    top_event_types=top_themes,
+                )
+                self._current[pair] = tension
+                self._history[pair].append(
+                    _DailySnapshot(
+                        date=datetime.now(timezone.utc),
+                        tension_score=tension_score,
+                        event_count=event_count,
+                    )
+                )
+                self._prune_history(pair)
+                return tension
 
-            # Polite delay between GDELT queries
-            await asyncio.sleep(_RATE_LIMIT_DELAY_SECONDS)
+        computed = await asyncio.gather(
+            *[_compute_pair(a, b) for a, b in pairs],
+            return_exceptions=True,
+        )
+        results: list[CountryPairTension] = []
+        for item in computed:
+            if isinstance(item, CountryPairTension):
+                results.append(item)
+            elif isinstance(item, Exception):
+                self._last_error = str(item)
+                logger.debug("Tension pair computation error: %s", item)
 
         logger.info(
             "Tension tracker updated %d pairs (max=%.1f)",
@@ -367,6 +452,17 @@ class TensionTracker:
             }
             for s in recent
         ]
+
+    def get_health(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "tracked_pairs": len(self._current),
+            "request_spacing_seconds": _RATE_LIMIT_DELAY_SECONDS,
+            "max_concurrency": int(
+                max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3)
+            ),
+            "last_error": self._last_error,
+        }
 
 
 # ---------------------------------------------------------------------------

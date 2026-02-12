@@ -18,7 +18,7 @@ import {
 import { cn } from '../lib/utils'
 import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
 import { buildYesNoSparklineSeries } from '../lib/priceHistory'
-import { Opportunity, judgeOpportunity } from '../services/api'
+import { Opportunity, WeatherForecastSource, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -158,6 +158,16 @@ export function formatCompact(n: number | null | undefined): string {
   return `$${n.toFixed(4)}`
 }
 
+function formatTemp(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${value.toFixed(1)}F`
+}
+
+function formatPct(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
 // ─── Props ────────────────────────────────────────────────
 
 interface Props {
@@ -189,6 +199,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const judgment = judgeMutation.data || (inlineAnalysis && !isPending ? inlineAnalysis : null)
   const resolutions = inlineAnalysis?.resolution_analyses || []
   const recommendation = judgment?.recommendation || (isPending ? 'pending' : '')
+  // Search result mode (market listing, not an arbitrage opportunity)
+  const isSearch = opportunity.strategy === 'search'
 
   // Risk color
   const riskColor = opportunity.risk_score < 0.3
@@ -205,6 +217,78 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
   // Sparkline data
   const market = opportunity.markets[0]
+  const weather = market?.weather
+  const isWeatherOpportunity = !isSearch && (opportunity.strategy === 'weather_edge' || Boolean(weather))
+
+  const weatherSources = useMemo((): WeatherForecastSource[] => {
+    if (!weather) return []
+    const explicit = Array.isArray(weather.forecast_sources)
+      ? weather.forecast_sources.filter((s): s is WeatherForecastSource => Boolean(s?.source_id))
+      : []
+    if (explicit.length > 0) {
+      return [...explicit].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+    }
+    const fallback: WeatherForecastSource[] = []
+    if (weather.gfs_value != null || weather.gfs_probability != null) {
+      fallback.push({
+        source_id: 'open_meteo:gfs_seamless',
+        provider: 'open_meteo',
+        model: 'gfs_seamless',
+        value_c: weather.gfs_value ?? null,
+        value_f: weather.gfs_value != null ? weather.gfs_value * 9 / 5 + 32 : null,
+        probability: weather.gfs_probability ?? null,
+        weight: null,
+        target_time: weather.target_time ?? null,
+      })
+    }
+    if (weather.ecmwf_value != null || weather.ecmwf_probability != null) {
+      fallback.push({
+        source_id: 'open_meteo:ecmwf_ifs04',
+        provider: 'open_meteo',
+        model: 'ecmwf_ifs04',
+        value_c: weather.ecmwf_value ?? null,
+        value_f: weather.ecmwf_value != null ? weather.ecmwf_value * 9 / 5 + 32 : null,
+        probability: weather.ecmwf_probability ?? null,
+        weight: null,
+        target_time: weather.target_time ?? null,
+      })
+    }
+    return fallback
+  }, [weather])
+
+  const consensusProbability = (weather?.consensus_probability ?? opportunity.expected_payout) ?? null
+  const marketProbability = (weather?.market_probability ?? market?.yes_price) ?? null
+  const signalEdgePercent = (
+    consensusProbability != null && marketProbability != null
+      ? (consensusProbability - marketProbability) * 100
+      : null
+  )
+  const consensusTempF = weather?.consensus_temp_f
+    ?? (weather?.consensus_temp_c != null ? (weather.consensus_temp_c * 9 / 5) + 32 : null)
+  const marketImpliedTempF = weather?.market_implied_temp_f
+    ?? (weather?.market_implied_temp_c != null ? (weather.market_implied_temp_c * 9 / 5) + 32 : null)
+  const tempDeltaF = (
+    consensusTempF != null && marketImpliedTempF != null
+      ? consensusTempF - marketImpliedTempF
+      : null
+  )
+  const weatherContractLabel = useMemo(() => {
+    if (!weather) return '—'
+    const unit = weather.raw_unit || 'F'
+    if (weather.raw_threshold != null) {
+      const op = (weather.operator || 'gt').toLowerCase()
+      const opText = op === 'lt' || op === 'lte' ? '<' : '>'
+      return `${opText} ${safeFixed(weather.raw_threshold, 1)}${unit}`
+    }
+    if (weather.raw_threshold_low != null && weather.raw_threshold_high != null) {
+      return `${safeFixed(weather.raw_threshold_low, 1)}-${safeFixed(weather.raw_threshold_high, 1)}${unit}`
+    }
+    return '—'
+  }, [weather])
+  const weatherTargetLabel = weather?.target_time
+    ? new Date(weather.target_time).toLocaleString()
+    : '—'
+
   const sparkData = useMemo(() => {
     if (!market) return { yes: [], no: [] }
     return buildYesNoSparklineSeries(
@@ -235,9 +319,6 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         eventSlug: (kalshiMarket as any).slug,
       })
     : null
-
-  // Search result mode (market listing, not an arbitrage opportunity)
-  const isSearch = opportunity.strategy === 'search'
 
   // ROI direction
   const roiPositive = opportunity.roi_percent >= 0
@@ -356,20 +437,53 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               />
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
-              <MiniMetric label="Cost" value={formatCompact(opportunity.total_cost)} />
-              <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
-              <MiniMetric
-                label="Risk"
-                value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
-                valueClass={riskColor}
-                bar={opportunity.risk_score}
-                barClass={riskBarColor}
-              />
-              <MiniMetric label="Max Pos" value={formatCompact(opportunity.max_position_size)} />
-            </div>
+            isWeatherOpportunity ? (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
+                <MiniMetric
+                  label="Market Px"
+                  value={marketProbability != null ? `${safeFixed(marketProbability * 100, 1)}¢` : '—'}
+                />
+                <MiniMetric
+                  label="Model Px"
+                  value={consensusProbability != null ? `${safeFixed(consensusProbability * 100, 1)}¢` : '—'}
+                />
+                <MiniMetric
+                  label="Temp Delta"
+                  value={tempDeltaF != null ? `${tempDeltaF >= 0 ? '+' : ''}${safeFixed(tempDeltaF, 1)}F` : '—'}
+                  valueClass={tempDeltaF != null ? (tempDeltaF >= 0 ? 'text-cyan-300' : 'text-orange-300') : undefined}
+                />
+                <MiniMetric
+                  label="Sources"
+                  value={`${weather?.source_count ?? weatherSources.length ?? 0} src`}
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 flex-1 min-w-0">
+                <MiniMetric label="Cost" value={formatCompact(opportunity.total_cost)} />
+                <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
+                <MiniMetric
+                  label="Risk"
+                  value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
+                  valueClass={riskColor}
+                  bar={opportunity.risk_score}
+                  barClass={riskBarColor}
+                />
+                <MiniMetric label="Max Pos" value={formatCompact(opportunity.max_position_size)} />
+              </div>
+            )
           )}
         </div>
+
+        {isWeatherOpportunity && (
+          <div className="flex items-center justify-between rounded-md border border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1">
+            <span className="text-[10px] text-cyan-300/90 font-medium truncate">
+              Mkt {formatTemp(marketImpliedTempF)} vs Consensus {formatTemp(consensusTempF)}
+            </span>
+            <span className="text-[10px] font-data text-muted-foreground ml-2 shrink-0">
+              Edge {signalEdgePercent != null ? `${signalEdgePercent >= 0 ? '+' : ''}${safeFixed(signalEdgePercent, 1)}%` : '—'}
+            </span>
+          </div>
+        )}
 
         {/* ── Row 4: AI Score Bar ── */}
         {judgment ? (
@@ -619,6 +733,75 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               </>
             ) : (
               <>
+                {isWeatherOpportunity && weather && (
+                  <div className="bg-cyan-500/[0.06] rounded-lg p-3 border border-cyan-500/20">
+                    <h4 className="text-[10px] font-medium text-cyan-300 mb-2 uppercase tracking-wider">Weather Intelligence</h4>
+                    <div className="grid grid-cols-3 gap-3 text-xs">
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Location</p>
+                        <p className="font-data text-foreground truncate">{weather.location || '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Contract</p>
+                        <p className="font-data text-foreground">{weatherContractLabel}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Target</p>
+                        <p className="font-data text-foreground">{weatherTargetLabel}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Market</p>
+                        <p className="font-data text-foreground">{marketProbability != null ? `${safeFixed(marketProbability * 100, 1)}%` : '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Model</p>
+                        <p className="font-data text-cyan-300">{consensusProbability != null ? `${safeFixed(consensusProbability * 100, 1)}%` : '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Edge</p>
+                        <p className={cn(
+                          "font-data",
+                          signalEdgePercent != null && signalEdgePercent >= 0 ? 'text-green-400' : 'text-red-400'
+                        )}>
+                          {signalEdgePercent != null ? `${signalEdgePercent >= 0 ? '+' : ''}${safeFixed(signalEdgePercent, 1)}%` : '—'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Market-Implied Temp</p>
+                        <p className="font-data text-foreground">{formatTemp(marketImpliedTempF)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Consensus Temp</p>
+                        <p className="font-data text-cyan-300">{formatTemp(consensusTempF)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Model Agreement</p>
+                        <p className="font-data text-foreground">{formatPct(weather.agreement)}</p>
+                      </div>
+                    </div>
+                    {weatherSources.length > 0 && (
+                      <div className="mt-3 space-y-1.5">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Forecast Sources ({weatherSources.length})</p>
+                        {weatherSources.map((src) => (
+                          <div key={src.source_id} className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/40 px-2.5 py-1.5">
+                            <div className="min-w-0">
+                              <p className="text-[11px] text-foreground truncate">
+                                {src.provider}:{src.model}
+                              </p>
+                              <p className="text-[9px] text-muted-foreground font-data">
+                                Temp {formatTemp(src.value_f)} · Prob {formatPct(src.probability)}
+                              </p>
+                            </div>
+                            <span className="text-[10px] text-cyan-300 font-data shrink-0">
+                              {src.weight != null ? `w ${safeFixed(src.weight * 100, 0)}%` : 'w —'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── Arbitrage opportunity expanded: Positions + Profit ── */}
                 {/* Positions to Take */}
                 <div>
@@ -764,7 +947,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
             )}
 
             {/* Execute Button */}
-            {onExecute && !isSearch && (
+            {onExecute && !isSearch && opportunity.max_position_size > 0 && (
               <Button
                 onClick={(e) => { e.stopPropagation(); onExecute(opportunity) }}
                 size="sm"

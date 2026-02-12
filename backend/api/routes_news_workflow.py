@@ -12,11 +12,13 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
+    NewsArticleCache,
     NewsTradeIntent,
     NewsWorkflowFinding,
     get_db_session,
 )
 from services.news import shared_state
+from services.pause_state import global_pause_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +32,131 @@ def _to_iso_utc_z(value: Optional[datetime]) -> Optional[str]:
     else:
         value = value.astimezone(timezone.utc)
     return value.replace(tzinfo=None).isoformat() + "Z"
+
+
+def _collect_cluster_article_ids(findings: list[NewsWorkflowFinding]) -> set[str]:
+    article_ids: set[str] = set()
+    for finding in findings:
+        evidence = finding.evidence or {}
+        cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
+        if not isinstance(cluster, dict):
+            continue
+        refs = cluster.get("article_refs")
+        if isinstance(refs, list) and refs:
+            continue
+        raw_ids = cluster.get("article_ids")
+        if not isinstance(raw_ids, list):
+            continue
+        for raw_id in raw_ids:
+            article_id = str(raw_id or "").strip()
+            if article_id:
+                article_ids.add(article_id)
+    return article_ids
+
+
+def _build_supporting_articles_from_finding(
+    finding: Optional[NewsWorkflowFinding],
+    article_cache_by_id: Optional[dict[str, NewsArticleCache]] = None,
+) -> list[dict]:
+    if finding is None:
+        return []
+
+    cache = article_cache_by_id or {}
+    evidence = finding.evidence or {}
+    cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
+    refs: list[dict] = []
+
+    if isinstance(cluster, dict):
+        raw_refs = cluster.get("article_refs")
+        if isinstance(raw_refs, list):
+            for raw in raw_refs:
+                if not isinstance(raw, dict):
+                    continue
+                title = str(raw.get("title") or "").strip()
+                url = str(raw.get("url") or "").strip()
+                if not title and not url:
+                    continue
+                refs.append(
+                    {
+                        "article_id": str(raw.get("article_id") or ""),
+                        "title": title,
+                        "url": url,
+                        "source": str(raw.get("source") or ""),
+                        "published": raw.get("published"),
+                        "fetched_at": raw.get("fetched_at"),
+                    }
+                )
+
+        if not refs:
+            raw_ids = cluster.get("article_ids")
+            if isinstance(raw_ids, list):
+                for raw_id in raw_ids:
+                    article_id = str(raw_id or "").strip()
+                    if not article_id:
+                        continue
+                    row = cache.get(article_id)
+                    title = ((row.title if row else "") or "").strip()
+                    url = ((row.url if row else "") or "").strip()
+                    if not title and not url:
+                        continue
+                    refs.append(
+                        {
+                            "article_id": article_id,
+                            "title": title,
+                            "url": url,
+                            "source": (row.source if row else "") or "",
+                            "published": _to_iso_utc_z(row.published) if row else None,
+                            "fetched_at": _to_iso_utc_z(row.fetched_at) if row else None,
+                        }
+                    )
+
+    if not refs:
+        refs = [
+            {
+                "article_id": finding.article_id,
+                "title": finding.article_title,
+                "url": finding.article_url or "",
+                "source": finding.article_source or "",
+                "published": None,
+                "fetched_at": _to_iso_utc_z(finding.created_at),
+            }
+        ]
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for ref in refs:
+        title = str(ref.get("title") or "").strip()
+        url = str(ref.get("url") or "").strip()
+        if not title and not url:
+            continue
+        key = (
+            str(ref.get("article_id") or "").strip()
+            or url
+            or title.lower()
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    return deduped[:8]
+
+
+class CustomRssFeedRequest(BaseModel):
+    id: Optional[str] = None
+    name: str = ""
+    url: str = ""
+    enabled: bool = True
+    category: Optional[str] = ""
+
+
+class GovRssFeedRequest(BaseModel):
+    id: Optional[str] = None
+    agency: str = "government"
+    name: str = ""
+    url: str = ""
+    priority: str = "medium"
+    country_iso3: str = "USA"
+    enabled: bool = True
 
 
 class WorkflowSettingsRequest(BaseModel):
@@ -61,6 +188,9 @@ class WorkflowSettingsRequest(BaseModel):
     cache_ttl_minutes: Optional[int] = Field(None, ge=1, le=1440)
     max_edge_evals_per_article: Optional[int] = Field(None, ge=1, le=20)
     model: Optional[str] = None
+    rss_feeds: Optional[list[CustomRssFeedRequest]] = None
+    gov_rss_enabled: Optional[bool] = None
+    gov_rss_feeds: Optional[list[GovRssFeedRequest]] = None
 
 
 async def _build_status_payload(session: AsyncSession) -> dict:
@@ -108,6 +238,11 @@ async def get_workflow_status(session: AsyncSession = Depends(get_db_session)):
 @router.post("/news-workflow/run")
 async def run_workflow_cycle(session: AsyncSession = Depends(get_db_session)):
     """Queue a one-time workflow cycle (non-blocking)."""
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Resume all workers before queueing runs.",
+        )
     await shared_state.request_one_news_scan(session)
     return {
         "status": "queued",
@@ -118,6 +253,11 @@ async def run_workflow_cycle(session: AsyncSession = Depends(get_db_session)):
 
 @router.post("/news-workflow/start")
 async def start_workflow(session: AsyncSession = Depends(get_db_session)):
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Use /workers/resume-all first.",
+        )
     await shared_state.set_news_paused(session, False)
     return {"status": "started", **await _build_status_payload(session)}
 
@@ -176,37 +316,55 @@ async def get_findings(
     query = query.offset(offset).limit(limit)
     result = await session.execute(query)
     rows = result.scalars().all()
-
-    findings = [
-        {
-            "id": r.id,
-            "article_id": r.article_id,
-            "market_id": r.market_id,
-            "article_title": r.article_title,
-            "article_source": r.article_source,
-            "article_url": r.article_url,
-            "signal_key": r.signal_key,
-            "cache_key": r.cache_key,
-            "market_question": r.market_question,
-            "market_price": r.market_price,
-            "model_probability": r.model_probability,
-            "edge_percent": r.edge_percent,
-            "direction": r.direction,
-            "confidence": r.confidence,
-            "retrieval_score": r.retrieval_score,
-            "semantic_score": r.semantic_score,
-            "keyword_score": r.keyword_score,
-            "event_score": r.event_score,
-            "rerank_score": r.rerank_score,
-            "event_graph": r.event_graph,
-            "evidence": r.evidence,
-            "reasoning": r.reasoning,
-            "actionable": r.actionable,
-            "consumed_by_auto_trader": r.consumed_by_auto_trader,
-            "created_at": _to_iso_utc_z(r.created_at),
+    article_ids_needed = _collect_cluster_article_ids(rows)
+    article_cache_by_id: dict[str, NewsArticleCache] = {}
+    if article_ids_needed:
+        article_result = await session.execute(
+            select(NewsArticleCache).where(
+                NewsArticleCache.article_id.in_(list(article_ids_needed))
+            )
+        )
+        cached_rows = article_result.scalars().all()
+        article_cache_by_id = {
+            row.article_id: row for row in cached_rows if row.article_id
         }
-        for r in rows
-    ]
+
+    findings = []
+    for r in rows:
+        supporting_articles = _build_supporting_articles_from_finding(
+            r, article_cache_by_id=article_cache_by_id
+        )
+        findings.append(
+            {
+                "id": r.id,
+                "article_id": r.article_id,
+                "market_id": r.market_id,
+                "article_title": r.article_title,
+                "article_source": r.article_source,
+                "article_url": r.article_url,
+                "signal_key": r.signal_key,
+                "cache_key": r.cache_key,
+                "market_question": r.market_question,
+                "market_price": r.market_price,
+                "model_probability": r.model_probability,
+                "edge_percent": r.edge_percent,
+                "direction": r.direction,
+                "confidence": r.confidence,
+                "retrieval_score": r.retrieval_score,
+                "semantic_score": r.semantic_score,
+                "keyword_score": r.keyword_score,
+                "event_score": r.event_score,
+                "rerank_score": r.rerank_score,
+                "event_graph": r.event_graph,
+                "evidence": r.evidence,
+                "reasoning": r.reasoning,
+                "actionable": r.actionable,
+                "consumed_by_auto_trader": r.consumed_by_auto_trader,
+                "supporting_articles": supporting_articles,
+                "supporting_article_count": int(len(supporting_articles)),
+                "created_at": _to_iso_utc_z(r.created_at),
+            }
+        )
 
     return {
         "total": total,
@@ -228,26 +386,61 @@ async def get_intents(
     rows = await shared_state.list_news_intents(
         session, status_filter=status_filter, limit=limit
     )
-    intents = [
-        {
-            "id": r.id,
-            "signal_key": r.signal_key,
-            "finding_id": r.finding_id,
-            "market_id": r.market_id,
-            "market_question": r.market_question,
-            "direction": r.direction,
-            "entry_price": r.entry_price,
-            "model_probability": r.model_probability,
-            "edge_percent": r.edge_percent,
-            "confidence": r.confidence,
-            "suggested_size_usd": r.suggested_size_usd,
-            "metadata": r.metadata_json,
-            "status": r.status,
-            "created_at": _to_iso_utc_z(r.created_at),
-            "consumed_at": _to_iso_utc_z(r.consumed_at),
-        }
-        for r in rows
-    ]
+
+    finding_ids = [r.finding_id for r in rows if r.finding_id]
+    finding_by_id: dict[str, NewsWorkflowFinding] = {}
+    article_cache_by_id: dict[str, NewsArticleCache] = {}
+    if finding_ids:
+        finding_result = await session.execute(
+            select(NewsWorkflowFinding).where(NewsWorkflowFinding.id.in_(finding_ids))
+        )
+        findings = finding_result.scalars().all()
+        finding_by_id = {f.id: f for f in findings if f.id}
+
+        article_ids_needed = _collect_cluster_article_ids(findings)
+        if article_ids_needed:
+            article_result = await session.execute(
+                select(NewsArticleCache).where(
+                    NewsArticleCache.article_id.in_(list(article_ids_needed))
+                )
+            )
+            cached_rows = article_result.scalars().all()
+            article_cache_by_id = {
+                row.article_id: row for row in cached_rows if row.article_id
+            }
+
+    intents = []
+    for r in rows:
+        metadata = r.metadata_json if isinstance(r.metadata_json, dict) else {}
+        supporting_articles = metadata.get(
+            "supporting_articles"
+        ) or _build_supporting_articles_from_finding(
+            finding_by_id.get(r.finding_id),
+            article_cache_by_id=article_cache_by_id,
+        )
+        intents.append(
+            {
+                "id": r.id,
+                "signal_key": r.signal_key,
+                "finding_id": r.finding_id,
+                "market_id": r.market_id,
+                "market_question": r.market_question,
+                "direction": r.direction,
+                "entry_price": r.entry_price,
+                "model_probability": r.model_probability,
+                "edge_percent": r.edge_percent,
+                "confidence": r.confidence,
+                "suggested_size_usd": r.suggested_size_usd,
+                "metadata": {
+                    **metadata,
+                    "supporting_articles": supporting_articles,
+                    "supporting_article_count": int(len(supporting_articles)),
+                },
+                "status": r.status,
+                "created_at": _to_iso_utc_z(r.created_at),
+                "consumed_at": _to_iso_utc_z(r.consumed_at),
+            }
+        )
 
     return {"total": len(intents), "intents": intents}
 

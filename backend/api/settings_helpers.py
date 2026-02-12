@@ -160,6 +160,24 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "auto_cleanup_enabled": settings.auto_cleanup_enabled,
         "cleanup_interval_hours": settings.cleanup_interval_hours,
         "cleanup_resolved_trade_days": settings.cleanup_resolved_trade_days,
+        "market_cache_hygiene_enabled": _with_default(
+            settings.market_cache_hygiene_enabled, True
+        ),
+        "market_cache_hygiene_interval_hours": _with_default(
+            settings.market_cache_hygiene_interval_hours, 6
+        ),
+        "market_cache_retention_days": _with_default(
+            settings.market_cache_retention_days, 120
+        ),
+        "market_cache_reference_lookback_days": _with_default(
+            settings.market_cache_reference_lookback_days, 45
+        ),
+        "market_cache_weak_entry_grace_days": _with_default(
+            settings.market_cache_weak_entry_grace_days, 7
+        ),
+        "market_cache_max_entries_per_slug": _with_default(
+            settings.market_cache_max_entries_per_slug, 3
+        ),
     }
 
 
@@ -263,6 +281,20 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.auto_cleanup_enabled = maint.auto_cleanup_enabled
         settings.cleanup_interval_hours = maint.cleanup_interval_hours
         settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
+        settings.market_cache_hygiene_enabled = maint.market_cache_hygiene_enabled
+        settings.market_cache_hygiene_interval_hours = (
+            maint.market_cache_hygiene_interval_hours
+        )
+        settings.market_cache_retention_days = maint.market_cache_retention_days
+        settings.market_cache_reference_lookback_days = (
+            maint.market_cache_reference_lookback_days
+        )
+        settings.market_cache_weak_entry_grace_days = (
+            maint.market_cache_weak_entry_grace_days
+        )
+        settings.market_cache_max_entries_per_slug = (
+            maint.market_cache_max_entries_per_slug
+        )
 
     if request.search_filters:
         sf = request.search_filters

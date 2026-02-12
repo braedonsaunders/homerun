@@ -256,23 +256,16 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
   const isLoading = pnlQuery.isLoading || summaryQuery.isLoading || winRateQuery.isLoading
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">Wallet Analysis</h2>
-          <p className="text-sm text-muted-foreground">
-            Deep dive into any trader's performance and strategy
-          </p>
-        </div>
-      </div>
-
-      {/* Search Card */}
+    <div className="space-y-4">
       <Card className="border-border">
-        <CardContent className="p-6">
-          <div className="flex flex-col gap-3">
-            <div className="flex gap-3">
-              <div className="flex-1 relative">
+        <CardContent className="p-3">
+          <div className="overflow-x-auto pb-1">
+            <div className="flex min-w-max items-end gap-2">
+              <div className="flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 py-1.5 text-xs text-muted-foreground">
+                <Eye className="h-3.5 w-3.5 text-cyan-400" />
+                Wallet analysis controls
+              </div>
+              <div className="relative w-[380px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   type="text"
@@ -280,37 +273,39 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                   onChange={(e) => setSearchAddress(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Enter wallet address (0x...) or username"
-                  className="pl-10 bg-card border-border font-mono text-sm"
+                  className="h-8 pl-10 bg-card border-border font-mono text-xs"
                 />
               </div>
               <Button
                 onClick={handleAnalyze}
                 disabled={!searchAddress.trim()}
-                className="flex items-center gap-2 bg-cyan-500 hover:bg-cyan-600 text-foreground"
+                className="h-8 px-3 text-xs flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-600 text-foreground mb-0.5"
               >
-                <Search className="w-4 h-4" />
+                <Search className="w-3.5 h-3.5" />
                 Analyze
               </Button>
-            </div>
-            {/* Time Period Filter */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">Time Period:</span>
-              <div className="flex gap-1">
+              <div className="h-6 w-px bg-border/70 mb-1" />
+              <div className="flex h-8 items-center bg-muted/50 rounded-lg p-0.5 border border-border mb-0.5">
                 {TIME_PERIOD_OPTIONS.map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setTimePeriod(option.value)}
                     className={cn(
-                      "px-3 py-1.5 text-xs font-medium rounded-md transition-colors",
+                      "h-7 px-2.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap",
                       timePeriod === option.value
                         ? "bg-primary/20 text-primary"
-                        : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                        : "text-muted-foreground hover:bg-muted"
                     )}
                   >
                     {option.label}
                   </button>
                 ))}
               </div>
+              {activeWallet && (
+                <div className="rounded-md border border-border bg-background/40 px-2 py-1.5 text-[11px] text-muted-foreground mb-0.5">
+                  Active: <span className="font-mono text-foreground">{activeWallet.slice(0, 6)}...{activeWallet.slice(-4)}</span>
+                </div>
+              )}
             </div>
           </div>
         </CardContent>
@@ -318,7 +313,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
 
       {/* Results */}
       {activeWallet && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Hero Profile Card */}
           <WalletHeroCard
             address={activeWallet}

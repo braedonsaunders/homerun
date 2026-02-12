@@ -219,12 +219,18 @@ class SimulationService:
 
             # Create position records
             for pos in opportunity.positions_to_take:
+                market_id = pos.get("market_id") or pos.get("market", "")
+                market_question = (
+                    pos.get("market_question")
+                    or pos.get("question")
+                    or market_id
+                )
                 position = SimulationPosition(
                     id=str(uuid.uuid4()),
                     account_id=account_id,
                     opportunity_id=opportunity.id,
-                    market_id=pos.get("market", ""),
-                    market_question=pos.get("market", ""),
+                    market_id=market_id,
+                    market_question=market_question,
                     token_id=pos.get("token_id"),
                     side=PositionSide.YES
                     if pos.get("outcome") == "YES"

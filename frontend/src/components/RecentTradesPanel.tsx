@@ -38,6 +38,7 @@ import {
 
 interface Props {
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (contextType?: string, contextId?: string, label?: string) => void
   mode?: 'full' | 'management' | 'opportunities'
   viewMode?: 'card' | 'list' | 'terminal'
 }
@@ -140,6 +141,7 @@ function toTier(value: string | null | undefined): TierFilter {
 
 export default function RecentTradesPanel({
   onNavigateToWallet,
+  onOpenCopilot,
   mode = 'full',
   viewMode = 'card',
 }: Props) {
@@ -160,6 +162,15 @@ export default function RecentTradesPanel({
 
   const queryClient = useQueryClient()
   const { lastMessage } = useWebSocket('/ws')
+
+  const invalidateTrackedManagementQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
+    queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+    queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
+  }
 
   const {
     data: opportunities = [],
@@ -255,9 +266,7 @@ export default function RecentTradesPanel({
       setGroupName('')
       setGroupDescription('')
       setGroupWalletInput('')
-      queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
-      queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
-      queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
+      invalidateTrackedManagementQueries()
     },
     onError: (error: unknown) => {
       const message =
@@ -271,7 +280,7 @@ export default function RecentTradesPanel({
     mutationFn: (groupId: string) => discoveryApi.trackTraderGroupMembers(groupId),
     onSuccess: (result) => {
       setGroupStatusMessage(`Tracking refreshed for ${result.tracked_members} group members.`)
-      queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
+      invalidateTrackedManagementQueries()
     },
     onError: () => setGroupStatusMessage('Failed to track group members'),
   })
@@ -280,8 +289,7 @@ export default function RecentTradesPanel({
     mutationFn: (groupId: string) => discoveryApi.deleteTraderGroup(groupId),
     onSuccess: () => {
       setGroupStatusMessage('Group deleted')
-      queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
-      queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
+      invalidateTrackedManagementQueries()
     },
     onError: () => setGroupStatusMessage('Failed to delete group'),
   })
@@ -382,6 +390,12 @@ export default function RecentTradesPanel({
 
     return merged
   }, [filteredSignals, insiderOpportunities, sourceFilter])
+
+  const handleOpenSignalCopilot = (signal: UnifiedTraderSignal) => {
+    const contextId = `${signal.source}:${signal.id}`
+    const label = signal.market_question || signal.market_id
+    onOpenCopilot?.('trader_signal', contextId, label)
+  }
 
   const insiderCount = insiderOpportunities.length
   const confluenceCount = filteredSignals.length
@@ -494,42 +508,46 @@ export default function RecentTradesPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-orange-500/10 rounded-lg">
-            <Zap className="w-5 h-5 text-orange-500" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">
-              {showOpportunities && showManagement
-                ? 'Traders'
-                : showOpportunities
-                  ? 'Trader Opportunities'
-                  : 'Trader Management'}
-            </h2>
-            <p className="text-sm text-muted-foreground/70">
-              {showOpportunities && showManagement
-                ? 'Tracked traders, trader groups, and discovery confluence from high-quality discovered wallets'
-                : showOpportunities
-                  ? 'Confluence and insider opportunities generated from tracked trader activity'
-                  : 'Tracked trader lists, group management, and monitoring controls'}
-            </p>
+      {mode !== 'opportunities' && (
+        <div className="rounded-xl border border-border/40 bg-card/60 p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="p-2 bg-orange-500/10 rounded-lg shrink-0">
+                <Zap className="w-5 h-5 text-orange-500" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-foreground truncate">
+                  {showOpportunities && showManagement
+                    ? 'Traders'
+                    : showOpportunities
+                      ? 'Trader Opportunities'
+                      : 'Trader Management'}
+                </h2>
+                <p className="text-sm text-muted-foreground/70 truncate">
+                  {showOpportunities && showManagement
+                    ? 'Tracked traders, trader groups, and discovery confluence from high-quality discovered wallets'
+                    : showOpportunities
+                      ? 'Confluence and insider opportunities generated from tracked trader activity'
+                      : 'Tracked trader lists, group management, and monitoring controls'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={handleRefresh}
+              disabled={isRefetching}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card px-2.5 py-1.5 text-xs text-muted-foreground',
+                'hover:text-foreground hover:bg-muted/60 transition-colors',
+                isRefetching && 'opacity-50',
+              )}
+            >
+              <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
+              Refresh
+            </button>
           </div>
         </div>
-
-        <button
-          onClick={handleRefresh}
-          disabled={isRefetching}
-          className={cn(
-            'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm',
-            'bg-muted text-foreground/80 hover:bg-accent transition-colors',
-            isRefetching && 'opacity-50',
-          )}
-        >
-          <RefreshCw className={cn('w-4 h-4', isRefetching && 'animate-spin')} />
-          Refresh
-        </button>
-      </div>
+      )}
 
       {showManagement && (
         <div className="rounded-lg border border-border bg-card/60 p-4 space-y-4">
@@ -800,98 +818,172 @@ export default function RecentTradesPanel({
 
       {showOpportunities && (
         <>
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-4 p-3 bg-card rounded-lg border border-border">
-            <Filter className="w-4 h-4 text-muted-foreground/70" />
+          {mode === 'opportunities' ? (
+            <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-border/40 bg-card/40">
+              <Filter className="w-4 h-4 text-muted-foreground/70" />
 
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground/70">Source:</span>
               <select
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
-                className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
               >
                 <option value="all">All ({totalSignalCount})</option>
                 <option value="confluence">Confluence ({confluenceCount})</option>
                 <option value="insider">Insider ({insiderCount})</option>
               </select>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground/70">Min tier:</span>
               <select
                 value={minTier}
                 onChange={(e) => setMinTier(e.target.value as TierFilter)}
-                className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
               >
                 <option value="WATCH">Watch (5+)</option>
                 <option value="HIGH">High (10+)</option>
                 <option value="EXTREME">Extreme (15+)</option>
               </select>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground/70">Side:</span>
               <select
                 value={sideFilter}
                 onChange={(e) => setSideFilter(e.target.value as SignalSideFilter)}
-                className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
               >
-                <option value="all">All</option>
+                <option value="all">All sides</option>
                 <option value="BUY">Buy clusters</option>
                 <option value="SELL">Sell clusters</option>
               </select>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground/70">Max signals:</span>
               <select
                 value={signalLimit}
                 onChange={(e) => setSignalLimit(Number(e.target.value))}
-                className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
               >
                 <option value={25}>25</option>
                 <option value={50}>50</option>
                 <option value={100}>100</option>
               </select>
-            </div>
-          </div>
 
-          {/* Stats Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="bg-card border border-border rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70">Total Signals</p>
-              <p className="text-lg font-semibold text-foreground">
-                {unifiedSignals.length}
-                <span className="text-muted-foreground/50 text-sm ml-1">
-                  ({confluenceCount}c + {insiderCount}i)
-                </span>
-              </p>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Signals {unifiedSignals.length}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                High/Extreme {highSignals}/{extremeSignals}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Avg {avgConviction.toFixed(1)}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Markets/Wallets {uniqueSignalMarkets}/{trackedWallets}
+              </span>
+
+              <button
+                onClick={handleRefresh}
+                disabled={isRefetching}
+                className={cn(
+                  'ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2.5 text-xs text-muted-foreground',
+                  'hover:text-foreground hover:bg-muted/60 transition-colors',
+                  isRefetching && 'opacity-50',
+                )}
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
+                Refresh
+              </button>
             </div>
-            <div className="bg-card border border-border rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70">High / Extreme</p>
-              <p className="text-lg font-semibold text-orange-400">
-                {highSignals}
-                <span className="text-muted-foreground/60 text-sm ml-1">/ {extremeSignals}</span>
-              </p>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70">Avg Conviction</p>
-              <p className="text-lg font-semibold text-foreground">{avgConviction.toFixed(1)}</p>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70">Markets / Wallets</p>
-              <p className="text-lg font-semibold text-foreground">
-                <span className="text-blue-400">{uniqueSignalMarkets}</span>
-                <span className="text-muted-foreground/50 mx-1">/</span>
-                <span className="text-orange-400">{trackedWallets}</span>
-              </p>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70">Insider Signals</p>
-              <p className="text-lg font-semibold text-purple-400">{insiderCount}</p>
-            </div>
-          </div>
+          ) : (
+            <>
+              {/* Filters */}
+              <div className="flex flex-wrap items-center gap-4 p-3 rounded-xl border border-border/40 bg-card/40">
+                <Filter className="w-4 h-4 text-muted-foreground/70" />
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground/70">Source:</span>
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
+                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                  >
+                    <option value="all">All ({totalSignalCount})</option>
+                    <option value="confluence">Confluence ({confluenceCount})</option>
+                    <option value="insider">Insider ({insiderCount})</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground/70">Min tier:</span>
+                  <select
+                    value={minTier}
+                    onChange={(e) => setMinTier(e.target.value as TierFilter)}
+                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                  >
+                    <option value="WATCH">Watch (5+)</option>
+                    <option value="HIGH">High (10+)</option>
+                    <option value="EXTREME">Extreme (15+)</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground/70">Side:</span>
+                  <select
+                    value={sideFilter}
+                    onChange={(e) => setSideFilter(e.target.value as SignalSideFilter)}
+                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                  >
+                    <option value="all">All</option>
+                    <option value="BUY">Buy clusters</option>
+                    <option value="SELL">Sell clusters</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground/70">Max signals:</span>
+                  <select
+                    value={signalLimit}
+                    onChange={(e) => setSignalLimit(Number(e.target.value))}
+                    className="bg-muted border border-border rounded px-2 py-1 text-sm"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Stats Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Total Signals</p>
+                  <p className="text-lg font-semibold text-foreground">
+                    {unifiedSignals.length}
+                    <span className="text-muted-foreground/50 text-sm ml-1">
+                      ({confluenceCount}c + {insiderCount}i)
+                    </span>
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">High / Extreme</p>
+                  <p className="text-lg font-semibold text-orange-400">
+                    {highSignals}
+                    <span className="text-muted-foreground/60 text-sm ml-1">/ {extremeSignals}</span>
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Avg Conviction</p>
+                  <p className="text-lg font-semibold text-foreground">{avgConviction.toFixed(1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Markets / Wallets</p>
+                  <p className="text-lg font-semibold text-foreground">
+                    <span className="text-blue-400">{uniqueSignalMarkets}</span>
+                    <span className="text-muted-foreground/50 mx-1">/</span>
+                    <span className="text-orange-400">{trackedWallets}</span>
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Insider Signals</p>
+                  <p className="text-lg font-semibold text-purple-400">{insiderCount}</p>
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Unified Signal List */}
           {isLoading ? (
@@ -910,17 +1002,20 @@ export default function RecentTradesPanel({
             <TraderSignalTerminal
               signals={unifiedSignals}
               onNavigateToWallet={onNavigateToWallet}
+              onOpenCopilot={handleOpenSignalCopilot}
               totalCount={unifiedSignals.length}
             />
           ) : viewMode === 'list' ? (
             <TraderSignalTable
               signals={unifiedSignals}
               onNavigateToWallet={onNavigateToWallet}
+              onOpenCopilot={handleOpenSignalCopilot}
             />
           ) : (
             <TraderSignalCards
               signals={unifiedSignals}
               onNavigateToWallet={onNavigateToWallet}
+              onOpenCopilot={handleOpenSignalCopilot}
             />
           )}
         </>

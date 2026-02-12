@@ -2,7 +2,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import Set
 import json
 
-from models.database import AsyncSessionLocal
+from models.database import AsyncSessionLocal, WorldIntelligenceSnapshot
+from sqlalchemy import select
 from services import shared_state, wallet_tracker
 from services.autotrader_state import read_autotrader_snapshot
 from services.news import shared_state as news_shared_state
@@ -58,11 +59,24 @@ async def handle_websocket(websocket: WebSocket):
 
     # Send current state (from DB snapshot)
     async with AsyncSessionLocal() as session:
-        opportunities, status = await shared_state.read_scanner_snapshot(session)
-        weather_opportunities, weather_status = await weather_shared_state.read_weather_snapshot(session)
+        opportunities = await shared_state.get_opportunities_from_db(session, None)
+        status = await shared_state.get_scanner_status_from_db(session)
+        weather_opportunities = await weather_shared_state.get_weather_opportunities_from_db(session)
+        weather_status = await weather_shared_state.get_weather_status_from_db(session)
         news_workflow_status = await news_shared_state.get_news_status_from_db(session)
         worker_statuses = await list_worker_snapshots(session)
         autotrader_status = await read_autotrader_snapshot(session)
+        world_snapshot = (
+            (
+                await session.execute(
+                    select(WorldIntelligenceSnapshot).where(
+                        WorldIntelligenceSnapshot.id == "latest"
+                    )
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
     await manager.send_personal(
         websocket,
         {
@@ -78,6 +92,15 @@ async def handle_websocket(websocket: WebSocket):
                 "news_workflow_status": news_workflow_status,
                 "workers_status": worker_statuses,
                 "autotrader_status": autotrader_status,
+                "world_intelligence_status": {
+                    "status": (world_snapshot.status if world_snapshot else {}) or {},
+                    "stats": (world_snapshot.stats if world_snapshot else {}) or {},
+                    "updated_at": (
+                        world_snapshot.updated_at.isoformat()
+                        if world_snapshot and world_snapshot.updated_at
+                        else None
+                    ),
+                },
             },
         },
     )
@@ -103,7 +126,7 @@ async def handle_websocket(websocket: WebSocket):
                 async with AsyncSessionLocal() as session:
                     await shared_state.request_one_scan(session)
                 async with AsyncSessionLocal() as session:
-                    opportunities, _ = await shared_state.read_scanner_snapshot(session)
+                    opportunities = await shared_state.get_opportunities_from_db(session, None)
                 await manager.send_personal(
                     websocket,
                     {

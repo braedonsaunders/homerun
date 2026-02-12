@@ -20,6 +20,8 @@ from models.database import (
     AutoTraderTrade,
     OpportunityEvent,
     TradeSignalSnapshot,
+    WorldIntelligenceSignal,
+    WorldIntelligenceSnapshot,
 )
 from services.autotrader_state import read_autotrader_snapshot
 from services import shared_state
@@ -46,10 +48,38 @@ class SnapshotBroadcaster:
         self._last_news_status_sig: Optional[tuple] = None
         self._last_news_update_sig: Optional[tuple] = None
         self._last_worker_status_sig: Optional[tuple] = None
+        self._last_crypto_markets_sig: Optional[tuple] = None
         self._last_signals_sig: Optional[tuple] = None
+        self._last_world_status_sig: Optional[tuple] = None
+        self._last_world_update_sig: Optional[tuple] = None
         self._last_autotrader_status_sig: Optional[tuple] = None
         self._last_autotrader_decision_ts: Optional[datetime] = None
         self._last_autotrader_trade_ts: Optional[datetime] = None
+
+    @staticmethod
+    def _opportunity_ai_signature(opportunities: list) -> int:
+        """Compact signature that changes when inline AI analysis changes."""
+        signature_rows: list[tuple] = []
+        for opp in opportunities:
+            analysis = getattr(opp, "ai_analysis", None)
+            if analysis is None:
+                signature_rows.append((opp.stable_id or opp.id, None, None, None))
+                continue
+            judged_at = (
+                analysis.judged_at.isoformat()
+                if getattr(analysis, "judged_at", None) is not None
+                else None
+            )
+            score = round(float(getattr(analysis, "overall_score", 0.0) or 0.0), 6)
+            signature_rows.append(
+                (
+                    opp.stable_id or opp.id,
+                    getattr(analysis, "recommendation", None),
+                    score,
+                    judged_at,
+                )
+            )
+        return hash(tuple(signature_rows))
 
     async def start(self, interval_seconds: float = 1.0) -> None:
         """Start background poll loop (idempotent)."""
@@ -81,7 +111,10 @@ class SnapshotBroadcaster:
         self._last_news_status_sig = None
         self._last_news_update_sig = None
         self._last_worker_status_sig = None
+        self._last_crypto_markets_sig = None
         self._last_signals_sig = None
+        self._last_world_status_sig = None
+        self._last_world_update_sig = None
         self._last_autotrader_status_sig = None
         self._last_autotrader_decision_ts = None
         self._last_autotrader_trade_ts = None
@@ -91,8 +124,12 @@ class SnapshotBroadcaster:
         while self._running:
             try:
                 async with AsyncSessionLocal() as session:
-                    opportunities, status = await shared_state.read_scanner_snapshot(session)
-                    weather_opps, weather_status = await weather_shared_state.read_weather_snapshot(session)
+                    opportunities = await shared_state.get_opportunities_from_db(session, None)
+                    status = await shared_state.get_scanner_status_from_db(session)
+                    status["opportunities_count"] = len(opportunities)
+                    weather_opps = await weather_shared_state.get_weather_opportunities_from_db(session)
+                    weather_status = await weather_shared_state.get_weather_status_from_db(session)
+                    weather_status["opportunities_count"] = len(weather_opps)
                     news_status = await news_shared_state.get_news_status_from_db(session)
                     worker_statuses = await list_worker_snapshots(session)
                     autotrader_status = await read_autotrader_snapshot(session)
@@ -100,6 +137,31 @@ class SnapshotBroadcaster:
                         (
                             await session.execute(
                                 select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    world_snapshot = (
+                        (
+                            await session.execute(
+                                select(WorldIntelligenceSnapshot).where(
+                                    WorldIntelligenceSnapshot.id == "latest"
+                                )
+                            )
+                        )
+                        .scalars()
+                        .one_or_none()
+                    )
+                    world_rows = (
+                        (
+                            await session.execute(
+                                select(WorldIntelligenceSignal)
+                                .order_by(
+                                    WorldIntelligenceSignal.detected_at.desc(),
+                                    WorldIntelligenceSignal.severity.desc(),
+                                )
+                                .limit(100)
                             )
                         )
                         .scalars()
@@ -129,11 +191,12 @@ class SnapshotBroadcaster:
                     )
 
                     trade_query = select(AutoTraderTrade).order_by(
-                        AutoTraderTrade.created_at.asc()
+                        AutoTraderTrade.updated_at.asc(),
+                        AutoTraderTrade.id.asc(),
                     )
                     if self._last_autotrader_trade_ts is not None:
                         trade_query = trade_query.where(
-                            AutoTraderTrade.created_at > self._last_autotrader_trade_ts
+                            AutoTraderTrade.updated_at > self._last_autotrader_trade_ts
                         )
                     trade_query = trade_query.limit(200)
                     trade_rows = (
@@ -172,10 +235,12 @@ class SnapshotBroadcaster:
                     status.get("opportunities_count"),
                 )
                 first_id = opportunities[0].id if opportunities else None
+                ai_sig = self._opportunity_ai_signature(opportunities)
                 opp_sig = (
                     status.get("last_scan"),
                     len(opportunities),
                     first_id,
+                    ai_sig,
                 )
 
                 if activity != self._last_activity:
@@ -295,6 +360,47 @@ class SnapshotBroadcaster:
                         {"type": "worker_status_update", "data": {"workers": worker_statuses}}
                     )
 
+                crypto_row = next(
+                    (
+                        row
+                        for row in worker_statuses
+                        if row.get("worker_name") == "crypto"
+                    ),
+                    None,
+                )
+                crypto_stats = (
+                    (crypto_row or {}).get("stats")
+                    if isinstance((crypto_row or {}).get("stats"), dict)
+                    else {}
+                )
+                crypto_markets = crypto_stats.get("markets")
+                if not isinstance(crypto_markets, list):
+                    crypto_markets = []
+
+                crypto_sig = (
+                    (crypto_row or {}).get("updated_at"),
+                    (crypto_row or {}).get("last_run_at"),
+                    len(crypto_markets),
+                    (
+                        (crypto_markets[0] or {}).get("id")
+                        if crypto_markets
+                        else None
+                    ),
+                    (
+                        (crypto_markets[0] or {}).get("oracle_updated_at_ms")
+                        if crypto_markets
+                        else None
+                    ),
+                )
+                if crypto_sig != self._last_crypto_markets_sig:
+                    self._last_crypto_markets_sig = crypto_sig
+                    await manager.broadcast(
+                        {
+                            "type": "crypto_markets_update",
+                            "data": {"markets": crypto_markets},
+                        }
+                    )
+
                 signal_sources = [
                     {
                         "source": row.source,
@@ -334,6 +440,80 @@ class SnapshotBroadcaster:
                         {"type": "signals_update", "data": {"sources": signal_sources}}
                     )
 
+                world_status = {}
+                world_stats = {}
+                world_updated_at = None
+                if world_snapshot is not None:
+                    if isinstance(world_snapshot.status, dict):
+                        world_status = dict(world_snapshot.status)
+                    if isinstance(world_snapshot.stats, dict):
+                        world_stats = dict(world_snapshot.stats)
+                        world_stats.pop("runtime_state", None)
+                    world_updated_at = (
+                        world_snapshot.updated_at.isoformat()
+                        if world_snapshot.updated_at
+                        else None
+                    )
+                world_status_sig = (
+                    world_status.get("running"),
+                    world_status.get("enabled"),
+                    world_status.get("last_scan"),
+                    world_status.get("next_scan"),
+                    world_status.get("last_error"),
+                    world_updated_at,
+                )
+                if world_status_sig != self._last_world_status_sig:
+                    self._last_world_status_sig = world_status_sig
+                    await manager.broadcast(
+                        {
+                            "type": "world_intelligence_status",
+                            "data": {
+                                "status": world_status,
+                                "stats": world_stats,
+                                "updated_at": world_updated_at,
+                            },
+                        }
+                    )
+
+                world_signals = [
+                    {
+                        "signal_id": row.id,
+                        "signal_type": row.signal_type,
+                        "severity": float(row.severity or 0.0),
+                        "country": row.country,
+                        "latitude": row.latitude,
+                        "longitude": row.longitude,
+                        "title": row.title,
+                        "description": row.description or "",
+                        "source": row.source or "unknown",
+                        "detected_at": row.detected_at.isoformat()
+                        if row.detected_at
+                        else None,
+                        "metadata": row.metadata_json or {},
+                        "related_market_ids": row.related_market_ids or [],
+                        "market_relevance_score": row.market_relevance_score,
+                    }
+                    for row in world_rows
+                ]
+                world_update_sig = (
+                    world_status.get("last_scan"),
+                    len(world_signals),
+                    world_signals[0]["signal_id"] if world_signals else None,
+                    world_signals[0]["detected_at"] if world_signals else None,
+                )
+                if world_update_sig != self._last_world_update_sig:
+                    self._last_world_update_sig = world_update_sig
+                    await manager.broadcast(
+                        {
+                            "type": "world_intelligence_update",
+                            "data": {
+                                "count": len(world_signals),
+                                "signals": world_signals[:50],
+                                "summary": world_stats.get("signal_breakdown", {}),
+                            },
+                        }
+                    )
+
                 autotrader_sig = (
                     autotrader_status.get("running"),
                     autotrader_status.get("enabled"),
@@ -364,6 +544,10 @@ class SnapshotBroadcaster:
                                     "decision": row.decision,
                                     "reason": row.reason,
                                     "score": row.score,
+                                    "event_id": row.event_id,
+                                    "trace_id": row.trace_id,
+                                    "policy_snapshot": row.policy_snapshot_json or {},
+                                    "risk_snapshot": row.risk_snapshot_json or {},
                                     "payload": row.payload_json or {},
                                     "created_at": row.created_at.isoformat()
                                     if row.created_at
@@ -373,7 +557,11 @@ class SnapshotBroadcaster:
                         )
 
                 if trade_rows:
-                    self._last_autotrader_trade_ts = trade_rows[-1].created_at
+                    latest_trade = trade_rows[-1]
+                    self._last_autotrader_trade_ts = (
+                        latest_trade.updated_at
+                        or latest_trade.created_at
+                    )
                     for row in trade_rows:
                         await manager.broadcast(
                             {
@@ -381,19 +569,32 @@ class SnapshotBroadcaster:
                                 "data": {
                                     "id": row.id,
                                     "signal_id": row.signal_id,
+                                    "decision_id": row.decision_id,
                                     "source": row.source,
                                     "market_id": row.market_id,
+                                    "market_question": row.market_question,
                                     "direction": row.direction,
                                     "status": row.status,
                                     "mode": row.mode,
                                     "notional_usd": row.notional_usd,
                                     "entry_price": row.entry_price,
                                     "effective_price": row.effective_price,
+                                    "edge_percent": row.edge_percent,
+                                    "confidence": row.confidence,
+                                    "actual_profit": row.actual_profit,
+                                    "reason": row.reason,
+                                    "error_message": row.error_message,
+                                    "event_id": row.event_id,
+                                    "trace_id": row.trace_id,
+                                    "payload": row.payload_json or {},
                                     "created_at": row.created_at.isoformat()
                                     if row.created_at
                                     else None,
                                     "executed_at": row.executed_at.isoformat()
                                     if row.executed_at
+                                    else None,
+                                    "updated_at": row.updated_at.isoformat()
+                                    if row.updated_at
                                     else None,
                                 },
                             }

@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ChevronDown,
   ChevronUp,
   Clock,
   ExternalLink,
+  MessageCircle,
   Terminal,
   TrendingUp,
   TrendingDown,
@@ -12,7 +13,9 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { buildPolymarketMarketUrl } from '../lib/marketUrls'
+import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import { Badge } from './ui/badge'
+import Sparkline from './Sparkline'
 import type { InsiderOpportunity, TrackedTraderOpportunity } from '../services/discoveryApi'
 
 // ─── Unified Type ──────────────────────────────────────────
@@ -23,6 +26,13 @@ export interface UnifiedTraderSignal {
   market_id: string
   market_question: string
   market_slug?: string | null
+  yes_price?: number | null
+  no_price?: number | null
+  price_history?: Array<{
+    t: number
+    yes: number
+    no: number
+  }>
   direction: 'BUY' | 'SELL' | null
   confidence: number
   wallet_count: number
@@ -102,6 +112,9 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     market_id: signal.market_id,
     market_question: signal.market_question || signal.market_id,
     market_slug: signal.market_slug,
+    yes_price: signal.yes_price,
+    no_price: signal.no_price,
+    price_history: signal.price_history,
     direction,
     confidence: signal.conviction_score || Math.round(signal.strength * 100) || 0,
     wallet_count: signal.wallet_count,
@@ -128,6 +141,10 @@ export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSi
     source: 'insider',
     market_id: opp.market_id,
     market_question: opp.market_question || opp.market_id,
+    market_slug: opp.market_slug,
+    yes_price: opp.yes_price,
+    no_price: opp.no_price,
+    price_history: opp.price_history,
     direction: isYes ? 'BUY' : 'SELL',
     confidence: Math.round((opp.confidence || 0) * 100),
     wallet_count: opp.wallet_count,
@@ -208,6 +225,34 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
+function humanizeSlug(slug: string | null | undefined): string {
+  const raw = String(slug || '').trim().replace(/_/g, '-')
+  if (!raw) return ''
+  return raw
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function normalizeMarketLabel(signal: UnifiedTraderSignal): string {
+  const question = String(signal.market_question || '').trim()
+  const placeholderTail = question.replace(/^market\s+/i, '').trim()
+  const looksLikePlaceholder = /^market\s+/i.test(question)
+    && (
+      /^0x[0-9a-f.]+$/i.test(placeholderTail)
+      || /^\d{12,}$/.test(placeholderTail)
+    )
+  if (question && !looksLikePlaceholder) return question
+  const fromSlug = humanizeSlug(signal.market_slug || null)
+  if (fromSlug) return fromSlug
+  const marketId = String(signal.market_id || '').trim()
+  if (/^0x[0-9a-f]+$/i.test(marketId) && marketId.length > 14) {
+    return `Market ${marketId.slice(0, 10)}...${marketId.slice(-4)}`
+  }
+  return question || marketId || 'Unknown market'
+}
+
 // ═══════════════════════════════════════════════════════════
 // CARD VIEW
 // ═══════════════════════════════════════════════════════════
@@ -215,9 +260,10 @@ function shortAddress(address: string): string {
 interface CardProps {
   signals: UnifiedTraderSignal[]
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }
 
-export function TraderSignalCards({ signals, onNavigateToWallet }: CardProps) {
+export function TraderSignalCards({ signals, onNavigateToWallet, onOpenCopilot }: CardProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
       {signals.map((signal) => (
@@ -225,6 +271,7 @@ export function TraderSignalCards({ signals, onNavigateToWallet }: CardProps) {
           key={signal.id}
           signal={signal}
           onNavigateToWallet={onNavigateToWallet}
+          onOpenCopilot={onOpenCopilot}
         />
       ))}
     </div>
@@ -234,12 +281,22 @@ export function TraderSignalCards({ signals, onNavigateToWallet }: CardProps) {
 function TraderSignalCard({
   signal,
   onNavigateToWallet,
+  onOpenCopilot,
 }: {
   signal: UnifiedTraderSignal
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const isBuy = signal.direction === 'BUY'
+  const marketLabel = normalizeMarketLabel(signal)
+  const sparkData = useMemo(
+    () => buildYesNoSparklineSeries(signal.price_history, signal.yes_price, signal.no_price),
+    [signal.price_history, signal.yes_price, signal.no_price],
+  )
+  const hasSparkline = sparkData.yes.length >= 2
+  const yesLast = sparkData.yes[sparkData.yes.length - 1]
+  const noLast = sparkData.no[sparkData.no.length - 1]
   const accentBar = ACCENT_BAR_COLORS[signal.tier] || 'bg-yellow-500'
   const bgGradient = signal.source === 'insider'
     ? 'from-purple-500/[0.04] via-transparent to-transparent'
@@ -297,10 +354,30 @@ function TraderSignalCard({
 
         {/* Row 2: Title */}
         <h3 className="font-medium text-sm text-foreground line-clamp-2 mb-3">
-          {signal.market_question}
+          {marketLabel}
         </h3>
 
-        {/* Row 3: Metrics grid */}
+        {/* Row 3: Sparkline */}
+        {hasSparkline && (
+          <div className="mb-3">
+            <Sparkline
+              data={sparkData.yes}
+              data2={sparkData.no}
+              width={220}
+              height={40}
+              color="#22c55e"
+              color2="#ef4444"
+              lineWidth={1.5}
+              showDots
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground font-data mt-1 px-0.5">
+              <span className="text-green-400/70">YES {Number.isFinite(yesLast) ? `${(yesLast * 100).toFixed(0)}¢` : '—'}</span>
+              <span className="text-red-400/70">NO {Number.isFinite(noLast) ? `${(noLast * 100).toFixed(0)}¢` : '—'}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Row 4: Metrics grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">
           <div>
             <p className="text-muted-foreground/70">Confidence</p>
@@ -348,7 +425,7 @@ function TraderSignalCard({
           )}
         </div>
 
-        {/* Row 4: Confidence bar */}
+        {/* Row 5: Confidence bar */}
         <div>
           <div className="flex items-center justify-between text-[11px] mb-1">
             <span className="text-muted-foreground/70">
@@ -364,7 +441,7 @@ function TraderSignalCard({
           </div>
         </div>
 
-        {/* Row 5: Insider-specific metrics */}
+        {/* Row 6: Insider-specific metrics */}
         {signal.source === 'insider' && (
           <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground/70">
             {signal.insider_score != null && (
@@ -379,7 +456,7 @@ function TraderSignalCard({
           </div>
         )}
 
-        {/* Row 6: Wallets */}
+        {/* Row 7: Wallets */}
         {signal.source === 'confluence' && signal.top_wallets && signal.top_wallets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {signal.top_wallets.slice(0, 4).map((wallet) => (
@@ -419,7 +496,7 @@ function TraderSignalCard({
           </div>
         )}
 
-        {/* Row 7: Actions */}
+        {/* Row 8: Actions */}
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/50">
           {signal.market_url && (
             <a
@@ -432,6 +509,18 @@ function TraderSignalCard({
               <ExternalLink className="w-3 h-3" />
               Market
             </a>
+          )}
+          {onOpenCopilot && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCopilot(signal)
+              }}
+              className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300"
+            >
+              <MessageCircle className="w-3 h-3" />
+              Copilot
+            </button>
           )}
           <div className="ml-auto">
             {expanded ? (
@@ -525,9 +614,10 @@ function TraderSignalCard({
 interface TableProps {
   signals: UnifiedTraderSignal[]
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }
 
-export function TraderSignalTable({ signals, onNavigateToWallet }: TableProps) {
+export function TraderSignalTable({ signals, onNavigateToWallet, onOpenCopilot }: TableProps) {
   return (
     <div className="border border-border/50 rounded-lg overflow-hidden">
       {/* Header */}
@@ -550,6 +640,7 @@ export function TraderSignalTable({ signals, onNavigateToWallet }: TableProps) {
             key={signal.id}
             signal={signal}
             onNavigateToWallet={onNavigateToWallet}
+            onOpenCopilot={onOpenCopilot}
           />
         ))}
       </div>
@@ -560,12 +651,15 @@ export function TraderSignalTable({ signals, onNavigateToWallet }: TableProps) {
 function TraderSignalTableRow({
   signal,
   onNavigateToWallet,
+  onOpenCopilot,
 }: {
   signal: UnifiedTraderSignal
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const isBuy = signal.direction === 'BUY'
+  const marketLabel = normalizeMarketLabel(signal)
 
   const confidenceColor = signal.confidence >= 80
     ? 'text-green-400'
@@ -617,7 +711,7 @@ function TraderSignalTableRow({
 
         {/* Market */}
         <div className="px-2 py-2.5 min-w-0">
-          <p className="text-xs text-foreground truncate">{signal.market_question}</p>
+          <p className="text-xs text-foreground truncate">{marketLabel}</p>
         </div>
 
         {/* Direction */}
@@ -695,7 +789,7 @@ function TraderSignalTableRow({
           <div className="flex gap-6">
             {/* Left column: Details */}
             <div className="flex-1 space-y-2">
-              <p className="text-sm text-foreground">{signal.market_question}</p>
+              <p className="text-sm text-foreground">{marketLabel}</p>
 
               {signal.source === 'confluence' && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
@@ -787,6 +881,18 @@ function TraderSignalTableRow({
                   Open Market
                 </a>
               )}
+              {onOpenCopilot && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenCopilot(signal)
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-purple-500/15 text-xs text-purple-300 hover:bg-purple-500/25"
+                >
+                  <MessageCircle className="w-3 h-3" />
+                  Copilot
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -802,11 +908,18 @@ function TraderSignalTableRow({
 interface TerminalProps {
   signals: UnifiedTraderSignal[]
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
   isConnected?: boolean
   totalCount?: number
 }
 
-export function TraderSignalTerminal({ signals, onNavigateToWallet, isConnected, totalCount }: TerminalProps) {
+export function TraderSignalTerminal({
+  signals,
+  onNavigateToWallet,
+  onOpenCopilot,
+  isConnected,
+  totalCount,
+}: TerminalProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -817,9 +930,9 @@ export function TraderSignalTerminal({ signals, onNavigateToWallet, isConnected,
   }, [])
 
   return (
-    <div className="terminal-view bg-[#0a0c10] border border-green-500/20 rounded-lg overflow-hidden font-data text-[11px] leading-relaxed">
+    <div className="terminal-view terminal-surface border rounded-lg overflow-hidden font-data text-[11px] leading-relaxed">
       {/* Terminal Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#0d1017] border-b border-green-500/15">
+      <div className="terminal-header flex items-center justify-between px-3 py-1.5">
         <div className="flex items-center gap-2">
           <Terminal className="w-3.5 h-3.5 text-green-400" />
           <span className="text-green-400 font-bold text-xs">TRADER SIGNAL FEED</span>
@@ -866,6 +979,7 @@ export function TraderSignalTerminal({ signals, onNavigateToWallet, isConnected,
             isSelected={selectedIdx === idx}
             onSelect={() => setSelectedIdx(selectedIdx === idx ? null : idx)}
             onNavigateToWallet={onNavigateToWallet}
+            onOpenCopilot={onOpenCopilot}
           />
         ))}
 
@@ -890,15 +1004,18 @@ function TerminalSignalEntry({
   isSelected,
   onSelect,
   onNavigateToWallet,
+  onOpenCopilot,
 }: {
   signal: UnifiedTraderSignal
   isSelected: boolean
   onSelect: () => void
   onNavigateToWallet?: (address: string) => void
+  onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }) {
   const sourceTag = signal.source === 'insider' ? 'INS' : 'CNF'
   const tierTag = signal.tier === 'INSIDER' ? 'INS' : signal.tier
   const isBuy = signal.direction === 'BUY'
+  const marketLabel = normalizeMarketLabel(signal)
 
   const tierColor = signal.tier === 'EXTREME'
     ? 'text-red-400'
@@ -957,7 +1074,7 @@ function TerminalSignalEntry({
 
       {/* Title */}
       <div className="text-green-100/70 pl-4 truncate">
-        &quot;{signal.market_question}&quot;
+        &quot;{marketLabel}&quot;
       </div>
 
       {/* Metrics line */}
@@ -1052,6 +1169,17 @@ function TerminalSignalEntry({
               >
                 [polymarket]
               </a>
+            )}
+            {onOpenCopilot && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenCopilot(signal)
+                }}
+                className="text-[10px] text-purple-400/70 hover:text-purple-400 transition-colors underline underline-offset-2"
+              >
+                [copilot]
+              </button>
             )}
             {signal.source === 'insider' && signal.top_wallet?.address && (
               <button

@@ -23,9 +23,9 @@ import asyncio
 import math
 from datetime import datetime, timedelta
 from utils.utcnow import utcnow, utcfromtimestamp
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import select, func, update, desc, asc
+from sqlalchemy import select, func, update, desc, asc, cast, String, or_
 
 from models.database import DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
@@ -56,6 +56,8 @@ DELAY_BETWEEN_WALLETS = 0.15
 
 # Staleness threshold: re-analyze wallets older than this
 STALE_ANALYSIS_HOURS = 12
+ANALYSIS_PRIORITY_BATCH_LIMIT = 2500
+METRICS_SOURCE_VERSION = "accuracy_v2_closed_positions"
 
 
 class WalletDiscoveryEngine:
@@ -258,6 +260,148 @@ class WalletDiscoveryEngine:
             "_market_rois": [],
             "_market_pnls": [],
         }
+
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _summarize_closed_positions(self, closed_positions: list[dict]) -> dict:
+        wins = 0
+        losses = 0
+        market_ids: set[str] = set()
+        market_pnls: list[float] = []
+        market_rois: list[float] = []
+
+        for pos in closed_positions:
+            if not isinstance(pos, dict):
+                continue
+
+            market_id = (
+                pos.get("market")
+                or pos.get("condition_id")
+                or pos.get("conditionId")
+                or pos.get("asset")
+                or pos.get("token_id")
+                or pos.get("tokenId")
+                or ""
+            )
+            market_key = str(market_id).strip()
+            if market_key:
+                market_ids.add(market_key)
+
+            realized_pnl = self._to_float(pos.get("realizedPnl", 0) or 0)
+            initial_value = self._to_float(pos.get("initialValue", 0) or 0)
+            market_pnls.append(realized_pnl)
+            if initial_value > 0:
+                market_rois.append((realized_pnl / initial_value) * 100.0)
+
+            if realized_pnl > 0:
+                wins += 1
+            elif realized_pnl < 0:
+                losses += 1
+
+        return {
+            "wins": wins,
+            "losses": losses,
+            "market_ids": market_ids,
+            "market_pnls": market_pnls,
+            "market_rois": market_rois,
+        }
+
+    def _build_accuracy_first_stats(
+        self,
+        *,
+        base_stats: dict,
+        pnl_snapshot: dict | None,
+        closed_positions: list[dict],
+    ) -> dict:
+        """Merge legacy trade-derived stats with closed-position/PnL endpoint truth."""
+        stats = dict(base_stats)
+        closed_summary = self._summarize_closed_positions(closed_positions)
+
+        if isinstance(pnl_snapshot, dict):
+            total_trades = int(self._to_float(pnl_snapshot.get("total_trades"), 0))
+            open_positions = int(self._to_float(pnl_snapshot.get("open_positions"), 0))
+            total_invested = self._to_float(pnl_snapshot.get("total_invested"), 0.0)
+            total_returned = self._to_float(pnl_snapshot.get("total_returned"), 0.0)
+            realized_pnl = self._to_float(pnl_snapshot.get("realized_pnl"), 0.0)
+            unrealized_pnl = self._to_float(pnl_snapshot.get("unrealized_pnl"), 0.0)
+            total_pnl = self._to_float(
+                pnl_snapshot.get("total_pnl"),
+                realized_pnl + unrealized_pnl,
+            )
+
+            if total_trades > 0:
+                stats["total_trades"] = total_trades
+            stats["open_positions"] = open_positions
+            stats["total_invested"] = total_invested
+            stats["total_returned"] = total_returned
+            stats["realized_pnl"] = realized_pnl
+            stats["unrealized_pnl"] = unrealized_pnl
+            stats["total_pnl"] = total_pnl
+
+        wins = int(closed_summary["wins"])
+        losses = int(closed_summary["losses"])
+        closed_total = wins + losses
+        if closed_total > 0:
+            stats["wins"] = wins
+            stats["losses"] = losses
+            stats["win_rate"] = wins / closed_total
+
+        market_rois = list(closed_summary["market_rois"])
+        market_pnls = list(closed_summary["market_pnls"])
+        if market_rois:
+            stats["avg_roi"] = sum(market_rois) / len(market_rois)
+            stats["max_roi"] = max(market_rois)
+            stats["min_roi"] = min(market_rois)
+            stats["roi_std"] = self._std_dev(market_rois) if len(market_rois) > 1 else 0.0
+            stats["_market_rois"] = market_rois
+            stats["_market_pnls"] = market_pnls
+        elif market_pnls:
+            stats["_market_pnls"] = market_pnls
+            total_invested = self._to_float(stats.get("total_invested"), 0.0)
+            total_pnl = self._to_float(stats.get("total_pnl"), 0.0)
+            stats["avg_roi"] = (total_pnl / total_invested * 100.0) if total_invested > 0 else 0.0
+            stats["max_roi"] = stats["avg_roi"]
+            stats["min_roi"] = stats["avg_roi"]
+            stats["roi_std"] = 0.0
+
+        if closed_summary["market_ids"]:
+            stats["unique_markets"] = max(
+                int(stats.get("unique_markets", 0) or 0),
+                len(closed_summary["market_ids"]),
+            )
+
+        days_active = max(int(stats.get("days_active", 0) or 0), 1)
+        total_trades = int(stats.get("total_trades", 0) or 0)
+        total_invested = self._to_float(stats.get("total_invested"), 0.0)
+        stats["trades_per_day"] = total_trades / days_active
+        stats["avg_position_size"] = (
+            total_invested / total_trades if total_trades > 0 else 0.0
+        )
+
+        for key in (
+            "win_rate",
+            "total_pnl",
+            "realized_pnl",
+            "unrealized_pnl",
+            "total_invested",
+            "total_returned",
+            "avg_roi",
+            "max_roi",
+            "min_roi",
+            "roi_std",
+            "trades_per_day",
+            "avg_position_size",
+        ):
+            value = stats.get(key)
+            if isinstance(value, float) and not math.isfinite(value):
+                stats[key] = 0.0
+
+        return stats
 
     # ------------------------------------------------------------------
     # 2. Risk-Adjusted Metrics
@@ -616,11 +760,15 @@ class WalletDiscoveryEngine:
         address = address.lower()
 
         try:
-            # Fetch trade history, open positions, and profile in parallel
-            trades, positions, profile = await asyncio.gather(
-                self.client.get_wallet_trades(address, limit=500),
+            # Fetch data in parallel. Trade history is widened beyond 500 so
+            # strategy/rolling windows use deeper context while PnL truth comes
+            # from accuracy-first endpoints.
+            trades, positions, profile, pnl_snapshot, closed_positions = await asyncio.gather(
+                self.client.get_wallet_trades(address, limit=1500),
                 self.client.get_wallet_positions(address),
                 self.client.get_user_profile(address),
+                self.client.get_wallet_pnl(address, time_period="ALL"),
+                self.client.get_closed_positions_paginated(address, max_positions=1500),
             )
         except Exception as e:
             logger.error(
@@ -630,13 +778,28 @@ class WalletDiscoveryEngine:
             )
             return None
 
-        if len(trades) < MIN_TRADES_FOR_ANALYSIS and not positions:
+        if (
+            len(trades) < MIN_TRADES_FOR_ANALYSIS
+            and not positions
+            and len(closed_positions) < MIN_TRADES_FOR_ANALYSIS
+        ):
             return None
 
         # All statistical computations are CPU-bound. Run them in the
         # thread pool so the async event loop stays free for API requests.
-        def _compute_profile(engine, trade_list, position_list):
+        def _compute_profile(
+            engine,
+            trade_list,
+            position_list,
+            pnl_snapshot_payload,
+            closed_position_payload,
+        ):
             stats = engine._calculate_trade_stats(trade_list, position_list)
+            stats = engine._build_accuracy_first_stats(
+                base_stats=stats,
+                pnl_snapshot=pnl_snapshot_payload,
+                closed_positions=closed_position_payload,
+            )
             risk_metrics = engine._calculate_risk_adjusted_metrics(
                 market_rois=stats["_market_rois"],
                 market_pnls=stats["_market_pnls"],
@@ -674,7 +837,14 @@ class WalletDiscoveryEngine:
             classification,
             rank_score,
             now,
-        ) = await asyncio.to_thread(_compute_profile, self, trades, positions)
+        ) = await asyncio.to_thread(
+            _compute_profile,
+            self,
+            trades,
+            positions,
+            pnl_snapshot,
+            closed_positions,
+        )
 
         username = profile.get("username") if profile else None
 
@@ -683,6 +853,7 @@ class WalletDiscoveryEngine:
             "username": username,
             "last_analyzed_at": now,
             "discovery_source": "scan",
+            "metrics_source_version": METRICS_SOURCE_VERSION,
             # Basic stats
             "total_trades": stats["total_trades"],
             "wins": stats["wins"],
@@ -870,6 +1041,125 @@ class WalletDiscoveryEngine:
             total_wallets=len(rows),
         )
 
+    @staticmethod
+    def _merge_unique_addresses(*groups: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            for raw in group:
+                addr = str(raw or "").strip().lower()
+                if not addr or addr in seen:
+                    continue
+                seen.add(addr)
+                merged.append(addr)
+        return merged
+
+    async def _priority_analysis_queue(
+        self,
+        limit: int = ANALYSIS_PRIORITY_BATCH_LIMIT,
+    ) -> tuple[list[str], dict[str, int]]:
+        """Build priority addresses: in-pool unanalyzed, smart-pool unanalyzed, metrics backfill."""
+        priority_limit = max(50, min(limit, ANALYSIS_PRIORITY_BATCH_LIMIT))
+        backfill_limit = max(100, min(priority_limit, ANALYSIS_PRIORITY_BATCH_LIMIT))
+
+        async with AsyncSessionLocal() as session:
+            top_pool_rows = await session.execute(
+                select(DiscoveredWallet.address)
+                .where(
+                    DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                    DiscoveredWallet.last_analyzed_at.is_(None),
+                )
+                .order_by(
+                    desc(func.coalesce(DiscoveredWallet.trades_24h, 0)),
+                    desc(func.coalesce(DiscoveredWallet.trades_1h, 0)),
+                    desc(DiscoveredWallet.last_trade_at),
+                    desc(DiscoveredWallet.discovered_at),
+                )
+                .limit(priority_limit)
+            )
+            top_pool = [str(row.address).lower() for row in top_pool_rows.all() if row.address]
+
+            smart_pool_query = (
+                select(DiscoveredWallet.address)
+                .where(
+                    DiscoveredWallet.discovery_source == "smart_pool",
+                    DiscoveredWallet.last_analyzed_at.is_(None),
+                )
+                .order_by(
+                    desc(func.coalesce(DiscoveredWallet.trades_24h, 0)),
+                    desc(func.coalesce(DiscoveredWallet.trades_1h, 0)),
+                    desc(DiscoveredWallet.last_trade_at),
+                    desc(DiscoveredWallet.discovered_at),
+                )
+                .limit(priority_limit)
+            )
+            if top_pool:
+                smart_pool_query = smart_pool_query.where(
+                    DiscoveredWallet.address.notin_(top_pool)
+                )
+            smart_pool_rows = await session.execute(smart_pool_query)
+            smart_pool = [
+                str(row.address).lower() for row in smart_pool_rows.all() if row.address
+            ]
+
+            backfill_rows = await session.execute(
+                select(DiscoveredWallet.address)
+                .where(
+                    DiscoveredWallet.last_analyzed_at.is_not(None),
+                    or_(
+                        DiscoveredWallet.metrics_source_version.is_(None),
+                        DiscoveredWallet.metrics_source_version != METRICS_SOURCE_VERSION,
+                    ),
+                )
+                .order_by(
+                    desc(func.coalesce(DiscoveredWallet.in_top_pool, False)),
+                    desc(func.coalesce(DiscoveredWallet.trades_24h, 0)),
+                    DiscoveredWallet.last_analyzed_at.asc(),
+                )
+                .limit(backfill_limit)
+            )
+            backfill = [str(row.address).lower() for row in backfill_rows.all() if row.address]
+
+        ordered = self._merge_unique_addresses(top_pool, smart_pool, backfill)
+        counts = {
+            "top_pool_unanalyzed": len(top_pool),
+            "smart_pool_unanalyzed": len(smart_pool),
+            "metrics_backfill": len(backfill),
+            "priority_total": len(ordered),
+        }
+        return ordered, counts
+
+    async def get_priority_backlog_count(self) -> int:
+        """Count high-priority wallets waiting for initial analysis."""
+        async with AsyncSessionLocal() as session:
+            top_pool_unanalyzed = (
+                (
+                    await session.execute(
+                        select(func.count(DiscoveredWallet.address)).where(
+                            DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                            DiscoveredWallet.last_analyzed_at.is_(None),
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            smart_pool_unanalyzed = (
+                (
+                    await session.execute(
+                        select(func.count(DiscoveredWallet.address)).where(
+                            DiscoveredWallet.discovery_source == "smart_pool",
+                            DiscoveredWallet.last_analyzed_at.is_(None),
+                            or_(
+                                DiscoveredWallet.in_top_pool.is_(None),
+                                DiscoveredWallet.in_top_pool == False,  # noqa: E712
+                            ),
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+        return int(top_pool_unanalyzed + smart_pool_unanalyzed)
+
     # ------------------------------------------------------------------
     # 10. Full Discovery Run
     # ------------------------------------------------------------------
@@ -970,7 +1260,7 @@ class WalletDiscoveryEngine:
             # Batch the staleness check into a single DB query instead of
             # one query per wallet, which was blocking the event loop for
             # hundreds/thousands of sequential DB round-trips.
-            addresses_to_analyze: list[str] = []
+            stale_addresses: list[str] = []
             stale_cutoff = utcnow() - timedelta(hours=STALE_ANALYSIS_HOURS)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
@@ -984,12 +1274,27 @@ class WalletDiscoveryEngine:
             for addr in all_addresses:
                 last_analyzed = existing.get(addr)
                 if last_analyzed is None or last_analyzed < stale_cutoff:
-                    addresses_to_analyze.append(addr)
+                    stale_addresses.append(addr)
+
+            priority_addresses, priority_counts = await self._priority_analysis_queue()
+            addresses_to_analyze = self._merge_unique_addresses(
+                priority_addresses,
+                stale_addresses,
+            )
 
             logger.info(
                 "Wallets requiring analysis",
                 total=len(addresses_to_analyze),
-                skipped_fresh=len(all_addresses) - len(addresses_to_analyze),
+                priority_total=priority_counts.get("priority_total", 0),
+                priority_top_pool_unanalyzed=priority_counts.get(
+                    "top_pool_unanalyzed", 0
+                ),
+                priority_smart_pool_unanalyzed=priority_counts.get(
+                    "smart_pool_unanalyzed", 0
+                ),
+                priority_metrics_backfill=priority_counts.get("metrics_backfill", 0),
+                stale_discovered=len(stale_addresses),
+                skipped_fresh=max(len(all_addresses) - len(stale_addresses), 0),
             )
 
             # --- Step 5 & 6: Analyze and store ---
@@ -1107,6 +1412,9 @@ class WalletDiscoveryEngine:
         min_activity_score: float | None = None,
         pool_only: bool = False,
         tier: str | None = None,
+        search_text: str | None = None,
+        unique_entities_only: bool = False,
+        market_category: str | None = None,
     ) -> dict:
         """
         Get the wallet leaderboard with filtering and sorting.
@@ -1122,11 +1430,17 @@ class WalletDiscoveryEngine:
             recommendation: If provided, filter to this recommendation level.
             window_key: Rolling window key ("1d", "7d", "30d", "90d").
                         When set, sorts/filters use rolling window metrics for that period.
+            search_text: Optional free-text filter against address/username/tags/strategies.
+            unique_entities_only: If true, collapse clustered wallets to one row per cluster.
+            market_category: Optional market-focus category filter.
 
         Returns:
             Dict with 'wallets' list, 'total' count, and 'window_key' if set.
         """
         async with AsyncSessionLocal() as session:
+            normalized_tags = [
+                t.strip().lower() for t in (tags or []) if isinstance(t, str) and t.strip()
+            ]
             base_filter = [
                 DiscoveredWallet.total_trades >= min_trades,
                 DiscoveredWallet.total_pnl >= min_pnl,
@@ -1148,6 +1462,40 @@ class WalletDiscoveryEngine:
                 base_filter.append(DiscoveredWallet.in_top_pool == True)  # noqa: E712
             if tier:
                 base_filter.append(DiscoveredWallet.pool_tier == tier.lower())
+            if normalized_tags:
+                for tag in normalized_tags:
+                    base_filter.append(
+                        func.lower(cast(DiscoveredWallet.tags, String)).like(
+                            f'%"{tag}"%'
+                        )
+                    )
+            if search_text:
+                q = f"%{search_text.strip().lower()}%"
+                if q != "%%":
+                    base_filter.append(
+                        or_(
+                            func.lower(DiscoveredWallet.address).like(q),
+                            func.lower(func.coalesce(DiscoveredWallet.username, "")).like(q),
+                            func.lower(cast(DiscoveredWallet.tags, String)).like(q),
+                            func.lower(cast(DiscoveredWallet.strategies_detected, String)).like(q),
+                            func.lower(cast(DiscoveredWallet.source_flags, String)).like(q),
+                        )
+                    )
+            if market_category:
+                normalized_category = market_category.strip().lower()
+                if normalized_category not in {"", "all", "overall"}:
+                    category_flag = f'%\"leaderboard_category_{normalized_category}\": true%'
+                    category_tag = f'%\"market_{normalized_category}\"%'
+                    base_filter.append(
+                        or_(
+                            func.lower(cast(DiscoveredWallet.source_flags, String)).like(
+                                category_flag
+                            ),
+                            func.lower(cast(DiscoveredWallet.tags, String)).like(
+                                category_tag
+                            ),
+                        )
+                    )
 
             # When a rolling window is active, filter to wallets with trades in that window
             if window_key:
@@ -1155,13 +1503,6 @@ class WalletDiscoveryEngine:
                     DiscoveredWallet.rolling_trade_count, f"$.{window_key}"
                 )
                 base_filter.append(trade_count_expr > 0)
-
-            # Get total count for pagination
-            count_query = select(func.count(DiscoveredWallet.address)).where(
-                *base_filter
-            )
-            count_result = await session.execute(count_query)
-            total_count = count_result.scalar() or 0
 
             # Build main query
             query = select(DiscoveredWallet).where(*base_filter)
@@ -1186,10 +1527,35 @@ class WalletDiscoveryEngine:
             else:
                 query = query.order_by(desc(sort_expr))
 
-            query = query.offset(offset).limit(limit)
+            if unique_entities_only:
+                result = await session.execute(query)
+                ordered_wallets = list(result.scalars().all())
+                deduped_wallets: list[DiscoveredWallet] = []
+                seen_entities: set[str] = set()
+                for wallet in ordered_wallets:
+                    entity_key = (
+                        f"cluster:{wallet.cluster_id}"
+                        if wallet.cluster_id
+                        else f"wallet:{wallet.address}"
+                    )
+                    if entity_key in seen_entities:
+                        continue
+                    seen_entities.add(entity_key)
+                    deduped_wallets.append(wallet)
 
-            result = await session.execute(query)
-            wallets = result.scalars().all()
+                total_count = len(deduped_wallets)
+                wallets = deduped_wallets[offset : offset + limit]
+            else:
+                # Get total count for pagination
+                count_query = select(func.count(DiscoveredWallet.address)).where(
+                    *base_filter
+                )
+                count_result = await session.execute(count_query)
+                total_count = count_result.scalar() or 0
+
+                query = query.offset(offset).limit(limit)
+                result = await session.execute(query)
+                wallets = result.scalars().all()
 
             rows = []
             for w in wallets:
@@ -1202,12 +1568,6 @@ class WalletDiscoveryEngine:
                     row["period_win_rate"] = (w.rolling_win_rate or {}).get(window_key, 0.0)
                     row["period_trades"] = (w.rolling_trade_count or {}).get(window_key, 0)
                     row["period_sharpe"] = (w.rolling_sharpe or {}).get(window_key)
-
-                # Client-side tag filtering (JSON column)
-                if tags:
-                    wallet_tags = row.get("tags") or []
-                    if not all(t in wallet_tags for t in tags):
-                        continue
 
                 rows.append(row)
 
@@ -1286,6 +1646,15 @@ class WalletDiscoveryEngine:
     @staticmethod
     def _wallet_to_dict(w: DiscoveredWallet) -> dict:
         """Serialize a DiscoveredWallet ORM object to a plain dict."""
+        source_flags = w.source_flags or {}
+        if not isinstance(source_flags, dict):
+            source_flags = {}
+        market_categories = [
+            key.replace("leaderboard_category_", "")
+            for key, enabled in source_flags.items()
+            if key.startswith("leaderboard_category_") and bool(enabled)
+        ]
+
         return {
             "address": w.address,
             "username": w.username,
@@ -1294,6 +1663,7 @@ class WalletDiscoveryEngine:
             if w.last_analyzed_at
             else None,
             "discovery_source": w.discovery_source,
+            "metrics_source_version": w.metrics_source_version,
             # Basic stats
             "total_trades": w.total_trades,
             "wins": w.wins,
@@ -1347,7 +1717,8 @@ class WalletDiscoveryEngine:
             "in_top_pool": w.in_top_pool,
             "pool_tier": w.pool_tier,
             "pool_membership_reason": w.pool_membership_reason,
-            "source_flags": w.source_flags or {},
+            "source_flags": source_flags,
+            "market_categories": sorted(set(market_categories)),
             # Clustering
             "cluster_id": w.cluster_id,
             # Insider detection

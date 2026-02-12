@@ -336,6 +336,93 @@ class TestMispricingClassification:
 
 
 # ---------------------------------------------------------------------------
+# Shared sparkline history attach
+# ---------------------------------------------------------------------------
+
+
+class TestSharedPriceHistoryAttach:
+    @pytest.mark.asyncio
+    async def test_remember_tokens_from_opportunities_parses_json_string(self):
+        scanner = _build_scanner(strategies=[])
+        yes_token = "123456789012345678901"
+        no_token = "123456789012345678902"
+        opp = ArbitrageOpportunity(
+            strategy=StrategyType.WEATHER_EDGE,
+            title="Weather",
+            description="D",
+            total_cost=0.2,
+            expected_payout=0.5,
+            gross_profit=0.3,
+            fee=0.01,
+            net_profit=0.29,
+            roi_percent=145.0,
+            markets=[
+                {
+                    "id": "m_weather_1",
+                    "platform": "polymarket",
+                    "clob_token_ids": f"[\"{yes_token}\", \"{no_token}\"]",
+                    "yes_price": 0.2,
+                    "no_price": 0.8,
+                }
+            ],
+            min_liquidity=1000.0,
+            max_position_size=10.0,
+            positions_to_take=[],
+        )
+
+        scanner._remember_market_tokens_from_opportunities([opp])
+
+        assert scanner._market_token_ids.get("m_weather_1") == (yes_token, no_token)
+
+    @pytest.mark.asyncio
+    async def test_attach_price_history_to_opportunities_uses_shared_backfill(self):
+        scanner = _build_scanner(strategies=[])
+        yes_token = "123456789012345678901"
+        no_token = "123456789012345678902"
+        opp = ArbitrageOpportunity(
+            strategy=StrategyType.WEATHER_EDGE,
+            title="Weather",
+            description="D",
+            total_cost=0.2,
+            expected_payout=0.5,
+            gross_profit=0.3,
+            fee=0.01,
+            net_profit=0.29,
+            roi_percent=145.0,
+            markets=[
+                {
+                    "id": "m_weather_2",
+                    "platform": "polymarket",
+                    "clob_token_ids": [yes_token, no_token],
+                    "yes_price": 0.2,
+                    "no_price": 0.8,
+                }
+            ],
+            min_liquidity=1000.0,
+            max_position_size=10.0,
+            positions_to_take=[],
+        )
+
+        scanner._backfill_market_history_for_opportunities = AsyncMock(return_value=None)
+        scanner.get_market_history_for_opportunities = MagicMock(
+            return_value={
+                "m_weather_2": [
+                    {"t": 1.0, "yes": 0.41, "no": 0.59},
+                    {"t": 2.0, "yes": 0.43, "no": 0.57},
+                ]
+            }
+        )
+
+        attached = await scanner.attach_price_history_to_opportunities(
+            [opp], timeout_seconds=None
+        )
+
+        assert attached == 1
+        assert "price_history" in opp.markets[0]
+        assert len(opp.markets[0]["price_history"]) == 2
+
+
+# ---------------------------------------------------------------------------
 # get_opportunities with OpportunityFilter
 # ---------------------------------------------------------------------------
 

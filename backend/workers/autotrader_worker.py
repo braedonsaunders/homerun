@@ -8,7 +8,7 @@ import math
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import and_, func, select
@@ -24,16 +24,23 @@ from models.database import (
     AsyncSessionLocal,
     AutoTraderDecision,
     AutoTraderTrade,
+    SimulationPosition,
+    SimulationTrade,
     TradeSignal,
+    TradeStatus,
     init_database,
 )
+from models.opportunity import ArbitrageOpportunity
 from services.autotrader_state import (
+    SOURCE_DOMAIN_MAP,
     clear_autotrader_run_request,
     create_autotrader_decision,
     create_autotrader_trade,
     ensure_default_autotrader_policies,
+    normalize_trading_domains,
     read_autotrader_control,
     read_autotrader_policies,
+    read_autotrader_snapshot,
     reset_autotrader_for_manual_start,
     write_autotrader_snapshot,
 )
@@ -43,6 +50,7 @@ from services.signal_bus import (
     set_trade_signal_status,
 )
 from services.trading import OrderSide, OrderStatus, OrderType, trading_service
+from services.simulation import simulation_service
 from services.worker_state import write_worker_snapshot
 
 logging.basicConfig(
@@ -50,6 +58,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("autotrader_worker")
+OPEN_AUTOTRADER_STATUSES = ("submitted", "executed", "open")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -76,6 +85,17 @@ def _source_live_enabled(mode: str, source_policy: dict[str, Any]) -> bool:
     if not isinstance(metadata, dict):
         metadata = {}
     return bool(metadata.get("live_enabled", True))
+
+
+def _normalize_strategy(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _strategy_enabled(signal: TradeSignal, enabled_strategies: set[str]) -> bool:
+    if not enabled_strategies:
+        return True
+    strategy = _normalize_strategy(signal.strategy_type) or _normalize_strategy(signal.signal_type)
+    return strategy in enabled_strategies
 
 
 def _extract_event_key(signal: TradeSignal) -> Optional[str]:
@@ -116,6 +136,364 @@ def _extract_token_id(signal: TradeSignal) -> Optional[str]:
             return str(metadata.get("token_id"))
 
     return None
+
+
+def _enum_text(value: Any) -> str:
+    if hasattr(value, "value"):
+        return str(value.value).lower()
+    return str(value).lower()
+
+
+def _build_positions_to_take(signal: TradeSignal) -> list[dict[str, Any]]:
+    payload = signal.payload_json if isinstance(signal.payload_json, dict) else {}
+    positions_raw = payload.get("positions_to_take") if isinstance(payload, dict) else None
+    positions: list[dict[str, Any]] = []
+
+    if isinstance(positions_raw, list):
+        for pos in positions_raw:
+            if not isinstance(pos, dict):
+                continue
+
+            price = _safe_float(
+                pos.get("price"),
+                _safe_float(signal.effective_price, _safe_float(signal.entry_price, 0.0)),
+            )
+            if price <= 0:
+                continue
+
+            outcome_raw = str(pos.get("outcome") or "").strip().lower()
+            if outcome_raw in {"yes", "buy_yes", "y"}:
+                outcome = "YES"
+            elif outcome_raw in {"no", "buy_no", "n"}:
+                outcome = "NO"
+            else:
+                outcome = "NO" if signal.direction == "buy_no" else "YES"
+
+            market_ref = str(pos.get("market_id") or pos.get("market") or signal.market_id)
+            normalized: dict[str, Any] = {
+                "action": str(pos.get("action") or "buy").lower(),
+                "outcome": outcome,
+                "market": market_ref,
+                "market_id": market_ref,
+                "market_question": str(pos.get("market_question") or signal.market_question or market_ref),
+                "price": price,
+            }
+            token_id = pos.get("token_id")
+            if token_id:
+                normalized["token_id"] = str(token_id)
+            positions.append(normalized)
+
+    if positions:
+        return positions
+
+    entry_price = _safe_float(signal.effective_price, _safe_float(signal.entry_price, 0.0))
+    if entry_price <= 0:
+        return []
+
+    fallback_position: dict[str, Any] = {
+        "action": "buy",
+        "outcome": "NO" if signal.direction == "buy_no" else "YES",
+        "market": str(signal.market_id),
+        "market_id": str(signal.market_id),
+        "market_question": str(signal.market_question or signal.market_id),
+        "price": entry_price,
+    }
+    token_id = _extract_token_id(signal)
+    if token_id:
+        fallback_position["token_id"] = token_id
+    return [fallback_position]
+
+
+def _build_simulation_opportunity(signal: TradeSignal) -> Optional[ArbitrageOpportunity]:
+    payload = signal.payload_json if isinstance(signal.payload_json, dict) else {}
+    positions = _build_positions_to_take(signal)
+    if not positions:
+        return None
+
+    total_cost = _safe_float(payload.get("total_cost"), 0.0)
+    if total_cost <= 0:
+        total_cost = sum(_safe_float(pos.get("price"), 0.0) for pos in positions)
+    if total_cost <= 0:
+        return None
+
+    expected_payout = _safe_float(payload.get("expected_payout"), 1.0)
+    gross_profit = _safe_float(payload.get("gross_profit"), max(0.0, expected_payout - total_cost))
+    fee = _safe_float(payload.get("fee"), 0.0)
+    net_profit = _safe_float(payload.get("net_profit"), gross_profit - fee)
+    roi_percent = _safe_float(
+        payload.get("roi_percent"),
+        (net_profit / total_cost * 100.0) if total_cost > 0 else 0.0,
+    )
+    risk_score = _clamp(_safe_float(payload.get("risk_score"), 0.5), 0.0, 1.0)
+
+    resolution_date = signal.expires_at
+    if resolution_date is None and isinstance(payload, dict):
+        raw_resolution = payload.get("resolution_date") or payload.get("expires_at")
+        if isinstance(raw_resolution, str):
+            try:
+                parsed = datetime.fromisoformat(raw_resolution.replace("Z", "+00:00"))
+                resolution_date = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            except Exception:
+                resolution_date = None
+
+    return ArbitrageOpportunity(
+        id=str(signal.id),
+        strategy=str(signal.strategy_type or signal.source),
+        title=str(signal.market_question or signal.market_id),
+        description=f"AutoTrader {signal.source} signal",
+        total_cost=total_cost,
+        expected_payout=expected_payout,
+        gross_profit=gross_profit,
+        fee=fee,
+        net_profit=net_profit,
+        roi_percent=roi_percent,
+        risk_score=risk_score,
+        risk_factors=list(payload.get("risk_factors") or []),
+        markets=list(payload.get("markets") or []),
+        event_id=_extract_event_key(signal),
+        min_liquidity=max(0.0, _safe_float(signal.liquidity, 0.0)),
+        max_position_size=max(0.0, _safe_float(payload.get("max_position_size"), 0.0)),
+        resolution_date=resolution_date,
+        positions_to_take=positions,
+    )
+
+
+def _paper_exit_prices(
+    positions: list[dict[str, Any]],
+    settings: dict[str, Any],
+) -> tuple[Optional[float], Optional[float]]:
+    enabled = bool(settings.get("paper_enable_spread_exits", True))
+    if not enabled or not positions:
+        return None, None
+
+    prices = [_safe_float(pos.get("price"), 0.0) for pos in positions]
+    prices = [price for price in prices if price > 0]
+    if not prices:
+        return None, None
+
+    avg_entry = sum(prices) / len(prices)
+    take_profit_pct = max(0.0, _safe_float(settings.get("paper_take_profit_pct"), 5.0))
+    stop_loss_pct = max(0.0, _safe_float(settings.get("paper_stop_loss_pct"), 10.0))
+
+    take_profit_price = None
+    stop_loss_price = None
+    if take_profit_pct > 0 and avg_entry > 0:
+        take_profit_price = min(avg_entry * (1.0 + take_profit_pct / 100.0), 0.99)
+    if stop_loss_pct > 0 and avg_entry > 0:
+        stop_loss_price = max(avg_entry * (1.0 - stop_loss_pct / 100.0), 0.01)
+    return take_profit_price, stop_loss_price
+
+
+async def _execute_paper_trade(
+    signal: TradeSignal,
+    notional_usd: float,
+    paper_settings: dict[str, Any],
+) -> tuple[str, Optional[float], Optional[str], dict[str, Any]]:
+    account_id = str(paper_settings.get("paper_account_id") or "").strip()
+    if not account_id:
+        return "failed", None, "Paper account is not configured", {}
+
+    account = await simulation_service.get_account(account_id)
+    if account is None:
+        return "failed", None, f"Paper account not found: {account_id}", {}
+
+    opportunity = _build_simulation_opportunity(signal)
+    if opportunity is None:
+        return "failed", None, "Unable to build simulation opportunity", {"account_id": account_id}
+
+    quantity = max(1.0, notional_usd / max(opportunity.total_cost, 0.01))
+    take_profit_price, stop_loss_price = _paper_exit_prices(
+        opportunity.positions_to_take,
+        paper_settings,
+    )
+
+    sim_trade = await simulation_service.execute_opportunity(
+        account_id=account_id,
+        opportunity=opportunity,
+        position_size=quantity,
+        take_profit_price=take_profit_price,
+        stop_loss_price=stop_loss_price,
+    )
+
+    effective_price = _safe_float(signal.effective_price, _safe_float(signal.entry_price, 0.0))
+    if effective_price <= 0:
+        prices = [
+            _safe_float(pos.get("price"), 0.0)
+            for pos in opportunity.positions_to_take
+            if _safe_float(pos.get("price"), 0.0) > 0
+        ]
+        if prices:
+            effective_price = sum(prices) / len(prices)
+        else:
+            effective_price = None
+
+    payload: dict[str, Any] = {
+        "simulation_trade_id": sim_trade.id,
+        "simulation_account_id": account_id,
+        "simulation_opportunity_id": sim_trade.opportunity_id,
+        "simulation_status": _enum_text(sim_trade.status),
+        "shares": quantity,
+        "take_profit_price": take_profit_price,
+        "stop_loss_price": stop_loss_price,
+        "unrealized_pnl": 0.0,
+    }
+    return "open", effective_price, None, payload
+
+
+async def _reconcile_paper_trades(session) -> dict[str, Any]:
+    rows = list(
+        (
+            await session.execute(
+                select(AutoTraderTrade).where(
+                    and_(
+                        AutoTraderTrade.mode == "paper",
+                        AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES),
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {"updated": 0, "resolved": 0, "unrealized_pnl": 0.0}
+
+    trades_by_sim_id: dict[str, AutoTraderTrade] = {}
+    for row in rows:
+        payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+        sim_trade_id = payload.get("simulation_trade_id")
+        if sim_trade_id:
+            trades_by_sim_id[str(sim_trade_id)] = row
+
+    if not trades_by_sim_id:
+        return {"updated": 0, "resolved": 0, "unrealized_pnl": 0.0}
+
+    sim_rows = list(
+        (
+            await session.execute(
+                select(SimulationTrade).where(SimulationTrade.id.in_(list(trades_by_sim_id.keys())))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    sim_by_id = {str(row.id): row for row in sim_rows}
+
+    account_ids = {str(row.account_id) for row in sim_rows if row.account_id}
+    opportunity_ids = {str(row.opportunity_id) for row in sim_rows if row.opportunity_id}
+    unrealized_by_key: dict[tuple[str, str], float] = {}
+    if account_ids and opportunity_ids:
+        pnl_rows = (
+            (
+                await session.execute(
+                    select(
+                        SimulationPosition.account_id,
+                        SimulationPosition.opportunity_id,
+                        func.coalesce(func.sum(SimulationPosition.unrealized_pnl), 0.0),
+                    )
+                    .where(
+                        and_(
+                            SimulationPosition.status == TradeStatus.OPEN,
+                            SimulationPosition.account_id.in_(list(account_ids)),
+                            SimulationPosition.opportunity_id.in_(list(opportunity_ids)),
+                        )
+                    )
+                    .group_by(SimulationPosition.account_id, SimulationPosition.opportunity_id)
+                )
+            )
+            .all()
+        )
+        for account_id, opportunity_id, unrealized in pnl_rows:
+            if account_id and opportunity_id:
+                unrealized_by_key[(str(account_id), str(opportunity_id))] = float(unrealized or 0.0)
+
+    updated = 0
+    resolved = 0
+    for sim_trade_id, auto_trade in trades_by_sim_id.items():
+        sim_trade = sim_by_id.get(sim_trade_id)
+        if sim_trade is None:
+            continue
+
+        existing_payload = auto_trade.payload_json if isinstance(auto_trade.payload_json, dict) else {}
+        payload = dict(existing_payload)
+        sim_status = _enum_text(sim_trade.status)
+        account_id = str(sim_trade.account_id or payload.get("simulation_account_id") or "")
+        opportunity_id = str(sim_trade.opportunity_id or payload.get("simulation_opportunity_id") or "")
+        unrealized = 0.0
+        if sim_status == "open" and account_id and opportunity_id:
+            unrealized = float(unrealized_by_key.get((account_id, opportunity_id), 0.0))
+
+        changed = False
+        payload["simulation_status"] = sim_status
+        payload["simulation_trade_id"] = sim_trade_id
+        payload["simulation_account_id"] = account_id or payload.get("simulation_account_id")
+        payload["simulation_opportunity_id"] = opportunity_id or payload.get("simulation_opportunity_id")
+        payload["unrealized_pnl"] = unrealized if sim_status == "open" else 0.0
+
+        if sim_status == "open":
+            if auto_trade.status != "open":
+                auto_trade.status = "open"
+                changed = True
+            if auto_trade.executed_at is None:
+                auto_trade.executed_at = sim_trade.executed_at or auto_trade.created_at
+                changed = True
+        elif sim_status in {"resolved_win", "resolved_loss"}:
+            pnl = _safe_float(sim_trade.actual_pnl, 0.0)
+            payload["actual_profit"] = pnl
+            payload["resolved_at"] = _to_iso(sim_trade.resolved_at)
+            if auto_trade.status != sim_status:
+                auto_trade.status = sim_status
+                changed = True
+            if auto_trade.actual_profit != pnl:
+                auto_trade.actual_profit = pnl
+                changed = True
+            if auto_trade.executed_at is None:
+                auto_trade.executed_at = sim_trade.executed_at or auto_trade.created_at
+                changed = True
+            resolved += 1
+        elif sim_status in {"cancelled", "failed"}:
+            if auto_trade.status != "failed":
+                auto_trade.status = "failed"
+                changed = True
+
+        if payload != existing_payload:
+            auto_trade.payload_json = payload
+            changed = True
+
+        if changed:
+            auto_trade.updated_at = utcnow()
+            updated += 1
+
+    if updated > 0:
+        await session.commit()
+
+    open_payload_rows = (
+        (
+            await session.execute(
+                select(AutoTraderTrade.payload_json).where(
+                    and_(
+                        AutoTraderTrade.mode == "paper",
+                        AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES),
+                    )
+                )
+            )
+        )
+        .all()
+    )
+    unrealized_pnl_total = 0.0
+    for (payload,) in open_payload_rows:
+        if not isinstance(payload, dict):
+            continue
+        try:
+            unrealized_pnl_total += float(payload.get("unrealized_pnl") or 0.0)
+        except Exception:
+            continue
+
+    return {
+        "updated": updated,
+        "resolved": resolved,
+        "unrealized_pnl": unrealized_pnl_total,
+    }
 
 
 def _score_signal(
@@ -183,7 +561,7 @@ async def _load_exposure_state(session) -> dict[str, Any]:
                 ).where(
                     and_(
                         AutoTraderTrade.created_at >= today_start,
-                        AutoTraderTrade.status.in_(("submitted", "executed")),
+                        AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES),
                     )
                 ).group_by(AutoTraderTrade.source)
             )
@@ -205,7 +583,7 @@ async def _load_exposure_state(session) -> dict[str, Any]:
                     func.coalesce(func.sum(AutoTraderTrade.notional_usd), 0.0),
                     func.count(AutoTraderTrade.id),
                 ).where(
-                    AutoTraderTrade.status.in_(("submitted", "executed"))
+                    AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES)
                 ).group_by(AutoTraderTrade.market_id, AutoTraderTrade.direction)
             )
         )
@@ -225,7 +603,7 @@ async def _load_exposure_state(session) -> dict[str, Any]:
         (
             await session.execute(
                 select(AutoTraderTrade.payload_json, func.coalesce(func.sum(AutoTraderTrade.notional_usd), 0.0))
-                .where(AutoTraderTrade.status.in_(("submitted", "executed")))
+                .where(AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES))
                 .group_by(AutoTraderTrade.payload_json)
             )
         )
@@ -320,10 +698,23 @@ async def _run_cycle() -> dict[str, Any]:
     paused = bool(control.get("is_paused", False))
     kill_switch = bool(control.get("kill_switch", False))
     requested_run = bool(control.get("requested_run_at"))
+    control_settings = control.get("settings") if isinstance(control.get("settings"), dict) else {}
+    enabled_strategies_raw = (
+        control_settings.get("enabled_strategies")
+        if isinstance(control_settings.get("enabled_strategies"), list)
+        else []
+    )
+    enabled_strategies = {
+        _normalize_strategy(item)
+        for item in enabled_strategies_raw
+        if isinstance(item, str) and _normalize_strategy(item)
+    }
+    active_domains = set(normalize_trading_domains(control_settings.get("trading_domains")))
 
     if (not enabled or paused or kill_switch) and not requested_run:
         return {
             "idle": True,
+            "carry_snapshot": True,
             "interval": run_interval,
             "mode": mode,
             "reason": "kill_switch" if kill_switch else ("paused" if paused else "disabled"),
@@ -351,6 +742,7 @@ async def _run_cycle() -> dict[str, Any]:
                 await clear_autotrader_run_request(session)
         return {
             "idle": True,
+            "carry_snapshot": True,
             "interval": run_interval,
             "mode": mode,
             "reason": "no_enabled_sources",
@@ -368,7 +760,10 @@ async def _run_cycle() -> dict[str, Any]:
     trades_count = 0
     signals_selected = 0
 
+    paper_reconcile: dict[str, Any] = {"updated": 0, "resolved": 0, "unrealized_pnl": 0.0}
     async with AsyncSessionLocal() as session:
+        if mode == "paper":
+            paper_reconcile = await _reconcile_paper_trades(session)
         await expire_stale_signals(session)
         pending_signals = await list_pending_trade_signals(
             session,
@@ -376,6 +771,36 @@ async def _run_cycle() -> dict[str, Any]:
             limit=2000,
         )
         exposure = await _load_exposure_state(session)
+
+    eligible_signals: list[TradeSignal] = []
+    blocked_signals: list[TradeSignal] = []
+    for signal in pending_signals:
+        source_domain = SOURCE_DOMAIN_MAP.get(str(signal.source), "event_markets")
+        if source_domain in active_domains:
+            eligible_signals.append(signal)
+        else:
+            blocked_signals.append(signal)
+
+    if blocked_signals:
+        for signal in blocked_signals:
+            source_policy = source_policies.get(signal.source) or {}
+            async with AsyncSessionLocal() as session:
+                await set_trade_signal_status(session, signal.id, "skipped")
+                await create_autotrader_decision(
+                    session,
+                    signal_id=signal.id,
+                    source=signal.source,
+                    decision="skipped",
+                    reason=f"Domain {SOURCE_DOMAIN_MAP.get(str(signal.source), 'event_markets')} disabled by settings",
+                    score=None,
+                    policy_snapshot=source_policy,
+                    risk_snapshot={"rule": "domain_disabled"},
+                    payload={
+                        "active_domains": sorted(active_domains),
+                        "source_domain": SOURCE_DOMAIN_MAP.get(str(signal.source), "event_markets"),
+                    },
+                )
+            decisions_count += 1
 
     source_budget_used = dict(exposure["source_budget_used"])
     source_open_positions = dict(exposure["source_open_positions"])
@@ -392,7 +817,7 @@ async def _run_cycle() -> dict[str, Any]:
         risk_penalty = 1.0 / (1.0 + (global_open_positions / max_total_open))
 
     scored: list[tuple[TradeSignal, float]] = []
-    for signal in pending_signals:
+    for signal in eligible_signals:
         source_policy = source_policies.get(signal.source) or {}
         source_weight = _safe_float(source_policy.get("weight"), 1.0)
         score = _score_signal(signal, now=now, source_weight=source_weight, risk_penalty=risk_penalty)
@@ -409,6 +834,28 @@ async def _run_cycle() -> dict[str, Any]:
             source_metadata = {}
         min_score = _safe_float(source_policy.get("min_signal_score"), 0.0)
         signal_payload = signal.payload_json if isinstance(signal.payload_json, dict) else {}
+        strategy_key = _normalize_strategy(signal.strategy_type) or _normalize_strategy(signal.signal_type)
+
+        if not _strategy_enabled(signal, enabled_strategies):
+            async with AsyncSessionLocal() as session:
+                await set_trade_signal_status(session, signal.id, "skipped")
+                await create_autotrader_decision(
+                    session,
+                    signal_id=signal.id,
+                    source=signal.source,
+                    decision="skipped",
+                    reason=f"Strategy {strategy_key or 'unknown'} disabled by settings",
+                    score=score,
+                    policy_snapshot=source_policy,
+                    risk_snapshot={"rule": "strategy_disabled"},
+                    payload={
+                        "strategy_type": signal.strategy_type,
+                        "signal_type": signal.signal_type,
+                        "enabled_strategies": sorted(enabled_strategies),
+                    },
+                )
+            decisions_count += 1
+            continue
 
         if not _source_live_enabled(mode, source_policy):
             async with AsyncSessionLocal() as session:
@@ -633,18 +1080,37 @@ async def _run_cycle() -> dict[str, Any]:
                 error_message = str(exc)
                 execution_payload = {"error": str(exc)}
                 errors.append(str(exc))
+        else:
+            try:
+                trade_status, paper_price, err, execution_payload = await _execute_paper_trade(
+                    signal,
+                    size_usd,
+                    control_settings,
+                )
+                if paper_price is not None:
+                    effective_price = paper_price
+                error_message = err
+            except Exception as exc:
+                trade_status = "failed"
+                error_message = str(exc)
+                execution_payload = {"error": str(exc)}
+                errors.append(str(exc))
+
+        decision_outcome = "executed" if trade_status == "open" else trade_status
+        if trade_status == "failed":
+            decision_reason = error_message or "Execution failed"
+        elif mode == "live":
+            decision_reason = "Submitted live order" if trade_status == "submitted" else "Executed live order"
+        else:
+            decision_reason = "Opened paper simulation position"
 
         async with AsyncSessionLocal() as session:
             decision = await create_autotrader_decision(
                 session,
                 signal_id=signal.id,
                 source=signal.source,
-                decision=trade_status,
-                reason=(
-                    "Executed in paper mode"
-                    if mode != "live" and trade_status == "executed"
-                    else (error_message or "Submitted live order")
-                ),
+                decision=decision_outcome,
+                reason=decision_reason,
                 score=score,
                 policy_snapshot=source_policy,
                 risk_snapshot={
@@ -656,6 +1122,7 @@ async def _run_cycle() -> dict[str, Any]:
                 payload={
                     "mode": mode,
                     "size_usd": size_usd,
+                    "execution_status": trade_status,
                     "execution": execution_payload,
                 },
             )
@@ -680,13 +1147,14 @@ async def _run_cycle() -> dict[str, Any]:
                     "event_id": _extract_event_key(signal),
                     "signal_payload": signal_payload,
                     "execution": execution_payload,
+                    "unrealized_pnl": float(execution_payload.get("unrealized_pnl") or 0.0),
                 },
                 error_message=error_message,
             )
 
             if trade_status == "submitted":
                 final_signal_status = "submitted"
-            elif trade_status == "executed":
+            elif trade_status in {"executed", "open"}:
                 final_signal_status = "executed"
             else:
                 final_signal_status = "failed"
@@ -702,16 +1170,17 @@ async def _run_cycle() -> dict[str, Any]:
         signals_selected += 1
 
         # Update in-memory exposure after placement.
-        source_budget_used[signal.source] = source_used + size_usd
-        source_open_positions[signal.source] = source_open + 1
-        global_budget_used += size_usd
-        global_open_positions += 1
-        market_exposure[market_id] = _safe_float(market_exposure.get(market_id), 0.0) + size_usd
-        if signal.direction:
-            market_directions.setdefault(market_id, set()).add(signal.direction)
-        if event_key:
-            event_exposure[event_key] = _safe_float(event_exposure.get(event_key), 0.0) + size_usd
-        last_trade_at[signal.source] = now
+        if trade_status in OPEN_AUTOTRADER_STATUSES:
+            source_budget_used[signal.source] = source_used + size_usd
+            source_open_positions[signal.source] = source_open + 1
+            global_budget_used += size_usd
+            global_open_positions += 1
+            market_exposure[market_id] = _safe_float(market_exposure.get(market_id), 0.0) + size_usd
+            if signal.direction:
+                market_directions.setdefault(market_id, set()).add(signal.direction)
+            if event_key:
+                event_exposure[event_key] = _safe_float(event_exposure.get(event_key), 0.0) + size_usd
+            last_trade_at[signal.source] = now
         seen_dedupe.add(signal.dedupe_key)
 
     # Clear one-shot run request if present.
@@ -727,29 +1196,56 @@ async def _run_cycle() -> dict[str, Any]:
             ).scalar()
             or 0
         )
+        total_trades = int(
+            (
+                await session.execute(select(func.count(AutoTraderTrade.id)))
+            ).scalar()
+            or 0
+        )
         open_positions = int(
             (
                 await session.execute(
                     select(func.count(AutoTraderTrade.id)).where(
-                        AutoTraderTrade.status.in_(("submitted", "executed"))
+                        AutoTraderTrade.status.in_(OPEN_AUTOTRADER_STATUSES)
                     )
                 )
             ).scalar()
             or 0
         )
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        realized_daily_pnl = float(
+            (
+                await session.execute(
+                    select(func.coalesce(func.sum(AutoTraderTrade.actual_profit), 0.0)).where(
+                        and_(
+                            AutoTraderTrade.updated_at >= today_start,
+                            AutoTraderTrade.status.in_(("resolved_win", "resolved_loss")),
+                        )
+                    )
+                )
+            ).scalar()
+            or 0.0
+        )
 
     return {
         "idle": False,
+        "carry_snapshot": False,
         "interval": run_interval,
         "mode": mode,
-        "signals_seen": len(pending_signals),
+        "signals_seen": len(eligible_signals),
+        "signals_blocked_by_domain": len(blocked_signals),
         "signals_selected": signals_selected,
+        "signals_seen_total": total_decisions,
+        "signals_selected_total": total_trades,
         "decisions_count": decisions_count,
         "trades_count": trades_count,
+        "decisions_total": total_decisions,
+        "trades_total": total_trades,
         "open_positions": open_positions,
-        "daily_pnl": 0.0,
+        "daily_pnl": realized_daily_pnl + (paper_reconcile.get("unrealized_pnl", 0.0) if mode == "paper" else 0.0),
         "errors": errors,
         "total_decisions": total_decisions,
+        "active_domains": sorted(active_domains),
     }
 
 
@@ -789,15 +1285,45 @@ async def _run_loop() -> None:
             reason = cycle.get("reason") or "paused"
             activity = f"Autotrader idle ({reason})"
         else:
+            cycle_seen = int(cycle.get("signals_seen", 0))
+            cycle_selected = int(cycle.get("signals_selected", 0))
+            total_seen = int(cycle.get("signals_seen_total", cycle_seen))
+            total_selected = int(cycle.get("signals_selected_total", cycle_selected))
             activity = (
-                f"Processed {cycle.get('signals_seen', 0)} signals, "
-                f"selected {cycle.get('signals_selected', 0)}"
+                f"Cycle processed {cycle_seen} pending signals, selected {cycle_selected} "
+                f"(totals seen {total_seen}, selected {total_selected})"
             )
 
         errors = cycle.get("errors") or []
         last_error = errors[-1] if errors else None
 
         async with AsyncSessionLocal() as session:
+            existing_snapshot = await read_autotrader_snapshot(session)
+            snapshot_signals_seen = int(
+                cycle.get("signals_seen_total", cycle.get("signals_seen", existing_snapshot.get("signals_seen", 0)))
+            )
+            snapshot_signals_selected = int(
+                cycle.get(
+                    "signals_selected_total",
+                    cycle.get("signals_selected", existing_snapshot.get("signals_selected", 0)),
+                )
+            )
+            snapshot_decisions_count = int(
+                cycle.get("decisions_total", cycle.get("decisions_count", existing_snapshot.get("decisions_count", 0)))
+            )
+            snapshot_trades_count = int(
+                cycle.get("trades_total", cycle.get("trades_count", existing_snapshot.get("trades_count", 0)))
+            )
+            snapshot_open_positions = int(cycle.get("open_positions", existing_snapshot.get("open_positions", 0)))
+            snapshot_daily_pnl = float(cycle.get("daily_pnl", existing_snapshot.get("daily_pnl", 0.0)))
+            if cycle.get("carry_snapshot"):
+                snapshot_signals_seen = int(existing_snapshot.get("signals_seen", 0))
+                snapshot_signals_selected = int(existing_snapshot.get("signals_selected", 0))
+                snapshot_decisions_count = int(existing_snapshot.get("decisions_count", 0))
+                snapshot_trades_count = int(existing_snapshot.get("trades_count", 0))
+                snapshot_open_positions = int(existing_snapshot.get("open_positions", 0))
+                snapshot_daily_pnl = float(existing_snapshot.get("daily_pnl", 0.0))
+
             await write_autotrader_snapshot(
                 session,
                 running=True,
@@ -805,16 +1331,22 @@ async def _run_loop() -> None:
                 current_activity=activity,
                 interval_seconds=interval,
                 last_run_at=cycle_started,
-                signals_seen=int(cycle.get("signals_seen", 0)),
-                signals_selected=int(cycle.get("signals_selected", 0)),
-                decisions_count=int(cycle.get("decisions_count", 0)),
-                trades_count=int(cycle.get("trades_count", 0)),
-                open_positions=int(cycle.get("open_positions", 0)),
-                daily_pnl=float(cycle.get("daily_pnl", 0.0)),
+                signals_seen=snapshot_signals_seen,
+                signals_selected=snapshot_signals_selected,
+                decisions_count=snapshot_decisions_count,
+                trades_count=snapshot_trades_count,
+                open_positions=snapshot_open_positions,
+                daily_pnl=snapshot_daily_pnl,
                 last_error=last_error,
                 stats={
                     "mode": cycle.get("mode"),
                     "total_decisions": int(cycle.get("total_decisions", 0)),
+                    "cycle_signals_seen": int(cycle.get("signals_seen", 0)),
+                    "cycle_signals_blocked_by_domain": int(cycle.get("signals_blocked_by_domain", 0)),
+                    "cycle_signals_selected": int(cycle.get("signals_selected", 0)),
+                    "cycle_decisions_count": int(cycle.get("decisions_count", 0)),
+                    "cycle_trades_count": int(cycle.get("trades_count", 0)),
+                    "active_domains": list(cycle.get("active_domains") or []),
                     "errors": errors[-10:],
                 },
             )
@@ -830,10 +1362,16 @@ async def _run_loop() -> None:
                 last_error=last_error,
                 stats={
                     "mode": cycle.get("mode"),
-                    "signals_seen": int(cycle.get("signals_seen", 0)),
-                    "signals_selected": int(cycle.get("signals_selected", 0)),
-                    "decisions_count": int(cycle.get("decisions_count", 0)),
-                    "trades_count": int(cycle.get("trades_count", 0)),
+                    "active_domains": list(cycle.get("active_domains") or []),
+                    "signals_seen_cycle": int(cycle.get("signals_seen", 0)),
+                    "signals_blocked_by_domain_cycle": int(cycle.get("signals_blocked_by_domain", 0)),
+                    "signals_selected_cycle": int(cycle.get("signals_selected", 0)),
+                    "signals_seen_total": snapshot_signals_seen,
+                    "signals_selected_total": snapshot_signals_selected,
+                    "decisions_count_cycle": int(cycle.get("decisions_count", 0)),
+                    "trades_count_cycle": int(cycle.get("trades_count", 0)),
+                    "decisions_count_total": snapshot_decisions_count,
+                    "trades_count_total": snapshot_trades_count,
                 },
             )
 

@@ -157,6 +157,40 @@ class MaintenanceSettings(BaseModel):
     cleanup_resolved_trade_days: int = Field(
         default=30, ge=1, le=365, description="Delete resolved trades older than X days"
     )
+    market_cache_hygiene_enabled: bool = Field(
+        default=True,
+        description="Enable automatic market metadata hygiene cleanup",
+    )
+    market_cache_hygiene_interval_hours: int = Field(
+        default=6,
+        ge=1,
+        le=168,
+        description="Market metadata hygiene run interval in hours",
+    )
+    market_cache_retention_days: int = Field(
+        default=120,
+        ge=7,
+        le=3650,
+        description="Delete unreferenced market metadata older than this many days",
+    )
+    market_cache_reference_lookback_days: int = Field(
+        default=45,
+        ge=1,
+        le=365,
+        description="Keep metadata referenced by activity/signals within this lookback",
+    )
+    market_cache_weak_entry_grace_days: int = Field(
+        default=7,
+        ge=1,
+        le=180,
+        description="Grace period before pruning weak cache entries missing strong identifiers",
+    )
+    market_cache_max_entries_per_slug: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Maximum cache entries allowed per slug before collision pruning",
+    )
 
 
 class TradingProxySettings(BaseModel):

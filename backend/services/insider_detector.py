@@ -307,6 +307,8 @@ class InsiderDetectorService:
                 market_question = (
                     str(market_context.get("question") or "").strip() or f"Market {market_id}"
                 )
+                if not bool(market_context.get("is_tradable", True)):
+                    continue
 
                 confidence = _clamp(
                     0.40 * avg_insider_score
@@ -434,19 +436,43 @@ class InsiderDetectorService:
                 cutoff = utcnow() - timedelta(minutes=max(1, max_age_minutes))
                 query = query.where(InsiderTradeIntent.created_at >= cutoff)
 
-            count_q = select(func.count()).select_from(query.subquery())
-            total = int((await session.execute(count_q)).scalar() or 0)
-
-            query = (
-                query.order_by(
-                    InsiderTradeIntent.confidence.desc(),
-                    InsiderTradeIntent.created_at.desc(),
-                )
-                .offset(max(0, offset))
-                .limit(max(1, min(limit, 500)))
+            query = query.order_by(
+                InsiderTradeIntent.confidence.desc(),
+                InsiderTradeIntent.created_at.desc(),
             )
 
-            intents = list((await session.execute(query)).scalars().all())
+            intents_all = list(
+                (
+                    await session.execute(
+                        query.limit(2000)
+                    )
+                ).scalars().all()
+            )
+            now = utcnow()
+
+            intents: list[InsiderTradeIntent] = []
+            expired = 0
+            for row in intents_all:
+                if await self._is_market_tradable(row.market_id, now=now):
+                    intents.append(row)
+                    continue
+                row.status = "expired"
+                row.consumed_at = now
+                expired += 1
+
+            if expired:
+                await session.commit()
+                logger.info(
+                    "Expired non-tradable insider intents",
+                    expired=expired,
+                    checked=len(intents_all),
+                )
+
+            total = len(intents)
+            page_offset = max(0, offset)
+            page_limit = max(1, min(limit, 500))
+            intents = intents[page_offset : page_offset + page_limit]
+
             address_set: set[str] = set()
             for row in intents:
                 for addr in (row.wallet_addresses_json or []):
@@ -461,7 +487,6 @@ class InsiderDetectorService:
                 wallet_map = {w.address.lower(): w for w in wallets_res.scalars().all()}
 
             opportunities: list[dict[str, Any]] = []
-            now = utcnow()
             for row in intents:
                 wallet_addresses = [
                     str(addr).lower()
@@ -499,6 +524,11 @@ class InsiderDetectorService:
                         "signal_key": row.signal_key,
                         "market_id": row.market_id,
                         "market_question": row.market_question,
+                        "market_slug": (
+                            str(metadata.get("market_slug")).strip()
+                            if metadata.get("market_slug")
+                            else None
+                        ),
                         "direction": row.direction,
                         "entry_price": row.entry_price,
                         "edge_percent": row.edge_percent,
@@ -530,8 +560,8 @@ class InsiderDetectorService:
 
             return {
                 "total": total,
-                "offset": max(0, offset),
-                "limit": max(1, min(limit, 500)),
+                "offset": page_offset,
+                "limit": page_limit,
                 "opportunities": opportunities,
             }
 
@@ -1092,7 +1122,8 @@ class InsiderDetectorService:
 
     async def _get_market_context(self, market_id: str) -> dict[str, Any]:
         now = utcnow()
-        cached = self._market_context_cache.get(market_id)
+        cache_key = str(market_id or "").strip().lower()
+        cached = self._market_context_cache.get(cache_key)
         if cached:
             cached_at, payload = cached
             if now - cached_at <= timedelta(minutes=10):
@@ -1102,6 +1133,7 @@ class InsiderDetectorService:
             "question": "",
             "liquidity": 0.0,
             "market_slug": None,
+            "is_tradable": True,
         }
 
         try:
@@ -1113,12 +1145,24 @@ class InsiderDetectorService:
                 payload["question"] = str(info.get("question") or "")
                 payload["liquidity"] = _safe_float(info.get("liquidity"), 0.0)
                 payload["market_slug"] = info.get("event_slug") or info.get("slug")
+                payload["is_tradable"] = self.client.is_market_tradable(info, now=now)
         except Exception:
             # Use fallback payload if market metadata fetch fails.
             pass
 
-        self._market_context_cache[market_id] = (now, payload)
+        self._market_context_cache[cache_key] = (now, payload)
         return payload
+
+    async def _is_market_tradable(
+        self,
+        market_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        context = await self._get_market_context(market_id)
+        if "is_tradable" in context:
+            return bool(context.get("is_tradable"))
+        return self.client.is_market_tradable(context, now=now)
 
 
 insider_detector = InsiderDetectorService()

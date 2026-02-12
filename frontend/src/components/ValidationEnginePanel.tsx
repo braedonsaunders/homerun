@@ -301,6 +301,8 @@ export default function ValidationEnginePanel() {
 
   const demotedCount = strategyHealth.filter((row) => row.status === 'demoted').length
   const jobs = jobsData?.jobs || []
+  const executionFailureRate = overview?.autotrader_execution_30d?.failure_rate
+  const resolverTradableRate = overview?.world_intel_resolver_7d?.tradable_rate
 
   const activeSetLabel = useMemo(() => {
     const activeSet = overview?.active_parameter_set
@@ -367,7 +369,7 @@ export default function ValidationEnginePanel() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3">
         <Card className="bg-muted/40 border-border/40">
           <CardContent className="p-3">
             <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Resolved Sample</p>
@@ -396,6 +398,22 @@ export default function ValidationEnginePanel() {
           <CardContent className="p-3">
             <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Demoted Strategies</p>
             <p className="text-lg font-semibold">{demotedCount}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-muted/40 border-border/40">
+          <CardContent className="p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Execution Failure (30d)</p>
+            <p className="text-lg font-semibold">
+              {typeof executionFailureRate === 'number' ? `${(executionFailureRate * 100).toFixed(1)}%` : 'N/A'}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="bg-muted/40 border-border/40">
+          <CardContent className="p-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground">World Resolver Tradable (7d)</p>
+            <p className="text-lg font-semibold">
+              {typeof resolverTradableRate === 'number' ? `${(resolverTradableRate * 100).toFixed(1)}%` : 'N/A'}
+            </p>
           </CardContent>
         </Card>
       </div>

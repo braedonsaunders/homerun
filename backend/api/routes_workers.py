@@ -9,9 +9,10 @@ from models.database import get_db_session
 from services import discovery_shared_state, shared_state
 from services.autotrader_state import read_autotrader_control, update_autotrader_control
 from services.news import shared_state as news_shared_state
+from services.pause_state import global_pause_state
 from services.weather import shared_state as weather_shared_state
 from services.worker_state import (
-    list_worker_snapshots,
+    clear_worker_run_request,
     read_worker_control,
     read_worker_snapshot,
     request_worker_run,
@@ -30,6 +31,17 @@ ALLOWED_WORKERS = {
     "discovery",
     "world_intelligence",
 }
+WORKER_DISPLAY_ORDER = (
+    "scanner",
+    "discovery",
+    "weather",
+    "news",
+    "crypto",
+    "tracked_traders",
+    "autotrader",
+    "world_intelligence",
+)
+GENERIC_WORKERS = ("crypto", "tracked_traders", "world_intelligence")
 
 
 def _normalize_worker_name(raw: str) -> str:
@@ -102,6 +114,9 @@ async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
             "is_enabled": bool(control.get("is_enabled", True)),
             "is_paused": bool(control.get("is_paused", False)),
             "interval_seconds": int((control.get("run_interval_minutes") or 60) * 60),
+            "priority_backlog_mode": bool(
+                control.get("priority_backlog_mode", True)
+            ),
             "requested_run_at": control.get("requested_run_at").isoformat()
             if control.get("requested_run_at")
             else None,
@@ -123,20 +138,66 @@ async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
     return snapshot
 
 
+async def _collect_workers(session: AsyncSession) -> list[dict]:
+    detail: list[dict] = []
+    for worker_name in WORKER_DISPLAY_ORDER:
+        detail.append(await _worker_detail(session, worker_name))
+    return detail
+
+
+async def _set_all_workers_paused(session: AsyncSession, paused: bool) -> None:
+    await shared_state.set_scanner_paused(session, paused)
+    await news_shared_state.set_news_paused(session, paused)
+    await weather_shared_state.set_weather_paused(session, paused)
+    await discovery_shared_state.set_discovery_paused(session, paused)
+    await update_autotrader_control(
+        session,
+        is_paused=paused,
+        requested_run=False if paused else None,
+    )
+
+    if paused:
+        await shared_state.clear_scan_request(session)
+        await news_shared_state.clear_news_scan_request(session)
+        await weather_shared_state.clear_weather_scan_request(session)
+        await discovery_shared_state.clear_discovery_run_request(session)
+
+    for worker_name in GENERIC_WORKERS:
+        await set_worker_paused(session, worker_name, paused)
+        if paused:
+            await clear_worker_run_request(session, worker_name)
+
+    if paused:
+        global_pause_state.pause()
+    else:
+        global_pause_state.resume()
+
+
 @router.get("/status")
 async def get_workers_status(session: AsyncSession = Depends(get_db_session)):
-    rows = await list_worker_snapshots(session)
-    detail = []
-    for row in rows:
-        name = row.get("worker_name")
-        if not name:
-            continue
-        detail.append(await _worker_detail(session, name))
-    return {"workers": detail}
+    return {"workers": await _collect_workers(session)}
+
+
+@router.post("/pause-all")
+async def pause_all_workers(session: AsyncSession = Depends(get_db_session)):
+    await _set_all_workers_paused(session, True)
+    return {"status": "paused", "workers": await _collect_workers(session)}
+
+
+@router.post("/resume-all")
+async def resume_all_workers(session: AsyncSession = Depends(get_db_session)):
+    await _set_all_workers_paused(session, False)
+    return {"status": "running", "workers": await _collect_workers(session)}
 
 
 @router.post("/{worker}/start")
 async def start_worker(worker: str, session: AsyncSession = Depends(get_db_session)):
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Use /workers/resume-all first.",
+        )
+
     name = _normalize_worker_name(worker)
     _assert_supported_worker(name)
 
@@ -179,6 +240,12 @@ async def pause_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
 
 @router.post("/{worker}/run-once")
 async def run_worker_once(worker: str, session: AsyncSession = Depends(get_db_session)):
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Resume execution before queueing runs.",
+        )
+
     name = _normalize_worker_name(worker)
     _assert_supported_worker(name)
 

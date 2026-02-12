@@ -16,8 +16,11 @@ import {
   Map as MapIcon,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { formatCountry, formatCountryPair, normalizeCountryCode, parseCountryPair } from '../lib/worldCountries'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
+import ErrorBoundary from './ErrorBoundary'
+import WorldIntelligenceOpportunitiesView from './WorldIntelligenceOpportunitiesPanel'
 
 const WorldMap = lazy(() => import('./WorldMap'))
 import {
@@ -28,10 +31,11 @@ import {
   getTemporalAnomalies,
   getWorldIntelligenceSummary,
   getWorldIntelligenceStatus,
+  getWorldSourceStatus,
   WorldSignal,
 } from '../services/worldIntelligenceApi'
 
-type WorldSubView = 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
+type WorldSubView = 'opportunities' | 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
 
 const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; label: string }> = {
   conflict: { icon: Swords, color: 'text-red-400', label: 'Conflict' },
@@ -44,7 +48,7 @@ const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: strin
 }
 
 function SeverityBadge({ severity }: { severity: number }) {
-  const level = severity >= 0.7 ? 'critical' : severity >= 0.4 ? 'high' : severity >= 0.2 ? 'medium' : 'low'
+  const level = severity >= 0.8 ? 'critical' : severity >= 0.6 ? 'high' : severity >= 0.3 ? 'medium' : 'low'
   const colors = {
     critical: 'bg-red-500/20 text-red-400 border-red-500/30',
     high: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
@@ -64,33 +68,58 @@ function TrendIndicator({ trend }: { trend: string }) {
   return <Activity className="w-3 h-3 text-muted-foreground" />
 }
 
+function displayPair(pairText: string): string {
+  const pair = parseCountryPair(pairText)
+  if (pair) {
+    return formatCountryPair(pair[0], pair[1])
+  }
+  return pairText
+}
+
 // ==================== OVERVIEW SUB-VIEW ====================
 
-function OverviewView() {
-  const { data: summary, isLoading } = useQuery({
+function OverviewView({ isConnected }: { isConnected: boolean }) {
+  const { data: summary, isLoading, isError } = useQuery({
     queryKey: ['world-intelligence-summary'],
     queryFn: getWorldIntelligenceSummary,
-    refetchInterval: 60000,
+    refetchInterval: isConnected ? false : 180000,
   })
 
   const { data: signalsData } = useQuery({
     queryKey: ['world-signals', { min_severity: 0.5, limit: 10 }],
     queryFn: () => getWorldSignals({ min_severity: 0.5, limit: 10 }),
-    refetchInterval: 60000,
+    refetchInterval: isConnected ? false : 180000,
   })
 
   const { data: statusData } = useQuery({
     queryKey: ['world-intelligence-status'],
     queryFn: getWorldIntelligenceStatus,
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? false : 120000,
+  })
+
+  const { data: sourceData } = useQuery({
+    queryKey: ['world-intelligence-sources'],
+    queryFn: getWorldSourceStatus,
+    refetchInterval: isConnected ? false : 180000,
   })
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64 text-muted-foreground">Loading world intelligence...</div>
   }
 
+  if (isError) {
+    return (
+      <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+        Unable to load world intelligence summary.
+      </div>
+    )
+  }
+
   const stats = statusData?.stats || {}
   const isRunning = statusData?.status?.running
+  const sourceStatus = sourceData?.sources || {}
+  const sourceErrors = sourceData?.errors || []
+  const criticalSignalCount = Number(summary?.signal_summary?.by_severity?.critical || 0)
 
   return (
     <div className="space-y-4">
@@ -98,13 +127,38 @@ function OverviewView() {
       <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-card border border-border">
         <div className={cn('w-2 h-2 rounded-full', isRunning ? 'bg-green-400 animate-pulse' : 'bg-muted-foreground')} />
         <span className="text-xs text-muted-foreground">
-          {isRunning ? 'Collecting' : 'Offline'} · {stats.total_signals || 0} signals · Last: {summary?.last_collection ? new Date(summary.last_collection).toLocaleTimeString() : 'Never'}
+          {isRunning ? 'Collecting' : 'Offline'} · {stats.total_signals || 0} signals · Last: {summary?.last_collection ? new Date(summary.last_collection).toLocaleTimeString() : 'Never'}{statusData?.status?.stale ? ' · STALE' : ''}
         </span>
+      </div>
+
+      <div className="p-3 rounded-lg bg-card border border-border">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Source Health</h3>
+        {Object.keys(sourceStatus).length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {Object.entries(sourceStatus).map(([name, details]: [string, any]) => (
+              <div key={name} className="flex items-center justify-between rounded bg-background/50 px-2 py-1.5 text-[11px]">
+                <span className="font-mono text-muted-foreground">{name}</span>
+                <span className={cn('font-mono', details?.ok === false ? 'text-red-400' : 'text-emerald-400')}>
+                  {details?.ok === false ? 'error' : `ok (${details?.count ?? 0})`}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[11px] text-muted-foreground">
+            Source telemetry not available yet.
+          </div>
+        )}
+        {sourceErrors.length > 0 && (
+          <div className="mt-2 text-[11px] text-red-400">
+            {sourceErrors[0]}
+          </div>
+        )}
       </div>
 
       {/* Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Critical Signals" value={summary?.signal_summary?.critical || 0} icon={AlertTriangle} color="text-red-400" />
+        <StatCard label="Critical Signals" value={criticalSignalCount} icon={AlertTriangle} color="text-red-400" />
         <StatCard label="Countries at Risk" value={summary?.critical_countries?.length || 0} icon={Globe} color="text-orange-400" />
         <StatCard label="High Tensions" value={summary?.high_tensions?.length || 0} icon={Swords} color="text-yellow-400" />
         <StatCard label="Anomalies" value={summary?.critical_anomalies || 0} icon={Zap} color="text-cyan-400" />
@@ -118,8 +172,8 @@ function OverviewView() {
             {summary.critical_countries.map((c) => (
               <div key={c.iso3} className="flex items-center justify-between py-1 px-2 rounded bg-background/50">
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-semibold">{c.iso3}</span>
-                  <span className="text-sm">{c.country}</span>
+                  <span className="font-mono text-xs font-semibold">{normalizeCountryCode(c.iso3 || c.country || '') || c.iso3}</span>
+                  <span className="text-sm">{formatCountry(c.country || c.iso3)}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <TrendIndicator trend={c.trend} />
@@ -142,7 +196,7 @@ function OverviewView() {
               <div key={t.pair} className="flex items-center justify-between py-1 px-2 rounded bg-background/50">
                 <div className="flex items-center gap-2">
                   <Swords className="w-3 h-3 text-orange-400" />
-                  <span className="text-sm font-mono">{t.pair}</span>
+                  <span className="text-sm">{displayPair(t.pair)}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <TrendIndicator trend={t.trend} />
@@ -194,7 +248,7 @@ function SignalRow({ signal }: { signal: WorldSignal }) {
           <SeverityBadge severity={signal.severity} />
         </div>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
-          {signal.country && <span>{signal.country}</span>}
+          {signal.country && <span>{formatCountry(signal.country)}</span>}
           <span>·</span>
           <span>{signal.source}</span>
           {signal.detected_at && (
@@ -217,12 +271,12 @@ function SignalRow({ signal }: { signal: WorldSignal }) {
 
 // ==================== SIGNALS SUB-VIEW ====================
 
-function SignalsView() {
+function SignalsView({ isConnected }: { isConnected: boolean }) {
   const [typeFilter, setTypeFilter] = useState<string>('')
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['world-signals', { signal_type: typeFilter || undefined, limit: 100 }],
     queryFn: () => getWorldSignals({ signal_type: typeFilter || undefined, limit: 100 }),
-    refetchInterval: 30000,
+    refetchInterval: isConnected ? false : 120000,
   })
 
   return (
@@ -239,6 +293,8 @@ function SignalsView() {
 
       {isLoading ? (
         <div className="text-center text-muted-foreground py-8">Loading signals...</div>
+      ) : isError ? (
+        <div className="text-center text-red-400 py-8">Failed to load signals</div>
       ) : (
         <div className="space-y-2">
           {(data?.signals || []).map((s) => (
@@ -255,14 +311,15 @@ function SignalsView() {
 
 // ==================== COUNTRIES SUB-VIEW ====================
 
-function CountriesView() {
-  const { data, isLoading } = useQuery({
+function CountriesView({ isConnected }: { isConnected: boolean }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['world-instability'],
-    queryFn: () => getInstabilityScores({ min_score: 10, limit: 50 }),
-    refetchInterval: 60000,
+    queryFn: () => getInstabilityScores({ min_score: 0, limit: 100 }),
+    refetchInterval: isConnected ? false : 180000,
   })
 
   if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading instability scores...</div>
+  if (isError) return <div className="text-center text-red-400 py-8">Failed to load instability scores</div>
 
   return (
     <div className="space-y-2">
@@ -276,8 +333,8 @@ function CountriesView() {
       </div>
       {(data?.scores || []).map((s) => (
         <div key={s.iso3} className="grid grid-cols-12 gap-2 px-2 py-1.5 rounded bg-card border border-border items-center">
-          <div className="col-span-1 font-mono text-xs font-bold">{s.iso3}</div>
-          <div className="col-span-3 text-sm truncate">{s.country}</div>
+          <div className="col-span-1 font-mono text-xs font-bold">{normalizeCountryCode(s.iso3 || s.country) || s.iso3}</div>
+          <div className="col-span-3 text-sm truncate">{formatCountry(s.country || s.iso3)}</div>
           <div className={cn('col-span-2 text-right font-mono font-bold text-sm', s.score >= 80 ? 'text-red-400' : s.score >= 60 ? 'text-orange-400' : s.score >= 40 ? 'text-yellow-400' : 'text-green-400')}>
             {s.score.toFixed(1)}
           </div>
@@ -292,20 +349,26 @@ function CountriesView() {
           </div>
         </div>
       ))}
+      {(!data?.scores || data.scores.length === 0) && (
+        <div className="text-center text-muted-foreground py-8">
+          No instability scores available yet. Check source health in Overview.
+        </div>
+      )}
     </div>
   )
 }
 
 // ==================== TENSIONS SUB-VIEW ====================
 
-function TensionsView() {
-  const { data, isLoading } = useQuery({
+function TensionsView({ isConnected }: { isConnected: boolean }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['world-tensions'],
-    queryFn: () => getTensionPairs({ min_tension: 10, limit: 20 }),
-    refetchInterval: 60000,
+    queryFn: () => getTensionPairs({ min_tension: 0, limit: 20 }),
+    refetchInterval: isConnected ? false : 180000,
   })
 
   if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading tension data...</div>
+  if (isError) return <div className="text-center text-red-400 py-8">Failed to load tension data</div>
 
   return (
     <div className="space-y-2">
@@ -314,9 +377,9 @@ function TensionsView() {
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Swords className="w-4 h-4 text-orange-400" />
-              <span className="font-mono text-sm font-bold">{t.country_a}</span>
+              <span className="text-sm font-bold">{formatCountry(t.country_a_name || t.country_a_iso3 || t.country_a)}</span>
               <ChevronRight className="w-3 h-3 text-muted-foreground" />
-              <span className="font-mono text-sm font-bold">{t.country_b}</span>
+              <span className="text-sm font-bold">{formatCountry(t.country_b_name || t.country_b_iso3 || t.country_b)}</span>
             </div>
             <div className="flex items-center gap-2">
               <TrendIndicator trend={t.trend} />
@@ -332,20 +395,26 @@ function TensionsView() {
           </div>
         </div>
       ))}
+      {(!data?.tensions || data.tensions.length === 0) && (
+        <div className="text-center text-muted-foreground py-8">
+          No tension pairs available yet. Check source health in Overview.
+        </div>
+      )}
     </div>
   )
 }
 
 // ==================== CONVERGENCES SUB-VIEW ====================
 
-function ConvergencesView() {
-  const { data, isLoading } = useQuery({
+function ConvergencesView({ isConnected }: { isConnected: boolean }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['world-convergences'],
     queryFn: getConvergenceZones,
-    refetchInterval: 60000,
+    refetchInterval: isConnected ? false : 180000,
   })
 
   if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading convergence data...</div>
+  if (isError) return <div className="text-center text-red-400 py-8">Failed to load convergence data</div>
 
   return (
     <div className="space-y-2">
@@ -357,7 +426,7 @@ function ConvergencesView() {
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Radio className="w-4 h-4 text-purple-400" />
-              <span className="text-sm font-medium">{z.country || `${z.latitude.toFixed(1)}, ${z.longitude.toFixed(1)}`}</span>
+              <span className="text-sm font-medium">{z.country ? formatCountry(z.country) : `${z.latitude.toFixed(1)}, ${z.longitude.toFixed(1)}`}</span>
             </div>
             <Badge variant="outline" className={cn('text-[10px] font-mono', z.urgency_score >= 70 ? 'bg-red-500/20 text-red-400' : z.urgency_score >= 40 ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400')}>
               Urgency: {z.urgency_score.toFixed(0)}
@@ -384,14 +453,15 @@ function ConvergencesView() {
 
 // ==================== ANOMALIES SUB-VIEW ====================
 
-function AnomaliesView() {
-  const { data, isLoading } = useQuery({
+function AnomaliesView({ isConnected }: { isConnected: boolean }) {
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['world-anomalies'],
     queryFn: () => getTemporalAnomalies({ min_severity: 'medium' }),
-    refetchInterval: 60000,
+    refetchInterval: isConnected ? false : 180000,
   })
 
   if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading anomaly data...</div>
+  if (isError) return <div className="text-center text-red-400 py-8">Failed to load anomaly data</div>
 
   return (
     <div className="space-y-2">
@@ -403,7 +473,7 @@ function AnomaliesView() {
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-2">
               <Zap className={cn('w-4 h-4', a.severity === 'critical' ? 'text-red-400' : a.severity === 'high' ? 'text-orange-400' : 'text-yellow-400')} />
-              <span className="text-sm font-medium">{a.country} — {a.signal_type.replace(/_/g, ' ')}</span>
+              <span className="text-sm font-medium">{formatCountry(a.country)} — {a.signal_type.replace(/_/g, ' ')}</span>
             </div>
             <Badge variant="outline" className={cn('text-[10px] font-mono uppercase', a.severity === 'critical' ? 'bg-red-500/20 text-red-400' : a.severity === 'high' ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400')}>
               {a.severity}
@@ -424,20 +494,21 @@ function AnomaliesView() {
 // ==================== MAIN COMPONENT ====================
 
 const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = [
+  { id: 'opportunities', label: 'Opportunities', icon: TrendingUp },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'overview', label: 'Overview', icon: Globe },
   { id: 'signals', label: 'Signals', icon: Radio },
-  { id: 'countries', label: 'Countries', icon: MapPin },
+  { id: 'countries', label: 'Country Risk', icon: MapPin },
   { id: 'tensions', label: 'Tensions', icon: Swords },
-  { id: 'convergences', label: 'Convergences', icon: Flame },
+  { id: 'convergences', label: 'Convergence', icon: Flame },
   { id: 'anomalies', label: 'Anomalies', icon: Zap },
 ]
 
-export default function WorldIntelligencePanel() {
+export default function WorldIntelligencePanel({ isConnected = true }: { isConnected?: boolean }) {
   const [subView, setSubView] = useState<WorldSubView>('map')
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex flex-col overflow-hidden">
       {/* Sub-navigation */}
       <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-card/50 overflow-x-auto shrink-0">
         {SUB_NAV.map((item) => (
@@ -457,18 +528,23 @@ export default function WorldIntelligencePanel() {
       {/* Content */}
       {subView === 'map' ? (
         <div className="flex-1 min-h-0 relative overflow-hidden">
-          <Suspense fallback={<div className="flex items-center justify-center h-full text-muted-foreground">Loading map...</div>}>
-            <WorldMap />
-          </Suspense>
+          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Map view crashed.</div>}>
+            <Suspense fallback={<div className="h-full w-full" />}>
+              <WorldMap isConnected={isConnected} />
+            </Suspense>
+          </ErrorBoundary>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto p-4">
-          {subView === 'overview' && <OverviewView />}
-          {subView === 'signals' && <SignalsView />}
-          {subView === 'countries' && <CountriesView />}
-          {subView === 'tensions' && <TensionsView />}
-          {subView === 'convergences' && <ConvergencesView />}
-          {subView === 'anomalies' && <AnomaliesView />}
+          <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">This world intelligence view failed to render.</div>}>
+            {subView === 'opportunities' && <WorldIntelligenceOpportunitiesView />}
+            {subView === 'overview' && <OverviewView isConnected={isConnected} />}
+            {subView === 'signals' && <SignalsView isConnected={isConnected} />}
+            {subView === 'countries' && <CountriesView isConnected={isConnected} />}
+            {subView === 'tensions' && <TensionsView isConnected={isConnected} />}
+            {subView === 'convergences' && <ConvergencesView isConnected={isConnected} />}
+            {subView === 'anomalies' && <AnomaliesView isConnected={isConnected} />}
+          </ErrorBoundary>
         </div>
       )}
     </div>

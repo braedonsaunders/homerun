@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 import uuid
 
 from config import settings
+from services.pause_state import global_pause_state
 from services.price_chaser import price_chaser
 from services.execution_tiers import execution_tier_service
 from services.trading_proxy import (
@@ -217,6 +218,9 @@ class TradingService:
         Returns (is_valid, error_message)
         """
         self._check_daily_reset()
+
+        if global_pause_state.is_paused:
+            return False, "Global pause is active"
 
         if not self.is_ready():
             return False, "Trading service not initialized"

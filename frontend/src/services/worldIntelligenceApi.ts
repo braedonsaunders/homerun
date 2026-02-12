@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { normalizeUtcTimestampsInPlace } from '../lib/timestamps'
+import { normalizeCountryCode } from '../lib/worldCountries'
 
 const api = axios.create({
   baseURL: '/api',
@@ -21,6 +22,8 @@ export interface WorldSignal {
   signal_type: 'conflict' | 'tension' | 'instability' | 'convergence' | 'anomaly' | 'military' | 'infrastructure'
   severity: number
   country: string | null
+  country_iso3?: string | null
+  country_name?: string | null
   latitude: number | null
   longitude: number | null
   title: string
@@ -35,6 +38,7 @@ export interface WorldSignal {
 export interface InstabilityScore {
   country: string
   iso3: string
+  country_name?: string | null
   score: number
   trend: 'rising' | 'falling' | 'stable'
   change_24h: number | null
@@ -47,6 +51,10 @@ export interface InstabilityScore {
 export interface TensionPair {
   country_a: string
   country_b: string
+  country_a_iso3?: string | null
+  country_b_iso3?: string | null
+  country_a_name?: string | null
+  country_b_name?: string | null
   tension_score: number
   event_count: number
   avg_goldstein_scale: number | null
@@ -65,6 +73,44 @@ export interface ConvergenceZone {
   country: string
   nearby_markets: string[]
   detected_at: string | null
+}
+
+export interface WorldRegionHotspot {
+  id: string
+  name: string
+  lat_min: number
+  lat_max: number
+  lon_min: number
+  lon_max: number
+  event_count?: number
+  last_detected_at?: string | null
+  activity_types?: string[]
+}
+
+export interface WorldRegionChokepoint {
+  id: string
+  name: string
+  latitude: number
+  longitude: number
+  risk_score?: number
+  nearby_signal_count?: number
+  signal_breakdown?: Record<string, number>
+  source?: string
+  chokepoint_source?: string
+  risk_method?: string
+  last_updated?: string | null
+  daily_metrics_date?: string | null
+  daily_dataset_updated_at?: string | null
+  daily_transit_total?: number | null
+  daily_capacity_estimate?: number | null
+  baseline_vessel_count_total?: number | null
+}
+
+export interface WorldRegionsResponse {
+  version: number
+  updated_at: string | null
+  hotspots: WorldRegionHotspot[]
+  chokepoints: WorldRegionChokepoint[]
 }
 
 export interface TemporalAnomaly {
@@ -94,7 +140,81 @@ export interface WorldIntelligenceStatus {
   updated_at: string | null
 }
 
+export interface WorldIntelligenceOpportunity {
+  id: string
+  signal_id: string
+  signal_type: string
+  strategy_type: string
+  severity: number
+  country: string | null
+  source: string | null
+  title: string
+  description: string
+  detected_at: string | null
+  market_id: string
+  market_question: string
+  event_id: string | null
+  event_slug: string | null
+  event_title: string | null
+  category: string | null
+  liquidity: number
+  direction: 'buy_yes' | 'buy_no' | null
+  outcome: 'YES' | 'NO' | null
+  token_id: string | null
+  entry_price: number | null
+  confidence: number
+  edge_percent: number
+  market_relevance_score: number
+  related_market_ids: string[]
+  metadata: Record<string, any>
+  resolver_status: 'tradable' | 'incomplete' | string
+  missing_fields: string[]
+  tradable: boolean
+  positions_to_take: Array<Record<string, any>>
+}
+
+export interface WorldSourceStatusResponse {
+  sources: Record<string, any>
+  errors: string[]
+  updated_at: string | null
+}
+
 // ==================== API FUNCTIONS ====================
+
+function timestampValue(value: string | null | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
+}
+
+function dedupeInstabilityScores(scores: InstabilityScore[]): InstabilityScore[] {
+  const byIso3 = new Map<string, InstabilityScore>()
+  for (const score of scores) {
+    const canonicalIso3 =
+      normalizeCountryCode(score.iso3 || score.country_name || score.country)
+      || String(score.iso3 || '').trim().toUpperCase()
+    if (!canonicalIso3) continue
+    const normalized: InstabilityScore = {
+      ...score,
+      iso3: canonicalIso3,
+    }
+    const existing = byIso3.get(canonicalIso3)
+    if (!existing) {
+      byIso3.set(canonicalIso3, normalized)
+      continue
+    }
+    const existingTs = timestampValue(existing.last_updated)
+    const incomingTs = timestampValue(normalized.last_updated)
+    if (incomingTs > existingTs) {
+      byIso3.set(canonicalIso3, normalized)
+      continue
+    }
+    if (incomingTs === existingTs && Number(normalized.score || 0) > Number(existing.score || 0)) {
+      byIso3.set(canonicalIso3, normalized)
+    }
+  }
+  return [...byIso3.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+}
 
 export async function getWorldSignals(params?: {
   signal_type?: string
@@ -112,7 +232,13 @@ export async function getInstabilityScores(params?: {
   limit?: number
 }): Promise<{ scores: InstabilityScore[]; total: number }> {
   const { data } = await api.get('/world-intelligence/instability', { params })
-  return data
+  const rawScores = Array.isArray(data?.scores) ? data.scores as InstabilityScore[] : []
+  const scores = dedupeInstabilityScores(rawScores)
+  return {
+    ...data,
+    scores,
+    total: scores.length,
+  }
 }
 
 export async function getTensionPairs(params?: {
@@ -135,6 +261,11 @@ export async function getTemporalAnomalies(params?: {
   return data
 }
 
+export async function getWorldRegions(): Promise<WorldRegionsResponse> {
+  const { data } = await api.get('/world-intelligence/regions')
+  return data
+}
+
 export async function getWorldIntelligenceSummary(): Promise<WorldIntelligenceSummary> {
   const { data } = await api.get('/world-intelligence/summary')
   return data
@@ -145,6 +276,11 @@ export async function getWorldIntelligenceStatus(): Promise<WorldIntelligenceSta
   return data
 }
 
+export async function getWorldSourceStatus(): Promise<WorldSourceStatusResponse> {
+  const { data } = await api.get('/world-intelligence/sources')
+  return data
+}
+
 export async function getMilitaryActivity(): Promise<Record<string, any>> {
   const { data } = await api.get('/world-intelligence/military')
   return data
@@ -152,5 +288,23 @@ export async function getMilitaryActivity(): Promise<Record<string, any>> {
 
 export async function getInfrastructureEvents(): Promise<Record<string, any>> {
   const { data } = await api.get('/world-intelligence/infrastructure')
+  return data
+}
+
+export async function getWorldIntelligenceOpportunities(params?: {
+  signal_type?: string
+  country?: string
+  min_severity?: number
+  min_relevance?: number
+  tradable_only?: boolean
+  hours?: number
+  max_markets_per_signal?: number
+  limit?: number
+}): Promise<{
+  opportunities: WorldIntelligenceOpportunity[]
+  total: number
+  summary: Record<string, any>
+}> {
+  const { data } = await api.get('/world-intelligence/opportunities', { params })
   return data
 }

@@ -822,6 +822,12 @@ class AppSettings(Base):
     auto_cleanup_enabled = Column(Boolean, default=False)
     cleanup_interval_hours = Column(Integer, default=24)
     cleanup_resolved_trade_days = Column(Integer, default=30)
+    market_cache_hygiene_enabled = Column(Boolean, default=True)
+    market_cache_hygiene_interval_hours = Column(Integer, default=6)
+    market_cache_retention_days = Column(Integer, default=120)
+    market_cache_reference_lookback_days = Column(Integer, default=45)
+    market_cache_weak_entry_grace_days = Column(Integer, default=7)
+    market_cache_max_entries_per_slug = Column(Integer, default=3)
 
     # Trading VPN/Proxy (routes ONLY trading requests through proxy)
     trading_proxy_enabled = Column(Boolean, default=False)
@@ -869,6 +875,9 @@ class AppSettings(Base):
     news_workflow_cycle_llm_call_cap = Column(Integer, default=30)
     news_workflow_cache_ttl_minutes = Column(Integer, default=30)
     news_workflow_max_edge_evals_per_article = Column(Integer, default=3)
+    news_rss_feeds_json = Column(JSON, default=list)
+    news_gov_rss_enabled = Column(Boolean, default=True)
+    news_gov_rss_feeds_json = Column(JSON, default=list)
 
     # Independent Weather Workflow (forecast consensus -> opportunities/intents)
     weather_workflow_enabled = Column(Boolean, default=True)
@@ -1325,6 +1334,7 @@ class DiscoveredWallet(Base):
     # Leaderboard ranking (computed periodically)
     rank_score = Column(Float, default=0.0)  # Composite score for sorting
     rank_position = Column(Integer, nullable=True)  # Position on leaderboard
+    metrics_source_version = Column(String, nullable=True)
 
     # Smart pool scoring (quality + recency + stability blend)
     quality_score = Column(Float, default=0.0)
@@ -1722,6 +1732,7 @@ class DiscoveryControl(Base):
     is_enabled = Column(Boolean, default=True)
     is_paused = Column(Boolean, default=False)
     run_interval_minutes = Column(Integer, default=60)
+    priority_backlog_mode = Column(Boolean, default=True)
     requested_run_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -2002,6 +2013,8 @@ class AutoTraderDecision(Base):
     decision = Column(String, nullable=False)  # selected | skipped | submitted | executed | failed
     reason = Column(Text, nullable=True)
     score = Column(Float, nullable=True)
+    event_id = Column(String, nullable=True, index=True)
+    trace_id = Column(String, nullable=True, index=True)
     policy_snapshot_json = Column(JSON, default=dict)
     risk_snapshot_json = Column(JSON, default=dict)
     payload_json = Column(JSON, default=dict)
@@ -2028,6 +2041,8 @@ class AutoTraderTrade(Base):
     market_id = Column(String, nullable=False, index=True)
     market_question = Column(Text, nullable=True)
     direction = Column(String, nullable=True)
+    event_id = Column(String, nullable=True, index=True)
+    trace_id = Column(String, nullable=True, index=True)
     mode = Column(String, nullable=False, default="paper")
     status = Column(String, nullable=False, default="submitted")
     notional_usd = Column(Float, nullable=True)
@@ -2035,6 +2050,7 @@ class AutoTraderTrade(Base):
     effective_price = Column(Float, nullable=True)
     edge_percent = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)
+    actual_profit = Column(Float, nullable=True)
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
     error_message = Column(Text, nullable=True)
@@ -2047,6 +2063,88 @@ class AutoTraderTrade(Base):
         Index("idx_auto_trader_trades_status", "status"),
     )
 
+
+class AutoTraderEvent(Base):
+    """Immutable audit/event log for all command center activity."""
+
+    __tablename__ = "auto_trader_events"
+
+    id = Column(String, primary_key=True)
+    event_type = Column(String, nullable=False, index=True)
+    severity = Column(String, nullable=False, default="info")
+    source = Column(String, nullable=True, index=True)
+    operator = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    trace_id = Column(String, nullable=True, index=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("idx_auto_trader_events_type_created", "event_type", "created_at"),
+    )
+
+
+class AutoTraderDecisionCheck(Base):
+    """Per-rule decision evaluation records for explainability."""
+
+    __tablename__ = "auto_trader_decision_checks"
+
+    id = Column(String, primary_key=True)
+    decision_id = Column(
+        String,
+        ForeignKey("auto_trader_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    check_key = Column(String, nullable=False, index=True)
+    check_label = Column(String, nullable=False)
+    passed = Column(Boolean, nullable=False, default=False)
+    score = Column(Float, nullable=True)
+    detail = Column(Text, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_auto_trader_decision_checks_decision_created", "decision_id", "created_at"),
+    )
+
+
+class AutoTraderPreflightRun(Base):
+    """Live-start preflight checks and arming token lifecycle."""
+
+    __tablename__ = "auto_trader_preflight_runs"
+
+    id = Column(String, primary_key=True)
+    requested_mode = Column(String, nullable=False, default="live")
+    requested_by = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="failed")  # passed | failed
+    checks_json = Column(JSON, default=list)
+    failed_checks_json = Column(JSON, default=list)
+    arm_token_hash = Column(String, nullable=True, index=True)
+    arm_expires_at = Column(DateTime, nullable=True)
+    armed_at = Column(DateTime, nullable=True)
+    consumed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_auto_trader_preflight_status_created", "status", "created_at"),
+    )
+
+
+class AutoTraderConfigRevision(Base):
+    """Versioned control/policy snapshots for rollback and audit history."""
+
+    __tablename__ = "auto_trader_config_revisions"
+
+    id = Column(String, primary_key=True)
+    operator = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    control_before_json = Column(JSON, default=dict)
+    policies_before_json = Column(JSON, default=dict)
+    control_after_json = Column(JSON, default=dict)
+    policies_after_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 # ==================== WORLD INTELLIGENCE ====================
 
@@ -2358,7 +2456,10 @@ def _migrate_schema(connection):
                         news_workflow_market_min_liquidity = COALESCE(news_workflow_market_min_liquidity, 500.0),
                         news_workflow_market_max_days_to_resolution = COALESCE(news_workflow_market_max_days_to_resolution, 365),
                         news_workflow_min_keyword_signal = COALESCE(news_workflow_min_keyword_signal, 0.04),
-                        news_workflow_min_semantic_signal = COALESCE(news_workflow_min_semantic_signal, 0.22)
+                        news_workflow_min_semantic_signal = COALESCE(news_workflow_min_semantic_signal, 0.22),
+                        news_gov_rss_enabled = COALESCE(news_gov_rss_enabled, 1),
+                        news_rss_feeds_json = COALESCE(news_rss_feeds_json, '[]'),
+                        news_gov_rss_feeds_json = COALESCE(news_gov_rss_feeds_json, '[]')
                     """
                 )
             )
@@ -2410,6 +2511,46 @@ def _migrate_schema(connection):
             )
         except Exception as e:
             logger.debug("idx_insider_intent_signal may already exist: %s", e)
+
+    # Ensure wallet activity identity is idempotent across worker/API restarts.
+    if "wallet_activity_rollups" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM wallet_activity_rollups
+                    WHERE rowid NOT IN (
+                        SELECT MAX(rowid)
+                        FROM wallet_activity_rollups
+                        GROUP BY
+                            wallet_address,
+                            market_id,
+                            COALESCE(side, ''),
+                            traded_at,
+                            COALESCE(tx_hash, '')
+                    )
+                    """
+                )
+            )
+        except Exception as e:
+            logger.debug("wallet_activity_rollups dedupe skipped: %s", e)
+        try:
+            connection.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_war_identity_unique
+                    ON wallet_activity_rollups(
+                        wallet_address,
+                        market_id,
+                        COALESCE(side, ''),
+                        traded_at,
+                        COALESCE(tx_hash, '')
+                    )
+                    """
+                )
+            )
+        except Exception as e:
+            logger.debug("idx_war_identity_unique may already exist: %s", e)
 
 
 async def init_database():

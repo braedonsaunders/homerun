@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from utils.utcnow import utcnow
 from typing import Optional
 
-from sqlalchemy import select, text, update, func
+from sqlalchemy import select, text, update, func, or_
 
 from models.database import (
     DiscoveredWallet,
@@ -29,6 +29,7 @@ from models.database import (
     WalletActivityRollup,
     AsyncSessionLocal,
 )
+from services.market_tradability import get_market_tradability_map
 from services.polymarket import polymarket_client
 from services.pause_state import global_pause_state
 from utils.logger import get_logger
@@ -234,7 +235,12 @@ class ConfluenceDetector:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(DiscoveredWallet).where(
-                    DiscoveredWallet.rank_score >= self.MIN_WALLET_RANK_SCORE,
+                    or_(
+                        DiscoveredWallet.rank_score >= self.MIN_WALLET_RANK_SCORE,
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                        DiscoveredWallet.trades_24h > 0,
+                        DiscoveredWallet.trades_1h > 0,
+                    ),
                 )
             )
             wallets = list(result.scalars().all())
@@ -522,6 +528,26 @@ class ConfluenceDetector:
                 for s in raw_signals
                 if tier_rank.get((s.tier or "WATCH").upper(), 1) >= required_rank
             ][:limit]
+
+            actionable = [s for s in signals if s.market_id]
+            if actionable:
+                tradability = await get_market_tradability_map(
+                    [str(s.market_id) for s in actionable]
+                )
+                now = utcnow()
+                changed = False
+                kept: list[MarketConfluenceSignal] = []
+                for signal in signals:
+                    market_key = str(signal.market_id or "").strip().lower()
+                    if not market_key or tradability.get(market_key, True):
+                        kept.append(signal)
+                        continue
+                    signal.is_active = False
+                    signal.expired_at = now
+                    changed = True
+                if changed:
+                    await session.commit()
+                signals = kept
 
             return [
                 {

@@ -5,7 +5,6 @@ import {
   RefreshCw,
   Users,
   Target,
-  Tag,
   ChevronDown,
   ChevronUp,
   CheckCircle,
@@ -15,9 +14,12 @@ import {
   ExternalLink,
   Activity,
   UserPlus,
-  Clock,
   PauseCircle,
   AlertTriangle,
+  Ban,
+  UserCheck,
+  UserX,
+  Trash2,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -39,6 +41,8 @@ import {
   type TagInfo,
   type DiscoveryStats,
   type PoolStats,
+  type PoolMember,
+  type PoolMembersResponse,
 } from '../services/discoveryApi'
 import { analyzeAndTrackWallet } from '../services/api'
 
@@ -120,21 +124,32 @@ function timeAgo(dateStr: string | null): string {
 
 interface DiscoveryPanelProps {
   onAnalyzeWallet?: (address: string, username?: string) => void
+  view?: 'discovery' | 'pool'
 }
 
-export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps) {
+export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: DiscoveryPanelProps) {
+  const isPoolView = view === 'pool'
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [currentPage, setCurrentPage] = useState(0)
   const [minTrades, setMinTrades] = useState(0)
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
+  const [marketCategoryFilter, setMarketCategoryFilter] = useState<'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather'>('all')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('24h')
   const [insiderOnly, setInsiderOnly] = useState(false)
   const [minInsiderScore, setMinInsiderScore] = useState(0)
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [tagSearch, setTagSearch] = useState('')
+  const [tagPicker, setTagPicker] = useState('')
+  const [poolSearch, setPoolSearch] = useState('')
+  const [poolTierFilter, setPoolTierFilter] = useState<'all' | 'core' | 'rising'>('all')
+  const [poolSortBy, setPoolSortBy] = useState<'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'last_trade_at'>('composite_score')
+  const [poolSortDir, setPoolSortDir] = useState<'asc' | 'desc'>('desc')
+  const [poolOnly, setPoolOnly] = useState(true)
+  const [includeBlacklisted, setIncludeBlacklisted] = useState(true)
+  const [manualPoolAddress, setManualPoolAddress] = useState('')
 
   const queryClient = useQueryClient()
 
@@ -146,6 +161,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
     minTrades,
     minPnl,
     recommendationFilter,
+    marketCategoryFilter,
     timePeriod,
     selectedTags,
     insiderOnly,
@@ -162,12 +178,57 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
     queryKey: ['discovery-pool-stats'],
     queryFn: discoveryApi.getPoolStats,
     refetchInterval: 30000,
+    enabled: isPoolView,
+  })
+
+  const { data: poolMembersData, isLoading: poolMembersLoading, error: poolMembersError } = useQuery<PoolMembersResponse>({
+    queryKey: [
+      'discovery-pool-members',
+      poolSearch,
+      poolTierFilter,
+      poolSortBy,
+      poolSortDir,
+      poolOnly,
+      includeBlacklisted,
+    ],
+    queryFn: async () => {
+      const params = {
+        limit: 300,
+        offset: 0,
+        pool_only: poolOnly,
+        include_blacklisted: includeBlacklisted,
+        tier: poolTierFilter === 'all' ? undefined : poolTierFilter,
+        search: poolSearch.trim() || undefined,
+        sort_by: poolSortBy,
+        sort_dir: poolSortDir,
+      } as const
+      try {
+        return await discoveryApi.getPoolMembers(params)
+      } catch (error: any) {
+        const status = error?.response?.status
+        const detail = String(error?.response?.data?.detail || '')
+        const unsupportedSelectionSort =
+          poolSortBy === 'selection_score'
+          && status === 400
+          && detail.toLowerCase().includes('invalid sort_by')
+        if (unsupportedSelectionSort) {
+          return discoveryApi.getPoolMembers({
+            ...params,
+            sort_by: 'composite_score',
+          })
+        }
+        throw error
+      }
+    },
+    refetchInterval: 30000,
+    enabled: isPoolView,
   })
 
   const { data: tags = [], isLoading: tagsLoading } = useQuery<TagInfo[]>({
     queryKey: ['discovery-tags'],
     queryFn: discoveryApi.getTags,
     refetchInterval: 120000,
+    enabled: !isPoolView,
   })
 
   const selectedTagString = selectedTags.join(',')
@@ -181,6 +242,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
       minTrades,
       minPnl,
       recommendationFilter,
+      marketCategoryFilter,
       selectedTagString,
       timePeriod,
       insiderOnly,
@@ -197,10 +259,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
         insider_only: insiderOnly || undefined,
         min_insider_score: minInsiderScore > 0 ? minInsiderScore : undefined,
         recommendation: recommendationFilter || undefined,
+        market_category: marketCategoryFilter !== 'all' ? marketCategoryFilter : undefined,
         tags: selectedTagString || undefined,
         time_period: timePeriod !== 'all' ? timePeriod : undefined,
       }),
     refetchInterval: 30000,
+    enabled: !isPoolView,
   })
 
   const wallets: DiscoveredWallet[] = leaderboardData?.wallets || leaderboardData || []
@@ -219,6 +283,45 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wallets'] })
     },
+  })
+
+  const invalidatePoolQueries = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['discovery-pool-members'] })
+    queryClient.invalidateQueries({ queryKey: ['discovery-pool-stats'] })
+    queryClient.invalidateQueries({ queryKey: ['discovery-leaderboard'] })
+  }, [queryClient])
+
+  const manualIncludeMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.poolManualInclude(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const clearManualIncludeMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.clearPoolManualInclude(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const manualExcludeMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.poolManualExclude(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const clearManualExcludeMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.clearPoolManualExclude(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const blacklistMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.blacklistPoolWallet(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const unblacklistMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.unblacklistPoolWallet(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const deletePoolWalletMutation = useMutation({
+    mutationFn: (address: string) => discoveryApi.deletePoolWallet(address),
+    onSuccess: invalidatePoolQueries,
+  })
+  const promoteTrackedMutation = useMutation({
+    mutationFn: () => discoveryApi.promoteTrackedWalletsToPool(500),
+    onSuccess: invalidatePoolQueries,
   })
 
   const handleSort = useCallback(
@@ -258,7 +361,25 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
     })
   }, [tags, tagSearch])
 
+  const poolMembers: PoolMember[] = poolMembersData?.members || []
+  const poolMemberStats = poolMembersData?.stats
+  const poolMembersErrorMessage = useMemo(() => {
+    if (!poolMembersError) return null
+    const detail = (poolMembersError as any)?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail.trim()
+    return 'Failed to load pool members.'
+  }, [poolMembersError])
+
   const totalPages = Math.ceil(totalWallets / ITEMS_PER_PAGE)
+  const poolActionBusy =
+    manualIncludeMutation.isPending ||
+    clearManualIncludeMutation.isPending ||
+    manualExcludeMutation.isPending ||
+    clearManualExcludeMutation.isPending ||
+    blacklistMutation.isPending ||
+    unblacklistMutation.isPending ||
+    deletePoolWalletMutation.isPending ||
+    promoteTrackedMutation.isPending
 
   const statusBadge = stats?.is_running
     ? (
@@ -281,24 +402,16 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
       )
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold">Trader Discovery</h2>
-          <p className="text-sm text-muted-foreground">
-            Worker-driven leaderboard with behavioral tags for copy-trading candidates
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {statusBadge}
-          {stats?.current_activity && (
-            <span className="max-w-[320px] truncate">{stats.current_activity}</span>
-          )}
-          {stats?.last_run_at && <span>Last run: {timeAgo(stats.last_run_at)}</span>}
-        </div>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {statusBadge}
+        {stats?.current_activity && (
+          <span className="max-w-[320px] truncate">{stats.current_activity}</span>
+        )}
+        {stats?.last_run_at && <span>Last run: {timeAgo(stats.last_run_at)}</span>}
       </div>
 
-      <div className="grid grid-cols-5 gap-4">
+      <div className={cn('grid gap-2', isPoolView ? 'grid-cols-2 lg:grid-cols-5' : 'grid-cols-2 lg:grid-cols-4')}>
         <Card className="border-border">
           <CardContent className="flex items-center gap-3 p-4">
             <div className="p-2 bg-blue-500/10 rounded-lg">
@@ -347,44 +460,46 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
           </CardContent>
         </Card>
 
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="p-2 bg-cyan-500/10 rounded-lg">
-              <Users className="w-5 h-5 text-cyan-500" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Top Pool</p>
-              <p className="text-lg font-semibold">
-                {formatNumber(poolStats?.pool_size || 0)}
-                <span className="text-[11px] text-muted-foreground ml-1">/ {poolStats?.target_pool_size || 500}</span>
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        {isPoolView && (
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-4">
+              <div className="p-2 bg-cyan-500/10 rounded-lg">
+                <Users className="w-5 h-5 text-cyan-500" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Top Pool</p>
+                <p className="text-lg font-semibold">
+                  {formatNumber(poolStats?.pool_size || 0)}
+                  <span className="text-[11px] text-muted-foreground ml-1">/ {poolStats?.target_pool_size || 500}</span>
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
-      {poolStats && (
-        <div className="grid grid-cols-4 gap-4">
+      {isPoolView && poolStats && (
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
           <Card className="border-border">
-            <CardContent className="p-3">
+            <CardContent className="p-2.5">
               <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
               <p className="text-sm font-semibold">{poolStats.active_1h ?? 0} ({(poolStats.active_1h_pct ?? 0).toFixed(1)}%)</p>
             </CardContent>
           </Card>
           <Card className="border-border">
-            <CardContent className="p-3">
+            <CardContent className="p-2.5">
               <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
               <p className="text-sm font-semibold">{poolStats.active_24h ?? 0} ({(poolStats.active_24h_pct ?? 0).toFixed(1)}%)</p>
             </CardContent>
           </Card>
           <Card className="border-border">
-            <CardContent className="p-3">
+            <CardContent className="p-2.5">
               <p className="text-xs text-muted-foreground">Hourly Churn</p>
               <p className="text-sm font-semibold">{((poolStats.churn_rate ?? 0) * 100).toFixed(2)}%</p>
             </CardContent>
           </Card>
           <Card className="border-border">
-            <CardContent className="p-3">
+            <CardContent className="p-2.5">
               <p className="text-xs text-muted-foreground">Pool Recompute</p>
               <p className="text-sm font-semibold">{timeAgo(poolStats.last_pool_recompute_at)}</p>
             </CardContent>
@@ -392,157 +507,509 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
         </div>
       )}
 
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Clock className="w-3.5 h-3.5" />
-            <span>Period</span>
-          </div>
-          <div className="flex items-center bg-muted/50 rounded-lg p-0.5 border border-border">
-            {TIME_PERIODS.map(tp => (
-              <button
-                key={tp.value}
-                onClick={() => setTimePeriod(tp.value)}
-                className={cn(
-                  'px-3 py-1.5 rounded-md text-xs font-medium transition-all',
-                  timePeriod === tp.value
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                )}
-              >
-                {tp.label}
-              </button>
-            ))}
-          </div>
-          {timePeriod !== 'all' && (
-            <span className="text-[10px] text-muted-foreground/70">
-              Ranked by trading performance in the {TIME_PERIODS.find(p => p.value === timePeriod)?.description}
-            </span>
-          )}
-        </div>
-
-        <Card className="border-border">
-          <CardContent className="p-3 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Tag className="w-3.5 h-3.5" />
-                <span>Behavioral tags</span>
+      {isPoolView && (
+      <Card className="border-border overflow-hidden">
+        <CardContent className="p-3 space-y-2.5">
+          <div className="overflow-x-auto pb-1">
+            <div className="flex min-w-max items-end gap-2">
+              <div className="flex w-[190px] flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Manual add</span>
+                <Input
+                  value={manualPoolAddress}
+                  onChange={e => setManualPoolAddress(e.target.value)}
+                  placeholder="0x... add to pool"
+                  className="h-8 text-xs bg-card border-border"
+                />
               </div>
-              {selectedTags.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={poolActionBusy || !manualPoolAddress.trim()}
+                className="h-8 text-xs gap-1.5 mb-0.5"
+                onClick={() => {
+                  manualIncludeMutation.mutate(manualPoolAddress.trim().toLowerCase())
+                  setManualPoolAddress('')
+                }}
+              >
+                <UserCheck className="w-3.5 h-3.5" />
+                Add
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => promoteTrackedMutation.mutate()}
+                disabled={poolActionBusy}
+                className="h-8 text-xs gap-1.5 mb-0.5"
+              >
+                {promoteTrackedMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+                Add tracked
+              </Button>
+              <div className="h-6 w-px bg-border/70 mb-1" />
+              <div className="flex w-[210px] flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Search</span>
+                <Input
+                  value={poolSearch}
+                  onChange={e => setPoolSearch(e.target.value)}
+                  placeholder="Wallet / username"
+                  className="h-8 text-xs bg-card border-border"
+                />
+              </div>
+              <div className="flex w-[116px] flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Tier</span>
+                <select
+                  value={poolTierFilter}
+                  onChange={e => setPoolTierFilter(e.target.value as 'all' | 'core' | 'rising')}
+                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                >
+                  <option value="all">All tiers</option>
+                  <option value="core">Core</option>
+                  <option value="rising">Rising</option>
+                </select>
+              </div>
+              <div className="flex w-[152px] flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Sort by</span>
+                <select
+                  value={poolSortBy}
+                  onChange={e => setPoolSortBy(e.target.value as 'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'last_trade_at')}
+                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                >
+                  <option value="selection_score">Selection</option>
+                  <option value="composite_score">Composite</option>
+                  <option value="activity_score">Activity</option>
+                  <option value="quality_score">Quality</option>
+                  <option value="trades_24h">Trades 24h</option>
+                  <option value="last_trade_at">Last trade</option>
+                </select>
+              </div>
+              <div className="flex w-[94px] flex-col gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Direction</span>
+                <select
+                  value={poolSortDir}
+                  onChange={e => setPoolSortDir(e.target.value as 'asc' | 'desc')}
+                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                >
+                  <option value="desc">Desc</option>
+                  <option value="asc">Asc</option>
+                </select>
+              </div>
+              <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground">
+                <input type="checkbox" checked={poolOnly} onChange={e => setPoolOnly(e.target.checked)} className="h-3.5 w-3.5" />
+                Pool only
+              </label>
+              <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground">
+                <input type="checkbox" checked={includeBlacklisted} onChange={e => setIncludeBlacklisted(e.target.checked)} className="h-3.5 w-3.5" />
+                Show blacklisted
+              </label>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 text-[11px]">
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Pool: <span className="font-semibold">{poolMemberStats?.pool_members ?? 0}</span>
+            </div>
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Tracked in Pool: <span className="font-semibold">{poolMemberStats?.tracked_in_pool ?? 0}</span>
+            </div>
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Tracked Total: <span className="font-semibold">{poolMemberStats?.tracked_total ?? 0}</span>
+            </div>
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Manual+ : <span className="font-semibold">{poolMemberStats?.manual_included ?? 0}</span>
+            </div>
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Manual- : <span className="font-semibold">{poolMemberStats?.manual_excluded ?? 0}</span>
+            </div>
+            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
+              Blacklisted: <span className="font-semibold">{poolMemberStats?.blacklisted ?? 0}</span>
+            </div>
+          </div>
+
+          {poolMembersLoading ? (
+            <div className="py-8 flex items-center justify-center">
+              <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : poolMembersErrorMessage ? (
+            <div className="py-6 text-sm text-red-300 text-center">
+              {poolMembersErrorMessage}
+            </div>
+          ) : poolMembers.length === 0 ? (
+            <div className="py-6 text-sm text-muted-foreground text-center">
+              No pool members match current filters.
+            </div>
+          ) : (
+            <div className="max-h-[360px] overflow-auto rounded border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Trader</TableHead>
+                    <TableHead>Tier</TableHead>
+                    <TableHead>Activity</TableHead>
+                    <TableHead>Selection</TableHead>
+                    <TableHead>Why Selected</TableHead>
+                    <TableHead>Flags</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {poolMembers.map(member => {
+                    const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
+                    const canAnalyze = !!onAnalyzeWallet
+                    const reasons = member.selection_reasons || []
+                    const displayName = member.display_name || member.username || 'Unknown Trader'
+                    return (
+                      <TableRow key={member.address}>
+                        <TableCell>
+                          <div className="text-sm font-medium">{displayName}</div>
+                          {member.username && member.display_name !== member.username && (
+                            <div className="text-[11px] text-muted-foreground">@{member.username}</div>
+                          )}
+                          {member.name_source === 'tracked_label' && member.tracked_label && (
+                            <div className="text-[11px] text-muted-foreground">Tracked label: {member.tracked_label}</div>
+                          )}
+                          <div className="text-[11px] text-muted-foreground font-mono">{truncateAddress(member.address)}</div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="text-[10px]">
+                            {(member.pool_tier || 'out').toUpperCase()}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div>1h: {member.trades_1h || 0}</div>
+                          <div>24h: {member.trades_24h || 0}</div>
+                          <div className="text-muted-foreground">{timeAgo(member.last_trade_at || null)}</div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="font-mono">
+                            Sel: {(Number(member.selection_score ?? member.composite_score ?? 0) * 100).toFixed(1)}
+                          </div>
+                          <div className="font-mono text-muted-foreground">
+                            Cmp: {(Number(member.composite_score || 0) * 100).toFixed(1)}
+                          </div>
+                          {member.selection_percentile != null && (
+                            <div className="text-muted-foreground">
+                              Top {(Number(member.selection_percentile) * 100).toFixed(1)}%
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs max-w-[280px]">
+                          {reasons.length === 0 ? (
+                            <span className="text-muted-foreground">No reason metadata</span>
+                          ) : (
+                            <div className="space-y-1">
+                              {reasons.slice(0, 3).map((reason, i) => (
+                                <div key={`${member.address}-${reason.code}-${i}`}>
+                                  <div className="font-medium">{reason.label}</div>
+                                  {reason.detail && (
+                                    <div className="text-[11px] text-muted-foreground">{reason.detail}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="flex gap-1 flex-wrap">
+                            {member.tracked_wallet && <Badge variant="outline" className="text-[9px]">Tracked</Badge>}
+                            {flags.manual_include && <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-300 border-emerald-500/20">Manual+</Badge>}
+                            {flags.manual_exclude && <Badge variant="outline" className="text-[9px] bg-amber-500/10 text-amber-300 border-amber-500/20">Manual-</Badge>}
+                            {flags.blacklisted && <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-300 border-red-500/20">Blacklisted</Badge>}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1 flex-wrap">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-[10px]"
+                              disabled={!canAnalyze || poolActionBusy}
+                              onClick={() => onAnalyzeWallet?.(member.address, member.username || member.display_name || undefined)}
+                            >
+                              <Activity className="w-3 h-3 mr-1" />
+                              Analyze
+                            </Button>
+                            {!flags.manual_include ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={poolActionBusy}
+                                onClick={() => manualIncludeMutation.mutate(member.address)}
+                              >
+                                <UserCheck className="w-3 h-3 mr-1" />
+                                Include
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={poolActionBusy}
+                                onClick={() => clearManualIncludeMutation.mutate(member.address)}
+                              >
+                                Clear+
+                              </Button>
+                            )}
+                            {!flags.manual_exclude ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={poolActionBusy}
+                                onClick={() => manualExcludeMutation.mutate(member.address)}
+                              >
+                                <UserX className="w-3 h-3 mr-1" />
+                                Exclude
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={poolActionBusy}
+                                onClick={() => clearManualExcludeMutation.mutate(member.address)}
+                              >
+                                Clear-
+                              </Button>
+                            )}
+                            {!flags.blacklisted ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px] text-red-300 border-red-500/30"
+                                disabled={poolActionBusy}
+                                onClick={() => blacklistMutation.mutate(member.address)}
+                              >
+                                <Ban className="w-3 h-3 mr-1" />
+                                Blacklist
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[10px]"
+                                disabled={poolActionBusy}
+                                onClick={() => unblacklistMutation.mutate(member.address)}
+                              >
+                                Unblacklist
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-[10px] text-red-300 border-red-500/30"
+                              disabled={poolActionBusy}
+                              onClick={() => {
+                                if (window.confirm(`Delete ${member.address} from discovery/pool/tracking datasets?`)) {
+                                  deletePoolWalletMutation.mutate(member.address)
+                                }
+                              }}
+                            >
+                              <Trash2 className="w-3 h-3 mr-1" />
+                              Delete
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      )}
+
+      {!isPoolView && (
+      <div className="space-y-3">
+        <Card className="border-border">
+          <CardContent className="p-3">
+            <div className="overflow-x-auto pb-1">
+              <div className="flex min-w-max items-end gap-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Period</span>
+                  <div className="flex h-8 items-center bg-muted/50 rounded-lg p-0.5 border border-border">
+                    {TIME_PERIODS.map(tp => (
+                      <button
+                        key={tp.value}
+                        onClick={() => setTimePeriod(tp.value)}
+                        className={cn(
+                          'h-7 px-2.5 rounded-md text-xs font-medium transition-all',
+                          timePeriod === tp.value
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                        )}
+                      >
+                        {tp.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex w-[170px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Search tag</span>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      value={tagSearch}
+                      onChange={e => setTagSearch(e.target.value)}
+                      placeholder="Tag keyword"
+                      className="bg-card border-border h-8 text-xs pl-8"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex w-[190px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Add tag</span>
+                  <select
+                    value={tagPicker}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      if (value) {
+                        toggleTagFilter(value)
+                      }
+                      setTagPicker('')
+                    }}
+                    disabled={tagsLoading || filteredTags.length === 0}
+                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  >
+                    <option value="">
+                      {tagsLoading ? 'Loading...' : filteredTags.length === 0 ? 'No matching tags' : 'Select tag'}
+                    </option>
+                    {filteredTags.map((tag) => (
+                      <option key={tag.name} value={tag.name}>
+                        {tag.display_name || tag.name} ({tag.wallet_count})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex w-[250px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Selected tags</span>
+                  <div className="flex h-8 items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 overflow-x-auto">
+                    {selectedTags.length === 0 ? (
+                      <span className="text-xs text-muted-foreground/80">None</span>
+                    ) : (
+                      selectedTags.map((name) => {
+                        const tagMeta = tags.find((tag) => tag.name === name)
+                        return (
+                          <button
+                            key={name}
+                            onClick={() => toggleTagFilter(name)}
+                            className="inline-flex h-6 items-center rounded-full border border-border bg-background/70 px-2 text-[10px] text-muted-foreground hover:text-foreground whitespace-nowrap"
+                            title="Remove tag filter"
+                          >
+                            {tagMeta?.display_name || name}
+                            <span className="ml-1 text-muted-foreground/70">x</span>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex w-[112px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min trades</span>
+                  <Input
+                    type="number"
+                    value={minTrades}
+                    onChange={e => setMinTrades(parseInt(e.target.value) || 0)}
+                    min={0}
+                    className="bg-card border-border h-8 text-xs"
+                  />
+                </div>
+
+                <div className="flex w-[120px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min pnl ($)</span>
+                  <Input
+                    type="number"
+                    value={minPnl}
+                    onChange={e => setMinPnl(parseFloat(e.target.value) || 0)}
+                    step={100}
+                    className="bg-card border-border h-8 text-xs"
+                  />
+                </div>
+
+                <div className="flex w-[148px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Recommendation</span>
+                  <select
+                    value={recommendationFilter}
+                    onChange={e => setRecommendationFilter(e.target.value as RecommendationFilter)}
+                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  >
+                    <option value="">All</option>
+                    <option value="copy_candidate">Copy candidate</option>
+                    <option value="monitor">Monitor</option>
+                    <option value="avoid">Avoid</option>
+                  </select>
+                </div>
+
+                <div className="flex w-[140px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Category</span>
+                  <select
+                    value={marketCategoryFilter}
+                    onChange={e => setMarketCategoryFilter(e.target.value as 'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather')}
+                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  >
+                    <option value="all">All</option>
+                    <option value="politics">Politics</option>
+                    <option value="sports">Sports</option>
+                    <option value="crypto">Crypto</option>
+                    <option value="culture">Culture</option>
+                    <option value="economics">Economics</option>
+                    <option value="tech">Tech</option>
+                    <option value="finance">Finance</option>
+                    <option value="weather">Weather</option>
+                  </select>
+                </div>
+
+                <div className="flex w-[138px] flex-col gap-1">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min insider</span>
+                  <Input
+                    type="number"
+                    value={minInsiderScore}
+                    onChange={e => setMinInsiderScore(Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))}
+                    step={0.05}
+                    min={0}
+                    max={1}
+                    className="bg-card border-border h-8 text-xs"
+                  />
+                </div>
+
+                <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={insiderOnly}
+                    onChange={e => setInsiderOnly(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border"
+                  />
+                  Insider only
+                </label>
+
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs text-muted-foreground"
-                  onClick={() => setSelectedTags([])}
+                  className="h-8 px-2 text-xs mb-0.5 text-muted-foreground"
+                  onClick={() => {
+                    setTimePeriod('24h')
+                    setTagSearch('')
+                    setTagPicker('')
+                    setSelectedTags([])
+                    setMinTrades(0)
+                    setMinPnl(0)
+                    setRecommendationFilter('')
+                    setMarketCategoryFilter('all')
+                    setMinInsiderScore(0)
+                    setInsiderOnly(false)
+                  }}
                 >
-                  Clear tags
+                  Reset
                 </Button>
-              )}
-            </div>
-
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input
-                type="text"
-                value={tagSearch}
-                onChange={e => setTagSearch(e.target.value)}
-                placeholder="Search tags"
-                className="bg-card border-border h-8 text-sm pl-8"
-              />
-            </div>
-
-            {tagsLoading ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                Loading tags...
               </div>
-            ) : (
-              <div className="flex items-center gap-2 flex-wrap">
-                {filteredTags.map(tag => {
-                  const isActive = selectedTags.includes(tag.name)
-                  const tagStyle = tag.color
-                    ? isActive
-                      ? { borderColor: tag.color, backgroundColor: `${tag.color}25`, color: tag.color }
-                      : { borderColor: `${tag.color}40`, color: `${tag.color}99` }
-                    : {}
-                  return (
-                    <button
-                      key={tag.name}
-                      onClick={() => toggleTagFilter(tag.name)}
-                      className={cn(
-                        'px-2.5 py-1 rounded-full text-xs font-medium border transition-all',
-                        isActive
-                          ? 'ring-1 ring-primary/30'
-                          : 'hover:ring-1 hover:ring-primary/20 opacity-75 hover:opacity-100'
-                      )}
-                      style={tagStyle}
-                    >
-                      {tag.display_name || tag.name}
-                      <span className="ml-1.5 opacity-60">{tag.wallet_count}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
+            </div>
           </CardContent>
         </Card>
-
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="w-36">
-            <label className="block text-xs text-muted-foreground mb-1">Min Trades</label>
-            <Input
-              type="number"
-              value={minTrades}
-              onChange={e => setMinTrades(parseInt(e.target.value) || 0)}
-              min={0}
-              className="bg-card border-border h-8 text-sm"
-            />
-          </div>
-          <div className="w-36">
-            <label className="block text-xs text-muted-foreground mb-1">Min PnL ($)</label>
-            <Input
-              type="number"
-              value={minPnl}
-              onChange={e => setMinPnl(parseFloat(e.target.value) || 0)}
-              step={100}
-              className="bg-card border-border h-8 text-sm"
-            />
-          </div>
-          <div className="w-44">
-            <label className="block text-xs text-muted-foreground mb-1">Recommendation</label>
-            <select
-              value={recommendationFilter}
-              onChange={e => setRecommendationFilter(e.target.value as RecommendationFilter)}
-              className="w-full bg-card border border-border rounded-lg px-3 py-1.5 text-sm h-8"
-            >
-              <option value="">All</option>
-              <option value="copy_candidate">Copy Candidate</option>
-              <option value="monitor">Monitor</option>
-              <option value="avoid">Avoid</option>
-            </select>
-          </div>
-          <div className="w-44">
-            <label className="block text-xs text-muted-foreground mb-1">Min Insider Score</label>
-            <Input
-              type="number"
-              value={minInsiderScore}
-              onChange={e => setMinInsiderScore(Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))}
-              step={0.05}
-              min={0}
-              max={1}
-              className="bg-card border-border h-8 text-sm"
-            />
-          </div>
-          <label className="flex items-end gap-2 pb-1 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={insiderOnly}
-              onChange={e => setInsiderOnly(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-border"
-            />
-            Insider only
-          </label>
-        </div>
 
         {leaderboardLoading ? (
           <div className="flex items-center justify-center py-12">
@@ -711,6 +1178,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet }: DiscoveryPanelProps)
           </>
         )}
       </div>
+      )}
     </div>
   )
 }
@@ -857,6 +1325,10 @@ function LeaderboardRow({
   const composite = wallet.composite_score ?? wallet.rank_score ?? 0
   const activity = wallet.activity_score ?? 0
   const quality = wallet.quality_score ?? wallet.rank_score ?? 0
+  const marketCategories = wallet.market_categories || []
+  const tagPills = [...(wallet.tags || []).slice(0, 3)]
+  const categoryPills = marketCategories.slice(0, 2).map(cat => `mkt:${cat}`)
+  const pills = [...tagPills, ...categoryPills]
 
   return (
     <TableRow>
@@ -884,9 +1356,9 @@ function LeaderboardRow({
           copiedAddress={copiedAddress}
           onCopy={onCopyAddress}
         />
-        {wallet.tags.length > 0 && (
+        {pills.length > 0 && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {wallet.tags.slice(0, 3).map(tag => (
+            {pills.map(tag => (
               <span
                 key={tag}
                 className="px-1.5 py-0.5 text-[10px] rounded bg-muted text-muted-foreground border border-border"
@@ -894,9 +1366,9 @@ function LeaderboardRow({
                 {tag}
               </span>
             ))}
-            {wallet.tags.length > 3 && (
+            {(wallet.tags.length + marketCategories.length) > pills.length && (
               <span className="text-[10px] text-muted-foreground">
-                +{wallet.tags.length - 3}
+                +{wallet.tags.length + marketCategories.length - pills.length}
               </span>
             )}
           </div>

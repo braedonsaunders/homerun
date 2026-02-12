@@ -16,9 +16,10 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from config import settings
+from .taxonomy_catalog import taxonomy_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +28,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Signal types that the anomaly detector monitors
-MONITORED_SIGNAL_TYPES = {
-    "military_flights",
-    "naval_vessels",
-    "protests",
-    "news_velocity",
-    "internet_outages",
-    "conflict_events",
-}
+MONITORED_SIGNAL_TYPES = taxonomy_catalog.anomaly_monitored_signal_types()
+
+_BASE_MEDIUM_Z = float(
+    max(0.5, getattr(settings, "WORLD_INTEL_ANOMALY_THRESHOLD", 1.8) or 1.8)
+)
 
 # Z-score severity thresholds
 SEVERITY_THRESHOLDS = {
-    "medium": 2.0,
-    "high": 3.0,
-    "critical": 4.0,
+    "medium": _BASE_MEDIUM_Z,
+    "high": _BASE_MEDIUM_Z + 1.0,
+    "critical": _BASE_MEDIUM_Z + 2.0,
 }
 
 # Baseline window: rolling 30 days of daily observations
@@ -48,6 +46,12 @@ _BASELINE_WINDOW_DAYS = 30
 
 # Prune observations older than 90 days
 _MAX_RETENTION_DAYS = 90
+_MIN_BASELINE_POINTS = int(
+    max(
+        3,
+        getattr(settings, "WORLD_INTEL_ANOMALY_MIN_BASELINE_POINTS", 3) or 3,
+    )
+)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +170,15 @@ class AnomalyDetector:
             and (obs.weekday >= 5) == is_weekend
         ]
 
-        if len(filtered) < 5:
-            # Not enough data points for a reliable baseline
+        if len(filtered) < _MIN_BASELINE_POINTS:
+            # Use whatever signal history exists so anomalies can surface
+            # before day 5 of runtime.
+            if len(filtered) >= 2:
+                values = [obs.value for obs in filtered]
+                mean = sum(values) / len(values)
+                variance = sum((v - mean) ** 2 for v in values) / len(values)
+                std = math.sqrt(variance) if variance > 0 else 1.0
+                return mean, max(std, 0.5)
             return 0.0, 1.0
 
         values = [obs.value for obs in filtered]
@@ -256,6 +267,92 @@ class AnomalyDetector:
             a for a in all_anomalies
             if abs(a.z_score) >= SEVERITY_THRESHOLDS["high"]
         ]
+
+    def export_state(self) -> dict[str, Any]:
+        baselines: list[dict[str, Any]] = []
+        for (signal_type, country), observations in self._baselines.items():
+            rows = [
+                {
+                    "date": obs.date.isoformat(),
+                    "value": obs.value,
+                    "weekday": obs.weekday,
+                }
+                for obs in observations[-180:]
+            ]
+            baselines.append(
+                {
+                    "signal_type": signal_type,
+                    "country": country,
+                    "observations": rows,
+                }
+            )
+        current_values = [
+            {
+                "signal_type": signal_type,
+                "country": country,
+                "value": value,
+            }
+            for (signal_type, country), value in self._current_values.items()
+        ]
+        return {
+            "baselines": baselines,
+            "current_values": current_values,
+        }
+
+    def import_state(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        baselines = payload.get("baselines") or []
+        current_values = payload.get("current_values") or []
+        next_baselines: dict[tuple[str, str], list[DailyObservation]] = defaultdict(list)
+        next_current: dict[tuple[str, str], float] = {}
+
+        for item in baselines:
+            if not isinstance(item, dict):
+                continue
+            signal_type = str(item.get("signal_type") or "").strip()
+            country = str(item.get("country") or "").strip()
+            if not signal_type or not country:
+                continue
+            rows = item.get("observations") or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                date_raw = str(row.get("date") or "").strip()
+                try:
+                    dt = datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+                try:
+                    value = float(row.get("value") or 0.0)
+                    weekday = int(row.get("weekday") or dt.weekday())
+                except Exception:
+                    continue
+                next_baselines[(signal_type, country)].append(
+                    DailyObservation(date=dt, value=value, weekday=weekday)
+                )
+
+        for item in current_values:
+            if not isinstance(item, dict):
+                continue
+            signal_type = str(item.get("signal_type") or "").strip()
+            country = str(item.get("country") or "").strip()
+            if not signal_type or not country:
+                continue
+            try:
+                value = float(item.get("value") or 0.0)
+            except Exception:
+                continue
+            next_current[(signal_type, country)] = value
+
+        if next_baselines:
+            self._baselines = next_baselines
+            for key in list(self._baselines.keys()):
+                self._prune_baselines(key)
+        if next_current:
+            self._current_values = next_current
 
 
 # ---------------------------------------------------------------------------

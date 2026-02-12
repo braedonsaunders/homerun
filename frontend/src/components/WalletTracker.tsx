@@ -45,9 +45,16 @@ interface WalletTrackerProps {
   section?: 'tracked' | 'discover'
   discoverMode?: 'leaderboard' | 'winrate'
   onNavigateToWallet?: (address: string) => void
+  showManagementPanel?: boolean
 }
 
-export default function WalletTracker({ onAnalyzeWallet, section: propSection, discoverMode: propDiscoverMode, onNavigateToWallet }: WalletTrackerProps) {
+export default function WalletTracker({
+  onAnalyzeWallet,
+  section: propSection,
+  discoverMode: propDiscoverMode,
+  onNavigateToWallet,
+  showManagementPanel = true,
+}: WalletTrackerProps) {
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
@@ -75,6 +82,15 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
   const [selectedAccountId, setSelectedAccountId] = useState<string>('')
 
   const queryClient = useQueryClient()
+
+  const invalidateTrackedQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ['wallets'] })
+    queryClient.invalidateQueries({ queryKey: ['recent-trades-from-wallets'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-groups'] })
+    queryClient.invalidateQueries({ queryKey: ['trader-group-suggestions'] })
+    queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+    queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
+  }
 
   const { data: wallets = [], isLoading } = useQuery({
     queryKey: ['wallets'],
@@ -116,7 +132,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
     mutationFn: ({ address, label }: { address: string; label?: string }) =>
       addWallet(address, label),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+      invalidateTrackedQueries()
       setNewAddress('')
       setNewLabel('')
     },
@@ -125,7 +141,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
   const removeMutation = useMutation({
     mutationFn: removeWallet,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+      invalidateTrackedQueries()
     },
   })
 
@@ -133,7 +149,7 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
     mutationFn: (params: { address: string; label?: string; auto_copy?: boolean; simulation_account_id?: string }) =>
       analyzeAndTrackWallet(params),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['wallets'] })
+      invalidateTrackedQueries()
     },
   })
 
@@ -662,18 +678,20 @@ export default function WalletTracker({ onAnalyzeWallet, section: propSection, d
           </div>
 
           {/* Trader Group + List Management */}
-          <div className="mt-6">
-            <RecentTradesPanel
-              mode="management"
-              onNavigateToWallet={(address) => {
-                if (onNavigateToWallet) {
-                  onNavigateToWallet(address)
-                } else if (onAnalyzeWallet) {
-                  onAnalyzeWallet(address)
-                }
-              }}
-            />
-          </div>
+          {showManagementPanel && (
+            <div className="mt-6">
+              <RecentTradesPanel
+                mode="management"
+                onNavigateToWallet={(address) => {
+                  if (onNavigateToWallet) {
+                    onNavigateToWallet(address)
+                  } else if (onAnalyzeWallet) {
+                    onAnalyzeWallet(address)
+                  }
+                }}
+              />
+            </div>
+          )}
         </>
       )}
 

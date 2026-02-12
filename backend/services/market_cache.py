@@ -28,10 +28,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
-from models.database import Base, AsyncSessionLocal
+from models.database import (
+    Base,
+    AsyncSessionLocal,
+    WalletActivityRollup,
+    MarketConfluenceSignal,
+)
 from utils.logger import get_logger
 
 logger = get_logger("market_cache")
+
+MARKET_CACHE_HYGIENE_INTERVAL = timedelta(hours=6)
+MARKET_CACHE_RETENTION_DAYS = 120
+MARKET_CACHE_REFERENCE_LOOKBACK_DAYS = 45
+MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS = 7
+MARKET_CACHE_MAX_ENTRIES_PER_SLUG = 3
 
 
 # ==================== SQLAlchemy Models ====================
@@ -86,6 +97,11 @@ class MarketCacheService:
         self._market_cache: dict[str, dict] = {}  # In-memory for fast access
         self._username_cache: dict[str, str] = {}  # In-memory for fast access
         self._loaded = False
+        self._last_hygiene_at: Optional[datetime] = None
+
+    @staticmethod
+    def _norm(value: object) -> str:
+        return str(value or "").strip().lower()
 
     # -------------------- Startup --------------------
 
@@ -118,6 +134,12 @@ class MarketCacheService:
                 markets=len(self._market_cache),
                 usernames=len(self._username_cache),
             )
+            try:
+                hygiene = await self.run_hygiene_if_due(force=True)
+                if int(hygiene.get("markets_deleted", 0)) > 0:
+                    logger.info("Market cache hygiene removed stale entries", **hygiene)
+            except Exception as e:
+                logger.warning("Market cache hygiene failed after load", error=str(e))
         except Exception as e:
             logger.error("Failed to load cache from database", error=str(e))
             # Service remains usable with empty in-memory cache
@@ -128,6 +150,32 @@ class MarketCacheService:
     async def get_market(self, condition_id: str) -> Optional[dict]:
         """Get cached market metadata. Returns None if not cached."""
         return self._market_cache.get(condition_id)
+
+    async def delete_market(self, condition_id: str) -> bool:
+        """Delete a market metadata entry from memory and DB."""
+        if not condition_id:
+            return False
+        key = str(condition_id)
+        key_norm = self._norm(key)
+        self._market_cache.pop(key, None)
+        self._market_cache.pop(key_norm, None)
+
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    delete(CachedMarket).where(
+                        func.lower(CachedMarket.condition_id) == key_norm
+                    )
+                )
+                await session.commit()
+                return bool(result.rowcount)
+        except Exception as e:
+            logger.error(
+                "Failed to delete market cache entry",
+                condition_id=key,
+                error=str(e),
+            )
+            return False
 
     async def set_market(self, condition_id: str, data: dict):
         """Cache market metadata (write-through: memory + DB)."""
@@ -413,6 +461,177 @@ class MarketCacheService:
             "removed_markets": removed_markets,
             "removed_usernames": removed_usernames,
         }
+
+    async def run_hygiene_if_due(
+        self,
+        force: bool = False,
+        *,
+        interval_hours: Optional[int] = None,
+        retention_days: Optional[int] = None,
+        reference_lookback_days: Optional[int] = None,
+        weak_entry_grace_days: Optional[int] = None,
+        max_entries_per_slug: Optional[int] = None,
+    ) -> dict:
+        """Run market cache hygiene on an interval to keep metadata clean."""
+        now = utcnow()
+        interval = timedelta(
+            hours=max(
+                1,
+                int(
+                    interval_hours
+                    if interval_hours is not None
+                    else MARKET_CACHE_HYGIENE_INTERVAL.total_seconds() // 3600
+                ),
+            )
+        )
+        if (
+            not force
+            and self._last_hygiene_at
+            and (now - self._last_hygiene_at) < interval
+        ):
+            return {
+                "status": "skipped",
+                "next_due_after": (self._last_hygiene_at + interval).isoformat(),
+            }
+        result = await self.prune_market_metadata(
+            retention_days=(
+                int(retention_days)
+                if retention_days is not None
+                else MARKET_CACHE_RETENTION_DAYS
+            ),
+            reference_lookback_days=(
+                int(reference_lookback_days)
+                if reference_lookback_days is not None
+                else MARKET_CACHE_REFERENCE_LOOKBACK_DAYS
+            ),
+            weak_entry_grace_days=(
+                int(weak_entry_grace_days)
+                if weak_entry_grace_days is not None
+                else MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS
+            ),
+            max_entries_per_slug=(
+                int(max_entries_per_slug)
+                if max_entries_per_slug is not None
+                else MARKET_CACHE_MAX_ENTRIES_PER_SLUG
+            ),
+        )
+        self._last_hygiene_at = now
+        return result
+
+    async def prune_market_metadata(
+        self,
+        *,
+        retention_days: int = MARKET_CACHE_RETENTION_DAYS,
+        reference_lookback_days: int = MARKET_CACHE_REFERENCE_LOOKBACK_DAYS,
+        weak_entry_grace_days: int = MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS,
+        max_entries_per_slug: int = MARKET_CACHE_MAX_ENTRIES_PER_SLUG,
+    ) -> dict:
+        """Prune stale or inconsistent market cache rows.
+
+        Strategy:
+        - Keep recently referenced markets (activity/confluence lookback window).
+        - Remove rows with key mismatch, empty payload, or suspicious slug fanout.
+        - Remove stale rows older than retention.
+        """
+        now = utcnow()
+        stale_cutoff = now - timedelta(days=max(1, int(retention_days)))
+        ref_cutoff = now - timedelta(days=max(1, int(reference_lookback_days)))
+        weak_cutoff = now - timedelta(days=max(1, int(weak_entry_grace_days)))
+
+        deleted_ids: set[str] = set()
+        reasons: dict[str, int] = {}
+
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(select(CachedMarket))).scalars().all()
+
+            referenced_ids: set[str] = set()
+            activity_refs = await session.execute(
+                select(WalletActivityRollup.market_id)
+                .where(WalletActivityRollup.traded_at >= ref_cutoff)
+                .distinct()
+            )
+            referenced_ids.update(
+                self._norm(mid) for mid in activity_refs.scalars().all() if mid
+            )
+
+            confluence_refs = await session.execute(
+                select(MarketConfluenceSignal.market_id)
+                .where(
+                    func.coalesce(
+                        MarketConfluenceSignal.last_seen_at,
+                        MarketConfluenceSignal.detected_at,
+                    )
+                    >= ref_cutoff
+                )
+                .distinct()
+            )
+            referenced_ids.update(
+                self._norm(mid) for mid in confluence_refs.scalars().all() if mid
+            )
+
+            slug_counts: dict[str, int] = {}
+            for row in rows:
+                slug_norm = self._norm(row.slug)
+                if slug_norm:
+                    slug_counts[slug_norm] = slug_counts.get(slug_norm, 0) + 1
+
+            for row in rows:
+                key = self._norm(row.condition_id)
+                payload = row.extra_data if isinstance(row.extra_data, dict) else {}
+                embedded_key = self._norm(
+                    payload.get("condition_id") or payload.get("conditionId")
+                )
+                question = str(row.question or "").strip()
+                slug_norm = self._norm(row.slug)
+                referenced = key in referenced_ids
+                updated_at = row.updated_at or row.cached_at
+
+                reason: Optional[str] = None
+                if not key:
+                    reason = "empty_key"
+                elif embedded_key and embedded_key != key:
+                    reason = "embedded_key_mismatch"
+                elif not question and not slug_norm and not referenced:
+                    reason = "empty_payload"
+                elif (
+                    slug_norm
+                    and slug_counts.get(slug_norm, 0) > max_entries_per_slug
+                    and not embedded_key
+                ):
+                    reason = "suspicious_slug_collision"
+                elif updated_at and updated_at < weak_cutoff and not embedded_key and not referenced:
+                    reason = "missing_embedded_key"
+                elif updated_at and updated_at < stale_cutoff and not referenced:
+                    reason = "stale_unreferenced"
+
+                if reason:
+                    deleted_ids.add(str(row.condition_id))
+                    reasons[reason] = reasons.get(reason, 0) + 1
+
+            deleted_count = 0
+            if deleted_ids:
+                result = await session.execute(
+                    delete(CachedMarket).where(
+                        CachedMarket.condition_id.in_(list(deleted_ids))
+                    )
+                )
+                deleted_count = int(result.rowcount or 0)
+                await session.commit()
+                for cid in deleted_ids:
+                    self._market_cache.pop(cid, None)
+
+        summary = {
+            "status": "ok",
+            "scanned": len(rows),
+            "markets_deleted": len(deleted_ids),
+            "reasons": reasons,
+            "retention_days": retention_days,
+            "reference_lookback_days": reference_lookback_days,
+            "db_rowcount_deleted": deleted_count,
+        }
+        if len(deleted_ids) > 0:
+            logger.info("Pruned stale market cache metadata", **summary)
+        return summary
 
 
 # ==================== Singleton ====================

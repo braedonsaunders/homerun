@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings
+from .instability_catalog import instability_catalog
+from .military_catalog import military_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -23,50 +25,10 @@ logger = logging.getLogger(__name__)
 # Structural constants
 # ---------------------------------------------------------------------------
 
-# Regime multipliers: authoritarian regimes amplify event impact.
-# Sources: V-Dem, Freedom House.  Values are rough tiers.
-REGIME_MULTIPLIERS: dict[str, float] = {
-    # Authoritarian (2.0-2.5)
-    "PRK": 2.5, "ERI": 2.3, "TKM": 2.3, "SYR": 2.2, "AFG": 2.2,
-    "MMR": 2.0, "CHN": 2.0, "RUS": 2.0, "IRN": 2.0, "BLR": 2.0,
-    "SAU": 2.0, "CUB": 2.0, "VEN": 2.0,
-    # Hybrid (1.2-1.5)
-    "TUR": 1.5, "PAK": 1.4, "NGA": 1.3, "BGD": 1.3, "PHL": 1.2,
-    "HUN": 1.2, "MEX": 1.2, "IDN": 1.2, "THA": 1.3, "UKR": 1.2,
-    # Democracies (0.3-0.5) — events in democracies are less destabilising
-    "USA": 0.4, "GBR": 0.3, "DEU": 0.3, "FRA": 0.4, "JPN": 0.3,
-    "CAN": 0.3, "AUS": 0.3, "KOR": 0.4, "IND": 0.5, "BRA": 0.5,
-    "ZAF": 0.5, "ISR": 0.5,
-}
 _DEFAULT_REGIME_MULTIPLIER = 1.0
-
-# Structural baseline risk (0-40 range).
-BASELINE_RISK: dict[str, float] = {
-    # Failed / near-failed states
-    "SOM": 40, "YEM": 38, "SSD": 38, "AFG": 37, "SYR": 36, "LBY": 35,
-    "COD": 35, "HTI": 34, "MMR": 33, "SDN": 35,
-    # Active conflict zones
-    "UKR": 30, "IRQ": 28, "MLI": 27, "BFA": 27, "NGA": 26, "ETH": 26,
-    "MOZ": 25, "PSE": 30, "LBN": 25,
-    # Developing / moderate risk
-    "PAK": 22, "EGY": 20, "VEN": 20, "COL": 18, "PHL": 18,
-    "THA": 16, "MEX": 17, "IRN": 22, "PRK": 25, "RUS": 20,
-    "TUR": 18, "BGD": 18, "CHN": 15, "SAU": 16,
-    # Stable
-    "USA": 8, "GBR": 5, "DEU": 5, "FRA": 7, "JPN": 5,
-    "CAN": 5, "AUS": 5, "KOR": 8, "IND": 15, "BRA": 14,
-    "ISR": 18, "ZAF": 14, "IDN": 12,
-}
 _DEFAULT_BASELINE = 12.0
-
-# UCDP conflict floors: countries with active armed conflict get a score floor
-UCDP_ACTIVE_WAR_FLOOR = 70.0
-UCDP_MINOR_CONFLICT_FLOOR = 50.0
-
-UCDP_ACTIVE_WARS: set[str] = {"UKR", "SDN", "MMR", "PSE", "SYR", "YEM"}
-UCDP_MINOR_CONFLICTS: set[str] = {
-    "ETH", "NGA", "MLI", "BFA", "MOZ", "COD", "SOM", "IRQ", "AFG",
-}
+_DEFAULT_ACTIVE_WAR_FLOOR = 70.0
+_DEFAULT_MINOR_CONFLICT_FLOOR = 50.0
 
 # Rolling history retention
 _HISTORY_MAX_DAYS = 30
@@ -122,6 +84,16 @@ class InstabilityScorer:
         self._scores: dict[str, CountryInstabilityScore] = {}
         # Rolling daily history for trend calculation
         self._history: dict[str, list[_HistoricalScore]] = defaultdict(list)
+
+    @staticmethod
+    def _normalize_iso3(value: str) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        if len(text) == 3 and text.isalpha():
+            return text
+        aliases = military_catalog.country_aliases()
+        return aliases.get(text, "")
 
     # -- Component scorers ---------------------------------------------------
 
@@ -237,6 +209,15 @@ class InstabilityScorer:
         news_velocity = news_velocity or {}
         protest_events = protest_events or []
 
+        regime_multipliers = instability_catalog.regime_multipliers()
+        baseline_risk = instability_catalog.baseline_risk()
+        default_multiplier = float(instability_catalog.default_regime_multiplier() or _DEFAULT_REGIME_MULTIPLIER)
+        default_baseline = float(instability_catalog.default_baseline_risk() or _DEFAULT_BASELINE)
+        active_wars = instability_catalog.active_wars()
+        minor_conflicts = instability_catalog.minor_conflicts()
+        active_war_floor = float(instability_catalog.active_war_floor() or _DEFAULT_ACTIVE_WAR_FLOOR)
+        minor_conflict_floor = float(instability_catalog.minor_conflict_floor() or _DEFAULT_MINOR_CONFLICT_FLOOR)
+
         # Aggregate conflict events by country and type
         country_conflicts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         for ev in conflict_events:
@@ -256,7 +237,7 @@ class InstabilityScorer:
         # Aggregate military events by country
         country_military: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         for ev in military_events:
-            country = getattr(ev, "country", "")
+            country = self._normalize_iso3(getattr(ev, "country", ""))
             atype = getattr(ev, "activity_type", "")
             if country:
                 country_military[country][atype] += 1
@@ -271,8 +252,8 @@ class InstabilityScorer:
         results: dict[str, CountryInstabilityScore] = {}
 
         for iso3 in all_countries:
-            baseline = BASELINE_RISK.get(iso3, _DEFAULT_BASELINE)
-            multiplier = REGIME_MULTIPLIERS.get(iso3, _DEFAULT_REGIME_MULTIPLIER)
+            baseline = baseline_risk.get(iso3, default_baseline)
+            multiplier = regime_multipliers.get(iso3, default_multiplier)
 
             # Unrest component (25%)
             protests = country_protests.get(iso3, {})
@@ -313,10 +294,10 @@ class InstabilityScorer:
             score = baseline * 0.4 + event_score * 0.6
 
             # Apply UCDP conflict floors
-            if iso3 in UCDP_ACTIVE_WARS:
-                score = max(score, UCDP_ACTIVE_WAR_FLOOR)
-            elif iso3 in UCDP_MINOR_CONFLICTS:
-                score = max(score, UCDP_MINOR_CONFLICT_FLOOR)
+            if iso3 in active_wars:
+                score = max(score, active_war_floor)
+            elif iso3 in minor_conflicts:
+                score = max(score, minor_conflict_floor)
 
             score = min(100.0, round(score, 1))
 

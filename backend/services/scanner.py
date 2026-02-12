@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Optional, Callable, List
@@ -340,15 +341,59 @@ class ArbitrageScanner:
             platform = str(getattr(market, "platform", "polymarket") or "polymarket")
             if platform != "polymarket":
                 continue
-            token_ids = getattr(market, "clob_token_ids", None) or []
-            if len(token_ids) < 2:
+            token_pair = self._coerce_polymarket_token_pair(
+                getattr(market, "clob_token_ids", None)
+            )
+            if token_pair is None:
                 continue
-            yes_token = str(token_ids[0] or "")
-            no_token = str(token_ids[1] or "")
-            # Polymarket token IDs are long hashes; skip synthetic IDs.
-            if len(yes_token) <= 20 or len(no_token) <= 20:
-                continue
-            self._market_token_ids[market_id] = (yes_token, no_token)
+            self._market_token_ids[market_id] = token_pair
+
+    @staticmethod
+    def _coerce_polymarket_token_pair(raw: object) -> Optional[tuple[str, str]]:
+        """Parse polymarket YES/NO token IDs from list/tuple/JSON-string payloads."""
+        parsed = raw
+        if isinstance(parsed, str):
+            text = parsed.strip()
+            if not text:
+                return None
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+
+        if not isinstance(parsed, (list, tuple)) or len(parsed) < 2:
+            return None
+
+        yes_token = str(parsed[0] or "").strip()
+        no_token = str(parsed[1] or "").strip()
+        if not yes_token or not no_token or yes_token == no_token:
+            return None
+
+        # Real Polymarket token IDs are long hashes/ints; skip synthetic IDs.
+        if len(yes_token) <= 20 or len(no_token) <= 20:
+            return None
+        return yes_token, no_token
+
+    def _remember_market_tokens_from_opportunities(
+        self, opportunities: list[ArbitrageOpportunity]
+    ) -> None:
+        """Cache YES/NO token IDs from opportunity market dicts."""
+        for opp in opportunities:
+            for market in opp.markets:
+                market_id = str(market.get("id", "") or "")
+                if not market_id:
+                    continue
+                platform = str(
+                    market.get("platform", "polymarket") or "polymarket"
+                ).lower()
+                if platform != "polymarket":
+                    continue
+                token_pair = self._coerce_polymarket_token_pair(
+                    market.get("clob_token_ids")
+                )
+                if token_pair is None:
+                    continue
+                self._market_token_ids[market_id] = token_pair
 
     def _merge_market_history_points(
         self, market_id: str, incoming: list[dict[str, float]], now_ms: int
@@ -630,6 +675,47 @@ class ArbitrageScanner:
             if hist:
                 out[mid] = hist[-limit:]
         return out
+
+    async def attach_price_history_to_opportunities(
+        self,
+        opportunities: list[ArbitrageOpportunity],
+        *,
+        now: Optional[datetime] = None,
+        timeout_seconds: Optional[float] = 12.0,
+    ) -> int:
+        """Attach scanner-managed market price history to opportunity market payloads."""
+        if not opportunities:
+            return 0
+
+        ts = now or datetime.now(timezone.utc)
+        self._remember_market_tokens_from_opportunities(opportunities)
+
+        try:
+            if timeout_seconds is not None and timeout_seconds > 0:
+                await asyncio.wait_for(
+                    self._backfill_market_history_for_opportunities(opportunities, ts),
+                    timeout=timeout_seconds,
+                )
+            else:
+                await self._backfill_market_history_for_opportunities(opportunities, ts)
+        except asyncio.TimeoutError:
+            print("  Sparkline backfill timed out (shared attach)")
+        except Exception as e:
+            print(f"  Sparkline backfill error in shared attach: {e}")
+
+        market_history = self.get_market_history_for_opportunities(opportunities)
+        attached = 0
+        for opp in opportunities:
+            for market in opp.markets:
+                market_id = str(market.get("id", "") or "")
+                if not market_id:
+                    continue
+                history = market_history.get(market_id, [])
+                if len(history) < 2:
+                    continue
+                market["price_history"] = history
+                attached += 1
+        return attached
 
     async def _notify_status_change(self):
         """Notify all status callbacks of a change"""
@@ -1501,6 +1587,7 @@ class ArbitrageScanner:
         """
         try:
             from services.ai.opportunity_judge import opportunity_judge
+            import services.shared_state as scanner_shared_state
 
             # Filter: only unscored (DB dedup already attached scored ones)
             candidates = [o for o in opportunities if o.ai_analysis is None]
@@ -1516,6 +1603,21 @@ class ArbitrageScanner:
             print(f"  AI Judge: scoring {len(candidates)} unscored opportunities...")
 
             sem = asyncio.Semaphore(self.AI_SCORE_CONCURRENCY)
+            persist_lock = asyncio.Lock()
+
+            async def _persist_inline_analysis(opp: ArbitrageOpportunity) -> None:
+                if not opp.ai_analysis:
+                    return
+                # Serialize snapshot patch writes so concurrent scorers don't
+                # overwrite each other's updates.
+                async with persist_lock:
+                    async with AsyncSessionLocal() as session:
+                        await scanner_shared_state.update_opportunity_ai_analysis_in_snapshot(
+                            session=session,
+                            opportunity_id=opp.id,
+                            stable_id=opp.stable_id,
+                            ai_analysis=opp.ai_analysis.model_dump(mode="json"),
+                        )
 
             async def _score_one(opp):
                 async with sem:
@@ -1531,6 +1633,10 @@ class ArbitrageScanner:
                         risk_factors=result.get("risk_factors", []),
                         judged_at=datetime.now(timezone.utc),
                     )
+                    try:
+                        await _persist_inline_analysis(opp)
+                    except Exception as e:
+                        print(f"  AI Judge persist warning: {e}")
                     print(
                         f"  AI Judge: {opp.title[:50]}... "
                         f"-> {result.get('recommendation', 'unknown')} "
@@ -1659,9 +1765,9 @@ class ArbitrageScanner:
     async def _attach_ai_judgments(self, opportunities: list):
         """Attach existing AI judgments from the DB to opportunity objects.
 
-        Performs a single batch query for recent judgments and matches them
-        to opportunities by stable_id. This is the source of truth —
-        no in-memory cache needed.
+        Performs a single batch query for latest judgments and matches them
+        to opportunities by stable_id. This treats DB-persisted judgments as
+        durable state (survives worker restarts and scan cycles).
         """
         if not opportunities:
             return
@@ -1669,19 +1775,13 @@ class ArbitrageScanner:
         try:
             from sqlalchemy import func
 
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                seconds=self.AI_SCORE_CACHE_TTL_SECONDS
-            )
-
             async with AsyncSessionLocal() as session:
-                # Get the most recent judgment per opportunity_id,
-                # but only those within the TTL window
+                # Get the most recent judgment per opportunity_id.
                 subq = (
                     select(
                         OpportunityJudgment.opportunity_id,
                         func.max(OpportunityJudgment.judged_at).label("latest"),
                     )
-                    .where(OpportunityJudgment.judged_at >= cutoff)
                     .group_by(OpportunityJudgment.opportunity_id)
                     .subquery()
                 )

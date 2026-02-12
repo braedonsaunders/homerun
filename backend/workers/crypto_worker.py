@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import sys
 from collections import deque
@@ -27,6 +28,7 @@ from services.worker_state import (
     clear_worker_run_request,
     ensure_worker_control,
     read_worker_control,
+    read_worker_snapshot,
     write_worker_snapshot,
 )
 
@@ -39,6 +41,14 @@ logger = logging.getLogger("crypto_worker")
 # Keep short in-memory oracle history per asset for chart sparkline payloads.
 _MAX_ORACLE_HISTORY_POINTS = 180
 _oracle_history_by_asset: dict[str, deque[tuple[int, float]]] = {}
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _record_oracle_point(asset: str, timestamp_ms: int, price: float) -> None:
@@ -65,6 +75,46 @@ def _oracle_history_payload(asset: str) -> list[dict]:
     if points and points[-1] != history[-1]:
         points.append(history[-1])
     return [{"t": t, "p": round(p, 2)} for t, p in points]
+
+
+def _restore_price_to_beat_from_snapshot_markets(markets: list[dict]) -> int:
+    """Warm ``CryptoService._price_to_beat`` from previous worker snapshot rows."""
+    if not markets:
+        return 0
+
+    svc = get_crypto_service()
+    restored = 0
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    for row in markets:
+        if not isinstance(row, dict):
+            continue
+
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+
+        ptb = _to_float(row.get("price_to_beat"))
+        if ptb is None:
+            continue
+
+        # Skip clearly-expired windows to avoid carrying stale values across days.
+        end_time = row.get("end_time")
+        if isinstance(end_time, str) and end_time.strip():
+            try:
+                end_ts = datetime.fromisoformat(
+                    end_time.replace("Z", "+00:00")
+                ).timestamp()
+                if now_ts - end_ts > 1800:
+                    continue
+            except ValueError:
+                pass
+
+        if slug not in svc._price_to_beat:
+            svc._price_to_beat[slug] = ptb
+            restored += 1
+
+    return restored
 
 
 def _build_crypto_market_payload() -> list[dict]:
@@ -104,8 +154,33 @@ async def _run_loop() -> None:
     logger.info("Crypto worker started")
     worker_name = "crypto"
 
+    startup_stats = {"market_count": 0, "signals_emitted_last_run": 0, "markets": []}
     async with AsyncSessionLocal() as session:
         await ensure_worker_control(session, worker_name, default_interval=2)
+        previous_snapshot = await read_worker_snapshot(session, worker_name)
+        previous_stats = (
+            previous_snapshot.get("stats")
+            if isinstance(previous_snapshot.get("stats"), dict)
+            else {}
+        )
+        previous_markets = (
+            previous_stats.get("markets")
+            if isinstance(previous_stats.get("markets"), list)
+            else []
+        )
+        if previous_markets:
+            startup_stats = {
+                "market_count": len(previous_markets),
+                "signals_emitted_last_run": int(
+                    previous_stats.get("signals_emitted_last_run") or 0
+                ),
+                "markets": previous_markets,
+            }
+
+        restored = _restore_price_to_beat_from_snapshot_markets(previous_markets)
+        if restored:
+            logger.info("Restored %s price-to-beat entries from last snapshot", restored)
+
         await write_worker_snapshot(
             session,
             worker_name,
@@ -115,7 +190,7 @@ async def _run_loop() -> None:
             interval_seconds=2,
             last_run_at=None,
             last_error=None,
-            stats={"market_count": 0, "signals_emitted_last_run": 0, "markets": []},
+            stats=startup_stats,
         )
 
     # Chainlink oracle feed is owned by this worker (not API).

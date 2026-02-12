@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -17,9 +17,11 @@ from models.database import (
     WeatherTradeIntent,
 )
 from models.opportunity import ArbitrageOpportunity
+from services.market_tradability import get_market_tradability_map
 
 WEATHER_SNAPSHOT_ID = "latest"
 WEATHER_CONTROL_ID = "default"
+MIN_TIME_TO_RESOLUTION = timedelta(minutes=30)
 
 
 def _parse_iso_datetime(value: str) -> datetime:
@@ -134,8 +136,27 @@ async def get_weather_opportunities_from_db(
     direction: Optional[str] = None,
     max_entry_price: Optional[float] = None,
     location_query: Optional[str] = None,
+    require_tradable_markets: bool = False,
+    exclude_near_resolution: bool = False,
 ) -> list[ArbitrageOpportunity]:
     opportunities, _ = await read_weather_snapshot(session)
+
+    if opportunities and exclude_near_resolution:
+        now = datetime.now(timezone.utc)
+        filtered: list[ArbitrageOpportunity] = []
+        for opp in opportunities:
+            if opp.resolution_date is None:
+                filtered.append(opp)
+                continue
+            rd = (
+                opp.resolution_date
+                if opp.resolution_date.tzinfo is not None
+                else opp.resolution_date.replace(tzinfo=timezone.utc)
+            )
+            if rd <= (now + MIN_TIME_TO_RESOLUTION):
+                continue
+            filtered.append(opp)
+        opportunities = filtered
 
     if min_edge_percent is not None:
         opportunities = [o for o in opportunities if o.roi_percent >= min_edge_percent]
@@ -153,11 +174,20 @@ async def get_weather_opportunities_from_db(
         opportunities = filtered
 
     if max_entry_price is not None:
-        opportunities = [
-            o
-            for o in opportunities
-            if (o.positions_to_take and float(o.positions_to_take[0].get("price", 1.0)) <= max_entry_price)
-        ]
+        filtered: list[ArbitrageOpportunity] = []
+        for opp in opportunities:
+            positions = opp.positions_to_take or []
+            # Keep report-only rows (no executable leg) visible in weather UI.
+            if not positions:
+                filtered.append(opp)
+                continue
+            try:
+                price = float(positions[0].get("price", 1.0))
+            except Exception:
+                continue
+            if price <= max_entry_price:
+                filtered.append(opp)
+        opportunities = filtered
 
     if location_query:
         q = location_query.lower()
@@ -168,6 +198,31 @@ async def get_weather_opportunities_from_db(
             or q in o.title.lower()
             or q in o.description.lower()
         ]
+
+    if opportunities and require_tradable_markets:
+        market_ids: set[str] = set()
+        by_index: dict[int, list[str]] = {}
+        for idx, opp in enumerate(opportunities):
+            mids: list[str] = []
+            seen: set[str] = set()
+            for market in opp.markets or []:
+                if not isinstance(market, dict):
+                    continue
+                mid = str(market.get("id") or market.get("condition_id") or "").strip().lower()
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                mids.append(mid)
+                market_ids.add(mid)
+            by_index[idx] = mids
+
+        if market_ids:
+            tradability = await get_market_tradability_map(market_ids)
+            opportunities = [
+                opp
+                for idx, opp in enumerate(opportunities)
+                if all(tradability.get(mid, True) for mid in by_index.get(idx, []))
+            ]
 
     return opportunities
 
@@ -263,7 +318,25 @@ async def list_weather_intents(
         query = query.where(WeatherTradeIntent.status == status_filter)
     query = query.limit(limit)
     result = await session.execute(query)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+
+    actionable = [r for r in rows if r.status in {"pending", "submitted"} and r.market_id]
+    if actionable:
+        tradability = await get_market_tradability_map([str(r.market_id) for r in actionable])
+        now = utcnow()
+        changed = 0
+        for row in actionable:
+            if tradability.get(str(row.market_id).strip().lower(), True):
+                continue
+            row.status = "expired"
+            row.consumed_at = now
+            changed += 1
+        if changed:
+            await session.commit()
+            if status_filter in {"pending", "submitted"}:
+                rows = [r for r in rows if r.status == status_filter]
+
+    return rows
 
 
 async def mark_weather_intent(
@@ -279,6 +352,62 @@ async def mark_weather_intent(
         return False
     row.status = status
     row.consumed_at = datetime.now(timezone.utc)
+    await session.commit()
+    return True
+
+
+def _stable_id_from_opportunity_id(opportunity_id: Optional[str]) -> Optional[str]:
+    if not opportunity_id:
+        return None
+    text = str(opportunity_id).strip()
+    if not text:
+        return None
+    parts = text.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return text
+
+
+async def update_weather_opportunity_ai_analysis_in_snapshot(
+    session: AsyncSession,
+    opportunity_id: str,
+    stable_id: Optional[str],
+    ai_analysis: dict[str, Any],
+) -> bool:
+    """Persist ai_analysis on a weather opportunity inside weather_snapshot."""
+    sid = (stable_id or "").strip() or _stable_id_from_opportunity_id(opportunity_id)
+    oid = (opportunity_id or "").strip()
+    if not oid and not sid:
+        return False
+
+    result = await session.execute(
+        select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID)
+    )
+    row = result.scalar_one_or_none()
+    if row is None or not isinstance(row.opportunities_json, list):
+        return False
+
+    updated = False
+    patched_payload: list[dict[str, Any]] = []
+    for item in row.opportunities_json:
+        if not isinstance(item, dict):
+            patched_payload.append(item)
+            continue
+        item_id = str(item.get("id") or "").strip()
+        item_sid = str(item.get("stable_id") or "").strip()
+        if (oid and item_id == oid) or (sid and item_sid == sid):
+            patched = dict(item)
+            patched["ai_analysis"] = ai_analysis
+            patched_payload.append(patched)
+            updated = True
+        else:
+            patched_payload.append(item)
+
+    if not updated:
+        return False
+
+    row.opportunities_json = patched_payload
+    row.updated_at = utcnow()
     await session.commit()
     return True
 

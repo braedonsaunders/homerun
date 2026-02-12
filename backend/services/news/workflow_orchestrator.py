@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,6 +120,7 @@ class WorkflowOrchestrator:
 
         try:
             from services.news.edge_estimator import WorkflowFinding, edge_estimator
+            from services.news.article_clusterer import article_clusterer
             from services.news.event_extractor import event_extractor
             from services.news.feed_service import news_feed_service
             from services.news.hybrid_retriever import HybridRetriever
@@ -141,7 +142,12 @@ class WorkflowOrchestrator:
             articles = news_feed_service.get_articles(
                 max_age_hours=min(wf_settings.get("article_max_age_hours", 6), 48)
             )
-            articles.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
+            articles.sort(
+                key=lambda a: self._coerce_datetime(getattr(a, "published", None))
+                or self._coerce_datetime(getattr(a, "fetched_at", None))
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
             articles = articles[: settings.NEWS_MAX_ARTICLES_PER_SCAN]
             if not articles:
                 return {
@@ -150,6 +156,30 @@ class WorkflowOrchestrator:
                     "intents": 0,
                     "stats": {
                         "articles": 0,
+                        "events": 0,
+                        "market_count": 0,
+                        "llm_calls_used": 0,
+                        "llm_calls_skipped": 0,
+                    },
+                }
+
+            cycle_llm_call_cap = int(wf_settings.get("cycle_llm_call_cap", 30) or 30)
+            cluster_limit = max(
+                8,
+                min(
+                    len(articles),
+                    max(12, int(cycle_llm_call_cap * 2)),
+                ),
+            )
+            clusters = article_clusterer.cluster(articles, max_clusters=cluster_limit)
+            if not clusters:
+                return {
+                    "status": "no_clusters",
+                    "findings": 0,
+                    "intents": 0,
+                    "stats": {
+                        "articles": len(articles),
+                        "clusters": 0,
                         "events": 0,
                         "market_count": 0,
                         "llm_calls_used": 0,
@@ -176,6 +206,7 @@ class WorkflowOrchestrator:
                     "intents": 0,
                     "stats": {
                         "articles": len(articles),
+                        "clusters": len(clusters),
                         "events": 0,
                         "market_count": 0,
                         "llm_calls_used": 0,
@@ -216,56 +247,74 @@ class WorkflowOrchestrator:
                     usage = await llm_manager.get_usage_stats()
             except Exception:
                 llm_manager = None
-            if "spend_remaining_usd" in usage:
-                global_remaining = float(usage.get("spend_remaining_usd", 0.0) or 0.0)
-            else:
-                # If usage read fails but provider is up, don't hard-disable LLM.
-                global_remaining = (
-                    float("inf")
-                    if (llm_manager and llm_manager.is_available())
-                    else 0.0
+            llm_available = bool(llm_manager and llm_manager.is_available())
+            local_model_mode = self._is_local_model_mode(
+                model=wf_settings.get("model"),
+                usage=usage,
+            )
+
+            if local_model_mode and llm_available:
+                global_remaining = float("inf")
+                cycle_spend_cap = 10_000.0
+                hourly_spend_cap = 10_000.0
+                hourly_news_spend = 0.0
+                effective_call_cap = max(
+                    cycle_llm_call_cap,
+                    max(80, len(clusters) * 3),
                 )
-            hourly_news_spend = await self._hourly_news_spend_usd(session)
-            cycle_llm_call_cap = int(wf_settings.get("cycle_llm_call_cap", 30) or 30)
+                estimated_cost_per_call = 0.0
+            else:
+                if "spend_remaining_usd" in usage:
+                    spend_limit = float(usage.get("spend_limit_usd", 0.0) or 0.0)
+                    if spend_limit <= 0:
+                        global_remaining = float("inf")
+                    else:
+                        global_remaining = float(
+                            usage.get("spend_remaining_usd", 0.0) or 0.0
+                        )
+                else:
+                    # If usage read fails but provider is up, don't hard-disable LLM.
+                    global_remaining = float("inf") if llm_available else 0.0
+                hourly_news_spend = await self._hourly_news_spend_usd(session)
+                cycle_spend_cap = float(
+                    wf_settings.get("cycle_spend_cap_usd", 0.25) or 0.25
+                )
+                hourly_spend_cap = float(
+                    wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0
+                )
+                effective_call_cap = cycle_llm_call_cap
+                estimated_cost_per_call = 0.02
+
             budget = CycleBudget(
-                llm_available=bool(llm_manager and llm_manager.is_available() and global_remaining > 0),
+                llm_available=bool(llm_available and global_remaining > 0),
                 global_spend_remaining_usd=global_remaining,
-                cycle_spend_cap_usd=float(wf_settings.get("cycle_spend_cap_usd", 0.25) or 0.25),
-                hourly_spend_cap_usd=float(wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0),
+                cycle_spend_cap_usd=cycle_spend_cap,
+                hourly_spend_cap_usd=hourly_spend_cap,
                 hourly_news_spend_usd=hourly_news_spend,
-                cycle_llm_call_cap=cycle_llm_call_cap,
+                cycle_llm_call_cap=effective_call_cap,
+                estimated_cost_per_call_usd=estimated_cost_per_call,
             )
 
             # 5) Event extraction with adaptive LLM usage.
-            # Reserve most LLM budget for rerank + edge estimation (where signal quality is decided).
-            event_llm_quota = (
-                max(0, min(len(articles), int(cycle_llm_call_cap * 0.2)))
-                if cycle_llm_call_cap >= 5
-                else 0
-            )
-            rerank_llm_quota = (
-                max(0, min(len(articles), int(cycle_llm_call_cap * 0.2)))
-                if cycle_llm_call_cap >= 5
-                else 0
-            )
+            # Local models get broader quotas; remote models stay capped.
+            if local_model_mode and budget.llm_available:
+                event_llm_quota = len(clusters)
+                rerank_llm_quota = len(clusters)
+            else:
+                event_llm_quota = (
+                    max(0, min(len(clusters), int(effective_call_cap * 0.25)))
+                    if effective_call_cap >= 5
+                    else 0
+                )
+                rerank_llm_quota = (
+                    max(0, min(len(clusters), int(effective_call_cap * 0.3)))
+                    if effective_call_cap >= 5
+                    else 0
+                )
             event_llm_used = 0
             rerank_llm_used = 0
             alignment_dropped = 0
-
-            events = []
-            for article in articles:
-                allow_llm = False
-                if event_llm_used < event_llm_quota and budget.reserve_calls(1) == 1:
-                    allow_llm = True
-                    event_llm_used += 1
-                event = await event_extractor.extract(
-                    title=article.title,
-                    summary=article.summary or "",
-                    source=article.source,
-                    model=wf_settings.get("model"),
-                    allow_llm=allow_llm,
-                )
-                events.append(event)
+            cluster_events = 0
 
             retriever = HybridRetriever(market_watcher_index)
             market_metadata_by_id = {
@@ -296,10 +345,9 @@ class WorkflowOrchestrator:
             min_semantic_signal = float(
                 wf_settings.get("min_semantic_signal", 0.22) or 0.22
             )
-            require_verifier = bool(wf_settings.get("require_verifier", True))
             min_edge = float(wf_settings.get("min_edge_percent", 8.0) or 8.0)
             min_conf = float(wf_settings.get("min_confidence", 0.6) or 0.6)
-            max_edge_evals_per_article = int(
+            max_edge_evals_per_cluster = int(
                 wf_settings.get("max_edge_evals_per_article", 3) or 3
             )
             cache_ttl_minutes = int(wf_settings.get("cache_ttl_minutes", 30) or 30)
@@ -307,11 +355,28 @@ class WorkflowOrchestrator:
             all_findings: list[WorkflowFinding] = []
             market_sources_seen: dict[str, set[str]] = defaultdict(set)
 
-            for article, event in zip(articles, events):
+            for cluster in clusters:
+                article = cluster.representative
+                allow_llm = False
+                if event_llm_used < event_llm_quota and budget.reserve_calls(1) == 1:
+                    allow_llm = True
+                    event_llm_used += 1
+                event = await event_extractor.extract(
+                    title=cluster.headline or article.title,
+                    summary=(cluster.summary or cluster.merged_text or article.summary or "")[:1000],
+                    source=cluster.primary_source or article.source,
+                    model=wf_settings.get("model"),
+                    allow_llm=allow_llm,
+                )
                 if event.confidence < 0.2:
                     continue
+                cluster_events += 1
 
-                article_text = f"{article.title} {article.summary or ''}".strip()
+                article_text = (
+                    cluster.merged_text
+                    or f"{cluster.headline} {cluster.summary or ''}".strip()
+                    or f"{article.title} {article.summary or ''}".strip()
+                )
                 candidates = retriever.retrieve(
                     event=event,
                     article_text=article_text,
@@ -328,7 +393,7 @@ class WorkflowOrchestrator:
                 if not candidates:
                     continue
 
-                use_llm_rerank = require_verifier or self._should_use_llm_rerank(candidates)
+                use_llm_rerank = self._should_use_llm_rerank(candidates)
                 allow_llm_rerank = False
                 if (
                     use_llm_rerank
@@ -338,8 +403,8 @@ class WorkflowOrchestrator:
                     allow_llm_rerank = True
                     rerank_llm_used += 1
                 reranked = await reranker.rerank(
-                    article_title=article.title,
-                    article_summary=article.summary or "",
+                    article_title=cluster.headline or article.title,
+                    article_summary=(cluster.summary or cluster.merged_text or article.summary or "")[:900],
                     candidates=candidates,
                     top_n=rerank_top_n,
                     model=wf_settings.get("model"),
@@ -347,18 +412,6 @@ class WorkflowOrchestrator:
                 )
                 if not reranked:
                     continue
-
-                if require_verifier:
-                    reranked, rejected = self._split_verified_candidates(
-                        article=article,
-                        event=event,
-                        reranked=reranked,
-                    )
-                    for finding in rejected:
-                        self._assign_finding_keys(finding)
-                        all_findings.append(finding)
-                    if not reranked:
-                        continue
 
                 reranked = [
                     r for r in reranked if r.rerank_score >= max(0.2, sim_threshold * 0.7)
@@ -375,6 +428,7 @@ class WorkflowOrchestrator:
                             rc=rc,
                             reason="temporal_mismatch",
                         )
+                        self._attach_cluster_metadata(rejected, cluster)
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
@@ -390,23 +444,26 @@ class WorkflowOrchestrator:
                     else:
                         rejected = self._build_rejected_finding(
                             article=article,
-                            event=event,
-                            rc=rc,
-                            reason="entity_alignment_mismatch",
-                        )
+                                event=event,
+                                rc=rc,
+                                reason="entity_alignment_mismatch",
+                            )
+                        self._attach_cluster_metadata(rejected, cluster)
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
                 if not aligned_reranked:
                     continue
-                reranked = aligned_reranked[: max(1, max_edge_evals_per_article)]
+                reranked = aligned_reranked[: max(1, max_edge_evals_per_cluster)]
 
                 # Source-diversity gate for expensive per-market edge calls.
                 diversity_gated = []
                 for rc in reranked:
                     seen = market_sources_seen.get(rc.market_id, set())
-                    src = (article.source or "").strip().lower()
-                    if src and src in seen:
+                    cluster_sources = set(cluster.source_keys or [])
+                    if not cluster_sources and article.source:
+                        cluster_sources = {(article.source or "").strip().lower()}
+                    if cluster_sources and cluster_sources.issubset(seen):
                         budget.llm_calls_skipped += 1
                         continue
                     diversity_gated.append(rc)
@@ -415,7 +472,7 @@ class WorkflowOrchestrator:
 
                 # Reuse recent cached findings (article+market+price bucket) before LLM.
                 cache_keys = [
-                    self._cache_key(article.article_id, rc.market_id, rc.candidate.yes_price)
+                    self._cache_key(cluster.article_key, rc.market_id, rc.candidate.yes_price)
                     for rc in diversity_gated
                 ]
                 cached = await self._load_cached_findings(
@@ -428,23 +485,25 @@ class WorkflowOrchestrator:
                 to_estimate = []
                 for rc in diversity_gated:
                     cache_key = self._cache_key(
-                        article.article_id,
+                        cluster.article_key,
                         rc.market_id,
                         rc.candidate.yes_price,
                     )
                     row = cached.get(cache_key)
                     if row is not None:
-                        cached_hits.append(self._row_to_finding(row))
+                        hit = self._row_to_finding(row)
+                        self._attach_cluster_metadata(hit, cluster)
+                        cached_hits.append(hit)
                     else:
                         to_estimate.append(rc)
 
                 llm_calls_for_edges = budget.reserve_calls(len(to_estimate))
                 findings = await edge_estimator.estimate_batch(
-                    article_title=article.title,
-                    article_summary=article.summary or "",
-                    article_source=article.source,
-                    article_url=article.url,
-                    article_id=article.article_id,
+                    article_title=cluster.headline or article.title,
+                    article_summary=(cluster.summary or cluster.merged_text or article.summary or "")[:1000],
+                    article_source=cluster.primary_source or article.source,
+                    article_url=cluster.primary_url or article.url,
+                    article_id=cluster.article_key,
                     event=event,
                     reranked=to_estimate,
                     min_edge_percent=min_edge,
@@ -456,9 +515,10 @@ class WorkflowOrchestrator:
 
                 article_findings = cached_hits + findings
                 for finding in article_findings:
+                    self._attach_cluster_metadata(finding, cluster)
                     self._assign_finding_keys(finding)
-                    market_sources_seen[finding.market_id].add(
-                        (finding.article_source or "").strip().lower()
+                    market_sources_seen[finding.market_id].update(
+                        self._finding_sources(finding)
                     )
                 all_findings.extend(article_findings)
 
@@ -467,9 +527,7 @@ class WorkflowOrchestrator:
             if bool(wf_settings.get("require_second_source", False)):
                 by_market_sources: dict[str, set[str]] = defaultdict(set)
                 for f in deduped_findings:
-                    src = (f.article_source or "").strip().lower()
-                    if src:
-                        by_market_sources[f.market_id].add(src)
+                    by_market_sources[f.market_id].update(self._finding_sources(f))
                 for f in deduped_findings:
                     if len(by_market_sources.get(f.market_id, set())) < 2:
                         f.actionable = False
@@ -496,7 +554,8 @@ class WorkflowOrchestrator:
             stats = {
                 "cycle_count": self._cycle_count,
                 "articles": len(articles),
-                "events": len(events),
+                "clusters": len(clusters),
+                "events": cluster_events,
                 "market_count": len(market_infos),
                 "findings": len(deduped_findings),
                 "actionable": len(actionable),
@@ -507,6 +566,8 @@ class WorkflowOrchestrator:
                 "event_llm_used": event_llm_used,
                 "rerank_llm_quota": rerank_llm_quota,
                 "rerank_llm_used": rerank_llm_used,
+                "local_model_mode": local_model_mode,
+                "cluster_limit": cluster_limit,
                 "alignment_dropped": alignment_dropped,
                 "elapsed_seconds": round(elapsed, 2),
                 "market_index": {
@@ -519,9 +580,10 @@ class WorkflowOrchestrator:
             }
 
             logger.info(
-                "News workflow cycle #%d: %d articles -> %d findings (%d actionable) -> %d intents (%.1fs)",
+                "News workflow cycle #%d: %d articles -> %d clusters -> %d findings (%d actionable) -> %d intents (%.1fs)",
                 self._cycle_count,
                 len(articles),
+                len(clusters),
                 len(deduped_findings),
                 len(actionable),
                 len(intents),
@@ -531,7 +593,8 @@ class WorkflowOrchestrator:
             return {
                 "status": "completed",
                 "articles": len(articles),
-                "events": len(events),
+                "clusters": len(clusters),
+                "events": cluster_events,
                 "findings": len(deduped_findings),
                 "actionable": len(actionable),
                 "intents": len(intents),
@@ -891,6 +954,100 @@ class WorkflowOrchestrator:
                 )
             )
         return verified, rejected
+
+    @staticmethod
+    def _attach_cluster_metadata(finding, cluster) -> None:
+        """Attach cluster-level context to a finding in-place."""
+        if finding is None or cluster is None:
+            return
+
+        finding.article_id = getattr(cluster, "article_key", finding.article_id)
+        if getattr(cluster, "headline", None):
+            finding.article_title = cluster.headline
+        if getattr(cluster, "primary_source", None):
+            finding.article_source = cluster.primary_source
+        if getattr(cluster, "primary_url", None):
+            finding.article_url = cluster.primary_url
+
+        def _iso(dt: Optional[datetime]) -> Optional[str]:
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=None).isoformat() + "Z"
+
+        cluster_meta = {
+            "cluster_id": getattr(cluster, "cluster_id", None),
+            "article_ids": list(getattr(cluster, "article_ids", []) or []),
+            "article_count": int(getattr(cluster, "article_count", 0) or 0),
+            "sources": list(getattr(cluster, "source_list", []) or []),
+            "article_refs": [
+                {
+                    "article_id": str(getattr(article, "article_id", "") or ""),
+                    "title": str(getattr(article, "title", "") or ""),
+                    "url": str(getattr(article, "url", "") or ""),
+                    "source": str(getattr(article, "source", "") or ""),
+                    "published": _iso(WorkflowOrchestrator._coerce_datetime(getattr(article, "published", None))),
+                    "fetched_at": _iso(WorkflowOrchestrator._coerce_datetime(getattr(article, "fetched_at", None))),
+                }
+                for article in list(getattr(cluster, "articles", []) or [])[:8]
+            ],
+            "newest_ts": _iso(getattr(cluster, "newest_ts", None)),
+            "oldest_ts": _iso(getattr(cluster, "oldest_ts", None)),
+        }
+
+        event_graph = dict(getattr(finding, "event_graph", {}) or {})
+        event_graph["cluster"] = cluster_meta
+        finding.event_graph = event_graph
+
+        evidence = dict(getattr(finding, "evidence", {}) or {})
+        evidence["cluster"] = cluster_meta
+        finding.evidence = evidence
+
+    @staticmethod
+    def _finding_sources(finding) -> set[str]:
+        sources: set[str] = set()
+        src = str(getattr(finding, "article_source", "") or "").strip().lower()
+        if src:
+            sources.add(src)
+
+        evidence = getattr(finding, "evidence", {}) or {}
+        cluster_meta = evidence.get("cluster") if isinstance(evidence, dict) else None
+        if isinstance(cluster_meta, dict):
+            for source in cluster_meta.get("sources", []) or []:
+                value = str(source or "").strip().lower()
+                if value:
+                    sources.add(value)
+        return sources
+
+    @staticmethod
+    def _is_local_model_mode(model: Optional[str], usage: dict[str, Any]) -> bool:
+        model_name = str(model or usage.get("active_model") or "").strip().lower()
+        configured = {
+            str(provider).strip().lower()
+            for provider in list(usage.get("configured_providers", []) or [])
+            if provider
+        }
+
+        if model_name.startswith("ollama/") or model_name.startswith("lmstudio/"):
+            return True
+        if configured and configured.issubset({"ollama", "lmstudio"}):
+            return True
+        if configured.intersection({"ollama", "lmstudio"}) and any(
+            hint in model_name
+            for hint in (
+                "llama",
+                "mistral",
+                "qwen",
+                "phi",
+                "gemma",
+                "local",
+            )
+        ):
+            return True
+        return False
 
     async def _hourly_news_spend_usd(self, session: AsyncSession) -> float:
         cutoff = utcnow() - timedelta(hours=1)

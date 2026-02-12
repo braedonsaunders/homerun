@@ -73,16 +73,23 @@ def _parse_date_from_question(question: str) -> Optional[datetime]:
 
 
 def _parse_location(question: str) -> Optional[str]:
-    # Capture text after "in" and before "on|by|before|after|?".
-    m = re.search(
-        r"\bin\s+([A-Za-z0-9\s,.'\-/]+?)(?:\s+on\b|\s+by\b|\s+before\b|\s+after\b|\?|$)",
-        question,
-        flags=re.IGNORECASE,
-    )
-    if not m:
-        return None
-    loc = " ".join(m.group(1).split()).strip(" ,.-")
-    return loc or None
+    # Prefer "in <location> on <date>" form, then handle variants like
+    # "in London be 13°C on Feb 11?" where location is followed by a verb.
+    patterns = [
+        r"\bin\s+([A-Za-z][A-Za-z0-9\s,.'\-/]+?)\s+on\b",
+        r"\bin\s+([A-Za-z][A-Za-z0-9\s,.'\-/]+?)\s+(?:be|is|was|will(?:\s+be)?)\b",
+        r"\bin\s+([A-Za-z][A-Za-z0-9\s,.'\-/]+?)(?:\?|$)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, question, flags=re.IGNORECASE)
+        if not m:
+            continue
+        loc = " ".join(m.group(1).split()).strip(" ,.-")
+        # Drop accidental trailing numeric fragments from malformed captures.
+        loc = re.sub(r"\s+-?\d.*$", "", loc).strip(" ,.-")
+        if loc:
+            return loc
+    return None
 
 
 def _build_temp_threshold_contract(
@@ -91,12 +98,13 @@ def _build_temp_threshold_contract(
     op_text: str,
     raw_value: float,
     unit: str,
+    metric: str = "temp_threshold",
 ) -> ParsedWeatherContract:
     unit_up = unit.upper()
     return ParsedWeatherContract(
         location=location,
         target_time=target_time,
-        metric="temp_threshold",
+        metric=metric,
         operator=_normalize_operator(op_text),
         threshold_c=_to_celsius(raw_value, unit_up),
         threshold_c_low=None,
@@ -114,6 +122,7 @@ def _build_temp_range_contract(
     raw_low: float,
     raw_high: float,
     unit: str,
+    metric: str = "temp_range",
 ) -> ParsedWeatherContract:
     unit_up = unit.upper()
     low = min(raw_low, raw_high)
@@ -121,7 +130,7 @@ def _build_temp_range_contract(
     return ParsedWeatherContract(
         location=location,
         target_time=target_time,
-        metric="temp_range",
+        metric=metric,
         operator="between",
         threshold_c=None,
         threshold_c_low=_to_celsius(low, unit_up),
@@ -209,6 +218,29 @@ def _parse_temperature_band(
     return None
 
 
+def _temperature_context(question: str) -> Optional[str]:
+    q = question.lower()
+    if re.search(
+        r"\b(?:highest|max(?:imum)?|high(?:est)?\s+temperature|the\s+high\b|high\s+in)\b",
+        q,
+    ):
+        return "max"
+    if re.search(
+        r"\b(?:lowest|min(?:imum)?|low(?:est)?\s+temperature|the\s+low\b|low\s+in)\b",
+        q,
+    ):
+        return "min"
+    return None
+
+
+def _metric_for_context(base: str, temp_context: Optional[str]) -> str:
+    if temp_context == "max":
+        return f"temp_max_{base}"
+    if temp_context == "min":
+        return f"temp_min_{base}"
+    return f"temp_{base}"
+
+
 def parse_weather_contract(
     question: str,
     resolution_date: Optional[datetime] = None,
@@ -240,10 +272,11 @@ def parse_weather_contract(
             target_time = datetime.now(timezone.utc)
 
     default_unit = _detect_unit(q) or _detect_unit(group_item_title or "") or "F"
+    temp_context = _temperature_context(q)
 
     # Temperature contract with explicit threshold in question.
     temp_match = re.search(
-        r"(?:temperature|high|low)[^\d]*(above|over|below|under|at least|at most)\s*(-?\d+(?:\.\d+)?)\s*°?\s*([FC])",
+        r"(?:temperature|high|low).*?(above|over|below|under|at least|at most)\s*(-?\d+(?:\.\d+)?)\s*°?\s*([FC])",
         q,
         flags=re.IGNORECASE,
     )
@@ -255,6 +288,26 @@ def parse_weather_contract(
             op_text=op_text,
             raw_value=float(raw_val),
             unit=unit,
+            metric=_metric_for_context("threshold", temp_context),
+        )
+
+    # Exact value contracts (common in daily high/low markets):
+    # "Will the highest temperature in London be 13°C on February 11?"
+    exact_match = re.search(
+        r"\b(?:be|is|equals?|reach(?:es)?|hit(?:s)?)\s*(-?\d+(?:\.\d+)?)\s*°?\s*([FC])\b",
+        q,
+        flags=re.IGNORECASE,
+    )
+    if exact_match and temp_context is not None:
+        center = float(exact_match.group(1))
+        unit = exact_match.group(2).upper()
+        return _build_temp_range_contract(
+            location=location,
+            target_time=target_time,
+            raw_low=center - 0.5,
+            raw_high=center + 0.5,
+            unit=unit,
+            metric=_metric_for_context("range", temp_context),
         )
 
     # Generic weather page style contracts use the main question for context
@@ -271,6 +324,7 @@ def parse_weather_contract(
                     raw_low=left,
                     raw_high=right,
                     unit=unit,
+                    metric=_metric_for_context("range", temp_context),
                 )
             if kind == "threshold_gt":
                 return _build_temp_threshold_contract(
@@ -279,6 +333,7 @@ def parse_weather_contract(
                     op_text="above",
                     raw_value=left,
                     unit=unit,
+                    metric=_metric_for_context("threshold", temp_context),
                 )
             if kind == "threshold_lt":
                 return _build_temp_threshold_contract(
@@ -287,6 +342,7 @@ def parse_weather_contract(
                     op_text="below",
                     raw_value=left,
                     unit=unit,
+                    metric=_metric_for_context("threshold", temp_context),
                 )
 
     # Rain/snow/precip occurrence contract.

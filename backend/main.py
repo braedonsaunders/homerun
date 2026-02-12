@@ -54,8 +54,11 @@ from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from models.database import AsyncSessionLocal, init_database
 from services import discovery_shared_state, shared_state
-from services.autotrader_state import read_autotrader_snapshot
-from services.worker_state import list_worker_snapshots
+from services.autotrader_state import read_autotrader_control, read_autotrader_snapshot
+from services.news import shared_state as news_shared_state
+from services.pause_state import global_pause_state
+from services.weather import shared_state as weather_shared_state
+from services.worker_state import list_worker_snapshots, read_worker_control
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
@@ -106,6 +109,45 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Restore global pause state from persisted worker controls.
+        # This keeps API-owned loops (copy trader, wallet tracker, LLM/trading gates)
+        # aligned with worker controls across restarts.
+        try:
+            async with AsyncSessionLocal() as session:
+                scanner_control = await shared_state.read_scanner_control(session)
+                news_control = await news_shared_state.read_news_control(session)
+                weather_control = await weather_shared_state.read_weather_control(session)
+                discovery_control = await discovery_shared_state.read_discovery_control(
+                    session
+                )
+                autotrader_control = await read_autotrader_control(session)
+                crypto_control = await read_worker_control(session, "crypto")
+                tracked_control = await read_worker_control(session, "tracked_traders")
+                world_intel_control = await read_worker_control(
+                    session, "world_intelligence"
+                )
+
+            should_pause = all(
+                bool(control.get("is_paused", False))
+                for control in (
+                    scanner_control,
+                    news_control,
+                    weather_control,
+                    discovery_control,
+                    autotrader_control,
+                    crypto_control,
+                    tracked_control,
+                    world_intel_control,
+                )
+            )
+            if should_pause:
+                global_pause_state.pause()
+            else:
+                global_pause_state.resume()
+            logger.info("Global pause state restored", paused=should_pause)
+        except Exception as e:
+            logger.warning(f"Failed to restore global pause state (continuing): {e}")
 
         # Load persisted search filter settings from DB into config singleton
         try:

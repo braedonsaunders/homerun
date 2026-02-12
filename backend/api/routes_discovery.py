@@ -4,22 +4,33 @@ from utils.utcnow import utcnow
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, delete
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     DiscoveredWallet,
+    ScannerSnapshot,
+    TrackedWallet,
     TraderGroup,
     TraderGroupMember,
+    WalletActivityRollup,
     WalletCluster,
     get_db_session,
 )
 from services import discovery_shared_state
 from services.insider_detector import insider_detector
+from services.pause_state import global_pause_state
 from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
-from services.smart_wallet_pool import smart_wallet_pool
+from services.smart_wallet_pool import (
+    smart_wallet_pool,
+    POOL_FLAG_MANUAL_EXCLUDE,
+    POOL_FLAG_MANUAL_INCLUDE,
+    POOL_FLAG_BLACKLISTED,
+    POOL_RECOMPUTE_MODE_QUALITY_ONLY,
+    POOL_RECOMPUTE_MODE_BALANCED,
+)
 from services.wallet_tracker import wallet_tracker
 from services.worker_state import read_worker_snapshot
 from utils.validation import validate_eth_address
@@ -66,6 +77,9 @@ async def _build_discovery_status(session: AsyncSession) -> dict:
         worker_status.get("run_interval_minutes", 60)
     )
     stats["paused"] = bool(worker_status.get("paused", False))
+    stats["priority_backlog_mode"] = bool(
+        worker_status.get("priority_backlog_mode", True)
+    )
     stats["requested_run_at"] = worker_status.get("requested_run_at")
     return stats
 
@@ -87,6 +101,10 @@ class UpdateTraderGroupMembersRequest(BaseModel):
     source_label: str = Field(default="manual", max_length=40)
 
 
+class PoolFlagRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=240)
+
+
 def _normalize_wallet_addresses(addresses: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -104,6 +122,113 @@ def _normalize_wallet_addresses(addresses: list[str]) -> list[str]:
 def _suggestion_id(kind: str, key: str) -> str:
     safe_key = "".join(ch if ch.isalnum() else "_" for ch in key.lower())
     return f"{kind}:{safe_key}"
+
+
+def _coerce_source_flags(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
+def _pool_flags(source_flags: dict) -> dict[str, bool]:
+    return {
+        "manual_include": bool(source_flags.get(POOL_FLAG_MANUAL_INCLUDE)),
+        "manual_exclude": bool(source_flags.get(POOL_FLAG_MANUAL_EXCLUDE)),
+        "blacklisted": bool(source_flags.get(POOL_FLAG_BLACKLISTED)),
+    }
+
+
+def _market_categories_from_flags(source_flags: dict) -> list[str]:
+    categories = [
+        key.replace("leaderboard_category_", "")
+        for key, enabled in source_flags.items()
+        if key.startswith("leaderboard_category_") and bool(enabled)
+    ]
+    return sorted(set(categories))
+
+
+def _normalize_market_id(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_placeholder_market_question(question: object) -> bool:
+    text = str(question or "").strip().lower()
+    return text.startswith("market 0x")
+
+
+def _humanize_market_slug(slug: object) -> str:
+    raw = str(slug or "").strip().replace("_", "-")
+    if not raw:
+        return ""
+    parts = [p for p in raw.split("-") if p]
+    if not parts:
+        return ""
+    return " ".join(p[:1].upper() + p[1:] for p in parts)
+
+
+def _extract_yes_no_from_history(history: list[dict]) -> tuple[Optional[float], Optional[float]]:
+    if not history:
+        return None, None
+    last = history[-1] if isinstance(history[-1], dict) else {}
+    yes = last.get("yes")
+    no = last.get("no")
+    try:
+        yes_v = float(yes) if yes is not None else None
+    except Exception:
+        yes_v = None
+    try:
+        no_v = float(no) if no is not None else None
+    except Exception:
+        no_v = None
+    return yes_v, no_v
+
+
+async def _load_scanner_market_history(session: AsyncSession) -> dict[str, list[dict]]:
+    """Read scanner snapshot market history map used by main opportunities sparklines."""
+    result = await session.execute(
+        select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
+    )
+    row = result.scalar_one_or_none()
+    if row is None or not isinstance(row.market_history_json, dict):
+        return {}
+
+    out: dict[str, list[dict]] = {}
+    for market_id, points in row.market_history_json.items():
+        key = _normalize_market_id(market_id)
+        if not key or not isinstance(points, list):
+            continue
+        out[key] = [p for p in points if isinstance(p, dict)]
+    return out
+
+
+def _attach_market_history_to_signal_rows(
+    rows: list[dict],
+    market_history: dict[str, list[dict]],
+) -> None:
+    """Attach sparkline payload and latest YES/NO prices to confluence/insider rows."""
+    if not rows:
+        return
+
+    for row in rows:
+        market_id = _normalize_market_id(row.get("market_id"))
+        if not market_id:
+            continue
+
+        history = market_history.get(market_id, [])
+        if len(history) >= 2:
+            # Keep payload compact and consistent with AI context-pack limits.
+            compact = history[-20:]
+            row["price_history"] = compact
+            yes_price, no_price = _extract_yes_no_from_history(compact)
+            if yes_price is not None:
+                row["yes_price"] = yes_price
+            if no_price is not None:
+                row["no_price"] = no_price
+
+        if _is_placeholder_market_question(row.get("market_question")):
+            slug_fallback = _humanize_market_slug(row.get("market_slug"))
+            if slug_fallback:
+                row["market_question"] = slug_fallback
 
 
 def _first_valid_trade_time(trade: dict) -> Optional[datetime]:
@@ -144,6 +269,26 @@ async def _track_wallet_addresses(
         except Exception:
             continue
     return tracked
+
+
+def _apply_pool_flag_updates(
+    source_flags: dict,
+    *,
+    manual_include: Optional[bool] = None,
+    manual_exclude: Optional[bool] = None,
+    blacklisted: Optional[bool] = None,
+    tracked_wallet: Optional[bool] = None,
+) -> dict:
+    out = dict(source_flags)
+    if manual_include is not None:
+        out[POOL_FLAG_MANUAL_INCLUDE] = bool(manual_include)
+    if manual_exclude is not None:
+        out[POOL_FLAG_MANUAL_EXCLUDE] = bool(manual_exclude)
+    if blacklisted is not None:
+        out[POOL_FLAG_BLACKLISTED] = bool(blacklisted)
+    if tracked_wallet is not None:
+        out["tracked_wallet"] = bool(tracked_wallet)
+    return out
 
 
 async def _fetch_group_payload(
@@ -272,6 +417,18 @@ async def get_leaderboard(
         default=None,
         description="Pool tier filter: core, rising, standby",
     ),
+    search: Optional[str] = Query(
+        default=None,
+        description="Search wallet address, username, tags, or strategy terms",
+    ),
+    unique_entities_only: bool = Query(
+        default=False,
+        description="Deduplicate clustered wallets so each entity appears once",
+    ),
+    market_category: Optional[str] = Query(
+        default=None,
+        description="Market focus filter: politics, sports, crypto, culture, economics, tech, finance, weather",
+    ),
 ):
     """
     Get the wallet leaderboard with comprehensive filters and sorting.
@@ -320,6 +477,28 @@ async def get_leaderboard(
                 detail=f"Invalid recommendation. Must be one of: {valid_recommendations}",
             )
 
+        # Validate market category (optional)
+        valid_market_categories = [
+            "politics",
+            "sports",
+            "crypto",
+            "culture",
+            "economics",
+            "tech",
+            "finance",
+            "weather",
+            "overall",
+            "all",
+        ]
+        if market_category and market_category.lower() not in valid_market_categories:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid market_category. Must be one of: "
+                    f"{valid_market_categories}"
+                ),
+            )
+
         # Map time_period to rolling window key
         window_key = None
         if time_period and time_period != "all":
@@ -350,6 +529,9 @@ async def get_leaderboard(
             min_activity_score=min_activity_score,
             pool_only=pool_only,
             tier=tier,
+            search_text=search,
+            unique_entities_only=unique_entities_only,
+            market_category=market_category,
         )
 
         # When no discovered wallets yet, fall back to live Polymarket leaderboard so UI shows traders
@@ -439,6 +621,11 @@ async def trigger_discovery(
     """
     Queue a one-time discovery run for the discovery worker.
     """
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Resume all workers before queueing runs.",
+        )
     try:
         await discovery_shared_state.request_one_discovery_run(session)
         return {
@@ -453,6 +640,11 @@ async def trigger_discovery(
 @discovery_router.post("/start")
 async def start_discovery_worker(session: AsyncSession = Depends(get_db_session)):
     """Resume automatic discovery worker cycles."""
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Use /workers/resume-all first.",
+        )
     await discovery_shared_state.set_discovery_paused(session, False)
     return {
         "status": "started",
@@ -477,6 +669,19 @@ async def set_discovery_interval(
 ):
     """Set discovery worker cadence in minutes."""
     await discovery_shared_state.set_discovery_interval(session, interval_minutes)
+    return {
+        "status": "updated",
+        **await discovery_shared_state.get_discovery_status_from_db(session),
+    }
+
+
+@discovery_router.post("/priority-backlog-mode")
+async def set_discovery_priority_backlog_mode(
+    enabled: bool = Query(..., description="Enable backlog-priority cadence and queue"),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Enable or disable discovery priority backlog mode."""
+    await discovery_shared_state.set_discovery_priority_backlog_mode(session, enabled)
     return {
         "status": "updated",
         **await discovery_shared_state.get_discovery_status_from_db(session),
@@ -552,11 +757,639 @@ async def trigger_confluence_scan():
 async def get_smart_pool_stats(session: AsyncSession = Depends(get_db_session)):
     """Get near-real-time smart wallet pool health metrics."""
     try:
+        canonical = await smart_wallet_pool.get_pool_stats()
         worker = await read_worker_snapshot(session, "tracked_traders")
         stats = worker.get("stats") or {}
-        if isinstance(stats, dict) and stats:
-            return stats.get("pool_stats") or stats
-        return await smart_wallet_pool.get_pool_stats()
+        if isinstance(stats, dict):
+            pool_stats = stats.get("pool_stats")
+            if (
+                isinstance(pool_stats, dict)
+                and "active_1h" in pool_stats
+                and "active_24h" in pool_stats
+            ):
+                # Prefer DB-computed values for live counts, but preserve worker
+                # timing metadata when canonical values are empty in API-only processes.
+                merged = {**pool_stats, **canonical}
+                for key in (
+                    "last_pool_recompute_at",
+                    "last_full_sweep_at",
+                    "last_incremental_refresh_at",
+                    "last_activity_reconciliation_at",
+                    "last_error",
+                    "candidates_last_sweep",
+                    "events_last_reconcile",
+                ):
+                    if merged.get(key) in (None, "") and pool_stats.get(key) not in (None, ""):
+                        merged[key] = pool_stats.get(key)
+                return merged
+        return canonical
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/pool/actions/recompute")
+async def recompute_smart_pool(
+    mode: str = Query(
+        default=POOL_RECOMPUTE_MODE_QUALITY_ONLY,
+        description="quality_only or balanced",
+    ),
+):
+    """Force smart pool recomputation with optional mode override."""
+    normalized = str(mode or "").strip().lower()
+    valid_modes = {POOL_RECOMPUTE_MODE_QUALITY_ONLY, POOL_RECOMPUTE_MODE_BALANCED}
+    if normalized not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode. Must be one of: {sorted(valid_modes)}",
+        )
+    try:
+        await smart_wallet_pool.recompute_pool(mode=normalized)
+        return {
+            "status": "success",
+            "mode": smart_wallet_pool.get_recompute_mode(),
+            "pool_stats": await smart_wallet_pool.get_pool_stats(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.get("/pool/members")
+async def get_pool_members(
+    limit: int = Query(default=300, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    pool_only: bool = Query(default=True),
+    include_blacklisted: bool = Query(default=True),
+    tier: Optional[str] = Query(default=None, description="core or rising"),
+    search: Optional[str] = Query(default=None),
+    sort_by: str = Query(
+        default="composite_score",
+        description="selection_score, composite_score, quality_score, activity_score, trades_24h, trades_1h, last_trade_at, rank_score",
+    ),
+    sort_dir: str = Query(default="desc", description="asc or desc"),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List smart-pool members with actionable flags for management workflows."""
+    try:
+        valid_sort_fields = {
+            "selection_score": lambda row: float(
+                row.get("selection_score") or row.get("composite_score") or 0.0
+            ),
+            "composite_score": lambda row: float(row.get("composite_score") or 0.0),
+            "quality_score": lambda row: float(row.get("quality_score") or 0.0),
+            "activity_score": lambda row: float(row.get("activity_score") or 0.0),
+            "trades_24h": lambda row: int(row.get("trades_24h") or 0),
+            "trades_1h": lambda row: int(row.get("trades_1h") or 0),
+            "last_trade_at": lambda row: row.get("last_trade_at") or "",
+            "rank_score": lambda row: float(row.get("rank_score") or 0.0),
+        }
+        if sort_by not in valid_sort_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid sort_by. Must be one of: {list(valid_sort_fields)}",
+            )
+        if sort_dir not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="sort_dir must be asc or desc")
+
+        wallets_result = await session.execute(select(DiscoveredWallet))
+        wallets = list(wallets_result.scalars().all())
+        tracked_result = await session.execute(
+            select(TrackedWallet.address, TrackedWallet.label)
+        )
+        tracked_rows = list(tracked_result.all())
+        tracked_addresses = {str(row[0]).lower() for row in tracked_rows}
+        tracked_labels = {
+            str(row[0]).lower(): str(row[1]).strip()
+            for row in tracked_rows
+            if row[1] is not None and str(row[1]).strip()
+        }
+
+        cluster_ids = sorted(
+            {
+                str(w.cluster_id).strip()
+                for w in wallets
+                if w.cluster_id is not None and str(w.cluster_id).strip()
+            }
+        )
+        cluster_labels: dict[str, str] = {}
+        if cluster_ids:
+            cluster_rows = await session.execute(
+                select(WalletCluster.id, WalletCluster.label).where(
+                    WalletCluster.id.in_(cluster_ids)
+                )
+            )
+            cluster_labels = {
+                str(row[0]).strip().lower(): str(row[1]).strip()
+                for row in cluster_rows.all()
+                if row[1] is not None and str(row[1]).strip()
+            }
+
+        def _looks_placeholder_label(value: Optional[str]) -> bool:
+            text = str(value or "").strip()
+            if not text:
+                return True
+            lower = text.lower()
+            if lower.startswith("0x") and ("..." in text or len(text) <= 16):
+                return True
+            return False
+
+        query = (search or "").strip().lower()
+        rows: list[dict] = []
+        blacklisted_count = 0
+        manual_included_count = 0
+        manual_excluded_count = 0
+        pool_member_count = 0
+        tracked_in_pool_count = 0
+
+        for wallet in wallets:
+            source_flags = _coerce_source_flags(wallet.source_flags)
+            flags = _pool_flags(source_flags)
+            categories = _market_categories_from_flags(source_flags)
+            addr_l = wallet.address.lower()
+            is_tracked = addr_l in tracked_addresses
+            tracked_label = tracked_labels.get(addr_l)
+            cluster_label = cluster_labels.get(
+                str(wallet.cluster_id or "").strip().lower()
+            )
+
+            username = str(wallet.username or "").strip() or None
+            display_name = username
+            name_source = "username" if display_name else "unresolved"
+            if not display_name and tracked_label and not _looks_placeholder_label(tracked_label):
+                display_name = tracked_label
+                name_source = "tracked_label"
+            if not display_name and cluster_label:
+                display_name = cluster_label
+                name_source = "cluster_label"
+
+            selection_meta = source_flags.get("pool_selection_meta")
+            if not isinstance(selection_meta, dict):
+                selection_meta = {}
+            raw_reasons = selection_meta.get("reasons")
+            selection_reasons = (
+                [r for r in raw_reasons if isinstance(r, dict)]
+                if isinstance(raw_reasons, list)
+                else []
+            )
+            selection_breakdown = selection_meta.get("score_breakdown")
+            if not isinstance(selection_breakdown, dict):
+                selection_breakdown = {}
+            try:
+                selection_score = float(
+                    selection_meta.get("selection_score")
+                    if selection_meta.get("selection_score") is not None
+                    else (wallet.composite_score or 0.0)
+                )
+            except Exception:
+                selection_score = float(wallet.composite_score or 0.0)
+            try:
+                selection_rank = (
+                    int(selection_meta.get("selection_rank"))
+                    if selection_meta.get("selection_rank") is not None
+                    else None
+                )
+            except Exception:
+                selection_rank = None
+            try:
+                selection_percentile = (
+                    float(selection_meta.get("selection_percentile"))
+                    if selection_meta.get("selection_percentile") is not None
+                    else None
+                )
+            except Exception:
+                selection_percentile = None
+            raw_eligibility_status = str(
+                selection_meta.get("eligibility_status") or ""
+            ).strip().lower()
+            if raw_eligibility_status in {"eligible", "blocked"}:
+                eligibility_status = raw_eligibility_status
+            else:
+                eligibility_status = "eligible" if wallet.in_top_pool else "blocked"
+            raw_blockers = selection_meta.get("eligibility_blockers")
+            if isinstance(raw_blockers, list):
+                eligibility_blockers = [
+                    item
+                    for item in raw_blockers
+                    if isinstance(item, (dict, str))
+                ]
+            else:
+                eligibility_blockers = []
+            try:
+                analysis_freshness_hours = (
+                    float(selection_meta.get("analysis_freshness_hours"))
+                    if selection_meta.get("analysis_freshness_hours") is not None
+                    else None
+                )
+            except Exception:
+                analysis_freshness_hours = None
+            if analysis_freshness_hours is None and wallet.last_analyzed_at is not None:
+                analysis_freshness_hours = round(
+                    max(
+                        (utcnow() - wallet.last_analyzed_at).total_seconds(),
+                        0.0,
+                    )
+                    / 3600.0,
+                    2,
+                )
+            quality_gate_version = (
+                str(selection_meta.get("quality_gate_version")).strip()
+                if selection_meta.get("quality_gate_version") is not None
+                else None
+            )
+
+            if flags["blacklisted"]:
+                blacklisted_count += 1
+            if flags["manual_include"]:
+                manual_included_count += 1
+            if flags["manual_exclude"]:
+                manual_excluded_count += 1
+
+            if pool_only and not wallet.in_top_pool:
+                continue
+            if not include_blacklisted and flags["blacklisted"]:
+                continue
+            if tier and (wallet.pool_tier or "").lower() != tier.lower():
+                continue
+
+            tag_text = " ".join(wallet.tags or [])
+            strategy_text = " ".join(wallet.strategies_detected or [])
+            category_text = " ".join(categories)
+            if query:
+                haystack = " ".join(
+                    [
+                        wallet.address.lower(),
+                        str(wallet.username or "").lower(),
+                        str(display_name or "").lower(),
+                        str(tracked_label or "").lower(),
+                        str(wallet.pool_tier or "").lower(),
+                        tag_text.lower(),
+                        strategy_text.lower(),
+                        category_text.lower(),
+                    ]
+                )
+                if query not in haystack:
+                    continue
+
+            row = {
+                "address": wallet.address,
+                "username": wallet.username,
+                "display_name": display_name,
+                "name_source": name_source,
+                "tracked_label": tracked_label,
+                "cluster_label": cluster_label,
+                "in_top_pool": bool(wallet.in_top_pool),
+                "pool_tier": wallet.pool_tier,
+                "pool_membership_reason": wallet.pool_membership_reason,
+                "rank_score": wallet.rank_score or 0.0,
+                "composite_score": wallet.composite_score or 0.0,
+                "quality_score": wallet.quality_score or 0.0,
+                "activity_score": wallet.activity_score or 0.0,
+                "stability_score": wallet.stability_score or 0.0,
+                "selection_score": selection_score,
+                "selection_rank": selection_rank,
+                "selection_percentile": selection_percentile,
+                "selection_reasons": selection_reasons,
+                "selection_breakdown": selection_breakdown,
+                "selection_updated_at": selection_meta.get("updated_at"),
+                "eligibility_status": eligibility_status,
+                "eligibility_blockers": eligibility_blockers,
+                "analysis_freshness_hours": analysis_freshness_hours,
+                "quality_gate_version": quality_gate_version,
+                "trades_1h": wallet.trades_1h or 0,
+                "trades_24h": wallet.trades_24h or 0,
+                "last_trade_at": wallet.last_trade_at.isoformat()
+                if wallet.last_trade_at
+                else None,
+                "total_trades": wallet.total_trades or 0,
+                "total_pnl": wallet.total_pnl or 0.0,
+                "win_rate": wallet.win_rate or 0.0,
+                "tags": wallet.tags or [],
+                "strategies_detected": wallet.strategies_detected or [],
+                "market_categories": categories,
+                "tracked_wallet": is_tracked,
+                "pool_flags": flags,
+            }
+            rows.append(row)
+            if row["in_top_pool"]:
+                pool_member_count += 1
+                if is_tracked:
+                    tracked_in_pool_count += 1
+
+        rows.sort(
+            key=valid_sort_fields[sort_by],
+            reverse=(sort_dir != "asc"),
+        )
+
+        total = len(rows)
+        page = rows[offset : offset + limit]
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "members": page,
+            "stats": {
+                "pool_members": pool_member_count,
+                "blacklisted": blacklisted_count,
+                "manual_included": manual_included_count,
+                "manual_excluded": manual_excluded_count,
+                "tracked_in_pool": tracked_in_pool_count,
+                "tracked_total": len(tracked_addresses),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/pool/members/{wallet_address}/manual-include")
+async def pool_manual_include(
+    wallet_address: str,
+    payload: Optional[PoolFlagRequest] = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Force-include a wallet in the pool unless blacklisted."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            wallet = DiscoveredWallet(
+                address=address,
+                discovered_at=utcnow(),
+                discovery_source="manual_pool",
+            )
+            session.add(wallet)
+
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(
+            source_flags,
+            manual_include=True,
+            manual_exclude=False,
+            blacklisted=False,
+        )
+        if payload and payload.reason:
+            source_flags["pool_manual_reason"] = payload.reason
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.delete("/pool/members/{wallet_address}/manual-include")
+async def clear_pool_manual_include(
+    wallet_address: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Clear manual include override for a wallet."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(source_flags, manual_include=False)
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/pool/members/{wallet_address}/manual-exclude")
+async def pool_manual_exclude(
+    wallet_address: str,
+    payload: Optional[PoolFlagRequest] = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Force-exclude a wallet from the pool."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(
+            source_flags,
+            manual_include=False,
+            manual_exclude=True,
+        )
+        if payload and payload.reason:
+            source_flags["pool_manual_reason"] = payload.reason
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.delete("/pool/members/{wallet_address}/manual-exclude")
+async def clear_pool_manual_exclude(
+    wallet_address: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Clear manual exclude override for a wallet."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(source_flags, manual_exclude=False)
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/pool/members/{wallet_address}/blacklist")
+async def blacklist_pool_wallet(
+    wallet_address: str,
+    payload: Optional[PoolFlagRequest] = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Blacklist wallet from pool selection."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(
+            source_flags,
+            blacklisted=True,
+            manual_include=False,
+            manual_exclude=True,
+        )
+        if payload and payload.reason:
+            source_flags["pool_blacklist_reason"] = payload.reason
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.delete("/pool/members/{wallet_address}/blacklist")
+async def unblacklist_pool_wallet(
+    wallet_address: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Remove wallet from pool blacklist."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+        wallet = await session.get(DiscoveredWallet, address)
+        if wallet is None:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+        source_flags = _coerce_source_flags(wallet.source_flags)
+        source_flags = _apply_pool_flag_updates(source_flags, blacklisted=False)
+        wallet.source_flags = source_flags
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {"status": "success", "address": address, "pool_flags": _pool_flags(source_flags)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.delete("/pool/members/{wallet_address}")
+async def delete_pool_wallet(
+    wallet_address: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete wallet from discovery/tracking datasets and remove from pool."""
+    try:
+        address = validate_eth_address(wallet_address).lower()
+
+        removed_discovered = (
+            await session.execute(
+                delete(DiscoveredWallet).where(DiscoveredWallet.address == address)
+            )
+        ).rowcount or 0
+        removed_rollups = (
+            await session.execute(
+                delete(WalletActivityRollup).where(
+                    WalletActivityRollup.wallet_address == address
+                )
+            )
+        ).rowcount or 0
+        removed_tracked = (
+            await session.execute(
+                delete(TrackedWallet).where(TrackedWallet.address == address)
+            )
+        ).rowcount or 0
+        removed_group_memberships = (
+            await session.execute(
+                delete(TraderGroupMember).where(
+                    TraderGroupMember.wallet_address == address
+                )
+            )
+        ).rowcount or 0
+        await session.commit()
+
+        await smart_wallet_pool.recompute_pool()
+        return {
+            "status": "success",
+            "address": address,
+            "removed": {
+                "discovered_wallets": int(removed_discovered),
+                "wallet_activity_rollups": int(removed_rollups),
+                "tracked_wallets": int(removed_tracked),
+                "group_memberships": int(removed_group_memberships),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@discovery_router.post("/pool/actions/promote-tracked")
+async def promote_tracked_wallets_to_pool(
+    limit: int = Query(default=300, ge=1, le=2000),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Promote tracked-wallet list into manual-included pool candidates."""
+    try:
+        tracked_rows = (
+            (
+                await session.execute(
+                    select(TrackedWallet).order_by(TrackedWallet.added_at.asc()).limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        tracked_addresses = [row.address.lower() for row in tracked_rows if row.address]
+        if not tracked_addresses:
+            return {"status": "success", "promoted": 0, "created": 0, "updated": 0}
+
+        existing_rows = (
+            (
+                await session.execute(
+                    select(DiscoveredWallet).where(
+                        DiscoveredWallet.address.in_(tracked_addresses)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        existing = {row.address.lower(): row for row in existing_rows}
+
+        created = 0
+        updated = 0
+        for address in tracked_addresses:
+            wallet = existing.get(address)
+            if wallet is None:
+                wallet = DiscoveredWallet(
+                    address=address,
+                    discovered_at=utcnow(),
+                    discovery_source="manual_pool",
+                )
+                session.add(wallet)
+                created += 1
+            else:
+                updated += 1
+
+            source_flags = _coerce_source_flags(wallet.source_flags)
+            source_flags = _apply_pool_flag_updates(
+                source_flags,
+                manual_include=True,
+                manual_exclude=False,
+                blacklisted=False,
+                tracked_wallet=True,
+            )
+            wallet.source_flags = source_flags
+
+        await session.commit()
+        await smart_wallet_pool.recompute_pool()
+
+        return {
+            "status": "success",
+            "promoted": len(tracked_addresses),
+            "created": created,
+            "updated": updated,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -617,6 +1450,8 @@ async def get_traders_overview(
             limit=confluence_limit,
             min_tier=min_tier,
         )
+        market_history = await _load_scanner_market_history(session)
+        _attach_market_history_to_signal_rows(confluence_signals, market_history)
 
         groups = await _fetch_group_payload(session=session, include_members=False)
 
@@ -646,6 +1481,7 @@ async def get_traders_overview(
 async def get_tracked_trader_opportunities(
     limit: int = Query(default=50, ge=1, le=200),
     min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """Legacy alias for confluence signals powering the Traders surface."""
     try:
@@ -653,6 +1489,19 @@ async def get_tracked_trader_opportunities(
             limit=limit,
             min_tier=min_tier,
         )
+        if not opportunities:
+            # Self-heal path: run an on-demand confluence scan so the UI can
+            # recover quickly after stale/expired signal windows.
+            try:
+                await wallet_intelligence.confluence.scan_for_confluence()
+                opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
+                    limit=limit,
+                    min_tier=min_tier,
+                )
+            except Exception:
+                pass
+        market_history = await _load_scanner_market_history(session)
+        _attach_market_history_to_signal_rows(opportunities, market_history)
         return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -665,18 +1514,24 @@ async def get_insider_opportunities(
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
     direction: Optional[str] = Query(default=None, description="buy_yes or buy_no"),
     max_age_minutes: int = Query(default=180, ge=1, le=1440),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """List pending/submitted insider opportunities built from flagged-wallet behavior."""
     if direction and direction not in {"buy_yes", "buy_no"}:
         raise HTTPException(status_code=400, detail="direction must be buy_yes or buy_no")
     try:
-        return await insider_detector.list_opportunities(
+        payload = await insider_detector.list_opportunities(
             limit=limit,
             offset=offset,
             min_confidence=min_confidence,
             direction=direction,
             max_age_minutes=max_age_minutes,
         )
+        market_history = await _load_scanner_market_history(session)
+        opportunities = payload.get("opportunities") if isinstance(payload, dict) else None
+        if isinstance(opportunities, list):
+            _attach_market_history_to_signal_rows(opportunities, market_history)
+        return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

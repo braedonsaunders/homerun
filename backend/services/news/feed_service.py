@@ -20,12 +20,18 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 from xml.etree import ElementTree
 
 import httpx
+from sqlalchemy import select
 
 from config import settings
+from models.database import AppSettings, AsyncSessionLocal
+from services.news.rss_config import (
+    default_custom_rss_feeds,
+    normalize_custom_rss_feeds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,16 +96,19 @@ class NewsFeedService:
         """Fetch from all enabled sources. Returns only NEW articles."""
         self._reset_ingest_stats()
         new_articles: list[NewsArticle] = []
+        rss_config = await self._load_rss_configuration()
+        custom_rss_feeds = list(rss_config.get("custom_rss_feeds") or [])
+        gov_rss_enabled = bool(rss_config.get("gov_rss_enabled", True))
 
         tasks = [self._fetch_google_news_topics()]
 
         if settings.NEWS_GDELT_ENABLED:
             tasks.append(self._fetch_gdelt())
 
-        if settings.NEWS_RSS_FEEDS:
-            tasks.append(self._fetch_custom_rss_feeds())
+        if custom_rss_feeds:
+            tasks.append(self._fetch_custom_rss_feeds(custom_rss_feeds))
 
-        if settings.WORLD_INTEL_GOV_RSS_ENABLED:
+        if gov_rss_enabled:
             tasks.append(self._fetch_gov_rss())
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -376,11 +385,46 @@ class NewsFeedService:
     # Custom RSS feeds
     # ------------------------------------------------------------------
 
-    async def _fetch_custom_rss_feeds(self) -> list[NewsArticle]:
+    async def _load_rss_configuration(self) -> dict[str, Any]:
+        """Read RSS feed config from DB app settings with env fallbacks."""
+        default_custom = default_custom_rss_feeds()
+        default_gov_enabled = bool(getattr(settings, "NEWS_GOV_RSS_ENABLED", True))
+
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(AppSettings).where(AppSettings.id == "default")
+                )
+                row = result.scalar_one_or_none()
+        except Exception as exc:
+            logger.debug("RSS config DB read failed, using defaults: %s", exc)
+            return {
+                "custom_rss_feeds": default_custom,
+                "gov_rss_enabled": default_gov_enabled,
+            }
+
+        if row is None:
+            return {
+                "custom_rss_feeds": default_custom,
+                "gov_rss_enabled": default_gov_enabled,
+            }
+
+        raw_custom = getattr(row, "news_rss_feeds_json", None)
+        custom_rows = normalize_custom_rss_feeds(raw_custom) if raw_custom else default_custom
+        raw_gov_enabled = getattr(row, "news_gov_rss_enabled", None)
+        gov_enabled = default_gov_enabled if raw_gov_enabled is None else bool(raw_gov_enabled)
+        return {
+            "custom_rss_feeds": custom_rows,
+            "gov_rss_enabled": gov_enabled,
+        }
+
+    async def _fetch_custom_rss_feeds(self, feed_rows: list[dict[str, Any]]) -> list[NewsArticle]:
         """Fetch from user-configured RSS feed URLs."""
         all_articles: list[NewsArticle] = []
         tasks = [
-            self._fetch_single_rss(feed_url) for feed_url in settings.NEWS_RSS_FEEDS
+            self._fetch_single_rss(feed_info)
+            for feed_info in feed_rows
+            if bool(feed_info.get("enabled", True))
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -389,9 +433,14 @@ class NewsFeedService:
         return all_articles
 
     async def _fetch_single_rss(
-        self, feed_url: str, max_results: int = 20
+        self, feed_info: dict[str, Any], max_results: int = 20
     ) -> list[NewsArticle]:
         """Fetch from a single RSS feed URL."""
+        feed_url = str(feed_info.get("url") or "").strip()
+        if not feed_url:
+            return []
+        feed_name = str(feed_info.get("name") or "").strip() or feed_url
+        feed_category = str(feed_info.get("category") or "").strip().lower()
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 resp = await client.get(feed_url, headers={"User-Agent": _USER_AGENT})
@@ -443,10 +492,11 @@ class NewsFeedService:
                             article_id=article_id,
                             title=title,
                             url=link,
-                            source=feed_url,
+                            source=feed_name,
                             published=published,
                             summary=_strip_html(description)[:500],
                             feed_source="custom_rss",
+                            category=feed_category,
                         )
                     )
                 return articles
@@ -456,15 +506,15 @@ class NewsFeedService:
             return []
 
     # ------------------------------------------------------------------
-    # Government RSS feeds (world intelligence integration)
+    # Government RSS feeds
     # ------------------------------------------------------------------
 
     async def _fetch_gov_rss(self) -> list[NewsArticle]:
-        """Fetch from US government RSS feeds via world intelligence module."""
+        """Fetch from government RSS feeds owned by the news domain."""
         try:
-            from services.world_intelligence.gov_rss_feeds import gov_rss_service
+            from services.news.gov_rss_feeds import gov_rss_service
 
-            gov_articles = await gov_rss_service.fetch_all()
+            gov_articles = await gov_rss_service.fetch_all(consumer="news")
             articles: list[NewsArticle] = []
             for ga in gov_articles:
                 articles.append(

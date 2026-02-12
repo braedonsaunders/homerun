@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from sqlalchemy import select
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND not in sys.path:
@@ -19,9 +20,10 @@ if os.getcwd() != _BACKEND:
     os.chdir(_BACKEND)
 
 from utils.utcnow import utcnow
-from models.database import AsyncSessionLocal, init_database
+from models.database import AsyncSessionLocal, AppSettings, init_database
 from services.insider_detector import insider_detector
 from services.signal_bus import emit_insider_intent_signals, emit_tracked_trader_signals
+from services.market_cache import market_cache_service
 from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_intelligence import wallet_intelligence
 from services.worker_state import (
@@ -38,12 +40,49 @@ logging.basicConfig(
 logger = logging.getLogger("tracked_traders_worker")
 
 
-FULL_SWEEP_INTERVAL = timedelta(minutes=60)
-INCREMENTAL_REFRESH_INTERVAL = timedelta(minutes=5)
+FULL_SWEEP_INTERVAL = timedelta(minutes=30)
+INCREMENTAL_REFRESH_INTERVAL = timedelta(minutes=2)
 ACTIVITY_RECONCILE_INTERVAL = timedelta(minutes=2)
 POOL_RECOMPUTE_INTERVAL = timedelta(minutes=1)
-FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=30)
-INSIDER_RESCORING_INTERVAL = timedelta(minutes=15)
+FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=20)
+INSIDER_RESCORING_INTERVAL = timedelta(minutes=10)
+
+
+async def _market_cache_hygiene_settings() -> dict:
+    config = {
+        "enabled": True,
+        "interval_hours": 6,
+        "retention_days": 120,
+        "reference_lookback_days": 45,
+        "weak_entry_grace_days": 7,
+        "max_entries_per_slug": 3,
+    }
+    try:
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+            ).scalar_one_or_none()
+            if not row:
+                return config
+            config["enabled"] = bool(
+                row.market_cache_hygiene_enabled
+                if row.market_cache_hygiene_enabled is not None
+                else True
+            )
+            config["interval_hours"] = int(row.market_cache_hygiene_interval_hours or 6)
+            config["retention_days"] = int(row.market_cache_retention_days or 120)
+            config["reference_lookback_days"] = int(
+                row.market_cache_reference_lookback_days or 45
+            )
+            config["weak_entry_grace_days"] = int(
+                row.market_cache_weak_entry_grace_days or 7
+            )
+            config["max_entries_per_slug"] = int(
+                row.market_cache_max_entries_per_slug or 3
+            )
+    except Exception as exc:
+        logger.warning("Failed to read market cache hygiene settings: %s", exc)
+    return config
 
 
 async def _run_loop() -> None:
@@ -62,14 +101,14 @@ async def _run_loop() -> None:
     await wallet_intelligence.initialize()
 
     async with AsyncSessionLocal() as session:
-        await ensure_worker_control(session, worker_name, default_interval=60)
+        await ensure_worker_control(session, worker_name, default_interval=30)
         await write_worker_snapshot(
             session,
             worker_name,
             running=True,
             enabled=True,
             current_activity="Tracked-traders worker started; first cycle pending.",
-            interval_seconds=60,
+            interval_seconds=30,
             last_run_at=None,
             stats={
                 "pool_size": 0,
@@ -84,7 +123,7 @@ async def _run_loop() -> None:
 
     while True:
         async with AsyncSessionLocal() as session:
-            control = await read_worker_control(session, worker_name, default_interval=60)
+            control = await read_worker_control(session, worker_name, default_interval=30)
 
         interval = max(10, min(3600, int(control.get("interval_seconds") or 60)))
         paused = bool(control.get("is_paused", False))
@@ -124,6 +163,22 @@ async def _run_loop() -> None:
         try:
             now = utcnow()
             activity_labels: list[str] = []
+
+            market_cache_cfg = await _market_cache_hygiene_settings()
+            if market_cache_cfg["enabled"]:
+                hygiene = await market_cache_service.run_hygiene_if_due(
+                    force=requested,
+                    interval_hours=market_cache_cfg["interval_hours"],
+                    retention_days=market_cache_cfg["retention_days"],
+                    reference_lookback_days=market_cache_cfg["reference_lookback_days"],
+                    weak_entry_grace_days=market_cache_cfg["weak_entry_grace_days"],
+                    max_entries_per_slug=market_cache_cfg["max_entries_per_slug"],
+                )
+                if hygiene.get("status") != "skipped":
+                    activity_labels.append("market_cache_hygiene")
+                    deleted = int(hygiene.get("markets_deleted", 0))
+                    if deleted > 0:
+                        activity_labels.append(f"market_cache_pruned:{deleted}")
 
             if requested or now >= next_full_sweep:
                 activity_labels.append("full_sweep")
@@ -251,6 +306,7 @@ async def _run_loop() -> None:
 async def main() -> None:
     await init_database()
     logger.info("Database initialized")
+    await market_cache_service.load_from_db()
     try:
         await _run_loop()
     except asyncio.CancelledError:

@@ -23,11 +23,29 @@ import logging
 
 from models.database import get_db_session
 from services import shared_state
+from services.weather import shared_state as weather_shared_state
 from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _find_opportunity_by_id(
+    session: AsyncSession, opportunity_id: str
+) -> tuple[Any, Optional[str]]:
+    """Find opportunity across scanner and weather snapshots."""
+    scanner_opps = await shared_state.get_opportunities_from_db(session, None)
+    scanner_hit = next((o for o in scanner_opps if o.id == opportunity_id), None)
+    if scanner_hit:
+        return scanner_hit, "scanner"
+
+    weather_opps = await weather_shared_state.get_weather_opportunities_from_db(session)
+    weather_hit = next((o for o in weather_opps if o.id == opportunity_id), None)
+    if weather_hit:
+        return weather_hit, "weather"
+
+    return None, None
 
 
 # === Resolution Analysis ===
@@ -103,8 +121,7 @@ async def judge_opportunity(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Judge a specific opportunity using LLM."""
-    opps = await shared_state.get_opportunities_from_db(session, None)
-    opp = next((o for o in opps if o.id == request.opportunity_id), None)
+    opp, snapshot_source = await _find_opportunity_by_id(session, request.opportunity_id)
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
@@ -131,15 +148,24 @@ async def judge_opportunity(
         else utcnow(),
     )
     try:
-        await shared_state.update_opportunity_ai_analysis_in_snapshot(
-            session=session,
-            opportunity_id=opp.id,
-            stable_id=opp.stable_id,
-            ai_analysis=opp.ai_analysis.model_dump(mode="json"),
-        )
+        if snapshot_source == "weather":
+            await weather_shared_state.update_weather_opportunity_ai_analysis_in_snapshot(
+                session=session,
+                opportunity_id=opp.id,
+                stable_id=opp.stable_id,
+                ai_analysis=opp.ai_analysis.model_dump(mode="json"),
+            )
+        else:
+            await shared_state.update_opportunity_ai_analysis_in_snapshot(
+                session=session,
+                opportunity_id=opp.id,
+                stable_id=opp.stable_id,
+                ai_analysis=opp.ai_analysis.model_dump(mode="json"),
+            )
     except Exception as e:
         logger.warning(
-            "Failed to persist inline ai_analysis into snapshot for %s: %s",
+            "Failed to persist inline ai_analysis into %s snapshot for %s: %s",
+            snapshot_source or "unknown",
             opp.id,
             e,
         )
@@ -455,8 +481,7 @@ async def get_opportunity_ai_summary(
 
     Returns cached judgment + resolution analysis if available.
     """
-    opps = await shared_state.get_opportunities_from_db(session, None)
-    opp = next((o for o in opps if o.id == opportunity_id), None)
+    opp, _ = await _find_opportunity_by_id(session, opportunity_id)
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
@@ -520,6 +545,7 @@ async def _build_context_pack(
         "context_id": context_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "opportunity": None,
+        "trader_signal": None,
         "latest_judgment": None,
         "resolution_analyses": [],
         "news_findings": [],
@@ -530,14 +556,100 @@ async def _build_context_pack(
     market_ids: list[str] = []
     opportunity = None
     opps = await shared_state.get_opportunities_from_db(session, None)
+    weather_opps = await weather_shared_state.get_weather_opportunities_from_db(session)
 
     if context_type == "opportunity" and context_id:
         opportunity = next((o for o in opps if o.id == context_id), None)
+        if opportunity is None:
+            opportunity = next((o for o in weather_opps if o.id == context_id), None)
     elif context_type == "market" and context_id:
         for o in opps:
             if any(m.get("id", "") == context_id for m in o.markets):
                 opportunity = o
                 break
+        if opportunity is None:
+            for o in weather_opps:
+                if any(m.get("id", "") == context_id for m in o.markets):
+                    opportunity = o
+                    break
+    elif context_type == "trader_signal" and context_id:
+        # Context_id format: "<source>:<id>" where source is "confluence" or "insider".
+        # If source is omitted, search both domains.
+        source_hint: Optional[str] = None
+        signal_id = str(context_id)
+        if ":" in signal_id:
+            maybe_source, maybe_id = signal_id.split(":", 1)
+            source_hint = (maybe_source or "").strip().lower() or None
+            signal_id = maybe_id
+
+        trader_signal: Optional[dict[str, Any]] = None
+
+        if source_hint in {None, "confluence"}:
+            from services.smart_wallet_pool import smart_wallet_pool
+
+            confluence_rows = await smart_wallet_pool.get_tracked_trader_opportunities(
+                limit=250,
+                min_tier="WATCH",
+            )
+            match = next(
+                (row for row in confluence_rows if str(row.get("id") or "") == signal_id),
+                None,
+            )
+            if match:
+                trader_signal = {"source": "confluence", **match}
+
+        if trader_signal is None and source_hint in {None, "insider"}:
+            from services.insider_detector import insider_detector
+
+            insider_payload = await insider_detector.list_opportunities(
+                limit=250,
+                offset=0,
+                min_confidence=0.0,
+                direction=None,
+                max_age_minutes=24 * 60,
+            )
+            insider_rows = (
+                insider_payload.get("opportunities", [])
+                if isinstance(insider_payload, dict)
+                else []
+            )
+            match = next(
+                (row for row in insider_rows if str(row.get("id") or "") == signal_id),
+                None,
+            )
+            if match:
+                trader_signal = {"source": "insider", **match}
+
+        if trader_signal:
+            market_id = str(trader_signal.get("market_id") or "").strip()
+            if market_id:
+                market_ids = [market_id]
+
+            pack["trader_signal"] = {
+                "id": trader_signal.get("id"),
+                "source": trader_signal.get("source"),
+                "market_id": market_id,
+                "market_question": trader_signal.get("market_question"),
+                "market_slug": trader_signal.get("market_slug"),
+                "direction": trader_signal.get("direction"),
+                "tier": trader_signal.get("tier"),
+                "confidence": trader_signal.get("confidence")
+                or trader_signal.get("conviction_score"),
+                "wallet_count": trader_signal.get("wallet_count"),
+                "edge_percent": trader_signal.get("edge_percent"),
+                "insider_score": trader_signal.get("insider_score"),
+                "cluster_count": trader_signal.get("cluster_count"),
+                "signal_type": trader_signal.get("signal_type"),
+                "detected_at": trader_signal.get("detected_at"),
+                "last_seen_at": trader_signal.get("last_seen_at"),
+                "yes_price": trader_signal.get("yes_price"),
+                "no_price": trader_signal.get("no_price"),
+                "price_history": (
+                    trader_signal.get("price_history", [])[-20:]
+                    if isinstance(trader_signal.get("price_history"), list)
+                    else []
+                ),
+            }
 
     if opportunity:
         market_ids = [m.get("id", "") for m in opportunity.markets if m.get("id", "")]
@@ -668,7 +780,10 @@ async def _build_context_pack(
 @router.get("/ai/context-pack")
 async def get_ai_context_pack(
     session: AsyncSession = Depends(get_db_session),
-    context_type: str = Query("general", description="opportunity | market | general"),
+    context_type: str = Query(
+        "general",
+        description="opportunity | trader_signal | market | general",
+    ),
     context_id: Optional[str] = Query(
         None, description="opportunity_id or market_id for the context type"
     ),
@@ -688,7 +803,7 @@ async def get_ai_context_pack(
 class AIChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    context_type: Optional[str] = None  # "opportunity", "market", "general"
+    context_type: Optional[str] = None  # "opportunity", "trader_signal", "market", "general"
     context_id: Optional[str] = None  # opportunity_id or market_id
     history: list[dict] = Field(default_factory=list)  # prior messages [{role, content}]
     model: Optional[str] = None
@@ -793,13 +908,15 @@ async def ai_chat(
             "entropy arb, event-driven, temporal decay, correlation arb, market making, stat arb, BTC/ETH highfreq\n"
             "- Risk factors: resolution ambiguity, liquidity, correlation, timing\n\n"
             "Be concise, specific, and data-driven. When the user asks about a "
-            "specific opportunity, reference its actual data. Flag risks clearly.\n"
+            "specific opportunity (including trader-signal opportunities), "
+            "reference its actual data. Flag risks clearly.\n"
         )
 
         compact_context = {
             "context_type": context_pack.get("context_type"),
             "context_id": context_pack.get("context_id"),
             "opportunity": context_pack.get("opportunity"),
+            "trader_signal": context_pack.get("trader_signal"),
             "latest_judgment": context_pack.get("latest_judgment"),
             "resolution_analyses": context_pack.get("resolution_analyses", [])[:3],
             "news_findings": context_pack.get("news_findings", [])[:3],

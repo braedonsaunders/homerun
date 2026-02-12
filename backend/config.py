@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     POLYMARKET_FEE: float = 0.02  # 2% winner fee
 
     # Trader Discovery Worker
-    DISCOVERY_RUN_INTERVAL_MINUTES: int = 60
+    DISCOVERY_RUN_INTERVAL_MINUTES: int = 15
     DISCOVERY_MAX_MARKETS_PER_RUN: int = 100
     DISCOVERY_MAX_WALLETS_PER_MARKET: int = 50
 
@@ -280,6 +280,7 @@ class Settings(BaseSettings):
     NEWS_MAX_OPPORTUNITIES_PER_SCAN: int = 20  # Cap opportunities per scan
     NEWS_GDELT_ENABLED: bool = True  # Enable GDELT as additional news source
     NEWS_RSS_FEEDS: list[str] = []  # Additional custom RSS feed URLs
+    NEWS_GOV_RSS_ENABLED: bool = True  # Enable government RSS feed ingestion
 
     # Weather workflow defaults (DB settings override these at runtime)
     WEATHER_WORKFLOW_ENABLED: bool = True
@@ -298,16 +299,51 @@ class Settings(BaseSettings):
     # World Intelligence Settings
     WORLD_INTELLIGENCE_ENABLED: bool = True
     WORLD_INTELLIGENCE_INTERVAL_SECONDS: int = 300  # 5 minutes
+    WORLD_INTEL_EMIT_TRADE_SIGNALS: bool = False  # keep decoupled from autotrader by default
     ACLED_API_KEY: Optional[str] = None  # ACLED API key (free registration)
     ACLED_EMAIL: Optional[str] = None  # Email for ACLED API auth
     OPENSKY_USERNAME: Optional[str] = None  # OpenSky Network credentials (optional)
     OPENSKY_PASSWORD: Optional[str] = None
+    AISSTREAM_API_KEY: Optional[str] = None  # AIS stream API key (optional)
     CLOUDFLARE_RADAR_TOKEN: Optional[str] = None  # Cloudflare Radar API token
-    WORLD_INTEL_CONVERGENCE_MIN_TYPES: int = 3  # Min signal types for convergence
-    WORLD_INTEL_ANOMALY_THRESHOLD: float = 2.0  # Z-score threshold for anomalies
+    WORLD_INTEL_AIS_ENABLED: bool = True
+    WORLD_INTEL_AIS_WS_URL: str = "wss://stream.aisstream.io/v0/stream"
+    WORLD_INTEL_AIS_SAMPLE_SECONDS: int = 10
+    WORLD_INTEL_AIS_MAX_MESSAGES: int = 250
+    WORLD_INTEL_AIRPLANES_LIVE_ENABLED: bool = True
+    WORLD_INTEL_AIRPLANES_LIVE_URL: str = "https://api.airplanes.live/v2/mil"
+    WORLD_INTEL_AIRPLANES_LIVE_TIMEOUT_SECONDS: float = 20.0
+    WORLD_INTEL_AIRPLANES_LIVE_MAX_RECORDS: int = 1500
+    WORLD_INTEL_MILITARY_DEDUPE_RADIUS_KM: float = 45.0
+    WORLD_INTEL_CHOKEPOINTS_ENABLED: bool = True
+    WORLD_INTEL_CHOKEPOINTS_REFRESH_SECONDS: int = 1800
+    WORLD_INTEL_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS: float = 20.0
+    WORLD_INTEL_CHOKEPOINTS_MAX_DAILY_ROWS: int = 500
+    WORLD_INTEL_CHOKEPOINTS_PORTWATCH_POINTS_URL: str = (
+        "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
+        "PortWatch_chokepoints_database/FeatureServer/0/query"
+    )
+    WORLD_INTEL_CHOKEPOINTS_PORTWATCH_DAILY_URL: str = (
+        "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
+        "Daily_Chokepoints_Data/FeatureServer/0/query"
+    )
+    WORLD_INTEL_CONVERGENCE_MIN_TYPES: int = 2  # Min signal types for convergence
+    WORLD_INTEL_ANOMALY_THRESHOLD: float = 1.8  # Z-score threshold for anomalies
+    WORLD_INTEL_ANOMALY_MIN_BASELINE_POINTS: int = 3
+    WORLD_INTEL_INSTABILITY_SIGNAL_MIN: float = 15.0
     WORLD_INTEL_INSTABILITY_CRITICAL: float = 60.0  # CII threshold for critical alerts
     WORLD_INTEL_TENSION_CRITICAL: float = 70.0  # Tension score threshold for alerts
-    WORLD_INTEL_GOV_RSS_ENABLED: bool = True  # Enable US government RSS feeds
+    WORLD_INTEL_TENSION_PAIRS: list[str] = []
+    WORLD_INTEL_GDELT_QUERY_DELAY_SECONDS: float = 5.0
+    WORLD_INTEL_GDELT_MAX_CONCURRENCY: int = 1
+    WORLD_INTEL_ACLED_RATE_LIMIT_PER_MIN: int = 5
+    WORLD_INTEL_ACLED_AUTH_RATE_LIMIT_PER_MIN: int = 12
+    WORLD_INTEL_ACLED_CB_MAX_FAILURES: int = 8
+    WORLD_INTEL_ACLED_CB_COOLDOWN_SECONDS: float = 180.0
+    WORLD_INTEL_OPENSKY_CB_MAX_FAILURES: int = 6
+    WORLD_INTEL_OPENSKY_CB_COOLDOWN_SECONDS: float = 120.0
+    WORLD_INTEL_USGS_MIN_MAGNITUDE: float = 4.5
+    WORLD_INTEL_GOV_RSS_ENABLED: bool = True  # Legacy flag (deprecated; NEWS_GOV_RSS_ENABLED is authoritative)
     WORLD_INTEL_USGS_ENABLED: bool = True  # Enable earthquake monitoring
     WORLD_INTEL_MILITARY_ENABLED: bool = True  # Enable military flight tracking
 

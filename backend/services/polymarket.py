@@ -1,8 +1,9 @@
 import httpx
 import asyncio
 import random
+import json
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow, utcfromtimestamp
 
 from config import settings
@@ -389,29 +390,75 @@ class PolymarketClient:
             return Event.from_gamma_response(data[0])
         return None
 
+    async def _evict_market_cache_entry(self, *keys: str):
+        """Evict market metadata keys from memory and persistent SQL cache."""
+        cache = await self._get_persistent_cache()
+        for key in keys:
+            norm = self._normalize_identifier(key)
+            if not norm:
+                continue
+            self._market_cache.pop(key, None)
+            self._market_cache.pop(norm, None)
+            if cache:
+                try:
+                    await cache.delete_market(norm)
+                except Exception:
+                    pass
+
     async def get_market_by_condition_id(self, condition_id: str) -> Optional[dict]:
         """Look up a market by condition_id, using cache when available."""
-        if condition_id in self._market_cache:
-            return self._market_cache[condition_id]
+        requested = self._normalize_identifier(condition_id)
+        cached = self._market_cache.get(condition_id) or self._market_cache.get(requested)
+        if cached:
+            cached_cid = self._normalize_identifier(cached.get("condition_id"))
+            has_payload = bool(
+                str(cached.get("question") or "").strip()
+                or str(cached.get("slug") or "").strip()
+            )
+            has_tradability = self._has_tradability_metadata(cached)
+            if cached_cid == requested and has_payload and has_tradability:
+                return cached
+            # Drop stale/mismatched cache entries to prevent poisoning.
+            await self._evict_market_cache_entry(condition_id, requested)
 
         try:
-            response = await self._rate_limited_get(
-                f"{self.gamma_url}/markets",
-                params={"condition_id": condition_id, "limit": 1},
-            )
-            response.raise_for_status()
-            data = response.json()
+            # Gamma expects plural ``condition_ids`` for direct condition lookups.
+            for params in ({"condition_ids": condition_id, "limit": 80},):
+                response = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets",
+                    params=params,
+                )
+                response.raise_for_status()
+                data = self._extract_list_payload(
+                    response.json(),
+                    preferred_keys=("data", "items"),
+                )
+                if not data:
+                    continue
 
-            if data and len(data) > 0:
-                market_data = data[0]
+                market_data = next(
+                    (
+                        row
+                        for row in data
+                        if self._market_matches_condition_id(row, requested)
+                    ),
+                    None,
+                )
+                if market_data is None:
+                    continue
+
                 info = self._extract_market_info(market_data)
+                resolved_key = self._normalize_identifier(
+                    info.get("condition_id", condition_id)
+                ) or requested
+                self._market_cache[resolved_key] = info
                 self._market_cache[condition_id] = info
 
                 # Write-through to persistent SQL cache
                 cache = await self._get_persistent_cache()
                 if cache:
                     try:
-                        await cache.set_market(condition_id, info)
+                        await cache.set_market(resolved_key, info)
                     except Exception:
                         pass  # Non-critical
 
@@ -419,32 +466,102 @@ class PolymarketClient:
         except Exception as e:
             print(f"Market lookup failed for {condition_id}: {e}")
 
+        # Fallback path: the Data API reliably accepts ``market=<condition_id>``
+        # and returns trade rows with title/slug metadata.
+        try:
+            trades = await self.get_market_trades(condition_id, limit=20)
+            info = self._extract_market_info_from_trades(
+                requested_condition_id=requested,
+                trades=trades,
+            )
+            if info:
+                resolved_key = self._normalize_identifier(
+                    info.get("condition_id", condition_id)
+                ) or requested
+                self._market_cache[resolved_key] = info
+                self._market_cache[condition_id] = info
+
+                for token_id in info.get("token_ids") or []:
+                    norm_token = self._normalize_identifier(token_id)
+                    if norm_token:
+                        self._market_cache[f"token:{norm_token}"] = info
+
+                cache = await self._get_persistent_cache()
+                if cache:
+                    try:
+                        await cache.set_market(resolved_key, info)
+                    except Exception:
+                        pass
+
+                return info
+        except Exception as e:
+            print(f"Data API market lookup failed for {condition_id}: {e}")
+
         return None
 
     async def get_market_by_token_id(self, token_id: str) -> Optional[dict]:
         """Look up a market by CLOB token ID (asset_id), using cache when available."""
         # Check if already cached under this token_id
         cache_key = f"token:{token_id}"
+        requested = self._normalize_identifier(token_id)
         if cache_key in self._market_cache:
-            return self._market_cache[cache_key]
+            cached = self._market_cache[cache_key]
+            token_ids = {
+                self._normalize_identifier(t)
+                for t in (cached.get("token_ids") or [])
+                if self._normalize_identifier(t)
+            }
+            has_payload = bool(
+                str(cached.get("question") or "").strip()
+                or str(cached.get("slug") or "").strip()
+            )
+            has_tradability = self._has_tradability_metadata(cached)
+            if requested in token_ids and has_payload and has_tradability:
+                return cached
+            cached_cid = self._normalize_identifier(cached.get("condition_id"))
+            await self._evict_market_cache_entry(cache_key, token_id, cached_cid)
 
         try:
-            response = await self._rate_limited_get(
-                f"{self.gamma_url}/markets",
-                params={"clob_token_ids": token_id, "limit": 1},
-            )
-            response.raise_for_status()
-            data = response.json()
+            for params in (
+                {"clob_token_ids": token_id, "limit": 80},
+                {"clobTokenIds": token_id, "limit": 80},
+            ):
+                response = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets",
+                    params=params,
+                )
+                response.raise_for_status()
+                data = self._extract_list_payload(
+                    response.json(),
+                    preferred_keys=("data", "items"),
+                )
+                if not data:
+                    continue
 
-            if data and len(data) > 0:
-                market_data = data[0]
+                market_data = next(
+                    (
+                        row
+                        for row in data
+                        if self._market_matches_token_id(row, requested)
+                    ),
+                    None,
+                )
+                if market_data is None:
+                    continue
+
                 info = self._extract_market_info(market_data)
                 self._market_cache[cache_key] = info
 
-                # Also cache by condition_id if available
-                cid = market_data.get("condition_id", "")
+                # Also cache by condition_id if available.
+                cid = self._normalize_identifier(info.get("condition_id"))
                 if cid:
                     self._market_cache[cid] = info
+                    cache = await self._get_persistent_cache()
+                    if cache:
+                        try:
+                            await cache.set_market(cid, info)
+                        except Exception:
+                            pass
 
                 return info
         except Exception as e:
@@ -455,16 +572,322 @@ class PolymarketClient:
     @staticmethod
     def _extract_market_info(market_data: dict) -> dict:
         """Extract standardized market info from a Gamma API market response."""
+        token_ids = PolymarketClient._extract_token_ids_from_market(market_data)
+        events = market_data.get("events")
+        event_slug = ""
+        if isinstance(events, list) and events:
+            first = events[0]
+            if isinstance(first, dict):
+                event_slug = str(first.get("slug") or "").strip()
+        if not event_slug:
+            event_slug = str(
+                market_data.get("event_slug") or market_data.get("eventSlug") or ""
+            ).strip()
+
         return {
             "id": market_data.get("id", ""),
-            "condition_id": market_data.get("condition_id", ""),
+            "condition_id": market_data.get("condition_id", "")
+            or market_data.get("conditionId", ""),
             "question": market_data.get("question", ""),
             "slug": market_data.get("slug", ""),
             "groupItemTitle": market_data.get("groupItemTitle", ""),
-            "event_slug": market_data.get("events", [{}])[0].get("slug", "")
-            if market_data.get("events")
-            else market_data.get("event_slug", ""),
+            "event_slug": event_slug,
+            "token_ids": token_ids,
+            "active": market_data.get("active"),
+            "closed": market_data.get("closed"),
+            "archived": market_data.get("archived"),
+            "accepting_orders": market_data.get("acceptingOrders")
+            if market_data.get("acceptingOrders") is not None
+            else market_data.get("accepting_orders"),
+            "resolved": market_data.get("resolved")
+            if market_data.get("resolved") is not None
+            else market_data.get("isResolved"),
+            "end_date": market_data.get("endDate")
+            if market_data.get("endDate") is not None
+            else market_data.get("end_date"),
+            "liquidity": market_data.get("liquidity")
+            if market_data.get("liquidity") is not None
+            else market_data.get("liquidityNum"),
+            "volume": market_data.get("volume")
+            if market_data.get("volume") is not None
+            else market_data.get("volumeNum"),
         }
+
+    @staticmethod
+    def _extract_market_info_from_trades(
+        *,
+        requested_condition_id: str,
+        trades: list[dict],
+    ) -> Optional[dict]:
+        """Extract market metadata from market trade rows."""
+        if not trades:
+            return None
+
+        matching: list[dict] = []
+        fallback: list[dict] = []
+
+        for row in trades:
+            if not isinstance(row, dict):
+                continue
+
+            raw_condition = row.get("conditionId") or row.get("condition_id")
+            condition_id = PolymarketClient._normalize_identifier(raw_condition)
+            if condition_id == requested_condition_id:
+                matching.append(row)
+            elif not condition_id:
+                fallback.append(row)
+
+        candidates = matching if matching else fallback
+        if not candidates:
+            return None
+
+        token_ids: list[str] = []
+        seen_tokens: set[str] = set()
+        for row in candidates:
+            for raw_token in (
+                row.get("asset"),
+                row.get("asset_id"),
+                row.get("assetId"),
+                row.get("token_id"),
+                row.get("tokenId"),
+            ):
+                norm_token = PolymarketClient._normalize_identifier(raw_token)
+                if norm_token and norm_token not in seen_tokens:
+                    seen_tokens.add(norm_token)
+                    token_ids.append(norm_token)
+
+        sample = candidates[0]
+        question = str(
+            sample.get("title")
+            or sample.get("market_title")
+            or sample.get("question")
+            or ""
+        ).strip()
+        slug = str(
+            sample.get("slug")
+            or sample.get("market_slug")
+            or sample.get("marketSlug")
+            or ""
+        ).strip()
+        event_slug = str(
+            sample.get("eventSlug")
+            or sample.get("event_slug")
+            or ""
+        ).strip()
+
+        if not question and not slug:
+            return None
+
+        return {
+            "id": str(sample.get("market") or sample.get("market_id") or ""),
+            "condition_id": requested_condition_id,
+            "question": question,
+            "slug": slug,
+            "groupItemTitle": question,
+            "event_slug": event_slug,
+            "token_ids": token_ids,
+        }
+
+    @staticmethod
+    def _normalize_identifier(value: object) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _has_tradability_metadata(market_info: Optional[dict]) -> bool:
+        if not isinstance(market_info, dict):
+            return False
+        return any(
+            market_info.get(key) is not None
+            for key in (
+                "closed",
+                "active",
+                "archived",
+                "accepting_orders",
+                "resolved",
+                "end_date",
+                "winner",
+                "winning_outcome",
+            )
+        )
+
+    @staticmethod
+    def _coerce_bool(value: object) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "1", "yes", "y", "t"}:
+                return True
+            if text in {"false", "0", "no", "n", "f", ""}:
+                return False
+        return None
+
+    @staticmethod
+    def _coerce_datetime(value: object) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 10_000_000_000:
+                ts /= 1000.0
+            try:
+                return utcfromtimestamp(ts)
+            except (OSError, OverflowError, ValueError):
+                return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                numeric = float(text)
+                if numeric > 10_000_000_000:
+                    numeric /= 1000.0
+                return utcfromtimestamp(numeric)
+            except (TypeError, ValueError, OSError, OverflowError):
+                pass
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                return parsed
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def is_market_tradable(
+        market_info: Optional[dict],
+        *,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Return False when market metadata indicates closed/resolved/non-tradable."""
+        if not isinstance(market_info, dict) or not market_info:
+            return True
+
+        ref_now = now or utcnow()
+
+        closed = PolymarketClient._coerce_bool(market_info.get("closed"))
+        if closed is True:
+            return False
+
+        active = PolymarketClient._coerce_bool(market_info.get("active"))
+        if active is False:
+            return False
+
+        archived = PolymarketClient._coerce_bool(market_info.get("archived"))
+        if archived is True:
+            return False
+
+        accepting_orders = PolymarketClient._coerce_bool(
+            market_info.get("accepting_orders")
+            if market_info.get("accepting_orders") is not None
+            else market_info.get("acceptingOrders")
+        )
+        if accepting_orders is False:
+            return False
+
+        resolved = PolymarketClient._coerce_bool(
+            market_info.get("resolved")
+            if market_info.get("resolved") is not None
+            else (
+                market_info.get("isResolved")
+                if market_info.get("isResolved") is not None
+                else market_info.get("is_resolved")
+            )
+        )
+        if resolved is True:
+            return False
+
+        end_dt = PolymarketClient._coerce_datetime(
+            market_info.get("end_date")
+            if market_info.get("end_date") is not None
+            else market_info.get("endDate")
+        )
+        if end_dt and end_dt <= ref_now:
+            return False
+
+        winner = market_info.get("winner")
+        if winner not in (None, ""):
+            return False
+
+        winning_outcome = (
+            market_info.get("winning_outcome")
+            if market_info.get("winning_outcome") is not None
+            else market_info.get("winningOutcome")
+        )
+        if winning_outcome not in (None, ""):
+            return False
+
+        return True
+
+    @staticmethod
+    def _extract_token_ids_from_market(market_data: dict) -> list[str]:
+        raw_values: list[object] = []
+        for key in ("clobTokenIds", "clob_token_ids", "token_ids", "tokenIds"):
+            raw = market_data.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, list):
+                raw_values.extend(raw)
+            elif isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    continue
+                if text.startswith("["):
+                    try:
+                        parsed = json.loads(text)
+                        if isinstance(parsed, list):
+                            raw_values.extend(parsed)
+                    except Exception:
+                        pass
+                else:
+                    raw_values.extend([part.strip() for part in text.split(",") if part.strip()])
+
+        tokens = market_data.get("tokens")
+        if isinstance(tokens, list):
+            for token in tokens:
+                if isinstance(token, dict):
+                    raw_values.extend(
+                        [
+                            token.get("token_id"),
+                            token.get("tokenId"),
+                            token.get("asset_id"),
+                            token.get("assetId"),
+                            token.get("id"),
+                        ]
+                    )
+                else:
+                    raw_values.append(token)
+
+        seen: set[str] = set()
+        out: list[str] = []
+        for value in raw_values:
+            normalized = PolymarketClient._normalize_identifier(value)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+        return out
+
+    @staticmethod
+    def _market_matches_condition_id(market_data: dict, condition_id: str) -> bool:
+        return (
+            PolymarketClient._normalize_identifier(
+                market_data.get("condition_id") or market_data.get("conditionId")
+            )
+            == condition_id
+        )
+
+    @staticmethod
+    def _market_matches_token_id(market_data: dict, token_id: str) -> bool:
+        token_ids = PolymarketClient._extract_token_ids_from_market(market_data)
+        return token_id in token_ids
 
     async def enrich_trades_with_market_info(self, trades: list[dict]) -> list[dict]:
         """
@@ -969,7 +1392,11 @@ class PolymarketClient:
             f"{self.data_url}/trades", params={"user": address, "limit": limit}
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return self._extract_list_payload(
+            data,
+            preferred_keys=("data", "items", "trades", "activity"),
+        )
 
     async def get_market_trades(
         self, condition_id: str, limit: int = 100
@@ -979,7 +1406,11 @@ class PolymarketClient:
             f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return self._extract_list_payload(
+            data,
+            preferred_keys=("data", "items", "trades", "activity"),
+        )
 
     async def get_activity(
         self,
@@ -1003,10 +1434,10 @@ class PolymarketClient:
                 response = await self._rate_limited_get(endpoint, params=params)
                 response.raise_for_status()
                 data = response.json()
-                if isinstance(data, list):
-                    return data
-                if isinstance(data, dict):
-                    return data.get("data", data.get("items", data.get("activity", [])))
+                return self._extract_list_payload(
+                    data,
+                    preferred_keys=("data", "items", "activity"),
+                )
             except Exception:
                 continue
         return []
@@ -1029,12 +1460,31 @@ class PolymarketClient:
                 response = await self._rate_limited_get(endpoint, params=params)
                 response.raise_for_status()
                 data = response.json()
-                if isinstance(data, list):
-                    return data
-                if isinstance(data, dict):
-                    return data.get("data", data.get("items", data.get("holders", [])))
+                return self._extract_list_payload(
+                    data,
+                    preferred_keys=("data", "items", "holders"),
+                )
             except Exception:
                 continue
+        return []
+
+    @staticmethod
+    def _extract_list_payload(
+        payload: object,
+        preferred_keys: tuple[str, ...] = ("data", "items"),
+    ) -> list[dict]:
+        """Normalize API payloads that may return either list or wrapped objects."""
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in preferred_keys:
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            # Last resort: find the first list-valued field.
+            for value in payload.values():
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
         return []
 
     # ==================== LEADERBOARD / DISCOVERY ====================

@@ -118,6 +118,49 @@ async def _hydrate_scanner_pool_from_snapshot() -> int:
     return len(restored)
 
 
+async def _reattach_inline_ai_from_snapshot(opps: list) -> int:
+    """Reattach inline ai_analysis from the latest snapshot by stable_id.
+
+    Manual `/ai/judge/opportunity` writes ai_analysis into scanner_snapshot
+    immediately. The scanner worker keeps its own in-memory pool and can
+    overwrite that snapshot on the next cycle; this restores inline AI fields
+    before writing so card-level analysis does not disappear after refetch.
+    """
+    if not opps:
+        return 0
+
+    try:
+        async with AsyncSessionLocal() as session:
+            snapshot_opps, _ = await read_scanner_snapshot(session)
+    except Exception:
+        return 0
+
+    ai_by_stable: dict[str, object] = {}
+    for snapshot_opp in snapshot_opps:
+        stable_id = getattr(snapshot_opp, "stable_id", None)
+        analysis = getattr(snapshot_opp, "ai_analysis", None)
+        if stable_id and analysis is not None:
+            ai_by_stable[stable_id] = analysis
+
+    if not ai_by_stable:
+        return 0
+
+    attached = 0
+    for opp in opps:
+        if getattr(opp, "ai_analysis", None) is not None:
+            continue
+        stable_id = getattr(opp, "stable_id", None)
+        if not stable_id:
+            continue
+        existing = ai_by_stable.get(stable_id)
+        if existing is None:
+            continue
+        opp.ai_analysis = existing
+        attached += 1
+
+    return attached
+
+
 async def _run_scan_loop() -> None:
     """Load scanner, then loop: read control -> scan -> write snapshot -> sleep."""
     await scanner.load_settings()
@@ -136,27 +179,50 @@ async def _run_scan_loop() -> None:
 
     scanner.add_activity_callback(_on_activity)
 
-    # Worker-owned WS feed manager enables reactive scanning and fresh
-    # order-book overlays in this process (scanner runs here, not in API).
-    if settings.WS_FEED_ENABLED:
+    feed_manager = None
+    ws_feeds_running = False
+
+    async def _ensure_ws_feeds_running() -> None:
+        nonlocal feed_manager, ws_feeds_running
+        if ws_feeds_running or not settings.WS_FEED_ENABLED:
+            return
         try:
             from services.ws_feeds import get_feed_manager
             from services.polymarket import polymarket_client
 
-            feed_manager = get_feed_manager()
+            if feed_manager is None:
+                feed_manager = get_feed_manager()
 
-            async def _http_book_fallback(token_id: str):
-                try:
-                    return await polymarket_client.get_order_book(token_id)
-                except Exception:
-                    return None
+                async def _http_book_fallback(token_id: str):
+                    try:
+                        return await polymarket_client.get_order_book(token_id)
+                    except Exception:
+                        return None
 
-            feed_manager.set_http_fallback(_http_book_fallback)
+                feed_manager.set_http_fallback(_http_book_fallback)
+
             if not feed_manager._started:
                 await feed_manager.start()
+            ws_feeds_running = True
             logger.info("Scanner worker WebSocket feeds started")
         except Exception as e:
             logger.warning("Worker WS feeds failed to start (non-critical): %s", e)
+
+    async def _stop_ws_feeds() -> None:
+        nonlocal ws_feeds_running
+        if not ws_feeds_running or feed_manager is None:
+            return
+        try:
+            await feed_manager.stop()
+            logger.info("Scanner worker WebSocket feeds paused")
+        except Exception as e:
+            logger.warning("Worker WS feeds failed to stop cleanly: %s", e)
+        finally:
+            ws_feeds_running = False
+
+    # Worker-owned WS feed manager enables reactive scanning and fresh
+    # order-book overlays in this process (scanner runs here, not in API).
+    await _ensure_ws_feeds_running()
 
     # Notifier and opportunity_recorder hook into scanner callbacks (same process)
     try:
@@ -207,6 +273,7 @@ async def _run_scan_loop() -> None:
         requested = control.get("requested_scan_at")
 
         if paused and not requested:
+            await _stop_ws_feeds()
             try:
                 async with AsyncSessionLocal() as session:
                     await write_worker_snapshot(
@@ -224,6 +291,8 @@ async def _run_scan_loop() -> None:
                 pass
             await asyncio.sleep(min(10, interval))
             continue
+
+        await _ensure_ws_feeds_running()
 
         run_full_scan = bool(requested)
         if not run_full_scan and settings.TIERED_SCANNING_ENABLED:
@@ -314,6 +383,19 @@ async def _run_scan_loop() -> None:
         except Exception as e:
             logger.exception("Failed to fetch opportunities after scan: %s", e)
             opps = []
+
+        # Reattach inline analysis previously persisted by API/manual judging.
+        # This prevents worker snapshot writes from clobbering card AI data.
+        if opps and any(getattr(o, "ai_analysis", None) is None for o in opps):
+            try:
+                attached_inline = await _reattach_inline_ai_from_snapshot(opps)
+                if attached_inline:
+                    logger.debug(
+                        "Reattached %d inline AI analyses from snapshot",
+                        attached_inline,
+                    )
+            except Exception as e:
+                logger.debug("Inline AI snapshot reattach skipped: %s", e)
 
         # API-triggered manual AI analysis runs in the API process and writes
         # OpportunityJudgment rows. Re-attach those judgments here so scanner

@@ -5,7 +5,8 @@ Independent from scanner/news/crypto pipelines. Runs in dedicated weather worker
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings as app_settings
@@ -22,6 +23,7 @@ from .signal_engine import WeatherSignal, build_weather_signal
 from . import shared_state
 
 logger = get_logger("weather_workflow")
+MIN_MINUTES_TO_RESOLUTION = 90
 
 
 class WeatherWorkflowOrchestrator:
@@ -58,7 +60,9 @@ class WeatherWorkflowOrchestrator:
             )
             return {"status": "disabled"}
 
-        markets = await self._fetch_weather_markets(settings.get("max_markets_per_scan", 200))
+        configured_limit = int(settings.get("max_markets_per_scan", 200) or 200)
+        market_limit = max(10, min(500, configured_limit))
+        markets = await self._fetch_weather_markets(market_limit)
         opportunities: list[ArbitrageOpportunity] = []
         intents_created = 0
         contracts_parsed = 0
@@ -72,9 +76,10 @@ class WeatherWorkflowOrchestrator:
             "signals_generated": 0,
             "intents_created": 0,
         }
+        existing_opportunities, _ = await shared_state.read_weather_snapshot(session)
         await shared_state.write_weather_snapshot(
             session,
-            opportunities=[],
+            opportunities=existing_opportunities,
             status={
                 "running": True,
                 "enabled": True,
@@ -85,89 +90,40 @@ class WeatherWorkflowOrchestrator:
             stats=stats,
         )
 
-        for market in markets:
-            try:
-                liquidity = float(getattr(market, "liquidity", 0.0) or 0.0)
-                if liquidity < min_liquidity:
-                    continue
+        concurrency = max(
+            1,
+            min(16, int(settings.get("evaluation_concurrency", 8) or 8)),
+        )
+        sem = asyncio.Semaphore(concurrency)
 
-                parsed = parse_weather_contract(
-                    market.question,
-                    market.end_date,
-                    getattr(market, "group_item_title", None),
+        async def _bounded_evaluate(market_obj):
+            async with sem:
+                return await self._evaluate_market(
+                    market_obj, settings=settings, min_liquidity=min_liquidity
                 )
-                if parsed is None:
-                    continue
-                contracts_parsed += 1
 
-                fc_input = WeatherForecastInput(
-                    location=parsed.location,
-                    target_time=parsed.target_time,
-                    metric=parsed.metric,
-                    operator=parsed.operator,
-                    threshold_c=parsed.threshold_c,
-                    threshold_c_low=parsed.threshold_c_low,
-                    threshold_c_high=parsed.threshold_c_high,
-                )
-                forecast = await self._adapter.forecast_probability(fc_input)
+        evaluations = await asyncio.gather(
+            *[_bounded_evaluate(m) for m in markets],
+            return_exceptions=True,
+        )
 
-                signal = build_weather_signal(
-                    market_id=market.condition_id or market.id,
-                    yes_price=float(market.yes_price),
-                    no_price=float(market.no_price),
-                    forecast=forecast,
-                    entry_max_price=float(settings.get("entry_max_price", 0.25)),
-                    min_edge_percent=float(settings.get("min_edge_percent", 8.0)),
-                    min_confidence=float(settings.get("min_confidence", 0.6)),
-                    min_model_agreement=float(settings.get("min_model_agreement", 0.75)),
-                )
-                signals_generated += 1
-
-                if not signal.should_trade:
-                    continue
-
-                opp = self._signal_to_opportunity(signal, market, parsed, forecast, settings)
-                opportunities.append(opp)
-
-                intent = build_weather_intent(
-                    signal=signal,
-                    market_id=market.condition_id or market.id,
-                    market_question=market.question,
-                    settings=settings,
-                    metadata={
-                        "weather": {
-                            "location": parsed.location,
-                            "metric": parsed.metric,
-                            "operator": parsed.operator,
-                            "threshold_c": parsed.threshold_c,
-                            "threshold_c_low": parsed.threshold_c_low,
-                            "threshold_c_high": parsed.threshold_c_high,
-                            "raw_threshold": parsed.raw_threshold,
-                            "raw_threshold_low": parsed.raw_threshold_low,
-                            "raw_threshold_high": parsed.raw_threshold_high,
-                            "raw_unit": parsed.raw_unit,
-                            "target_time": parsed.target_time.isoformat(),
-                            "gfs_value": forecast.gfs_value,
-                            "ecmwf_value": forecast.ecmwf_value,
-                        },
-                        "market": {
-                            "id": market.id,
-                            "condition_id": market.condition_id,
-                            "slug": market.slug,
-                            "event_slug": market.event_slug,
-                            "liquidity": market.liquidity,
-                            "clob_token_ids": market.clob_token_ids,
-                            "volume": market.volume,
-                        },
-                    },
-                )
-                await shared_state.upsert_weather_intent(session, intent)
-                intents_created += 1
-            except Exception as exc:
-                logger.debug("Weather market skipped", market_id=market.id, error=str(exc))
+        for result in evaluations:
+            if isinstance(result, Exception):
+                logger.debug("Weather market evaluation failed", error=str(result))
                 continue
 
+            contracts_parsed += int(result.get("contracts_parsed", 0) or 0)
+            signals_generated += int(result.get("signals_generated", 0) or 0)
+            opp = result.get("opportunity")
+            intent = result.get("intent")
+            if opp is not None:
+                opportunities.append(opp)
+            if intent is not None:
+                await shared_state.upsert_weather_intent(session, intent)
+                intents_created += 1
+
         await session.commit()
+        await self._attach_market_price_history(opportunities)
 
         self._cycle_count += 1
         self._last_run = datetime.now(timezone.utc)
@@ -210,6 +166,127 @@ class WeatherWorkflowOrchestrator:
             "stats": final_stats,
         }
 
+    async def _evaluate_market(
+        self,
+        market,
+        *,
+        settings: dict[str, Any],
+        min_liquidity: float,
+    ) -> dict[str, Any]:
+        """Evaluate one weather market and return optional opportunity + intent."""
+        now = datetime.now(timezone.utc)
+        liquidity = float(getattr(market, "liquidity", 0.0) or 0.0)
+        if liquidity < min_liquidity:
+            return {"contracts_parsed": 0, "signals_generated": 0, "opportunity": None, "intent": None}
+
+        resolution_dt = getattr(market, "end_date", None)
+        if isinstance(resolution_dt, str):
+            try:
+                resolution_dt = datetime.fromisoformat(
+                    str(resolution_dt).replace("Z", "+00:00")
+                )
+            except Exception:
+                resolution_dt = None
+        if isinstance(resolution_dt, datetime):
+            if resolution_dt.tzinfo is None:
+                resolution_dt = resolution_dt.replace(tzinfo=timezone.utc)
+            else:
+                resolution_dt = resolution_dt.astimezone(timezone.utc)
+            if resolution_dt <= now + timedelta(minutes=MIN_MINUTES_TO_RESOLUTION):
+                return {"contracts_parsed": 0, "signals_generated": 0, "opportunity": None, "intent": None}
+
+        parsed = parse_weather_contract(
+            market.question,
+            market.end_date,
+            getattr(market, "group_item_title", None),
+        )
+        if parsed is None:
+            return {"contracts_parsed": 0, "signals_generated": 0, "opportunity": None, "intent": None}
+
+        fc_input = WeatherForecastInput(
+            location=parsed.location,
+            target_time=parsed.target_time,
+            metric=parsed.metric,
+            operator=parsed.operator,
+            threshold_c=parsed.threshold_c,
+            threshold_c_low=parsed.threshold_c_low,
+            threshold_c_high=parsed.threshold_c_high,
+        )
+        forecast = await self._adapter.forecast_probability(fc_input)
+
+        signal = build_weather_signal(
+            market_id=market.condition_id or market.id,
+            yes_price=float(market.yes_price),
+            no_price=float(market.no_price),
+            forecast=forecast,
+            entry_max_price=float(settings.get("entry_max_price", 0.25)),
+            min_edge_percent=float(settings.get("min_edge_percent", 8.0)),
+            min_confidence=float(settings.get("min_confidence", 0.6)),
+            min_model_agreement=float(settings.get("min_model_agreement", 0.75)),
+            operator=parsed.operator,
+            threshold_c=parsed.threshold_c,
+            threshold_c_low=parsed.threshold_c_low,
+            threshold_c_high=parsed.threshold_c_high,
+        )
+        opp = self._signal_to_opportunity(signal, market, parsed, forecast, settings)
+        if not signal.should_trade:
+            reasons = signal.reasons or ["filtered by weather thresholds"]
+            opp.description = f"REPORT ONLY | {opp.description} | {'; '.join(reasons)}"
+            opp.max_position_size = 0.0
+            existing_risks = list(opp.risk_factors or [])
+            opp.risk_factors = existing_risks + [
+                "Report only: does not meet trade thresholds",
+                *reasons,
+            ]
+            return {"contracts_parsed": 1, "signals_generated": 1, "opportunity": opp, "intent": None}
+
+        intent = build_weather_intent(
+            signal=signal,
+            market_id=market.condition_id or market.id,
+            market_question=market.question,
+            settings=settings,
+            metadata={
+                "weather": {
+                    "location": parsed.location,
+                    "metric": parsed.metric,
+                    "operator": parsed.operator,
+                    "threshold_c": parsed.threshold_c,
+                    "threshold_c_low": parsed.threshold_c_low,
+                    "threshold_c_high": parsed.threshold_c_high,
+                    "raw_threshold": parsed.raw_threshold,
+                    "raw_threshold_low": parsed.raw_threshold_low,
+                    "raw_threshold_high": parsed.raw_threshold_high,
+                    "raw_unit": parsed.raw_unit,
+                    "target_time": parsed.target_time.isoformat(),
+                    "gfs_value": forecast.gfs_value,
+                    "ecmwf_value": forecast.ecmwf_value,
+                    "consensus_probability": forecast.consensus_probability,
+                    "consensus_value_c": signal.consensus_temperature_c,
+                    "consensus_value_f": self._c_to_f(signal.consensus_temperature_c),
+                    "market_implied_temp_c": signal.market_implied_temperature_c,
+                    "market_implied_temp_f": self._c_to_f(signal.market_implied_temperature_c),
+                    "source_count": signal.source_count,
+                    "source_spread_c": signal.source_spread_c,
+                    "source_spread_f": (
+                        (signal.source_spread_c * 9.0 / 5.0)
+                        if signal.source_spread_c is not None
+                        else None
+                    ),
+                    "forecast_sources": self._build_forecast_sources_payload(forecast),
+                },
+                "market": {
+                    "id": market.id,
+                    "condition_id": market.condition_id,
+                    "slug": market.slug,
+                    "event_slug": market.event_slug,
+                    "liquidity": market.liquidity,
+                    "clob_token_ids": market.clob_token_ids,
+                    "volume": market.volume,
+                },
+            },
+        )
+        return {"contracts_parsed": 1, "signals_generated": 1, "opportunity": opp, "intent": intent}
+
     async def _fetch_weather_markets(self, limit: int) -> list:
         """Fetch markets that are parseable by the weather contract parser.
 
@@ -217,11 +294,14 @@ class WeatherWorkflowOrchestrator:
         Polymarket tagging is often sparse or inconsistent for weather pages.
         """
         markets: list = []
+        stale_markets: list = []
         seen: set[str] = set()
         scanned_events = 0
         offset = 0
         page_size = 100
-        max_events_offset = 5000
+        # Weather pages can be deep in the event feed; stop only after a wider crawl.
+        max_events_offset = 15000
+        now = datetime.now(timezone.utc)
 
         while offset < max_events_offset and len(markets) < limit:
             events = await polymarket_client.get_events(
@@ -252,7 +332,23 @@ class WeatherWorkflowOrchestrator:
                     if parsed is None:
                         continue
 
-                    markets.append(m)
+                    end_dt = m.end_date
+                    if isinstance(end_dt, str):
+                        try:
+                            end_dt = datetime.fromisoformat(
+                                str(end_dt).replace("Z", "+00:00")
+                            )
+                        except Exception:
+                            end_dt = None
+                    if isinstance(end_dt, datetime):
+                        if end_dt.tzinfo is None:
+                            end_dt = end_dt.replace(tzinfo=timezone.utc)
+                        else:
+                            end_dt = end_dt.astimezone(timezone.utc)
+                    if isinstance(end_dt, datetime) and end_dt <= now:
+                        stale_markets.append(m)
+                    else:
+                        markets.append(m)
                     if len(markets) >= limit:
                         break
                 if len(markets) >= limit:
@@ -263,6 +359,7 @@ class WeatherWorkflowOrchestrator:
                 "Weather market discovery complete",
                 scanned_events=scanned_events,
                 parseable_markets=len(markets),
+                stale_markets=len(stale_markets),
             )
             return markets
 
@@ -291,19 +388,137 @@ class WeatherWorkflowOrchestrator:
                 )
                 if parsed is None:
                     continue
-                markets.append(m)
+
+                end_dt = m.end_date
+                if isinstance(end_dt, str):
+                    try:
+                        end_dt = datetime.fromisoformat(
+                            str(end_dt).replace("Z", "+00:00")
+                        )
+                    except Exception:
+                        end_dt = None
+                if isinstance(end_dt, datetime):
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        end_dt = end_dt.astimezone(timezone.utc)
+                if isinstance(end_dt, datetime) and end_dt <= now:
+                    stale_markets.append(m)
+                else:
+                    markets.append(m)
+
                 if len(markets) >= limit:
                     break
             if len(markets) >= limit:
                 break
 
+        if markets:
+            logger.info(
+                "Weather market discovery complete",
+                scanned_events=scanned_events,
+                parseable_markets=len(markets),
+                stale_markets=len(stale_markets),
+                used_fallback=True,
+            )
+            return markets
+
+        # Last resort: return stale markets so UI can still render weather coverage
+        # when the feed has not rolled to fresh contracts yet.
+        if stale_markets:
+            logger.info(
+                "Weather market discovery returned stale-only set",
+                scanned_events=scanned_events,
+                stale_markets=len(stale_markets),
+                used_fallback=True,
+            )
+            return stale_markets[:limit]
+
         logger.info(
             "Weather market discovery complete",
             scanned_events=scanned_events,
-            parseable_markets=len(markets),
+            parseable_markets=0,
             used_fallback=True,
         )
         return markets
+
+    async def _attach_market_price_history(
+        self, opportunities: list[ArbitrageOpportunity]
+    ) -> None:
+        """Hydrate per-market YES/NO price history via scanner shared backfill."""
+        if not opportunities:
+            return
+        try:
+            # Use the same scanner backfill/cache pipeline as regular markets.
+            from services.scanner import scanner as market_scanner
+
+            attached = await market_scanner.attach_price_history_to_opportunities(
+                opportunities,
+                now=datetime.now(timezone.utc),
+                timeout_seconds=12.0,
+            )
+            if attached:
+                logger.debug(
+                    "Attached weather sparkline history",
+                    markets_with_history=attached,
+                )
+        except Exception as exc:
+            logger.debug("Weather sparkline hydration skipped", error=str(exc))
+
+    @staticmethod
+    def _c_to_f(value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        return (float(value) * 9.0 / 5.0) + 32.0
+
+    def _build_forecast_sources_payload(self, forecast) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        snapshots = getattr(forecast, "source_snapshots", None) or []
+        for snap in snapshots:
+            value_c = getattr(snap, "value_c", None)
+            payload.append(
+                {
+                    "source_id": getattr(snap, "source_id", ""),
+                    "provider": getattr(snap, "provider", ""),
+                    "model": getattr(snap, "model", ""),
+                    "value_c": value_c,
+                    "value_f": self._c_to_f(value_c),
+                    "probability": getattr(snap, "probability", None),
+                    "weight": getattr(snap, "weight", None),
+                    "target_time": getattr(snap, "target_time", None),
+                }
+            )
+
+        if payload:
+            return payload
+
+        # Backward-compatible fallback if source snapshots are unavailable.
+        if forecast.gfs_value is not None:
+            payload.append(
+                {
+                    "source_id": "open_meteo:gfs_seamless",
+                    "provider": "open_meteo",
+                    "model": "gfs_seamless",
+                    "value_c": forecast.gfs_value,
+                    "value_f": self._c_to_f(forecast.gfs_value),
+                    "probability": forecast.gfs_probability,
+                    "weight": None,
+                    "target_time": forecast.metadata.get("target_time"),
+                }
+            )
+        if forecast.ecmwf_value is not None:
+            payload.append(
+                {
+                    "source_id": "open_meteo:ecmwf_ifs04",
+                    "provider": "open_meteo",
+                    "model": "ecmwf_ifs04",
+                    "value_c": forecast.ecmwf_value,
+                    "value_f": self._c_to_f(forecast.ecmwf_value),
+                    "probability": forecast.ecmwf_probability,
+                    "weight": None,
+                    "target_time": forecast.metadata.get("target_time"),
+                }
+            )
+        return payload
 
     def _signal_to_opportunity(
         self,
@@ -327,12 +542,21 @@ class WeatherWorkflowOrchestrator:
 
         now = datetime.now(timezone.utc)
         title = f"Weather Edge: {market.question[:110]}"
+        consensus_temp_f = self._c_to_f(signal.consensus_temperature_c)
+        market_temp_f = self._c_to_f(signal.market_implied_temperature_c)
+        temp_segment = ""
+        if consensus_temp_f is not None:
+            temp_segment = f" | Consensus {consensus_temp_f:.1f}F"
+        if market_temp_f is not None:
+            temp_segment += f" vs Mkt {market_temp_f:.1f}F"
         description = (
             f"{signal.direction.replace('_', ' ').upper()} @ ${signal.market_price:.2f} | "
             f"Edge {signal.edge_percent:.2f}% | "
             f"GFS {signal.gfs_probability:.0%} / ECMWF {signal.ecmwf_probability:.0%}"
+            f"{temp_segment}"
         )
 
+        market_probability = float(market.yes_price) if signal.direction == "buy_yes" else float(market.no_price)
         market_payload = {
             "id": market.condition_id or market.id,
             "question": market.question,
@@ -343,19 +567,40 @@ class WeatherWorkflowOrchestrator:
             "no_price": market.no_price,
             "liquidity": market.liquidity,
             "volume": market.volume,
+            "clob_token_ids": market.clob_token_ids,
             "weather": {
                 "location": parsed.location,
                 "metric": parsed.metric,
                 "operator": parsed.operator,
                 "threshold_c": parsed.threshold_c,
+                "threshold_c_low": parsed.threshold_c_low,
+                "threshold_c_high": parsed.threshold_c_high,
                 "raw_threshold": parsed.raw_threshold,
+                "raw_threshold_low": parsed.raw_threshold_low,
+                "raw_threshold_high": parsed.raw_threshold_high,
                 "raw_unit": parsed.raw_unit,
                 "target_time": parsed.target_time.isoformat(),
                 "gfs_probability": signal.gfs_probability,
                 "ecmwf_probability": signal.ecmwf_probability,
                 "gfs_value": forecast.gfs_value,
                 "ecmwf_value": forecast.ecmwf_value,
+                "forecast_sources": self._build_forecast_sources_payload(forecast),
+                "source_weights": forecast.metadata.get("source_weights"),
+                "source_count": signal.source_count,
+                "source_spread_c": signal.source_spread_c,
+                "source_spread_f": (
+                    (signal.source_spread_c * 9.0 / 5.0)
+                    if signal.source_spread_c is not None
+                    else None
+                ),
+                "consensus_probability": forecast.consensus_probability,
+                "consensus_temp_c": signal.consensus_temperature_c,
+                "consensus_temp_f": self._c_to_f(signal.consensus_temperature_c),
+                "market_probability": market_probability,
+                "market_implied_temp_c": signal.market_implied_temperature_c,
+                "market_implied_temp_f": self._c_to_f(signal.market_implied_temperature_c),
                 "agreement": signal.model_agreement,
+                "model_confidence": signal.confidence,
             },
         }
 

@@ -18,6 +18,7 @@ from typing import Optional
 import httpx
 
 from config import settings
+from .tension_pair_catalog import tension_pair_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,14 @@ class GDELTEventService:
         self._pair_summaries: dict[str, CountryPairEventSummary] = {}
         self._last_fetch_at: Optional[datetime] = None
 
+    @staticmethod
+    def _query_term(country: str) -> str:
+        lookup = tension_pair_catalog.query_names()
+        text = str(country or "").strip()
+        if not text:
+            return text
+        return lookup.get(text.upper(), text)
+
     async def fetch_country_pair_events(
         self,
         country_a: str,
@@ -107,7 +116,9 @@ class GDELTEventService:
         days_back: int = 7,
     ) -> list[GDELTEvent]:
         """Fetch events between two countries from GDELT."""
-        query = f'"{country_a}" "{country_b}"'
+        query_a = self._query_term(country_a).replace('"', "")
+        query_b = self._query_term(country_b).replace('"', "")
+        query = f'"{query_a}" "{query_b}"'
         timespan = f"{days_back * 24}h"
 
         try:
@@ -236,18 +247,9 @@ class GDELTEventService:
 
     async def compute_all_default_pairs(self) -> list[CountryPairEventSummary]:
         """Compute tensions for all default country pairs."""
-        pairs = [
-            ("United States", "China"),
-            ("United States", "Russia"),
-            ("Russia", "Ukraine"),
-            ("Israel", "Iran"),
-            ("China", "Taiwan"),
-            ("India", "Pakistan"),
-            ("North Korea", "South Korea"),
-            ("United States", "Iran"),
-            ("China", "Philippines"),
-            ("Saudi Arabia", "Iran"),
-        ]
+        pairs = tension_pair_catalog.default_pairs()
+        if not pairs:
+            return []
 
         tasks = [self.compute_pair_tension(a, b) for a, b in pairs]
         results = await asyncio.gather(*tasks, return_exceptions=True)

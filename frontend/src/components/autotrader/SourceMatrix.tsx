@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { Activity, Bot, CloudRain, Copy, Newspaper, Radar, TrendingUp, Users } from 'lucide-react'
+import { Activity, Bot, CloudRain, Copy, Globe2, Newspaper, Radar, TrendingUp, Users } from 'lucide-react'
 
 import type {
   AutoTraderExposure,
@@ -12,13 +12,14 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 
-const SOURCE_ORDER = ['scanner', 'crypto', 'news', 'weather', 'tracked_traders', 'insider', 'copy']
+const SOURCE_ORDER = ['scanner', 'crypto', 'news', 'weather', 'world_intelligence', 'tracked_traders', 'insider', 'copy']
 
 const SOURCE_META: Record<string, { label: string; icon: ComponentType<{ className?: string }> }> = {
-  scanner: { label: 'Market Scanner', icon: Radar },
+  scanner: { label: 'Markets', icon: Radar },
   crypto: { label: 'Crypto', icon: TrendingUp },
   news: { label: 'News', icon: Newspaper },
   weather: { label: 'Weather', icon: CloudRain },
+  world_intelligence: { label: 'World Intelligence', icon: Globe2 },
   tracked_traders: { label: 'Tracked Traders', icon: Users },
   insider: { label: 'Insider', icon: Activity },
   copy: { label: 'Copy', icon: Copy },
@@ -68,11 +69,11 @@ export default function SourceMatrix({
   })
 
   return (
-    <Card className="border-border/50 bg-card/40">
-      <CardHeader className="pb-3">
+    <Card className="border-border/50 bg-card/40 w-full h-full min-h-0 flex flex-col">
+      <CardHeader className="pb-3 shrink-0">
         <CardTitle className="text-sm">Source Matrix</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
           {orderedSources.map((source) => {
             const signal = signalBySource.get(source) || {}

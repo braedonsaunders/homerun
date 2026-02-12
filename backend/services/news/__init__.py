@@ -3,10 +3,9 @@ News Intelligence Layer for Homerun.
 
 Provides:
 - Multi-source news ingestion (Google News RSS, GDELT, custom RSS)
-- Semantic matching of news articles to prediction markets
-- News-driven edge detection strategy
-- On-demand forecaster committee for deep analysis
+- Cluster-first topic grouping before retrieval
 - Independent news workflow pipeline (Options B/C/D):
+  - Article clustering (article_clusterer)
   - Event extraction (event_extractor)
   - Market watcher reverse index (market_watcher_index)
   - Hybrid retrieval (hybrid_retriever)
@@ -17,11 +16,14 @@ Provides:
 """
 
 from services.news.feed_service import news_feed_service, NewsFeedService
+from services.news.gov_rss_feeds import gov_rss_service, GovRSSFeedService
 from services.news.semantic_matcher import semantic_matcher, SemanticMatcher
 
 __all__ = [
     "news_feed_service",
     "NewsFeedService",
+    "gov_rss_service",
+    "GovRSSFeedService",
     "semantic_matcher",
     "SemanticMatcher",
 ]

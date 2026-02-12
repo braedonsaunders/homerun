@@ -445,9 +445,31 @@
    ============================================ */
 
 .terminal-view {
+  position: relative;
+  isolation: isolate;
   font-variant-ligatures: none;
   -webkit-font-feature-settings: "liga" 0;
   font-feature-settings: "liga" 0;
+}
+
+.terminal-surface {
+  background: #0a0c10;
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.terminal-header {
+  background: #0d1017;
+  border-bottom: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.theme-light .terminal-surface {
+  background: #0a0f0c;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.theme-light .terminal-header {
+  background: #111813;
+  border-bottom-color: rgba(34, 197, 94, 0.2);
 }
 
 .terminal-view ::-webkit-scrollbar-thumb {

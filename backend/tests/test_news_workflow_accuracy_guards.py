@@ -258,3 +258,23 @@ def test_edge_estimator_skips_results_when_llm_not_used():
     )
 
     assert finding is None
+
+
+def test_local_model_mode_detection():
+    orchestrator = WorkflowOrchestrator()
+
+    assert orchestrator._is_local_model_mode("ollama/mistral:7b", {}) is True
+    assert (
+        orchestrator._is_local_model_mode(
+            "mistral-7b-instruct",
+            {"configured_providers": ["ollama"]},
+        )
+        is True
+    )
+    assert (
+        orchestrator._is_local_model_mode(
+            "gpt-4o-mini",
+            {"configured_providers": ["openai"]},
+        )
+        is False
+    )

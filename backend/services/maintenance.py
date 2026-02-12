@@ -18,7 +18,9 @@ from models.database import (
     DetectedAnomaly,
     TradeStatus,
     AsyncSessionLocal,
+    AppSettings,
 )
+from services.market_cache import market_cache_service
 from utils.logger import get_logger
 
 logger = get_logger("maintenance")
@@ -32,6 +34,46 @@ class MaintenanceService:
     DEFAULT_OPEN_TRADE_EXPIRY = 90  # Mark open trades as expired after 90 days
     DEFAULT_WALLET_TRADE_AGE = 60  # Delete wallet trades older than 60 days
     DEFAULT_ANOMALY_AGE = 30  # Delete resolved anomalies older than 30 days
+
+    async def _market_cache_hygiene_settings(self) -> dict:
+        config = {
+            "enabled": True,
+            "interval_hours": 6,
+            "retention_days": 120,
+            "reference_lookback_days": 45,
+            "weak_entry_grace_days": 7,
+            "max_entries_per_slug": 3,
+        }
+        try:
+            async with AsyncSessionLocal() as session:
+                row = (
+                    await session.execute(
+                        select(AppSettings).where(AppSettings.id == "default")
+                    )
+                ).scalar_one_or_none()
+                if not row:
+                    return config
+                config["enabled"] = bool(
+                    row.market_cache_hygiene_enabled
+                    if row.market_cache_hygiene_enabled is not None
+                    else True
+                )
+                config["interval_hours"] = int(
+                    row.market_cache_hygiene_interval_hours or 6
+                )
+                config["retention_days"] = int(row.market_cache_retention_days or 120)
+                config["reference_lookback_days"] = int(
+                    row.market_cache_reference_lookback_days or 45
+                )
+                config["weak_entry_grace_days"] = int(
+                    row.market_cache_weak_entry_grace_days or 7
+                )
+                config["max_entries_per_slug"] = int(
+                    row.market_cache_max_entries_per_slug or 3
+                )
+        except Exception as e:
+            logger.warning("Failed to read market cache hygiene settings", error=str(e))
+        return config
 
     async def get_database_stats(self) -> dict:
         """Get statistics about database contents"""
@@ -474,6 +516,26 @@ class MaintenanceService:
         results["anomalies"] = await self.cleanup_anomalies(
             older_than_days=anomaly_days
         )
+
+        # 5. Prune stale/mismatched market metadata cache entries
+        try:
+            market_cache_cfg = await self._market_cache_hygiene_settings()
+            if market_cache_cfg["enabled"]:
+                results["market_cache"] = await market_cache_service.run_hygiene_if_due(
+                    force=True,
+                    interval_hours=market_cache_cfg["interval_hours"],
+                    retention_days=market_cache_cfg["retention_days"],
+                    reference_lookback_days=market_cache_cfg[
+                        "reference_lookback_days"
+                    ],
+                    weak_entry_grace_days=market_cache_cfg["weak_entry_grace_days"],
+                    max_entries_per_slug=market_cache_cfg["max_entries_per_slug"],
+                )
+            else:
+                results["market_cache"] = {"status": "disabled"}
+        except Exception as e:
+            logger.warning("Market cache cleanup failed during full maintenance run", error=str(e))
+            results["market_cache"] = {"status": "error", "error": str(e)}
 
         logger.info("Full database cleanup completed", results=results)
 

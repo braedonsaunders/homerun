@@ -8,12 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import select
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
-from models.database import AsyncSessionLocal, StrategyPlugin, get_db_session
+from models.database import (
+    AsyncSessionLocal,
+    StrategyPlugin,
+    StrategyValidationProfile,
+    get_db_session,
+)
 from services import scanner, wallet_tracker, polymarket_client
 from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client
 from services.plugin_loader import plugin_loader
 from services import shared_state
+from services.pause_state import global_pause_state
 from utils.logger import get_logger
 
 router = APIRouter()
@@ -25,6 +31,55 @@ DISCOVER_TIME_TO_WINDOW = {
     "MONTH": "30d",
     "ALL": None,
 }
+
+DEFAULT_STRATEGY_META = {
+    "domain": "event_markets",
+    "timeframe": "event",
+    "sources": ["scanner"],
+}
+
+STRATEGY_META_BY_TYPE: dict[str, dict[str, object]] = {
+    StrategyType.BTC_ETH_HIGHFREQ.value: {
+        "domain": "crypto",
+        "timeframe": "15m",
+        "sources": ["crypto"],
+    },
+    StrategyType.NEWS_EDGE.value: {
+        "domain": "event_markets",
+        "timeframe": "event",
+        "sources": ["news"],
+    },
+    StrategyType.WEATHER_EDGE.value: {
+        "domain": "event_markets",
+        "timeframe": "forecast",
+        "sources": ["weather"],
+    },
+    StrategyType.EVENT_DRIVEN.value: {
+        "domain": "event_markets",
+        "timeframe": "event",
+        "sources": ["scanner", "world_intelligence"],
+    },
+    StrategyType.BAYESIAN_CASCADE.value: {
+        "domain": "event_markets",
+        "timeframe": "event",
+        "sources": ["scanner", "world_intelligence"],
+    },
+    StrategyType.STAT_ARB.value: {
+        "domain": "event_markets",
+        "timeframe": "event",
+        "sources": ["scanner", "world_intelligence"],
+    },
+}
+
+
+def _strategy_meta(strategy_type: str, *, is_plugin: bool) -> dict[str, object]:
+    base = dict(DEFAULT_STRATEGY_META)
+    base.update(STRATEGY_META_BY_TYPE.get(strategy_type, {}))
+    if is_plugin:
+        base["domain"] = "event_markets"
+        base["timeframe"] = "plugin"
+        base["sources"] = ["scanner"]
+    return base
 
 
 async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str]:
@@ -122,17 +177,9 @@ async def get_opportunities(
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
         ]
 
-    # Server-side rejection: filter out STRONG SKIP opportunities
-    # These have been analyzed by AI and determined to be trash
-    # (false positives, guaranteed losses, etc.)
-    opportunities = [
-        opp
-        for opp in opportunities
-        if not (
-            opp.ai_analysis is not None
-            and opp.ai_analysis.recommendation == "strong_skip"
-        )
-    ]
+    # Keep all analyzed opportunities visible in Markets, including STRONG SKIP.
+    # This allows users to review completed AI analysis on the opportunity card
+    # instead of seeing cards disappear after post-analysis refetch.
 
     # Sort opportunities — uses inline ai_analysis (no DB queries needed)
     reverse = sort_dir != "asc"
@@ -219,7 +266,9 @@ async def search_polymarket_opportunities(
         now = datetime.now(timezone.utc)
         all_markets = [
             m for m in all_markets
-            if m.end_date is None or m.end_date > now
+            if bool(getattr(m, "active", True))
+            and not bool(getattr(m, "closed", False))
+            and (m.end_date is None or m.end_date > now)
         ]
 
         # Relevance filter: only keep markets where the query actually
@@ -398,6 +447,11 @@ async def get_opportunity(
 @router.post("/scan")
 async def trigger_scan(session: AsyncSession = Depends(get_db_session)):
     """Manually request one scan. Scanner worker will run a scan on its next loop."""
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Resume all workers before requesting a scan.",
+        )
     await shared_state.request_one_scan(session)
     return {
         "status": "started",
@@ -418,6 +472,11 @@ async def get_scanner_status(session: AsyncSession = Depends(get_db_session)):
 @router.post("/scanner/start")
 async def start_scanner(session: AsyncSession = Depends(get_db_session)):
     """Start/resume the scanner (worker reads control from DB)."""
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Use /workers/resume-all first.",
+        )
     await shared_state.set_scanner_paused(session, False)
     return {"status": "started", **await shared_state.get_scanner_status_from_db(session)}
 
@@ -736,9 +795,58 @@ async def get_strategies():
             "description": "Weather workflow forecast-consensus intents consumed by auto trader",
             "is_plugin": False,
         },
+        {
+            "type": StrategyType.BTC_ETH_HIGHFREQ.value,
+            "name": "BTC/ETH 15m High-Frequency",
+            "description": "Crypto 15m directional strategy emitted by the dedicated crypto worker",
+            "is_plugin": False,
+        },
     ]
+    combined: list[dict[str, object]] = builtin + synthetic + plugin_entries
 
-    return builtin + synthetic + plugin_entries
+    # Deduplicate by type while preserving first occurrence ordering.
+    seen_types: set[str] = set()
+    deduped: list[dict[str, object]] = []
+    for item in combined:
+        stype = str(item.get("type") or "").strip()
+        if not stype or stype in seen_types:
+            continue
+        seen_types.add(stype)
+        deduped.append(item)
+
+    validation_profiles: dict[str, StrategyValidationProfile] = {}
+    async with AsyncSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(StrategyValidationProfile).where(
+                        StrategyValidationProfile.strategy_type.in_(list(seen_types))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        validation_profiles = {str(row.strategy_type): row for row in rows}
+
+    enriched: list[dict[str, object]] = []
+    for item in deduped:
+        strategy_type = str(item.get("type") or "")
+        is_plugin = bool(item.get("is_plugin"))
+        meta = _strategy_meta(strategy_type, is_plugin=is_plugin)
+        profile = validation_profiles.get(strategy_type)
+        enriched.append(
+            {
+                **item,
+                "domain": meta.get("domain"),
+                "timeframe": meta.get("timeframe"),
+                "sources": meta.get("sources"),
+                "validation_status": profile.status if profile is not None else "unknown",
+                "validation_sample_size": int(profile.sample_size or 0) if profile is not None else 0,
+            }
+        )
+
+    return enriched
 
 
 # ==================== TRADER DISCOVERY ====================

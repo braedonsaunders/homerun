@@ -12,12 +12,33 @@ let sharedWs: WebSocket | null = null
 let sharedConnected = false
 let sharedReconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let sharedReconnectAttempts = 0
-const MAX_RECONNECT_DELAY = 30_000
-const BASE_RECONNECT_DELAY = 2_000
+let sharedPingInterval: ReturnType<typeof setInterval> | null = null
+const MAX_RECONNECT_DELAY = 10_000
+const BASE_RECONNECT_DELAY = 1_000
+const CLIENT_PING_INTERVAL_MS = 15_000
 const listeners = new Set<(msg: WebSocketMessage) => void>()
 const statusListeners = new Set<(connected: boolean) => void>()
 let mountedCount = 0
 let disposed = false
+
+function clearPingLoop() {
+  if (sharedPingInterval) {
+    clearInterval(sharedPingInterval)
+    sharedPingInterval = null
+  }
+}
+
+function startPingLoop() {
+  clearPingLoop()
+  sharedPingInterval = setInterval(() => {
+    if (sharedWs?.readyState !== WebSocket.OPEN) return
+    try {
+      sharedWs.send(JSON.stringify({ type: 'ping' }))
+    } catch {
+      // Let the regular close/reconnect path handle this.
+    }
+  }, CLIENT_PING_INTERVAL_MS)
+}
 
 function notifyStatus(connected: boolean) {
   sharedConnected = connected
@@ -44,6 +65,7 @@ function sharedConnect(url: string) {
       }
       sharedReconnectAttempts = 0
       notifyStatus(true)
+      startPingLoop()
     }
 
     ws.onmessage = (event) => {
@@ -57,6 +79,9 @@ function sharedConnect(url: string) {
     }
 
     ws.onclose = () => {
+      if (sharedWs !== ws) return
+      sharedWs = null
+      clearPingLoop()
       notifyStatus(false)
       // Don't reconnect if all consumers have unmounted
       if (disposed || mountedCount <= 0) return
@@ -95,6 +120,7 @@ function sharedDisconnect() {
     clearTimeout(sharedReconnectTimeout)
     sharedReconnectTimeout = null
   }
+  clearPingLoop()
   if (sharedWs) {
     try { sharedWs.close() } catch { /* ignore */ }
     sharedWs = null
@@ -123,7 +149,36 @@ export function useWebSocket(url: string) {
     // Start connection if not already connected
     sharedConnect(urlRef.current)
 
+    const reconnectNow = () => {
+      if (disposed || mountedCount <= 0) return
+      if (
+        sharedWs &&
+        (sharedWs.readyState === WebSocket.OPEN || sharedWs.readyState === WebSocket.CONNECTING)
+      ) {
+        return
+      }
+      if (sharedReconnectTimeout) {
+        clearTimeout(sharedReconnectTimeout)
+        sharedReconnectTimeout = null
+      }
+      sharedReconnectAttempts = 0
+      sharedConnect(urlRef.current)
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        reconnectNow()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', reconnectNow)
+    window.addEventListener('online', reconnectNow)
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', reconnectNow)
+      window.removeEventListener('online', reconnectNow)
       listeners.delete(onMsg)
       statusListeners.delete(onStatus)
       mountedCount--

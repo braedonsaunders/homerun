@@ -5,7 +5,7 @@
 <h1 align="center">Homerun</h1>
 
 <p align="center">
-  <strong>An autonomous trading engine that finds and executes arbitrage<br/>across prediction markets, crypto, and news — before anyone else.</strong>
+  <strong>The autonomous prediction market trading OS:<br/>zero-config setup, institutional-grade data, and multi-strategy execution in one dashboard.</strong>
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@
 
 <p align="center">
   <a href="#zero-config-start">Quick Start</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#data-breadth--signal-quality">Data Engine</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
   <a href="#18-strategies-one-scanner">Strategies</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
   <a href="#the-full-stack">Features</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
   <a href="#copy-trading--wallet-intelligence">Copy Trading</a>&nbsp;&nbsp;&middot;&nbsp;&nbsp;
@@ -26,29 +27,48 @@
 <br/>
 
 <p align="center">
-  <img src="screenshot.png" alt="Homerun Dashboard" width="800"/>
+  <img src="screenshots/screenshot.png" alt="Homerun Dashboard" width="800"/>
 </p>
 
 <br/>
 
 ## Why This Exists
 
-$40M+ in arbitrage has been extracted from Polymarket alone. [Published research](https://arxiv.org/abs/2503.18773) (Kroer et al.) confirmed it. Market makers optimize for speed over accuracy, which creates windows where:
+Prediction markets are inefficient in bursts, not in theory.
 
-- Mutually exclusive outcomes sum to **less than $1.00** (guaranteed profit)
-- The same event trades at **different prices** across Polymarket and Kalshi
-- Prices **lag for hours** after an outcome is effectively decided
-- News breaks and markets **don't reprice for minutes**
+[Published research](https://arxiv.org/abs/2503.18773) (Kroer et al.) identified **$40M+ in extractable Polymarket arbitrage**. In practice, that edge appears when:
 
-These windows last seconds to minutes. You'd need to monitor hundreds of markets simultaneously to catch them.
+- Mutually exclusive outcomes price to **less than $1.00**
+- The same event is priced **differently on Polymarket vs Kalshi**
+- Crypto binaries drift away from **true oracle reference levels**
+- News lands and markets **lag repricing for minutes**
 
-Homerun watches all of them. It scores them with AI. And it can trade them autonomously.
+The hard part is not finding one setup. The hard part is running all of them at once, with reliable live data and safe execution controls.
+
+Homerun does exactly that.
+
+<br/>
+
+## Data Breadth = Signal Quality
+
+Homerun is designed around source diversity and low-latency ingestion, so opportunities are backed by real market structure instead of one noisy feed.
+
+| Layer | Sources | Why It Matters |
+|-------|---------|----------------|
+| **Prediction markets** | Polymarket Gamma + CLOB, Kalshi APIs | Detect cross-market and cross-venue mispricing, not just single-book anomalies |
+| **Crypto resolution data** | Polymarket RTDS `crypto_prices_chainlink` | Uses the same Chainlink-backed reference stream used for market resolution |
+| **High-frequency crypto ticks** | Polymarket RTDS `crypto_prices` updates | Faster quote updates for short-window binaries and spread monitoring |
+| **News intelligence** | Google News RSS + GDELT DOC 2.0 + custom feeds | Catches catalysts earlier and maps them to tradable markets |
+| **Wallet intelligence** | On-chain wallet activity + anomaly filters | Distinguishes signal wallets from copy-trading noise |
+| **Global macro inputs** | Weather, world intelligence, and event feeds | Adds context for contracts tied to real-world events |
 
 <br/>
 
 ## Zero-Config Start
 
-No `.env` file. No database setup. No API keys. Clone and run.
+From clone to live dashboard in under a minute.
+
+No `.env` file. No database setup. No API keys. Clone and run:
 
 ```bash
 git clone https://github.com/braedonsaunders/homerun.git
@@ -56,9 +76,9 @@ cd homerun
 ./run.sh
 ```
 
-That's it. Open **http://localhost:3000** — you're scanning live markets for arbitrage.
+Open **http://localhost:3000** and you are immediately scanning live opportunities.
 
-Everything runs on **SQLite** out of the box. The database creates itself on first launch. Paper trading works immediately with a virtual $10k account.
+Everything boots with **SQLite** out of the box, auto-creates schema on first launch, and starts paper trading with a virtual $10k account.
 
 > **Windows?** Run `.\run.ps1` in PowerShell.
 
@@ -206,11 +226,13 @@ LLM-powered analysis with multi-provider support (OpenAI, Claude, Gemini, Grok, 
 
 Dedicated crypto pipeline running independently from the main scanner:
 
-- **2-second scan loop** on 15-minute binary markets (BTC, ETH, SOL, XRP)
-- **Chainlink oracle integration** for real-time "price to beat" tracking
+- **2-second scan loop** on live 15-minute binaries (BTC, ETH, SOL, XRP)
+- **Resolution-grade reference data** from Polymarket RTDS `crypto_prices_chainlink`
+- **High-frequency market updates** from Polymarket RTDS `crypto_prices` stream
+- **Price-to-beat tracking** anchored to oracle history for each contract window
 - **Maker mode** — limit orders to earn exchange rebates
 - **Thin liquidity detection** — avoids traps below $500 depth
-- Real-time WebSocket push to the dashboard
+- Real-time WebSocket push to the dashboard with freshness/health tracking
 
 ### News Intelligence
 
@@ -320,11 +342,18 @@ GET  /api/simulation/accounts/{id}/equity  # Equity curve data
 <summary><strong>Auto Trading</strong></summary>
 
 ```
-POST /api/auto-trader/start      # Start (paper/live/shadow)
-POST /api/auto-trader/stop       # Stop trading
-GET  /api/auto-trader/status     # Current status
-POST /api/auto-trader/configure  # Update config
-POST /api/auto-trader/emergency-stop  # Kill switch
+GET   /api/auto-trader/overview                  # Canonical command center payload
+GET   /api/auto-trader/events                    # Unified timeline feed (cursor + type filters)
+GET   /api/auto-trader/decisions/{decision_id}   # Full explainability payload
+PATCH /api/auto-trader/config                    # Typed config writes with validation
+POST  /api/auto-trader/start                     # Compatibility start endpoint
+POST  /api/auto-trader/stop                      # Compatibility stop endpoint
+POST  /api/auto-trader/kill-switch               # Compatibility kill switch endpoint
+POST  /api/auto-trader/live/preflight            # Strict live-mode preflight checks
+POST  /api/auto-trader/live/arm                  # Arm live start and mint expiring arm token
+POST  /api/auto-trader/live/start                # Start live mode (requires valid arm token)
+POST  /api/auto-trader/live/stop                 # Stop live mode
+POST  /api/auto-trader/live/kill-switch          # Live kill switch
 ```
 
 </details>

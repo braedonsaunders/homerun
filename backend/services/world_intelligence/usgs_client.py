@@ -71,6 +71,7 @@ class USGSClient:
         self._last_fetch_at: Optional[datetime] = None
         self._consecutive_failures: int = 0
         self._cooldown_until: Optional[datetime] = None
+        self._last_error: Optional[str] = None
 
     async def fetch_earthquakes(
         self,
@@ -79,14 +80,17 @@ class USGSClient:
     ) -> list[Earthquake]:
         """Fetch earthquakes from USGS. Returns NEW events only."""
         if not settings.WORLD_INTEL_USGS_ENABLED:
+            self._last_error = "disabled"
             return []
 
         if self._cooldown_until and datetime.now(timezone.utc) < self._cooldown_until:
+            self._last_error = "cooldown_active"
             return []
 
         url = USGS_FEEDS.get(feed)
         if not url:
             logger.warning("Unknown USGS feed: %s", feed)
+            self._last_error = f"unknown_feed:{feed}"
             return []
 
         try:
@@ -94,6 +98,7 @@ class USGSClient:
                 resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
                 if resp.status_code != 200:
                     self._record_failure()
+                    self._last_error = f"http_{resp.status_code}"
                     return []
 
             data = resp.json()
@@ -137,6 +142,7 @@ class USGSClient:
                 new_quakes.append(quake)
 
             self._consecutive_failures = 0
+            self._last_error = None
             self._last_fetch_at = datetime.now(timezone.utc)
             self._prune_old()
 
@@ -150,6 +156,7 @@ class USGSClient:
 
         except Exception as e:
             self._record_failure()
+            self._last_error = str(e)
             logger.debug("USGS fetch failed: %s", e)
             return []
 
@@ -190,6 +197,16 @@ class USGSClient:
             from datetime import timedelta
             self._cooldown_until = datetime.now(timezone.utc) + timedelta(minutes=5)
             logger.warning("USGS client in cooldown after %d failures", self._consecutive_failures)
+
+    def get_health(self) -> dict[str, object]:
+        return {
+            "enabled": bool(settings.WORLD_INTEL_USGS_ENABLED),
+            "consecutive_failures": self._consecutive_failures,
+            "cooldown_until": self._cooldown_until.isoformat() if self._cooldown_until else None,
+            "cached_quakes": len(self._earthquakes),
+            "last_fetch_at": self._last_fetch_at.isoformat() if self._last_fetch_at else None,
+            "last_error": self._last_error,
+        }
 
     def _prune_old(self) -> None:
         cutoff = datetime.now(timezone.utc).timestamp() - (7 * 24 * 3600)  # 7 days

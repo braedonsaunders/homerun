@@ -6,3 +6,4 @@
 #   python -m workers.crypto_worker
 #   python -m workers.tracked_traders_worker
 #   python -m workers.autotrader_worker
+#   python -m workers.world_intelligence_worker

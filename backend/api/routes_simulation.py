@@ -140,6 +140,7 @@ async def get_account_positions(account_id: str):
                 "event_slug", ""
             ),
             "market_question": pos.market_question,
+            "token_id": pos.token_id,
             "side": pos.side.value,
             "quantity": pos.quantity,
             "entry_price": pos.entry_price,

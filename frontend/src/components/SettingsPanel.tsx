@@ -40,6 +40,7 @@ import {
   updateSettings,
   testTelegramConnection,
   testTradingProxy,
+  flushDatabaseData,
   getLLMModels,
   refreshLLMModels,
   getPlugins,
@@ -50,6 +51,8 @@ import {
   getPluginTemplate,
   reloadPlugin,
   getPluginDocs,
+  runWorkerOnce,
+  type DatabaseFlushTarget,
   type LLMModelOption,
 } from '../services/api'
 
@@ -102,6 +105,7 @@ export default function SettingsPanel() {
   const [expandedSections, setExpandedSections] = useState<Set<SettingsSection>>(new Set())
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [activeFlushTarget, setActiveFlushTarget] = useState<DatabaseFlushTarget | null>(null)
 
   // Form state for each section
   const [llmForm, setLlmForm] = useState({
@@ -149,7 +153,13 @@ export default function SettingsPanel() {
   const [maintenanceForm, setMaintenanceForm] = useState({
     auto_cleanup_enabled: false,
     cleanup_interval_hours: 24,
-    cleanup_resolved_trade_days: 30
+    cleanup_resolved_trade_days: 30,
+    market_cache_hygiene_enabled: true,
+    market_cache_hygiene_interval_hours: 6,
+    market_cache_retention_days: 120,
+    market_cache_reference_lookback_days: 45,
+    market_cache_weak_entry_grace_days: 7,
+    market_cache_max_entries_per_slug: 3,
   })
 
   const [vpnForm, setVpnForm] = useState({
@@ -253,7 +263,13 @@ export default function SettingsPanel() {
       setMaintenanceForm({
         auto_cleanup_enabled: settings.maintenance.auto_cleanup_enabled,
         cleanup_interval_hours: settings.maintenance.cleanup_interval_hours,
-        cleanup_resolved_trade_days: settings.maintenance.cleanup_resolved_trade_days
+        cleanup_resolved_trade_days: settings.maintenance.cleanup_resolved_trade_days,
+        market_cache_hygiene_enabled: settings.maintenance.market_cache_hygiene_enabled,
+        market_cache_hygiene_interval_hours: settings.maintenance.market_cache_hygiene_interval_hours,
+        market_cache_retention_days: settings.maintenance.market_cache_retention_days,
+        market_cache_reference_lookback_days: settings.maintenance.market_cache_reference_lookback_days,
+        market_cache_weak_entry_grace_days: settings.maintenance.market_cache_weak_entry_grace_days,
+        market_cache_max_entries_per_slug: settings.maintenance.market_cache_max_entries_per_slug,
       })
 
       if (settings.trading_proxy) {
@@ -314,6 +330,45 @@ export default function SettingsPanel() {
 
   const testVpnMutation = useMutation({
     mutationFn: testTradingProxy,
+  })
+
+  const flushDataMutation = useMutation({
+    mutationFn: (target: DatabaseFlushTarget) => flushDatabaseData(target),
+    onSuccess: (data, target) => {
+      queryClient.invalidateQueries()
+      const totalCleared = Object.values(data.flushed || {}).reduce((datasetSum, datasetCounts) => {
+        return datasetSum + Object.values(datasetCounts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
+      }, 0)
+      const targetLabel = target === 'all' ? 'all selected datasets' : `${target} dataset`
+      setSaveMessage({
+        type: 'success',
+        text: `Flushed ${targetLabel} (${totalCleared} rows cleared). Live positions/history preserved.`,
+      })
+      setTimeout(() => setSaveMessage(null), 5000)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to flush database data' })
+      setTimeout(() => setSaveMessage(null), 7000)
+    },
+    onSettled: () => {
+      setActiveFlushTarget(null)
+    },
+  })
+
+  const runAutoTraderOnceMutation = useMutation({
+    mutationFn: () => runWorkerOnce('autotrader'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['autotrader-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['autotrader-status'] })
+      setSaveMessage({ type: 'success', text: 'Auto-trader one-time run queued' })
+      setTimeout(() => setSaveMessage(null), 4000)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to queue auto-trader run' })
+      setTimeout(() => setSaveMessage(null), 7000)
+    },
   })
 
   const createPluginMutation = useMutation({
@@ -466,6 +521,25 @@ export default function SettingsPanel() {
 
   const toggleSecret = (key: string) => {
     setShowSecrets(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const handleFlushTarget = (target: DatabaseFlushTarget) => {
+    const labelMap: Record<DatabaseFlushTarget, string> = {
+      scanner: 'Scanner/Market data',
+      weather: 'Weather workflow data',
+      news: 'News workflow/feed data',
+      autotrader: 'Auto-trader runtime data',
+      all: 'ALL non-trading datasets',
+    }
+
+    const selectedLabel = labelMap[target]
+    const confirmed = window.confirm(
+      `Flush ${selectedLabel}?\n\nThis cannot be undone.\n\nProtected data that will NOT be deleted:\n- Live/executed trade history\n- Position ledgers\n- Simulation trade history`
+    )
+    if (!confirmed) return
+
+    setActiveFlushTarget(target)
+    flushDataMutation.mutate(target)
   }
 
   if (isLoading) {
@@ -1679,6 +1753,181 @@ export default function SettingsPanel() {
                             />
                           </div>
                         </div>
+
+                        <Card className="bg-muted">
+                          <CardContent className="flex items-center justify-between p-3">
+                            <div>
+                              <p className="font-medium text-sm">Market Metadata Hygiene</p>
+                              <p className="text-xs text-muted-foreground">
+                                Prune stale or poisoned cached market names/slugs
+                              </p>
+                            </div>
+                            <Switch
+                              checked={maintenanceForm.market_cache_hygiene_enabled}
+                              onCheckedChange={(checked) => setMaintenanceForm(p => ({ ...p, market_cache_hygiene_enabled: checked }))}
+                            />
+                          </CardContent>
+                        </Card>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Metadata Hygiene Interval (hours)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.market_cache_hygiene_interval_hours}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, market_cache_hygiene_interval_hours: parseInt(e.target.value) || 6 }))}
+                              min={1}
+                              max={168}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Metadata Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.market_cache_retention_days}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, market_cache_retention_days: parseInt(e.target.value) || 120 }))}
+                              min={7}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Reference Lookback (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.market_cache_reference_lookback_days}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, market_cache_reference_lookback_days: parseInt(e.target.value) || 45 }))}
+                              min={1}
+                              max={365}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Weak Entry Grace (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.market_cache_weak_entry_grace_days}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, market_cache_weak_entry_grace_days: parseInt(e.target.value) || 7 }))}
+                              min={1}
+                              max={180}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Max Entries Per Slug</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.market_cache_max_entries_per_slug}
+                              onChange={(e) => setMaintenanceForm(p => ({ ...p, market_cache_max_entries_per_slug: parseInt(e.target.value) || 3 }))}
+                              min={1}
+                              max={50}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <Card className="bg-red-500/5 border-red-500/20">
+                          <CardContent className="p-3 space-y-3">
+                            <div>
+                              <p className="font-medium text-sm">Manual Data Flush</p>
+                              <p className="text-xs text-muted-foreground">
+                                Manually clear runtime/cache datasets for scanner, weather, news, and auto-trader pipelines.
+                              </p>
+                              <p className="text-[11px] text-emerald-400/80 mt-1">
+                                Protected automatically: live/executed positions and trade history.
+                              </p>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="justify-start border-red-500/30 hover:bg-red-500/10"
+                                onClick={() => handleFlushTarget('scanner')}
+                                disabled={flushDataMutation.isPending}
+                              >
+                                {flushDataMutation.isPending && activeFlushTarget === 'scanner'
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                                Flush Scanner/Market
+                              </Button>
+
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="justify-start border-red-500/30 hover:bg-red-500/10"
+                                onClick={() => handleFlushTarget('weather')}
+                                disabled={flushDataMutation.isPending}
+                              >
+                                {flushDataMutation.isPending && activeFlushTarget === 'weather'
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                                Flush Weather
+                              </Button>
+
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="justify-start border-red-500/30 hover:bg-red-500/10"
+                                onClick={() => handleFlushTarget('news')}
+                                disabled={flushDataMutation.isPending}
+                              >
+                                {flushDataMutation.isPending && activeFlushTarget === 'news'
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                                Flush News
+                              </Button>
+
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="justify-start border-red-500/30 hover:bg-red-500/10"
+                                onClick={() => handleFlushTarget('autotrader')}
+                                disabled={flushDataMutation.isPending}
+                              >
+                                {flushDataMutation.isPending && activeFlushTarget === 'autotrader'
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                                Flush Auto-Trader Runtime
+                              </Button>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-red-500/40 hover:bg-red-500/15"
+                                onClick={() => handleFlushTarget('all')}
+                                disabled={flushDataMutation.isPending}
+                              >
+                                {flushDataMutation.isPending && activeFlushTarget === 'all'
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                                Flush All Non-Trading Data
+                              </Button>
+
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => runAutoTraderOnceMutation.mutate()}
+                                disabled={runAutoTraderOnceMutation.isPending}
+                              >
+                                {runAutoTraderOnceMutation.isPending
+                                  ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                                  : <Play className="w-3.5 h-3.5 mr-1.5" />}
+                                Run Auto-Trader Once
+                              </Button>
+
+                              <p className="text-[10px] text-muted-foreground">
+                                Auto-trader run is non-destructive and queues one immediate cycle.
+                              </p>
+                            </div>
+                          </CardContent>
+                        </Card>
                       </div>
 
                       <Separator className="opacity-30" />

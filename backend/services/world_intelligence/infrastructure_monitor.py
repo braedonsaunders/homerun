@@ -20,6 +20,8 @@ from typing import Any, Optional
 import httpx
 
 from config import settings
+from .infrastructure_catalog import infrastructure_catalog
+from .military_catalog import military_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -57,106 +59,32 @@ class InfrastructureEvent:
     source: str
     affected_services: list[str] = field(default_factory=list)
     cascade_risk_score: float = 0.0  # 0-1, computed by cascade model
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
 # Infrastructure dependency graph
 # ---------------------------------------------------------------------------
 
-# Nodes represent key infrastructure assets.  Edges are directed and
-# weighted: (from_node, to_node, weight).  Weight represents how much
-# the downstream node depends on the upstream one (0-1).
+def _graph_state() -> tuple[
+    set[str],
+    dict[str, list[tuple[str, float]]],
+    dict[str, float],
+    dict[str, dict[str, float]],
+    dict[str, list[str]],
+]:
+    nodes = infrastructure_catalog.nodes()
+    edges = infrastructure_catalog.edges()
+    redundancy = infrastructure_catalog.redundancy()
+    trade_dependencies = infrastructure_catalog.trade_dependencies()
+    country_to_nodes = infrastructure_catalog.country_to_nodes()
 
-_INFRA_NODES: set[str] = {
-    # Chokepoints
-    "suez_canal", "strait_of_hormuz", "malacca_strait",
-    "panama_canal", "bosphorus_strait",
-    # Undersea cables (simplified clusters)
-    "transatlantic_cables", "transpacific_cables",
-    "asia_africa_cables", "med_cables",
-    # Major port clusters
-    "shanghai_port", "singapore_port", "rotterdam_port",
-    "houston_port", "dubai_port",
-}
+    adjacency: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for src, dst, weight in edges:
+        adjacency[src].append((dst, weight))
 
-_INFRA_EDGES: list[tuple[str, str, float]] = [
-    # Chokepoint -> cable / port dependencies
-    ("suez_canal", "med_cables", 0.7),
-    ("suez_canal", "asia_africa_cables", 0.5),
-    ("suez_canal", "rotterdam_port", 0.4),
-    ("suez_canal", "dubai_port", 0.3),
-    ("strait_of_hormuz", "dubai_port", 0.8),
-    ("strait_of_hormuz", "asia_africa_cables", 0.3),
-    ("malacca_strait", "singapore_port", 0.9),
-    ("malacca_strait", "shanghai_port", 0.6),
-    ("malacca_strait", "transpacific_cables", 0.4),
-    ("panama_canal", "houston_port", 0.5),
-    ("bosphorus_strait", "med_cables", 0.4),
-    # Cable -> port dependencies
-    ("transatlantic_cables", "rotterdam_port", 0.3),
-    ("transpacific_cables", "shanghai_port", 0.3),
-    ("transpacific_cables", "singapore_port", 0.2),
-    ("med_cables", "rotterdam_port", 0.2),
-    ("asia_africa_cables", "dubai_port", 0.3),
-    ("asia_africa_cables", "singapore_port", 0.3),
-]
-
-# Build adjacency list for BFS
-_ADJACENCY: dict[str, list[tuple[str, float]]] = defaultdict(list)
-for _src, _dst, _w in _INFRA_EDGES:
-    _ADJACENCY[_src].append((_dst, _w))
-
-# Redundancy factors: nodes with backup routes have lower cascade impact
-_REDUNDANCY: dict[str, float] = {
-    "transatlantic_cables": 0.7,   # Many redundant cables
-    "transpacific_cables": 0.6,
-    "med_cables": 0.5,
-    "asia_africa_cables": 0.4,
-    "singapore_port": 0.3,        # Major hub with alternatives
-    "rotterdam_port": 0.3,
-    "shanghai_port": 0.2,
-    "houston_port": 0.3,
-    "dubai_port": 0.2,
-    "suez_canal": 0.1,            # Cape route exists but very slow
-    "strait_of_hormuz": 0.05,     # Almost no alternative for oil
-    "malacca_strait": 0.15,       # Lombok Strait alternative
-    "panama_canal": 0.1,
-    "bosphorus_strait": 0.1,
-}
-
-# Trade dependencies: country -> chokepoint/node -> dependency weight
-# How much does this country's economy depend on this infrastructure?
-TRADE_DEPENDENCIES: dict[str, dict[str, float]] = {
-    "JPN": {"strait_of_hormuz": 0.8, "malacca_strait": 0.7, "transpacific_cables": 0.6},
-    "KOR": {"strait_of_hormuz": 0.7, "malacca_strait": 0.6, "transpacific_cables": 0.5},
-    "CHN": {"malacca_strait": 0.8, "strait_of_hormuz": 0.5, "transpacific_cables": 0.6, "shanghai_port": 0.9},
-    "DEU": {"suez_canal": 0.5, "bosphorus_strait": 0.3, "rotterdam_port": 0.7, "transatlantic_cables": 0.5},
-    "GBR": {"suez_canal": 0.4, "transatlantic_cables": 0.7, "rotterdam_port": 0.3},
-    "FRA": {"suez_canal": 0.4, "med_cables": 0.5, "transatlantic_cables": 0.4},
-    "USA": {"panama_canal": 0.4, "transatlantic_cables": 0.5, "transpacific_cables": 0.5, "houston_port": 0.3},
-    "IND": {"strait_of_hormuz": 0.6, "malacca_strait": 0.3, "asia_africa_cables": 0.5},
-    "SGP": {"malacca_strait": 0.9, "singapore_port": 0.95, "transpacific_cables": 0.4},
-    "ARE": {"strait_of_hormuz": 0.9, "dubai_port": 0.8, "asia_africa_cables": 0.4},
-    "SAU": {"strait_of_hormuz": 0.7, "suez_canal": 0.4, "asia_africa_cables": 0.3},
-    "TUR": {"bosphorus_strait": 0.8, "med_cables": 0.4, "suez_canal": 0.3},
-    "EGY": {"suez_canal": 0.9, "med_cables": 0.5, "asia_africa_cables": 0.4},
-    "NLD": {"rotterdam_port": 0.9, "suez_canal": 0.4, "transatlantic_cables": 0.5},
-    "AUS": {"transpacific_cables": 0.6, "malacca_strait": 0.3},
-    "BRA": {"panama_canal": 0.3, "transatlantic_cables": 0.4},
-}
-
-# Map outage country names to relevant infrastructure nodes for cascade seeding
-_COUNTRY_TO_INFRA_NODES: dict[str, list[str]] = {
-    "EG": ["suez_canal", "med_cables"],
-    "TR": ["bosphorus_strait", "med_cables"],
-    "SG": ["malacca_strait", "singapore_port"],
-    "PA": ["panama_canal"],
-    "AE": ["strait_of_hormuz", "dubai_port"],
-    "OM": ["strait_of_hormuz"],
-    "IR": ["strait_of_hormuz"],
-    "NL": ["rotterdam_port"],
-    "CN": ["shanghai_port", "transpacific_cables"],
-}
+    return nodes, adjacency, redundancy, trade_dependencies, country_to_nodes
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +106,17 @@ class InfrastructureMonitor:
         # Outage cache
         self._cached_outages: list[InfrastructureEvent] = []
         self._cache_timestamp: float = 0.0
+        self._last_error: Optional[str] = None
+
+    @staticmethod
+    def _normalize_iso3(value: str) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        if len(text) == 3 and text.isalpha():
+            return text
+        aliases = military_catalog.country_aliases()
+        return aliases.get(text, "")
 
     # -- Cloudflare Radar ----------------------------------------------------
 
@@ -203,6 +142,8 @@ class InfrastructureMonitor:
 
         self._cached_outages = events
         self._cache_timestamp = time.monotonic()
+        if events:
+            self._last_error = None
 
         if events:
             logger.info("Infrastructure monitor: %d outages fetched", len(events))
@@ -224,8 +165,10 @@ class InfrastructureMonitor:
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Cloudflare API v4 error: %s", exc)
+            self._last_error = str(exc)
             return []
 
+        self._last_error = None
         return self._parse_cf_response(data)
 
     async def _fetch_cf_free(self) -> list[InfrastructureEvent]:
@@ -238,8 +181,10 @@ class InfrastructureMonitor:
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Cloudflare Radar free endpoint error: %s", exc)
+            self._last_error = str(exc)
             return []
 
+        self._last_error = None
         return self._parse_cf_response(data)
 
     def _parse_cf_response(self, data: dict) -> list[InfrastructureEvent]:
@@ -261,6 +206,7 @@ class InfrastructureMonitor:
             # Cloudflare sometimes returns a list of location codes
             if isinstance(ann.get("locations"), list):
                 country = ann["locations"][0] if ann["locations"] else "unknown"
+            country_iso3 = self._normalize_iso3(country) or str(country).upper()
 
             description = str(
                 ann.get("description", ann.get("text", "Internet outage"))
@@ -286,15 +232,31 @@ class InfrastructureMonitor:
             else:
                 severity = 0.5
 
+            lat = ann.get("latitude", ann.get("lat"))
+            lon = ann.get("longitude", ann.get("lon"))
+            if isinstance(ann.get("location"), dict):
+                lat = ann["location"].get("lat", lat)
+                lon = ann["location"].get("lon", lon)
+            try:
+                lat_f = float(lat) if lat is not None else None
+            except Exception:
+                lat_f = None
+            try:
+                lon_f = float(lon) if lon is not None else None
+            except Exception:
+                lon_f = None
+
             event = InfrastructureEvent(
                 event_type="internet_outage",
-                country=country,
+                country=country_iso3,
                 severity=severity,
                 started_at=started_at,
                 description=description,
                 source="cloudflare_radar",
                 affected_services=["internet"],
                 cascade_risk_score=0.0,  # Computed separately
+                latitude=lat_f,
+                longitude=lon_f,
             )
             events.append(event)
 
@@ -315,7 +277,8 @@ class InfrastructureMonitor:
         Returns:
             Dict of node -> impact_score (0-1) for all affected nodes.
         """
-        if disrupted_node not in _INFRA_NODES:
+        nodes, adjacency, redundancy, _, _ = _graph_state()
+        if disrupted_node not in nodes:
             return {}
 
         impacts: dict[str, float] = {disrupted_node: 1.0}
@@ -327,10 +290,10 @@ class InfrastructureMonitor:
             if depth >= _MAX_CASCADE_HOPS:
                 continue
 
-            for neighbor, weight in _ADJACENCY.get(node, []):
-                redundancy = _REDUNDANCY.get(neighbor, 0.0)
+            for neighbor, weight in adjacency.get(node, []):
+                neighbor_redundancy = redundancy.get(neighbor, 0.0)
                 # Impact = upstream_impact * edge_weight * (1 - redundancy)
-                propagated = current_impact * weight * (1.0 - redundancy)
+                propagated = current_impact * weight * (1.0 - neighbor_redundancy)
                 if propagated < 0.01:
                     continue  # Below significance threshold
 
@@ -349,10 +312,11 @@ class InfrastructureMonitor:
         """Fetch outages and compute cascade risk scores for each."""
         events = await self.fetch_outages()
 
+        _, _, _, _, country_to_nodes = _graph_state()
         for event in events:
             # Find infrastructure nodes related to this outage's country
-            country_code = event.country.upper()[:2]
-            related_nodes = _COUNTRY_TO_INFRA_NODES.get(country_code, [])
+            country_code = self._normalize_iso3(event.country) or str(event.country).upper()
+            related_nodes = country_to_nodes.get(country_code, [])
 
             max_cascade = 0.0
             for node in related_nodes:
@@ -370,11 +334,12 @@ class InfrastructureMonitor:
 
         Returns a list of dicts with node, impact map, and affected countries.
         """
+        _, _, _, trade_dependencies, country_to_nodes = _graph_state()
         risks: list[dict] = []
 
         for event in self._cached_outages:
-            country_code = event.country.upper()[:2]
-            related_nodes = _COUNTRY_TO_INFRA_NODES.get(country_code, [])
+            country_code = self._normalize_iso3(event.country) or str(event.country).upper()
+            related_nodes = country_to_nodes.get(country_code, [])
 
             for node in related_nodes:
                 cascade = self.compute_cascade_impact(node)
@@ -383,7 +348,7 @@ class InfrastructureMonitor:
 
                 # Map cascade impacts to affected countries
                 affected: list[str] = []
-                for country_iso3, deps in TRADE_DEPENDENCIES.items():
+                for country_iso3, deps in trade_dependencies.items():
                     for affected_node, impact in cascade.items():
                         if affected_node in deps:
                             weighted = impact * deps[affected_node]
@@ -408,16 +373,30 @@ class InfrastructureMonitor:
         Uses the trade dependency map to find countries with exposure
         to infrastructure nodes associated with the event's location.
         """
-        country_code = event.country.upper()[:2]
-        related_nodes = _COUNTRY_TO_INFRA_NODES.get(country_code, [])
+        _, _, _, trade_dependencies, country_to_nodes = _graph_state()
+        country_code = InfrastructureMonitor._normalize_iso3(event.country) or str(event.country).upper()
+        related_nodes = country_to_nodes.get(country_code, [])
 
         affected: set[str] = set()
-        for country_iso3, deps in TRADE_DEPENDENCIES.items():
+        for country_iso3, deps in trade_dependencies.items():
             for node in related_nodes:
                 if node in deps and deps[node] >= 0.3:
                     affected.add(country_iso3)
 
         return sorted(affected)
+
+    def get_health(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "authenticated": bool(self._cf_api_token),
+            "cached_outages": len(self._cached_outages),
+            "cache_age_seconds": (
+                round(max(0.0, time.monotonic() - self._cache_timestamp), 1)
+                if self._cache_timestamp
+                else None
+            ),
+            "last_error": self._last_error,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("discovery_worker")
+PRIORITY_BACKLOG_INTERVAL_MINUTES = 10
 
 
 async def _run_loop() -> None:
@@ -63,7 +64,12 @@ async def _run_loop() -> None:
                 interval_seconds=settings.DISCOVERY_RUN_INTERVAL_MINUTES * 60,
                 last_run_at=None,
                 last_error=None,
-                stats={"wallets_discovered_last_run": 0, "wallets_analyzed_last_run": 0},
+                stats={
+                    "wallets_discovered_last_run": 0,
+                    "wallets_analyzed_last_run": 0,
+                    "priority_backlog_mode": True,
+                    "priority_backlog_count": 0,
+                },
             )
     except Exception:
         pass
@@ -84,6 +90,15 @@ async def _run_loop() -> None:
                 ),
             )
         )
+        priority_backlog_mode = bool(control.get("priority_backlog_mode", True))
+        priority_backlog_count = 0
+        if priority_backlog_mode:
+            try:
+                priority_backlog_count = int(await wallet_discovery.get_priority_backlog_count())
+            except Exception:
+                priority_backlog_count = 0
+        if priority_backlog_mode and priority_backlog_count > 0:
+            interval_minutes = min(interval_minutes, PRIORITY_BACKLOG_INTERVAL_MINUTES)
         paused = bool(control.get("is_paused", False))
         requested = control.get("requested_run_at") is not None
         enabled = bool(control.get("is_enabled", True))
@@ -116,6 +131,8 @@ async def _run_loop() -> None:
                         stats={
                             "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
                             "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                            "priority_backlog_mode": priority_backlog_mode,
+                            "priority_backlog_count": priority_backlog_count,
                         },
                     )
             except Exception:
@@ -184,6 +201,8 @@ async def _run_loop() -> None:
                     stats={
                         "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
                         "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                        "priority_backlog_mode": priority_backlog_mode,
+                        "priority_backlog_count": priority_backlog_count,
                     },
                 )
 
@@ -226,6 +245,8 @@ async def _run_loop() -> None:
                     stats={
                         "wallets_discovered_last_run": wallet_discovery._wallets_discovered_last_run,
                         "wallets_analyzed_last_run": wallet_discovery._wallets_analyzed_last_run,
+                        "priority_backlog_mode": priority_backlog_mode,
+                        "priority_backlog_count": priority_backlog_count,
                     },
                 )
             next_scheduled_run_at = datetime.now(timezone.utc).replace(

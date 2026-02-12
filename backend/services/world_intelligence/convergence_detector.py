@@ -1,6 +1,6 @@
 """Multi-signal geographic convergence detection.
 
-Detects when 3+ different event types cluster in the same geographic
+Detects when 2+ different event types cluster in the same geographic
 area within a 24-hour rolling window.  High-urgency convergence zones
 (e.g., military flights + conflict + internet outage in the same 1-degree
 grid cell) are strong predictors of imminent geopolitical events that
@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from config import settings
+from .taxonomy_catalog import taxonomy_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_GRID_RESOLUTION = 1.0
 
 # Signal types tracked by the convergence detector
-SIGNAL_TYPES = {
-    "conflict",
-    "protest",
-    "military_flight",
-    "military_vessel",
-    "internet_outage",
-    "fire",
-    "earthquake",
-    "infrastructure_disruption",
-}
+SIGNAL_TYPES = taxonomy_catalog.convergence_signal_types()
 
 # Rolling window for signal relevance
 _SIGNAL_TTL_HOURS = 24
@@ -126,7 +118,7 @@ class ConvergenceDetector:
     """Detects geographic convergence of heterogeneous signals.
 
     Signals are bucketed into 1-degree lat/lon grid cells.  When a cell
-    accumulates 3+ distinct signal types within the 24-hour rolling
+    accumulates multiple distinct signal types within the 24-hour rolling
     window, it is flagged as a convergence zone.
     """
 
@@ -220,7 +212,7 @@ class ConvergenceDetector:
                 return str(country)
         return "unknown"
 
-    def detect_convergences(self, min_types: int = 3) -> list[ConvergenceZone]:
+    def detect_convergences(self, min_types: int = 2) -> list[ConvergenceZone]:
         """Scan all grid cells and return those with >= min_types distinct signals.
 
         Also prunes expired signals before scanning.
@@ -308,15 +300,9 @@ class ConvergenceDetector:
                 continue
 
             # Check signal-type keywords against market text
+            keyword_map = taxonomy_catalog.convergence_market_keyword_map()
             for sig_type in convergence.signal_types:
-                keywords = {
-                    "conflict": ["war", "conflict", "attack", "military"],
-                    "protest": ["protest", "unrest", "demonstration"],
-                    "military_flight": ["military", "defense", "nato"],
-                    "internet_outage": ["internet", "outage", "blackout"],
-                    "infrastructure_disruption": ["infrastructure", "pipeline", "port"],
-                }
-                for kw in keywords.get(sig_type, []):
+                for kw in keyword_map.get(sig_type, []):
                     if kw in question:
                         matched_ids.append(str(market_id))
                         break
@@ -341,6 +327,66 @@ class ConvergenceDetector:
                 seen.add(mid)
                 unique.append(mid)
         return unique
+
+    def export_state(self) -> dict[str, Any]:
+        now = time.monotonic()
+        rows: list[dict[str, Any]] = []
+        for grid_key, signals in self._grid.items():
+            for sig in signals[-500:]:
+                age_seconds = max(0.0, now - sig.timestamp)
+                rows.append(
+                    {
+                        "grid_key": grid_key,
+                        "signal_type": sig.signal_type,
+                        "latitude": sig.latitude,
+                        "longitude": sig.longitude,
+                        "age_seconds": round(age_seconds, 3),
+                        "metadata": sig.metadata,
+                    }
+                )
+        return {"signals": rows[-5000:]}
+
+    def import_state(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        rows = payload.get("signals") or []
+        if not isinstance(rows, list):
+            return
+        now = time.monotonic()
+        cutoff_age = _SIGNAL_TTL_HOURS * 3600
+        grid: dict[str, list[_Signal]] = defaultdict(list)
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            grid_key = str(item.get("grid_key") or "").strip()
+            signal_type = str(item.get("signal_type") or "").strip()
+            if not grid_key or not signal_type:
+                continue
+            try:
+                lat = float(item.get("latitude"))
+                lon = float(item.get("longitude"))
+                age = float(item.get("age_seconds") or 0.0)
+            except Exception:
+                continue
+            if age > cutoff_age:
+                continue
+            metadata = item.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            grid[grid_key].append(
+                _Signal(
+                    signal_type=signal_type,
+                    latitude=lat,
+                    longitude=lon,
+                    timestamp=now - max(0.0, age),
+                    metadata=metadata,
+                )
+            )
+        if grid:
+            self._grid = grid
+            self.detect_convergences(
+                min_types=int(max(2, getattr(settings, "WORLD_INTEL_CONVERGENCE_MIN_TYPES", 2) or 2))
+            )
 
     # -- Accessors -----------------------------------------------------------
 

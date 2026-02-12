@@ -217,9 +217,9 @@ class CryptoService:
     def is_stale(self) -> bool:
         return (time.monotonic() - self._last_fetch) > self._ttl
 
-    def get_live_markets(self) -> list[CryptoMarket]:
-        """Return cached live crypto markets, refreshing from Gamma if stale."""
-        if self.is_stale:
+    def get_live_markets(self, force_refresh: bool = False) -> list[CryptoMarket]:
+        """Return cached live crypto markets, refreshing from Gamma when needed."""
+        if force_refresh or self.is_stale:
             try:
                 fetched = self._fetch_all()
                 if fetched is not None:

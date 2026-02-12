@@ -19,6 +19,7 @@ from typing import Optional
 import httpx
 
 from config import settings
+from .taxonomy_catalog import taxonomy_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +30,20 @@ logger = logging.getLogger(__name__)
 ACLED_API_URL = "https://api.acleddata.com/acled/read"
 
 # Rate limiting: max 5 requests per minute
-_RATE_LIMIT_MAX_REQUESTS = 5
+_RATE_LIMIT_MAX_REQUESTS = int(
+    max(1, getattr(settings, "WORLD_INTEL_ACLED_RATE_LIMIT_PER_MIN", 5) or 5)
+)
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 # Circuit breaker
-_CB_MAX_FAILURES = 5
-_CB_COOLDOWN_SECONDS = 300.0  # 5 minutes
+_CB_MAX_FAILURES = int(
+    max(1, getattr(settings, "WORLD_INTEL_ACLED_CB_MAX_FAILURES", 8) or 8)
+)
+_CB_COOLDOWN_SECONDS = float(
+    max(30.0, getattr(settings, "WORLD_INTEL_ACLED_CB_COOLDOWN_SECONDS", 180.0) or 180.0)
+)
 
-# Severity weights by event type (used in get_severity_score)
-_EVENT_TYPE_WEIGHTS: dict[str, float] = {
-    "violence against civilians": 1.0,
-    "explosions/remote violence": 0.8,
-    "battles": 0.7,
-    "riots": 0.5,
-    "protests": 0.3,
-    "strategic developments": 0.2,
-}
+_DEFAULT_EVENT_TYPE_WEIGHT = 0.2
 
 # Fields to request from the ACLED API
 _ACLED_FIELDS = (
@@ -119,18 +118,31 @@ class ACLEDClient:
         # Circuit breaker state
         self._consecutive_failures: int = 0
         self._last_failure_at: float = 0.0
+        self._last_error: Optional[str] = None
+        self._last_events: list[ConflictEvent] = []
 
     # -- Rate limiting -------------------------------------------------------
 
     async def _wait_for_rate_limit(self) -> None:
         """Block until we are within the per-minute request budget."""
+        budget = _RATE_LIMIT_MAX_REQUESTS
+        if self._api_key and self._email:
+            budget = max(
+                budget,
+                int(
+                    max(
+                        1,
+                        getattr(settings, "WORLD_INTEL_ACLED_AUTH_RATE_LIMIT_PER_MIN", 12) or 12,
+                    )
+                ),
+            )
         now = time.monotonic()
         # Prune timestamps older than the rate-limit window
         self._request_timestamps = [
             ts for ts in self._request_timestamps
             if now - ts < _RATE_LIMIT_WINDOW_SECONDS
         ]
-        if len(self._request_timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
+        if len(self._request_timestamps) >= budget:
             oldest = self._request_timestamps[0]
             wait = _RATE_LIMIT_WINDOW_SECONDS - (now - oldest) + 0.1
             if wait > 0:
@@ -153,6 +165,7 @@ class ACLEDClient:
 
     def _record_success(self) -> None:
         self._consecutive_failures = 0
+        self._last_error = None
 
     def _record_failure(self) -> None:
         self._consecutive_failures += 1
@@ -210,10 +223,28 @@ class ACLEDClient:
 
         try:
             resp = await self._client.get(ACLED_API_URL, params=params)
+            if resp.status_code == 429:
+                self._record_failure()
+                retry_after = resp.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after is not None else min(
+                        60.0, 2 ** self._consecutive_failures
+                    )
+                except ValueError:
+                    delay = min(60.0, 2 ** self._consecutive_failures)
+                self._last_error = f"HTTP 429 rate-limited ({delay:.0f}s backoff)"
+                logger.warning(
+                    "ACLED rate-limited (failure %d), backing off %.0fs",
+                    self._consecutive_failures,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                return []
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             self._record_failure()
+            self._last_error = str(exc)
             backoff = min(2 ** self._consecutive_failures, 60)
             logger.error(
                 "ACLED API error (failure %d, backoff %ds): %s",
@@ -228,6 +259,7 @@ class ACLEDClient:
         rows = data.get("data", [])
         if not rows:
             logger.info("ACLED returned 0 events for range %s", date_range)
+            self._last_events = []
             return []
 
         events = []
@@ -236,6 +268,7 @@ class ACLEDClient:
                 events.append(ConflictEvent.from_api_row(row))
             except (ValueError, TypeError) as exc:
                 logger.debug("Skipping malformed ACLED row: %s", exc)
+        self._last_events = list(events)
         logger.info("ACLED: fetched %d events (%d days back)", len(events), days_back)
         return events
 
@@ -279,7 +312,8 @@ class ACLEDClient:
         saturates at 1.0; a peaceful protest with no casualties scores
         near 0.3 * base.
         """
-        type_weight = _EVENT_TYPE_WEIGHTS.get(event.event_type, 0.2)
+        weights = taxonomy_catalog.acled_event_type_weights()
+        type_weight = weights.get(event.event_type, _DEFAULT_EVENT_TYPE_WEIGHT)
 
         # Fatality multiplier: logarithmic scaling, 0 fatalities = 0.3 base,
         # 1 fatality = ~0.5, 10 = ~0.8, 50+ -> ~1.0
@@ -289,6 +323,17 @@ class ACLEDClient:
             fatality_weight = min(1.0, 0.3 + 0.3 * math.log1p(event.fatalities))
 
         return min(1.0, type_weight * fatality_weight)
+
+    def get_health(self) -> dict[str, object]:
+        return {
+            "enabled": True,
+            "authenticated": bool(self._api_key and self._email),
+            "circuit_open": self._circuit_open(),
+            "consecutive_failures": self._consecutive_failures,
+            "cooldown_seconds": _CB_COOLDOWN_SECONDS,
+            "rate_limit_per_minute": _RATE_LIMIT_MAX_REQUESTS,
+            "last_error": self._last_error,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from config import settings
@@ -24,7 +25,12 @@ from .convergence_detector import convergence_detector, ConvergenceZone
 from .infrastructure_monitor import infrastructure_monitor, InfrastructureEvent
 from .instability_scorer import instability_scorer, CountryInstabilityScore
 from .military_monitor import military_monitor, MilitaryActivity
+from .chokepoint_feed import chokepoint_feed
+from .military_catalog import military_catalog
 from .tension_tracker import tension_tracker, CountryPairTension
+from .usgs_client import usgs_client, Earthquake
+from .taxonomy_catalog import taxonomy_catalog
+from services.news.gov_rss_feeds import gov_rss_service, GovArticle
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +39,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SIGNAL_TYPES = {
-    "conflict",
-    "tension",
-    "instability",
-    "convergence",
-    "anomaly",
-    "military",
-    "infrastructure",
+    *taxonomy_catalog.world_signal_types(),
 }
 
 # Market relevance scoring weights
@@ -73,8 +73,19 @@ class WorldSignal:
 # ---------------------------------------------------------------------------
 
 
-def _signal_id() -> str:
-    return str(uuid.uuid4())
+def _stable_signal_id(*parts: Any) -> str:
+    packed = "|".join(str(p or "") for p in parts)
+    digest = hashlib.sha256(packed.encode("utf-8")).hexdigest()[:20]
+    return f"wi_{digest}"
+
+
+def _normalize_iso3(value: str | None) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if len(text) == 3 and text.isalpha():
+        return text
+    return military_catalog.country_aliases().get(text, "")
 
 
 def _conflict_to_signal(event: ConflictEvent) -> WorldSignal:
@@ -83,7 +94,7 @@ def _conflict_to_signal(event: ConflictEvent) -> WorldSignal:
 
     severity = ACLEDClient.get_severity_score(event)
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id("acled", event.event_id),
         signal_type="conflict",
         severity=severity,
         country=event.iso3,
@@ -108,7 +119,7 @@ def _tension_to_signal(tension: CountryPairTension) -> WorldSignal:
     """Convert a CountryPairTension to a WorldSignal."""
     severity = tension.tension_score / 100.0
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id("gdelt", tension.country_a, tension.country_b),
         signal_type="tension",
         severity=severity,
         country=f"{tension.country_a}-{tension.country_b}",
@@ -132,7 +143,7 @@ def _instability_to_signal(score: CountryInstabilityScore) -> WorldSignal:
     """Convert a CountryInstabilityScore to a WorldSignal."""
     severity = score.score / 100.0
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id("cii", score.iso3),
         signal_type="instability",
         severity=severity,
         country=score.iso3,
@@ -154,7 +165,7 @@ def _convergence_to_signal(zone: ConvergenceZone) -> WorldSignal:
     """Convert a ConvergenceZone to a WorldSignal."""
     severity = zone.urgency_score / 100.0
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id("conv", zone.grid_key),
         signal_type="convergence",
         severity=severity,
         country=zone.country,
@@ -180,7 +191,7 @@ def _anomaly_to_signal(anomaly: TemporalAnomaly) -> WorldSignal:
     severity_map = {"normal": 0.2, "medium": 0.5, "high": 0.7, "critical": 0.9}
     severity = severity_map.get(anomaly.severity, 0.3)
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id("anomaly", anomaly.signal_type, anomaly.country),
         signal_type="anomaly",
         severity=severity,
         country=anomaly.country,
@@ -199,8 +210,17 @@ def _anomaly_to_signal(anomaly: TemporalAnomaly) -> WorldSignal:
 def _military_to_signal(activity: MilitaryActivity) -> WorldSignal:
     """Convert a MilitaryActivity to a WorldSignal."""
     severity = 0.5 if not activity.is_unusual else 0.7
+    source = str(activity.provider or ("opensky" if activity.activity_type == "flight" else "aisstream"))
+    providers = list(activity.providers or ([source] if source else []))
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id(
+            source,
+            activity.callsign,
+            activity.transponder,
+            activity.region,
+            round(activity.latitude, 2),
+            round(activity.longitude, 2),
+        ),
         signal_type="military",
         severity=severity,
         country=activity.country,
@@ -211,12 +231,16 @@ def _military_to_signal(activity: MilitaryActivity) -> WorldSignal:
             f"{activity.aircraft_type}, alt={activity.altitude:.0f}m, "
             f"speed={activity.speed:.0f}m/s, heading={activity.heading:.0f}deg"
         ),
-        source="opensky",
+        source=source,
         metadata={
             "callsign": activity.callsign,
+            "transponder": activity.transponder,
             "aircraft_type": activity.aircraft_type,
             "region": activity.region,
             "is_unusual": activity.is_unusual,
+            "activity_type": activity.activity_type,
+            "provider": source,
+            "providers": providers,
         },
     )
 
@@ -224,10 +248,17 @@ def _military_to_signal(activity: MilitaryActivity) -> WorldSignal:
 def _infrastructure_to_signal(event: InfrastructureEvent) -> WorldSignal:
     """Convert an InfrastructureEvent to a WorldSignal."""
     return WorldSignal(
-        signal_id=_signal_id(),
+        signal_id=_stable_signal_id(
+            "infra",
+            event.event_type,
+            event.country,
+            event.description[:80],
+        ),
         signal_type="infrastructure",
         severity=event.severity,
         country=event.country,
+        latitude=event.latitude,
+        longitude=event.longitude,
         title=f"Infrastructure: {event.event_type} in {event.country}",
         description=event.description,
         source=event.source,
@@ -235,6 +266,55 @@ def _infrastructure_to_signal(event: InfrastructureEvent) -> WorldSignal:
             "event_type": event.event_type,
             "affected_services": event.affected_services,
             "cascade_risk_score": event.cascade_risk_score,
+        },
+    )
+
+
+def _gov_article_to_signal(article: GovArticle) -> WorldSignal:
+    severity_map = {
+        "critical": 0.75,
+        "high": 0.6,
+        "medium": 0.4,
+    }
+    severity = severity_map.get(article.priority, 0.35)
+    return WorldSignal(
+        signal_id=_stable_signal_id("gov_rss", article.article_id),
+        signal_type="tension",
+        severity=severity,
+        country=_normalize_iso3(article.country_iso3),
+        title=f"{article.source}: {article.title}",
+        description=article.summary or article.title,
+        source="gov_rss",
+        detected_at=article.published or article.fetched_at,
+        metadata={
+            "agency": article.agency,
+            "priority": article.priority,
+            "url": article.url,
+        },
+    )
+
+
+def _earthquake_to_signal(quake: Earthquake) -> WorldSignal:
+    return WorldSignal(
+        signal_id=_stable_signal_id("usgs", quake.event_id),
+        signal_type="anomaly",
+        severity=max(0.15, min(1.0, float(quake.severity_score or 0.0))),
+        country=_normalize_iso3(quake.country) or None,
+        latitude=quake.latitude,
+        longitude=quake.longitude,
+        title=f"Earthquake M{quake.magnitude:.1f}: {quake.place}",
+        description=(
+            f"USGS significance {quake.significance}, depth {quake.depth_km:.1f} km"
+            + (" (tsunami warning)" if quake.tsunami else "")
+        ),
+        source="usgs",
+        detected_at=quake.timestamp,
+        metadata={
+            "magnitude": quake.magnitude,
+            "depth_km": quake.depth_km,
+            "tsunami": quake.tsunami,
+            "alert": quake.alert,
+            "url": quake.url,
         },
     )
 
@@ -255,6 +335,38 @@ class WorldSignalAggregator:
     def __init__(self) -> None:
         self._last_signals: list[WorldSignal] = []
         self._last_collection_at: Optional[datetime] = None
+        self._last_source_status: dict[str, dict[str, Any]] = {}
+        self._last_errors: list[str] = []
+
+    async def _load_active_markets(self) -> list[Any]:
+        try:
+            from services.market_cache import market_cache_service
+
+            if not market_cache_service._loaded:
+                await market_cache_service.load_from_db()
+            rows = getattr(market_cache_service, "_market_cache", {}) or {}
+            markets: list[Any] = []
+            for condition_id, raw in rows.items():
+                if not isinstance(raw, dict):
+                    continue
+                if raw.get("active") is False:
+                    continue
+                question = str(raw.get("question") or raw.get("groupItemTitle") or "").strip()
+                if not question:
+                    continue
+                markets.append(
+                    SimpleNamespace(
+                        market_id=str(condition_id),
+                        question=question,
+                        title=str(raw.get("groupItemTitle") or question),
+                        latitude=raw.get("latitude"),
+                        longitude=raw.get("longitude"),
+                    )
+                )
+            return markets
+        except Exception as exc:
+            logger.debug("Failed loading active markets for world matching: %s", exc)
+            return []
 
     # -- Collection orchestration --------------------------------------------
 
@@ -264,83 +376,291 @@ class WorldSignalAggregator:
         Steps:
             1. Fetch ACLED conflict events
             2. Update tension tracker
-            3. Fetch military activity
+            3. Fetch military activity (multi-provider + dedupe)
             4. Fetch infrastructure disruptions
-            5. Feed all signals into convergence detector
-            6. Run anomaly detection
-            7. Compute instability scores
-            8. Normalise all outputs into WorldSignal format
-            9. Return unified signal list sorted by severity desc
+            5. Refresh maintained chokepoint feed cache
+            6. Feed all signals into convergence detector
+            7. Run anomaly detection
+            8. Compute instability scores
+            9. Normalise all outputs into WorldSignal format
+            10. Return unified signal list sorted by severity desc
         """
+        cycle_started = datetime.now(timezone.utc)
         signals: list[WorldSignal] = []
+        source_status: dict[str, dict[str, Any]] = {}
+        errors: list[str] = []
+
+        def _record_source(
+            name: str,
+            started_at: datetime,
+            count: int,
+            error: Optional[Exception] = None,
+            ok: Optional[bool] = None,
+            error_message: Optional[str] = None,
+            extra: Optional[dict[str, Any]] = None,
+        ) -> None:
+            elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+            source_ok = (error is None) if ok is None else bool(ok)
+            reason = error_message or (str(error) if error else None)
+            payload = {
+                "ok": source_ok,
+                "count": int(count),
+                "duration_seconds": round(elapsed, 3),
+                "error": reason,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+            if extra:
+                payload.update(extra)
+            source_status[name] = payload
+            if not source_ok and reason:
+                errors.append(f"{name}: {reason}")
 
         # 1. ACLED conflict events
         conflict_events: list[ConflictEvent] = []
+        started = datetime.now(timezone.utc)
         try:
             conflict_events = await acled_client.fetch_recent(hours=24)
             for ev in conflict_events:
                 signals.append(_conflict_to_signal(ev))
+            health = acled_client.get_health()
+            acled_error = str(health.get("last_error") or "").strip() or None
+            _record_source(
+                "acled",
+                started,
+                len(conflict_events),
+                ok=not acled_error,
+                error_message=acled_error,
+                extra=health,
+            )
         except Exception as exc:
             logger.error("ACLED collection failed: %s", exc)
+            _record_source("acled", started, 0, error=exc, extra=acled_client.get_health())
 
         # 2. Tension tracker
         tensions: list[CountryPairTension] = []
+        started = datetime.now(timezone.utc)
         try:
             tensions = await tension_tracker.update_tensions()
             for t in tensions:
                 signals.append(_tension_to_signal(t))
+            tension_health = tension_tracker.get_health()
+            tension_error = str(tension_health.get("last_error") or "").strip() or None
+            _record_source(
+                "gdelt_tensions",
+                started,
+                len(tensions),
+                ok=not tension_error,
+                error_message=tension_error,
+                extra=tension_health,
+            )
         except Exception as exc:
             logger.error("Tension tracker collection failed: %s", exc)
+            _record_source(
+                "gdelt_tensions",
+                started,
+                0,
+                error=exc,
+                extra=tension_tracker.get_health(),
+            )
 
         # 3. Military activity
         military_events: list[MilitaryActivity] = []
+        started = datetime.now(timezone.utc)
         try:
-            military_events = await military_monitor.fetch_military_flights()
-            for m in military_events:
-                signals.append(_military_to_signal(m))
+            military_enabled = bool(getattr(settings, "WORLD_INTEL_MILITARY_ENABLED", True))
+            if military_enabled:
+                flights = await military_monitor.fetch_military_flights()
+                vessels = await military_monitor.fetch_vessel_activity()
+                military_events = flights + vessels
+                for m in military_events:
+                    signals.append(_military_to_signal(m))
+            military_health = military_monitor.get_health()
+            military_error = str(
+                military_health.get("last_error")
+                or military_health.get("last_vessel_error")
+                or ""
+            ).strip() or None
+            military_ok = (not military_error) or (not military_enabled)
+            _record_source(
+                "military",
+                started,
+                len(military_events),
+                ok=military_ok,
+                error_message=military_error,
+                extra=military_health,
+            )
         except Exception as exc:
             logger.error("Military monitor collection failed: %s", exc)
+            _record_source(
+                "military",
+                started,
+                0,
+                error=exc,
+                extra=military_monitor.get_health(),
+            )
 
         # 4. Infrastructure disruptions
         infra_events: list[InfrastructureEvent] = []
+        started = datetime.now(timezone.utc)
         try:
             infra_events = await infrastructure_monitor.get_current_disruptions()
             for ie in infra_events:
                 signals.append(_infrastructure_to_signal(ie))
+            infra_health = infrastructure_monitor.get_health()
+            infra_error = str(infra_health.get("last_error") or "").strip() or None
+            _record_source(
+                "infrastructure",
+                started,
+                len(infra_events),
+                ok=not infra_error,
+                error_message=infra_error,
+                extra=infra_health,
+            )
         except Exception as exc:
             logger.error("Infrastructure monitor collection failed: %s", exc)
+            _record_source("infrastructure", started, 0, error=exc)
 
-        # 5. Feed signals into convergence detector
+        # 5. Government RSS
+        gov_articles: list[GovArticle] = []
+        started = datetime.now(timezone.utc)
         try:
+            gov_articles = await gov_rss_service.fetch_all(consumer="world_intelligence")
+            for article in gov_articles:
+                signals.append(_gov_article_to_signal(article))
+            gov_health = gov_rss_service.get_health()
+            gov_error = str(gov_health.get("last_error") or "").strip() or None
+            gov_ok = (not gov_error) or gov_error == "disabled"
+            _record_source(
+                "gov_rss",
+                started,
+                len(gov_articles),
+                ok=gov_ok,
+                error_message=gov_error,
+                extra=gov_health,
+            )
+        except Exception as exc:
+            logger.error("Gov RSS collection failed: %s", exc)
+            _record_source("gov_rss", started, 0, error=exc)
+
+        # 6. USGS earthquakes
+        earthquakes: list[Earthquake] = []
+        started = datetime.now(timezone.utc)
+        try:
+            usgs_enabled = bool(getattr(settings, "WORLD_INTEL_USGS_ENABLED", True))
+            if usgs_enabled:
+                earthquakes = await usgs_client.fetch_earthquakes(
+                    feed="m4.5_day",
+                    min_magnitude=float(
+                        getattr(settings, "WORLD_INTEL_USGS_MIN_MAGNITUDE", 4.5) or 4.5
+                    ),
+                )
+                for quake in earthquakes:
+                    signals.append(_earthquake_to_signal(quake))
+            usgs_health = usgs_client.get_health()
+            usgs_error = str(usgs_health.get("last_error") or "").strip() or None
+            usgs_ok = (not usgs_error) or (not usgs_enabled) or usgs_error == "disabled"
+            _record_source(
+                "usgs",
+                started,
+                len(earthquakes),
+                ok=usgs_ok,
+                error_message=usgs_error,
+                extra=usgs_health,
+            )
+        except Exception as exc:
+            logger.error("USGS collection failed: %s", exc)
+            _record_source("usgs", started, 0, error=exc)
+
+        # 7. Chokepoint feed refresh (no direct signal emission).
+        started = datetime.now(timezone.utc)
+        try:
+            chokepoint_rows = await chokepoint_feed.refresh(force=False)
+            chokepoint_health = chokepoint_feed.get_health()
+            _record_source(
+                "chokepoints",
+                started,
+                len(chokepoint_rows),
+                ok=bool(chokepoint_health.get("ok")),
+                error_message=str(chokepoint_health.get("last_error") or "").strip() or None,
+                extra=chokepoint_health,
+            )
+        except Exception as exc:
+            logger.error("Chokepoint feed refresh failed: %s", exc)
+            _record_source(
+                "chokepoints",
+                started,
+                0,
+                error=exc,
+                extra=chokepoint_feed.get_health(),
+            )
+
+        # 8. Convergence detection
+        started = datetime.now(timezone.utc)
+        try:
+            signal_map = taxonomy_catalog.convergence_signal_map()
             for ev in conflict_events:
-                sig_type = "protest" if ev.event_type in ("protests", "riots") else "conflict"
+                sig_type = signal_map.get(ev.event_type, "conflict")
                 convergence_detector.ingest_signal(
-                    sig_type, ev.latitude, ev.longitude,
-                    metadata={"country": ev.iso3, "severity": acled_client.get_severity_score(ev)},
+                    sig_type,
+                    ev.latitude,
+                    ev.longitude,
+                    metadata={
+                        "country": ev.iso3,
+                        "severity": acled_client.get_severity_score(ev),
+                    },
                 )
             for m in military_events:
                 sig_type = "military_flight" if m.activity_type == "flight" else "military_vessel"
                 convergence_detector.ingest_signal(
-                    sig_type, m.latitude, m.longitude,
+                    sig_type,
+                    m.latitude,
+                    m.longitude,
                     metadata={"country": m.country, "region": m.region},
                 )
+            for quake in earthquakes:
+                convergence_detector.ingest_signal(
+                    "earthquake",
+                    quake.latitude,
+                    quake.longitude,
+                    metadata={
+                        "country": quake.country,
+                        "severity": float(quake.severity_score or 0.0),
+                    },
+                )
             for ie in infra_events:
-                if ie.event_type == "internet_outage":
-                    # Internet outages don't always have coords; skip if missing
-                    convergence_detector.ingest_signal(
-                        "internet_outage", 0.0, 0.0,
-                        metadata={"country": ie.country, "severity": ie.severity},
-                    )
+                lat = getattr(ie, "latitude", None)
+                lon = getattr(ie, "longitude", None)
+                if lat is None or lon is None:
+                    continue
+                convergence_detector.ingest_signal(
+                    "internet_outage" if ie.event_type == "internet_outage" else "infrastructure_disruption",
+                    float(lat),
+                    float(lon),
+                    metadata={
+                        "country": _normalize_iso3(ie.country),
+                        "severity": float(ie.severity or 0.0),
+                    },
+                )
 
-            convergences = convergence_detector.detect_convergences(min_types=3)
+            min_types = int(
+                max(2, getattr(settings, "WORLD_INTEL_CONVERGENCE_MIN_TYPES", 2) or 2)
+            )
+            convergences = convergence_detector.detect_convergences(min_types=min_types)
             for cz in convergences:
                 signals.append(_convergence_to_signal(cz))
+            _record_source(
+                "convergence",
+                started,
+                len(convergences),
+                extra={"min_types": min_types},
+            )
         except Exception as exc:
             logger.error("Convergence detection failed: %s", exc)
+            _record_source("convergence", started, 0, error=exc)
 
-        # 6. Anomaly detection - record observations and detect
+        # 9. Anomaly detection
+        started = datetime.now(timezone.utc)
         try:
-            # Record conflict event counts per country
             conflict_counts = acled_client.get_country_event_counts(conflict_events)
             for iso3, type_counts in conflict_counts.items():
                 total = sum(type_counts.values())
@@ -349,45 +669,120 @@ class WorldSignalAggregator:
                 if protest_count > 0:
                     anomaly_detector.record_observation("protests", iso3, float(protest_count))
 
-            # Record military flight counts per region
-            from collections import defaultdict as _dd
-            region_counts: dict[str, int] = _dd(int)
+            military_by_country: dict[str, dict[str, int]] = {}
             for m in military_events:
-                region_counts[m.region] += 1
-            for region, count in region_counts.items():
-                anomaly_detector.record_observation("military_flights", region, float(count))
+                iso3 = _normalize_iso3(m.country)
+                if not iso3:
+                    continue
+                country_counts = military_by_country.setdefault(iso3, {})
+                country_counts[m.activity_type] = country_counts.get(m.activity_type, 0) + 1
+            for iso3, counts in military_by_country.items():
+                flights = counts.get("flight", 0)
+                vessels = counts.get("vessel", 0)
+                if flights:
+                    anomaly_detector.record_observation("military_flights", iso3, float(flights))
+                if vessels:
+                    anomaly_detector.record_observation("naval_vessels", iso3, float(vessels))
+
+            outage_counts: dict[str, int] = {}
+            for ie in infra_events:
+                iso3 = _normalize_iso3(ie.country)
+                if not iso3:
+                    continue
+                outage_counts[iso3] = outage_counts.get(iso3, 0) + 1
+            for iso3, count in outage_counts.items():
+                anomaly_detector.record_observation("internet_outages", iso3, float(count))
+
+            news_counts: dict[str, int] = {}
+            for article in gov_articles:
+                iso3 = _normalize_iso3(article.country_iso3)
+                if not iso3:
+                    continue
+                news_counts[iso3] = news_counts.get(iso3, 0) + 1
+            for iso3, count in news_counts.items():
+                anomaly_detector.record_observation("news_velocity", iso3, float(count))
 
             anomalies = anomaly_detector.detect_anomalies()
             for a in anomalies:
                 signals.append(_anomaly_to_signal(a))
+            _record_source("anomaly", started, len(anomalies))
         except Exception as exc:
             logger.error("Anomaly detection failed: %s", exc)
+            _record_source("anomaly", started, 0, error=exc)
 
-        # 7. Instability scores
+        # 10. Instability scores
+        started = datetime.now(timezone.utc)
         try:
+            news_velocity: dict[str, float] = {}
+            for article in gov_articles:
+                iso3 = _normalize_iso3(article.country_iso3)
+                if not iso3:
+                    continue
+                news_velocity[iso3] = news_velocity.get(iso3, 0.0) + 1.0
             scores = await instability_scorer.compute_scores(
                 conflict_events=conflict_events,
                 military_events=military_events,
-                news_velocity={},  # Would be populated by news service
+                news_velocity=news_velocity,
                 protest_events=[e for e in conflict_events if e.event_type in ("protests", "riots")],
             )
+            min_instability_signal = float(
+                max(0.0, getattr(settings, "WORLD_INTEL_INSTABILITY_SIGNAL_MIN", 15.0) or 15.0)
+            )
+            emitted_instability = 0
             for score in scores.values():
-                # Only emit signals for countries with meaningful scores
-                if score.score >= 30:
+                if score.score >= min_instability_signal:
                     signals.append(_instability_to_signal(score))
+                    emitted_instability += 1
+            _record_source(
+                "instability",
+                started,
+                emitted_instability,
+                extra={
+                    "countries_scored": len(scores),
+                    "min_signal_score": min_instability_signal,
+                },
+            )
         except Exception as exc:
             logger.error("Instability scoring failed: %s", exc)
+            _record_source("instability", started, 0, error=exc)
 
-        # 8. Sort by severity descending
+        # 11. Market relevance matching (DB cache only; no autotrader coupling)
+        started = datetime.now(timezone.utc)
+        try:
+            active_markets = await self._load_active_markets()
+            if active_markets:
+                await self.match_signals_to_markets(signals, active_markets)
+                matched = sum(1 for s in signals if s.related_market_ids)
+                _record_source(
+                    "market_matching",
+                    started,
+                    matched,
+                    extra={"active_markets": len(active_markets)},
+                )
+            else:
+                _record_source(
+                    "market_matching",
+                    started,
+                    0,
+                    extra={"active_markets": 0},
+                )
+        except Exception as exc:
+            logger.error("World market-matching failed: %s", exc)
+            _record_source("market_matching", started, 0, error=exc)
+
+        # 12. Sort by severity descending
         signals.sort(key=lambda s: s.severity, reverse=True)
 
         self._last_signals = signals
         self._last_collection_at = datetime.now(timezone.utc)
+        self._last_source_status = source_status
+        self._last_errors = errors
 
         logger.info(
-            "Collection cycle complete: %d signals (%d critical)",
+            "Collection cycle complete: %d signals (%d critical, %d source errors)",
             len(signals),
             sum(1 for s in signals if s.severity >= 0.7),
+            len(errors),
         )
         return signals
 
@@ -406,15 +801,7 @@ class WorldSignalAggregator:
         - keyword_match: market question contains signal-type keywords -> 0.4
         - region_match: market question references the same region -> 0.3
         """
-        _KEYWORD_MAP: dict[str, list[str]] = {
-            "conflict": ["war", "conflict", "attack", "ceasefire", "invasion"],
-            "tension": ["sanctions", "diplomacy", "tensions", "relations"],
-            "instability": ["coup", "revolution", "collapse", "crisis"],
-            "military": ["military", "defense", "nato", "nuclear", "missile"],
-            "infrastructure": ["internet", "outage", "pipeline", "trade", "shipping"],
-            "anomaly": ["surge", "spike", "unusual"],
-            "convergence": ["escalation", "crisis"],
-        }
+        keyword_map = taxonomy_catalog.market_keyword_map()
 
         for signal in signals:
             best_relevance = 0.0
@@ -440,7 +827,7 @@ class WorldSignalAggregator:
                         relevance = max(relevance, _RELEVANCE_RELATED_COUNTRY)
 
                 # Keyword match
-                keywords = _KEYWORD_MAP.get(signal.signal_type, [])
+                keywords = keyword_map.get(signal.signal_type, [])
                 for kw in keywords:
                     if kw in question:
                         relevance = max(relevance, _RELEVANCE_KEYWORD)
@@ -459,6 +846,20 @@ class WorldSignalAggregator:
             signal.market_relevance_score = round(best_relevance, 2)
 
         return signals
+
+    def export_runtime_state(self) -> dict[str, Any]:
+        return {
+            "anomaly_detector": anomaly_detector.export_state(),
+            "convergence_detector": convergence_detector.export_state(),
+            "military_monitor": military_monitor.export_state(),
+        }
+
+    def import_runtime_state(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        anomaly_detector.import_state(payload.get("anomaly_detector") or {})
+        convergence_detector.import_state(payload.get("convergence_detector") or {})
+        military_monitor.import_state(payload.get("military_monitor") or {})
 
     # -- Accessors -----------------------------------------------------------
 
@@ -492,6 +893,13 @@ class WorldSignalAggregator:
     def get_critical_signals(self) -> list[WorldSignal]:
         """Return signals with severity >= 0.7."""
         return [s for s in self._last_signals if s.severity >= 0.7]
+
+    def get_source_status(self) -> dict[str, dict[str, Any]]:
+        """Return per-source collection health/status from the last cycle."""
+        return dict(self._last_source_status)
+
+    def get_last_errors(self) -> list[str]:
+        return list(self._last_errors)
 
     def get_signals_for_country(self, country: str) -> list[WorldSignal]:
         """Return all signals associated with a country (case-insensitive)."""

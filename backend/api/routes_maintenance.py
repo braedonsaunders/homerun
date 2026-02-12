@@ -4,14 +4,37 @@ Database Maintenance API Routes
 Endpoints for cleaning up old trades and managing database health.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional
-from datetime import datetime
+from typing import Literal, Optional
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from utils.utcnow import utcnow
 
 from services.maintenance import maintenance_service
-from models.database import TradeStatus
+from models.database import (
+    AutoTraderControl,
+    AutoTraderPreflightRun,
+    AutoTraderSnapshot,
+    AutoTraderTrade,
+    NewsArticleCache,
+    NewsMarketWatcher,
+    NewsTradeIntent,
+    NewsWorkflowFinding,
+    NewsWorkflowSnapshot,
+    OpportunityEvent,
+    OpportunityHistory,
+    OpportunityLifetime,
+    OpportunityState,
+    ScannerRun,
+    ScannerSnapshot,
+    TradeSignal,
+    TradeSignalSnapshot,
+    TradeStatus,
+    WeatherSnapshot,
+    WeatherTradeIntent,
+    get_db_session,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -74,6 +97,184 @@ class DeleteTradesRequest(BaseModel):
     )
 
 
+FlushTarget = Literal["scanner", "weather", "news", "autotrader", "all"]
+
+PROTECTED_DATASETS = (
+    "auto_trader_trades (live/executed trade history)",
+    "simulation_positions (position ledger)",
+    "simulation_trades (trade history ledger)",
+)
+
+
+class FlushDataRequest(BaseModel):
+    """Request for manual data flush operations in the database settings UI."""
+
+    target: FlushTarget = Field(
+        ...,
+        description="Dataset to flush: scanner, weather, news, autotrader, or all",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Must be true to acknowledge destructive flush action",
+    )
+
+
+async def _delete_rows(session: AsyncSession, model) -> int:
+    result = await session.execute(delete(model))
+    return max(0, int(result.rowcount or 0))
+
+
+async def _flush_scanner_data(session: AsyncSession) -> dict[str, int]:
+    snapshot = (
+        (
+            await session.execute(
+                select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    snapshot_opportunities = len(snapshot.opportunities_json or []) if snapshot else 0
+    if snapshot is not None:
+        snapshot.opportunities_json = []
+        snapshot.market_history_json = {}
+        snapshot.last_scan_at = None
+        snapshot.current_activity = "Scanner snapshot cleared by manual maintenance flush."
+
+    return {
+        "scanner_snapshot_opportunities": snapshot_opportunities,
+        "opportunity_events": await _delete_rows(session, OpportunityEvent),
+        "opportunity_state": await _delete_rows(session, OpportunityState),
+        "scanner_runs": await _delete_rows(session, ScannerRun),
+        "opportunity_history": await _delete_rows(session, OpportunityHistory),
+        "opportunity_lifetimes": await _delete_rows(session, OpportunityLifetime),
+    }
+
+
+async def _flush_news_data(session: AsyncSession) -> dict[str, int]:
+    from services.news.feed_service import news_feed_service
+
+    memory_cache_cleared = int(news_feed_service.clear() or 0)
+    snapshot = (
+        (
+            await session.execute(
+                select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == "latest")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if snapshot is not None:
+        snapshot.last_scan_at = None
+        snapshot.next_scan_at = None
+        snapshot.last_error = None
+        snapshot.degraded_mode = False
+        snapshot.budget_remaining_usd = None
+        snapshot.stats_json = {}
+        snapshot.current_activity = "News workflow snapshot cleared by manual maintenance flush."
+
+    return {
+        "news_memory_cache": memory_cache_cleared,
+        "news_article_cache": await _delete_rows(session, NewsArticleCache),
+        "news_market_watchers": await _delete_rows(session, NewsMarketWatcher),
+        "news_workflow_findings": await _delete_rows(session, NewsWorkflowFinding),
+        "news_trade_intents": await _delete_rows(session, NewsTradeIntent),
+    }
+
+
+async def _flush_weather_data(session: AsyncSession) -> dict[str, int]:
+    snapshot = (
+        (
+            await session.execute(
+                select(WeatherSnapshot).where(WeatherSnapshot.id == "latest")
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    snapshot_opportunities = len(snapshot.opportunities_json or []) if snapshot else 0
+    if snapshot is not None:
+        snapshot.last_scan_at = None
+        snapshot.opportunities_json = []
+        snapshot.stats_json = {}
+        snapshot.current_activity = (
+            "Weather workflow snapshot cleared by manual maintenance flush."
+        )
+
+    return {
+        "weather_snapshot_opportunities": snapshot_opportunities,
+        "weather_trade_intents": await _delete_rows(session, WeatherTradeIntent),
+    }
+
+
+async def _flush_autotrader_runtime_data(session: AsyncSession) -> dict[str, int]:
+    signal_id_subquery = (
+        select(AutoTraderTrade.signal_id)
+        .where(AutoTraderTrade.signal_id.is_not(None))
+        .distinct()
+    )
+    orphan_signal_delete = await session.execute(
+        delete(TradeSignal).where(~TradeSignal.id.in_(signal_id_subquery))
+    )
+    orphan_signals_cleared = max(0, int(orphan_signal_delete.rowcount or 0))
+
+    snapshot = (
+        (
+            await session.execute(
+                select(AutoTraderSnapshot).where(AutoTraderSnapshot.id == "latest")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if snapshot is not None:
+        snapshot.last_error = None
+        snapshot.stats_json = {}
+        snapshot.current_activity = (
+            "Autotrader runtime caches cleared by manual maintenance flush."
+        )
+
+    control = (
+        (
+            await session.execute(
+                select(AutoTraderControl).where(AutoTraderControl.id == "default")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if control is not None:
+        control.requested_run_at = None
+
+    return {
+        "trade_signal_snapshots": await _delete_rows(session, TradeSignalSnapshot),
+        "trade_signals_orphaned": orphan_signals_cleared,
+        "autotrader_preflight_runs": await _delete_rows(session, AutoTraderPreflightRun),
+    }
+
+
+async def _run_flush(session: AsyncSession, target: FlushTarget) -> dict[str, dict[str, int]]:
+    selected_targets: tuple[FlushTarget, ...]
+    if target == "all":
+        selected_targets = ("scanner", "weather", "news", "autotrader")
+    else:
+        selected_targets = (target,)
+
+    results: dict[str, dict[str, int]] = {}
+    for selected in selected_targets:
+        if selected == "scanner":
+            results[selected] = await _flush_scanner_data(session)
+        elif selected == "weather":
+            results[selected] = await _flush_weather_data(session)
+        elif selected == "news":
+            results[selected] = await _flush_news_data(session)
+        elif selected == "autotrader":
+            results[selected] = await _flush_autotrader_runtime_data(session)
+    return results
+
+
 # ==================== ENDPOINTS ====================
 
 
@@ -128,6 +329,48 @@ async def run_cleanup(request: CleanupRequest = CleanupRequest()):
         }
     except Exception as e:
         logger.error("Cleanup failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/flush")
+async def flush_data(
+    request: FlushDataRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Flush runtime/cache datasets from Database Settings UI.
+
+    Safety constraints:
+    - Requires confirm=true.
+    - Never deletes live/executed trade history or position ledgers.
+    """
+    if not request.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="This operation is destructive. Set confirm=true to proceed.",
+        )
+
+    try:
+        flushed = await _run_flush(session, request.target)
+        await session.commit()
+        logger.warning(
+            "Manual maintenance flush executed",
+            target=request.target,
+            datasets=list(flushed.keys()),
+        )
+        return {
+            "status": "success",
+            "target": request.target,
+            "timestamp": utcnow().isoformat(),
+            "flushed": flushed,
+            "protected_datasets": list(PROTECTED_DATASETS),
+            "message": "Flush complete. Live positions and trade history were preserved.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        logger.error("Manual maintenance flush failed", error=str(e), target=request.target)
         raise HTTPException(status_code=500, detail=str(e))
 
 

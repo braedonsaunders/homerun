@@ -234,7 +234,7 @@ export default function PerformancePanel() {
           <p className="text-sm text-muted-foreground">
             {activeSubTab === 'overview'
               ? 'Track your trading performance over time'
-              : 'Monitor validation runs, strategy health, and guardrails'}
+              : 'Monitor validation runs, backtests, strategy health, and guardrails'}
           </p>
         </div>
         {activeSubTab === 'overview' && (
@@ -257,7 +257,7 @@ export default function PerformancePanel() {
           </TabsTrigger>
           <TabsTrigger value="validation" className="gap-1.5">
             <Activity className="w-3.5 h-3.5" />
-            Validation Engine
+            Validation / Backtesting
           </TabsTrigger>
         </TabsList>
 

@@ -16,6 +16,7 @@ from models.database import (
     WeatherTradeIntent,
     get_db_session,
 )
+from services.pause_state import global_pause_state
 from services.weather import shared_state
 
 router = APIRouter()
@@ -65,6 +66,11 @@ async def get_weather_workflow_status(session: AsyncSession = Depends(get_db_ses
 
 @router.post("/weather-workflow/run")
 async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_session)):
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Resume all workers before queueing runs.",
+        )
     await shared_state.request_one_weather_scan(session)
     return {
         "status": "queued",
@@ -74,6 +80,11 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
 
 @router.post("/weather-workflow/start")
 async def start_weather_workflow(session: AsyncSession = Depends(get_db_session)):
+    if global_pause_state.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Global pause is active. Use /workers/resume-all first.",
+        )
     await shared_state.set_weather_paused(session, False)
     return {
         "status": "started",

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import TradeSignal, TradeSignalSnapshot
 from models.opportunity import ArbitrageOpportunity
+from services.market_tradability import get_market_tradability_map
 
 
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
@@ -184,7 +185,10 @@ async def list_trade_signals(
         query = query.where(TradeSignal.status == status)
     query = query.offset(max(0, offset)).limit(max(1, min(limit, 1000)))
     result = await session.execute(query)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    if status in {None, "pending", "selected", "submitted"}:
+        rows = await _expire_non_tradable_pending_signals(session, rows)
+    return rows
 
 
 async def list_pending_trade_signals(
@@ -204,7 +208,43 @@ async def list_pending_trade_signals(
     if sources:
         query = query.where(TradeSignal.source.in_(sources))
     result = await session.execute(query)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    rows = await _expire_non_tradable_pending_signals(session, rows)
+    return rows
+
+
+async def _expire_non_tradable_pending_signals(
+    session: AsyncSession,
+    rows: list[TradeSignal],
+) -> list[TradeSignal]:
+    if not rows:
+        return rows
+
+    pending_rows = [row for row in rows if row.status == "pending" and row.market_id]
+    if not pending_rows:
+        return rows
+
+    tradability = await get_market_tradability_map([str(row.market_id) for row in pending_rows])
+    now = _utc_now()
+    changed = False
+    output: list[TradeSignal] = []
+    for row in rows:
+        if row.status != "pending":
+            output.append(row)
+            continue
+        market_key = str(row.market_id or "").strip().lower()
+        if tradability.get(market_key, True):
+            output.append(row)
+            continue
+        row.status = "expired"
+        row.updated_at = now
+        changed = True
+
+    if changed:
+        await session.commit()
+        await refresh_trade_signal_snapshots(session)
+
+    return output
 
 
 async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str, Any]]:
@@ -403,6 +443,11 @@ async def emit_news_intent_signals(
         created_at = _to_utc_naive(getattr(intent, "created_at", None)) or _utc_now()
         expires = created_at + ttl
         dedupe_key = getattr(intent, "signal_key", None) or make_dedupe_key(intent.id)
+        metadata = getattr(intent, "metadata_json", None) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        market_metadata = metadata.get("market") if isinstance(metadata.get("market"), dict) else {}
+        finding_metadata = metadata.get("finding") if isinstance(metadata.get("finding"), dict) else {}
 
         await upsert_trade_signal(
             session,
@@ -416,12 +461,14 @@ async def emit_news_intent_signals(
             entry_price=getattr(intent, "entry_price", None),
             edge_percent=getattr(intent, "edge_percent", None),
             confidence=getattr(intent, "confidence", None),
-            liquidity=(getattr(intent, "metadata_json", {}) or {}).get("liquidity"),
+            liquidity=market_metadata.get("liquidity"),
             expires_at=expires,
             payload_json={
                 "intent_id": intent.id,
                 "finding_id": getattr(intent, "finding_id", None),
-                "metadata": getattr(intent, "metadata_json", None),
+                "metadata": metadata,
+                "reasoning": finding_metadata.get("reasoning"),
+                "evidence": finding_metadata.get("evidence"),
             },
             dedupe_key=dedupe_key,
             commit=False,

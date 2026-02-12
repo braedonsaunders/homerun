@@ -14,7 +14,7 @@ def test_parse_temperature_contract_with_location_and_threshold():
         "Will the high in New York, NY on Jan 29 be above 18F?"
     )
     assert parsed is not None
-    assert parsed.metric == "temp_threshold"
+    assert parsed.metric == "temp_max_threshold"
     assert parsed.operator == "gt"
     assert parsed.location == "New York, NY"
     assert parsed.raw_threshold == 18.0
@@ -28,7 +28,7 @@ def test_parse_grouped_temperature_range_contract():
         group_item_title="40-41°F",
     )
     assert parsed is not None
-    assert parsed.metric == "temp_range"
+    assert parsed.metric == "temp_max_range"
     assert parsed.location == "New York City"
     assert parsed.raw_threshold_low == 40.0
     assert parsed.raw_threshold_high == 41.0
@@ -43,7 +43,7 @@ def test_parse_grouped_temperature_threshold_contract():
         group_item_title="12°C or above",
     )
     assert parsed is not None
-    assert parsed.metric == "temp_threshold"
+    assert parsed.metric == "temp_max_threshold"
     assert parsed.operator == "gt"
     assert parsed.location == "Berlin"
     assert parsed.raw_threshold == 12.0
@@ -58,6 +58,18 @@ def test_parse_precipitation_contract():
     assert parsed.metric == "precip_occurrence"
     assert parsed.operator == "gt"
     assert parsed.location == "Seattle"
+
+
+def test_parse_exact_temperature_contract_with_be_syntax():
+    parsed = parse_weather_contract(
+        "Will the highest temperature in London be 13°C on February 11?"
+    )
+    assert parsed is not None
+    assert parsed.metric == "temp_max_range"
+    assert parsed.location == "London"
+    assert parsed.raw_threshold_low == 12.5
+    assert parsed.raw_threshold_high == 13.5
+    assert parsed.raw_unit == "C"
 
 
 def test_parse_quantitative_precipitation_contract_returns_none():

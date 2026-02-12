@@ -4,6 +4,27 @@ from datetime import datetime
 import json
 
 
+def _parse_maybe_json_list(raw: object) -> list[object]:
+    """Accept list values directly or parse JSON-encoded list strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, tuple):
+        return list(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
 class Token(BaseModel):
     """Represents a YES or NO token in a market"""
 
@@ -37,20 +58,25 @@ class Market(BaseModel):
     def from_gamma_response(cls, data: dict) -> "Market":
         """Parse market from Gamma API response"""
         # Parse stringified JSON fields
-        clob_token_ids = []
-        outcome_prices = []
+        clob_token_ids: list[str] = []
+        outcome_prices: list[float] = []
 
-        if data.get("clobTokenIds"):
-            try:
-                clob_token_ids = json.loads(data["clobTokenIds"])
-            except (json.JSONDecodeError, TypeError):
-                pass
+        clob_token_ids_raw = _parse_maybe_json_list(
+            data.get("clobTokenIds", data.get("clob_token_ids"))
+        )
+        for token_id in clob_token_ids_raw:
+            token_text = str(token_id or "").strip()
+            if token_text:
+                clob_token_ids.append(token_text)
 
-        if data.get("outcomePrices"):
+        outcome_prices_raw = _parse_maybe_json_list(
+            data.get("outcomePrices", data.get("outcome_prices"))
+        )
+        for price in outcome_prices_raw:
             try:
-                outcome_prices = [float(p) for p in json.loads(data["outcomePrices"])]
-            except (json.JSONDecodeError, TypeError):
-                pass
+                outcome_prices.append(float(price))
+            except (TypeError, ValueError):
+                continue
 
         # Prefer bestBid/bestAsk from CLOB for the YES side (more accurate
         # than outcomePrices which can be stale on fast-moving markets).

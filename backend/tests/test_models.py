@@ -119,6 +119,33 @@ class TestMarketFromGammaResponse:
         assert market.tokens[0].price == 0.0
         assert market.tokens[1].price == 0.0
 
+    def test_clob_token_ids_accepts_list_payload(self):
+        """Gamma sometimes returns clobTokenIds as a native array."""
+        data = {
+            "id": "list_tokens",
+            "question": "List token payload",
+            "slug": "list-token-payload",
+            "clobTokenIds": ["yes_tok", "no_tok"],
+            "outcomePrices": json.dumps(["0.5", "0.5"]),
+        }
+        market = Market.from_gamma_response(data)
+        assert market.clob_token_ids == ["yes_tok", "no_tok"]
+        assert len(market.tokens) == 2
+
+    def test_outcome_prices_accepts_list_payload(self):
+        """Gamma sometimes returns outcomePrices as a native array."""
+        data = {
+            "id": "list_prices",
+            "question": "List price payload",
+            "slug": "list-price-payload",
+            "clobTokenIds": json.dumps(["yes_tok", "no_tok"]),
+            "outcomePrices": [0.42, 0.58],
+        }
+        market = Market.from_gamma_response(data)
+        assert market.outcome_prices == [0.42, 0.58]
+        assert market.tokens[0].price == 0.42
+        assert market.tokens[1].price == 0.58
+
     def test_condition_id_fallback_to_conditionId(self):
         """condition_id is read from conditionId key as fallback."""
         data = {

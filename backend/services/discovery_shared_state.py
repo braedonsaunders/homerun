@@ -43,6 +43,7 @@ def _default_status() -> dict[str, Any]:
         "running": False,
         "enabled": True,
         "run_interval_minutes": settings.DISCOVERY_RUN_INTERVAL_MINUTES,
+        "priority_backlog_mode": True,
         "last_run_at": None,
         "current_activity": "Waiting for discovery worker.",
         "wallets_discovered_last_run": 0,
@@ -113,6 +114,7 @@ async def get_discovery_status_from_db(session: AsyncSession) -> dict[str, Any]:
     status = await read_discovery_snapshot(session)
     control = await read_discovery_control(session)
     status["paused"] = bool(control.get("is_paused", False))
+    status["priority_backlog_mode"] = bool(control.get("priority_backlog_mode", True))
     status["requested_run_at"] = (
         _format_iso_utc_z(control.get("requested_run_at"))
         if control.get("requested_run_at")
@@ -144,6 +146,7 @@ async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
             "is_enabled": True,
             "is_paused": False,
             "run_interval_minutes": settings.DISCOVERY_RUN_INTERVAL_MINUTES,
+            "priority_backlog_mode": True,
             "requested_run_at": None,
         }
     return {
@@ -151,6 +154,11 @@ async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
         "is_paused": bool(row.is_paused),
         "run_interval_minutes": int(
             row.run_interval_minutes or settings.DISCOVERY_RUN_INTERVAL_MINUTES
+        ),
+        "priority_backlog_mode": bool(
+            row.priority_backlog_mode
+            if row.priority_backlog_mode is not None
+            else True
         ),
         "requested_run_at": row.requested_run_at,
     }
@@ -166,6 +174,16 @@ async def set_discovery_paused(session: AsyncSession, paused: bool) -> None:
 async def set_discovery_interval(session: AsyncSession, interval_minutes: int) -> None:
     row = await ensure_discovery_control(session)
     row.run_interval_minutes = max(5, min(1440, int(interval_minutes)))
+    row.updated_at = utcnow()
+    await session.commit()
+
+
+async def set_discovery_priority_backlog_mode(
+    session: AsyncSession,
+    enabled: bool,
+) -> None:
+    row = await ensure_discovery_control(session)
+    row.priority_backlog_mode = bool(enabled)
     row.updated_at = utcnow()
     await session.commit()
 

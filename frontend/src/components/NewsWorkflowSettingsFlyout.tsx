@@ -14,6 +14,8 @@ import {
   Target,
   Timer,
   Shield,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -116,6 +118,9 @@ const DEFAULTS: NewsWorkflowSettings = {
   cycle_llm_call_cap: 30,
   cache_ttl_minutes: 30,
   max_edge_evals_per_article: 3,
+  rss_feeds: [],
+  gov_rss_enabled: true,
+  gov_rss_feeds: [],
   model: null,
 }
 
@@ -150,6 +155,7 @@ export default function NewsWorkflowSettingsFlyout({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['news-workflow-settings'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+      queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
       setSaveMessage({ type: 'success', text: 'Workflow settings saved' })
       setTimeout(() => setSaveMessage(null), 3000)
     },
@@ -165,6 +171,58 @@ export default function NewsWorkflowSettingsFlyout({
 
   const set = <K extends keyof NewsWorkflowSettings>(key: K, val: NewsWorkflowSettings[K]) =>
     setForm((p) => ({ ...p, [key]: val }))
+
+  const addCustomFeed = () => {
+    set('rss_feeds', [
+      ...(form.rss_feeds || []),
+      {
+        id: `custom_${Date.now()}`,
+        name: '',
+        url: '',
+        enabled: true,
+        category: '',
+      },
+    ])
+  }
+
+  const updateCustomFeed = (index: number, updates: Partial<NewsWorkflowSettings['rss_feeds'][number]>) => {
+    const next = [...(form.rss_feeds || [])]
+    const row = next[index]
+    if (!row) return
+    next[index] = { ...row, ...updates }
+    set('rss_feeds', next)
+  }
+
+  const removeCustomFeed = (index: number) => {
+    set('rss_feeds', (form.rss_feeds || []).filter((_, i) => i !== index))
+  }
+
+  const addGovFeed = () => {
+    set('gov_rss_feeds', [
+      ...(form.gov_rss_feeds || []),
+      {
+        id: `gov_${Date.now()}`,
+        agency: 'government',
+        name: '',
+        url: '',
+        priority: 'medium',
+        country_iso3: 'USA',
+        enabled: true,
+      },
+    ])
+  }
+
+  const updateGovFeed = (index: number, updates: Partial<NewsWorkflowSettings['gov_rss_feeds'][number]>) => {
+    const next = [...(form.gov_rss_feeds || [])]
+    const row = next[index]
+    if (!row) return
+    next[index] = { ...row, ...updates }
+    set('gov_rss_feeds', next)
+  }
+
+  const removeGovFeed = (index: number) => {
+    set('gov_rss_feeds', (form.gov_rss_feeds || []).filter((_, i) => i !== index))
+  }
 
   if (!isOpen) return null
 
@@ -214,7 +272,7 @@ export default function NewsWorkflowSettingsFlyout({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs font-medium">Enable Workflow</p>
-                <p className="text-[10px] text-muted-foreground">Run the full article-to-intent pipeline</p>
+                <p className="text-[10px] text-muted-foreground">Run the full cluster-to-intent pipeline</p>
               </div>
               <Switch checked={form.enabled} onCheckedChange={(v) => set('enabled', v)} className="scale-75" />
             </div>
@@ -237,13 +295,204 @@ export default function NewsWorkflowSettingsFlyout({
             />
           </Section>
 
+          {/* RSS Feed Configuration */}
+          <Section title="RSS Feeds" icon={Newspaper} color="text-emerald-500">
+            <p className="text-[10px] text-muted-foreground/60 -mt-1">
+              Configure custom and government RSS sources used by the news ingest pipeline.
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium">Custom RSS Feeds</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] gap-1"
+                  onClick={addCustomFeed}
+                >
+                  <Plus className="w-3 h-3" />
+                  Add
+                </Button>
+              </div>
+              {(form.rss_feeds || []).length === 0 ? (
+                <p className="text-[10px] text-muted-foreground/70">No custom feeds configured.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(form.rss_feeds || []).map((feed, idx) => (
+                    <div key={feed.id || `rss-${idx}`} className="rounded-lg border border-border/40 p-2 space-y-2">
+                      <div className="grid grid-cols-12 gap-2">
+                        <div className="col-span-4">
+                          <Label className="text-[10px] text-muted-foreground">Name</Label>
+                          <Input
+                            value={feed.name || ''}
+                            onChange={(e) => updateCustomFeed(idx, { name: e.target.value })}
+                            placeholder="Feed label"
+                            className="h-7 text-xs mt-0.5"
+                          />
+                        </div>
+                        <div className="col-span-6">
+                          <Label className="text-[10px] text-muted-foreground">URL</Label>
+                          <Input
+                            value={feed.url || ''}
+                            onChange={(e) => updateCustomFeed(idx, { url: e.target.value })}
+                            placeholder="https://example.com/rss.xml"
+                            className="h-7 text-xs mt-0.5 font-mono"
+                          />
+                        </div>
+                        <div className="col-span-2 flex items-end justify-end">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-red-400 hover:text-red-300"
+                            onClick={() => removeCustomFeed(idx)}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-12 gap-2 items-center">
+                        <div className="col-span-6">
+                          <Label className="text-[10px] text-muted-foreground">Category (optional)</Label>
+                          <Input
+                            value={feed.category || ''}
+                            onChange={(e) => updateCustomFeed(idx, { category: e.target.value })}
+                            placeholder="politics / crypto / world"
+                            className="h-7 text-xs mt-0.5"
+                          />
+                        </div>
+                        <div className="col-span-6 flex items-center justify-end gap-2 pt-4">
+                          <span className="text-[10px] text-muted-foreground">Enabled</span>
+                          <Switch
+                            checked={Boolean(feed.enabled)}
+                            onCheckedChange={(v) => updateCustomFeed(idx, { enabled: v })}
+                            className="scale-75"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium">Government RSS Feeds</p>
+                  <p className="text-[10px] text-muted-foreground/70">Official policy and agency feeds</p>
+                </div>
+                <Switch
+                  checked={Boolean(form.gov_rss_enabled)}
+                  onCheckedChange={(v) => set('gov_rss_enabled', v)}
+                  className="scale-75"
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] text-muted-foreground">Configured feeds: {(form.gov_rss_feeds || []).length}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] gap-1"
+                  onClick={addGovFeed}
+                >
+                  <Plus className="w-3 h-3" />
+                  Add
+                </Button>
+              </div>
+
+              {(form.gov_rss_feeds || []).length === 0 ? (
+                <p className="text-[10px] text-muted-foreground/70">No government feeds configured.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(form.gov_rss_feeds || []).map((feed, idx) => (
+                    <div key={feed.id || `gov-${idx}`} className="rounded-lg border border-border/40 p-2 space-y-2">
+                      <div className="grid grid-cols-12 gap-2">
+                        <div className="col-span-3">
+                          <Label className="text-[10px] text-muted-foreground">Agency</Label>
+                          <Input
+                            value={feed.agency || ''}
+                            onChange={(e) => updateGovFeed(idx, { agency: e.target.value })}
+                            placeholder="state_department"
+                            className="h-7 text-xs mt-0.5"
+                          />
+                        </div>
+                        <div className="col-span-4">
+                          <Label className="text-[10px] text-muted-foreground">Name</Label>
+                          <Input
+                            value={feed.name || ''}
+                            onChange={(e) => updateGovFeed(idx, { name: e.target.value })}
+                            placeholder="Feed name"
+                            className="h-7 text-xs mt-0.5"
+                          />
+                        </div>
+                        <div className="col-span-4">
+                          <Label className="text-[10px] text-muted-foreground">Country ISO3</Label>
+                          <Input
+                            value={feed.country_iso3 || ''}
+                            onChange={(e) => updateGovFeed(idx, { country_iso3: e.target.value.toUpperCase() })}
+                            placeholder="USA"
+                            className="h-7 text-xs mt-0.5 font-mono"
+                            maxLength={3}
+                          />
+                        </div>
+                        <div className="col-span-1 flex items-end justify-end">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-red-400 hover:text-red-300"
+                            onClick={() => removeGovFeed(idx)}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-12 gap-2 items-center">
+                        <div className="col-span-8">
+                          <Label className="text-[10px] text-muted-foreground">URL</Label>
+                          <Input
+                            value={feed.url || ''}
+                            onChange={(e) => updateGovFeed(idx, { url: e.target.value })}
+                            placeholder="https://agency.gov/feed.xml"
+                            className="h-7 text-xs mt-0.5 font-mono"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label className="text-[10px] text-muted-foreground">Priority</Label>
+                          <Input
+                            value={feed.priority || 'medium'}
+                            onChange={(e) => updateGovFeed(idx, { priority: e.target.value as 'critical' | 'high' | 'medium' | 'low' })}
+                            placeholder="medium"
+                            className="h-7 text-xs mt-0.5"
+                          />
+                        </div>
+                        <div className="col-span-2 flex items-center justify-end gap-2 pt-4">
+                          <span className="text-[10px] text-muted-foreground">On</span>
+                          <Switch
+                            checked={Boolean(feed.enabled)}
+                            onCheckedChange={(v) => updateGovFeed(idx, { enabled: v })}
+                            className="scale-75"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Section>
+
           {/* Retrieval */}
           <Section title="Hybrid Retrieval" icon={Search} color="text-blue-500">
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              Control how articles are matched to prediction markets using keyword, semantic, and event-type scoring.
+              Control how clustered news topics are matched to prediction markets using keyword, semantic, and event alignment scoring.
             </p>
             <div className="grid grid-cols-2 gap-2.5">
-              <NumericField label="Top-K Candidates" help="Max markets per article from retriever" value={form.top_k} onChange={(v) => set('top_k', v)} min={1} max={50} disabled={!form.enabled} />
+              <NumericField label="Top-K Candidates" help="Max markets per cluster from retriever" value={form.top_k} onChange={(v) => set('top_k', v)} min={1} max={50} disabled={!form.enabled} />
               <NumericField label="Rerank Top-N" help="Markets sent to LLM reranker" value={form.rerank_top_n} onChange={(v) => set('rerank_top_n', v)} min={1} max={20} disabled={!form.enabled} />
               <NumericField label="Similarity Threshold" help="Min combined score to include" value={form.similarity_threshold} onChange={(v) => set('similarity_threshold', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
             </div>
@@ -259,15 +508,8 @@ export default function NewsWorkflowSettingsFlyout({
           {/* Precision Guards */}
           <Section title="Precision Guards" icon={Shield} color="text-cyan-500">
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              Fail-closed and strict market/article compatibility guards to reduce false positives.
+              Strict market/event compatibility guards to reduce false positives.
             </p>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium">Require Verifier</p>
-                <p className="text-[10px] text-muted-foreground">Drop candidates if LLM reranker verification is unavailable</p>
-              </div>
-              <Switch checked={form.require_verifier} onCheckedChange={(v) => set('require_verifier', v)} className="scale-75" disabled={!form.enabled} />
-            </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
                 label="Market Min Liquidity"
@@ -402,8 +644,8 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Max Edge Evals / Article"
-                help="Cap expensive edge calls per article"
+                label="Max Edge Evals / Cluster"
+                help="Cap expensive edge calls per cluster"
                 value={form.max_edge_evals_per_article}
                 onChange={(v) => set('max_edge_evals_per_article', v)}
                 min={1}

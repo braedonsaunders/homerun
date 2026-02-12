@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings as app_settings
@@ -16,6 +16,13 @@ from models.database import (
     NewsWorkflowControl,
     NewsWorkflowFinding,
     NewsWorkflowSnapshot,
+)
+from services.market_tradability import get_market_tradability_map
+from services.news.rss_config import (
+    default_custom_rss_feeds,
+    default_gov_rss_feeds,
+    normalize_custom_rss_feeds,
+    normalize_gov_rss_feeds,
 )
 
 NEWS_SNAPSHOT_ID = "latest"
@@ -255,10 +262,8 @@ async def release_news_lease(session: AsyncSession, owner: str) -> None:
 
 
 async def count_pending_news_intents(session: AsyncSession) -> int:
-    result = await session.execute(
-        select(func.count(NewsTradeIntent.id)).where(NewsTradeIntent.status == "pending")
-    )
-    return int(result.scalar() or 0)
+    rows = await list_news_intents(session, status_filter="pending", limit=5000)
+    return len(rows)
 
 
 async def list_news_intents(
@@ -271,7 +276,25 @@ async def list_news_intents(
         query = query.where(NewsTradeIntent.status == status_filter)
     query = query.limit(limit)
     result = await session.execute(query)
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+
+    actionable = [r for r in rows if r.status in {"pending", "submitted"} and r.market_id]
+    if actionable:
+        tradability = await get_market_tradability_map([str(r.market_id) for r in actionable])
+        now = utcnow()
+        changed = 0
+        for row in actionable:
+            if tradability.get(str(row.market_id).strip().lower(), True):
+                continue
+            row.status = "expired"
+            row.consumed_at = now
+            changed += 1
+        if changed:
+            await session.commit()
+            if status_filter in {"pending", "submitted"}:
+                rows = [r for r in rows if r.status == status_filter]
+
+    return rows
 
 
 async def mark_news_intent(
@@ -329,6 +352,26 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
 
 async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
     db = await _get_or_create_app_settings(session)
+    raw_custom_feeds = getattr(db, "news_rss_feeds_json", None)
+    custom_rss_feeds = (
+        normalize_custom_rss_feeds(raw_custom_feeds)
+        if raw_custom_feeds
+        else default_custom_rss_feeds()
+    )
+    raw_gov_feeds = getattr(db, "news_gov_rss_feeds_json", None)
+    gov_rss_feeds = (
+        normalize_gov_rss_feeds(raw_gov_feeds)
+        if raw_gov_feeds
+        else default_gov_rss_feeds()
+    )
+    default_gov_enabled = bool(getattr(app_settings, "NEWS_GOV_RSS_ENABLED", True))
+    raw_gov_enabled = getattr(db, "news_gov_rss_enabled", None)
+    gov_rss_enabled = (
+        default_gov_enabled
+        if raw_gov_enabled is None
+        else bool(raw_gov_enabled)
+    )
+
     return {
         "enabled": bool(getattr(db, "news_workflow_enabled", True)),
         "auto_run": bool(getattr(db, "news_workflow_auto_run", True)),
@@ -393,6 +436,9 @@ async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
         "max_edge_evals_per_article": int(
             getattr(db, "news_workflow_max_edge_evals_per_article", 3) or 3
         ),
+        "rss_feeds": custom_rss_feeds,
+        "gov_rss_enabled": gov_rss_enabled,
+        "gov_rss_feeds": gov_rss_feeds,
     }
 
 
@@ -428,12 +474,19 @@ async def update_news_settings(
         "cycle_llm_call_cap": "news_workflow_cycle_llm_call_cap",
         "cache_ttl_minutes": "news_workflow_cache_ttl_minutes",
         "max_edge_evals_per_article": "news_workflow_max_edge_evals_per_article",
+        "gov_rss_enabled": "news_gov_rss_enabled",
     }
     for key, value in updates.items():
         col = mapping.get(key)
         if not col:
             continue
         setattr(db, col, value)
+
+    if "rss_feeds" in updates:
+        db.news_rss_feeds_json = normalize_custom_rss_feeds(updates.get("rss_feeds"))
+    if "gov_rss_feeds" in updates:
+        db.news_gov_rss_feeds_json = normalize_gov_rss_feeds(updates.get("gov_rss_feeds"))
+
     db.updated_at = utcnow()
     await session.commit()
     return await get_news_settings(session)

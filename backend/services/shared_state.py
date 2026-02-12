@@ -20,6 +20,7 @@ from models.database import (
     OpportunityEvent,
 )
 from models.opportunity import ArbitrageOpportunity, OpportunityFilter
+from services.market_tradability import get_market_tradability_map
 from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
@@ -344,6 +345,36 @@ def _stable_id_from_opportunity_id(opportunity_id: Optional[str]) -> Optional[st
     return text
 
 
+def _market_ids_from_opportunity(opp: ArbitrageOpportunity) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    for market in opp.markets or []:
+        if not isinstance(market, dict):
+            continue
+        mid = str(market.get("id") or market.get("condition_id") or "").strip().lower()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        ids.append(mid)
+
+    for position in opp.positions_to_take or []:
+        if not isinstance(position, dict):
+            continue
+        mid = str(
+            position.get("market_id")
+            or position.get("market")
+            or position.get("id")
+            or ""
+        ).strip().lower()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        ids.append(mid)
+
+    return ids
+
+
 async def update_opportunity_ai_analysis_in_snapshot(
     session: AsyncSession,
     opportunity_id: str,
@@ -401,6 +432,22 @@ async def get_opportunities_from_db(
 ) -> list[ArbitrageOpportunity]:
     """Get current opportunities from DB with optional filter (API use)."""
     opportunities, _ = await read_scanner_snapshot(session)
+    if opportunities:
+        by_index: dict[int, list[str]] = {}
+        all_market_ids: set[str] = set()
+        for idx, opp in enumerate(opportunities):
+            market_ids = _market_ids_from_opportunity(opp)
+            by_index[idx] = market_ids
+            all_market_ids.update(market_ids)
+
+        if all_market_ids:
+            tradability = await get_market_tradability_map(all_market_ids)
+            opportunities = [
+                opp
+                for idx, opp in enumerate(opportunities)
+                if all(tradability.get(mid, True) for mid in by_index.get(idx, []))
+            ]
+
     if not filter:
         return opportunities
     if filter.min_profit > 0:

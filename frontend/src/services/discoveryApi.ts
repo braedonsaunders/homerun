@@ -48,6 +48,7 @@ export interface DiscoveredWallet {
   pool_tier?: string | null
   pool_membership_reason?: string | null
   source_flags?: Record<string, boolean>
+  market_categories?: string[]
   insider_score?: number
   insider_confidence?: number
   insider_sample_size?: number
@@ -74,6 +75,13 @@ export interface ConfluenceSignal {
   market_id: string
   market_question: string | null
   market_slug: string | null
+  yes_price?: number | null
+  no_price?: number | null
+  price_history?: Array<{
+    t: number
+    yes: number
+    no: number
+  }>
   signal_type: string
   strength: number
   conviction_score?: number
@@ -163,6 +171,14 @@ export interface InsiderOpportunity {
   signal_key?: string | null
   market_id: string
   market_question: string
+  market_slug?: string | null
+  yes_price?: number | null
+  no_price?: number | null
+  price_history?: Array<{
+    t: number
+    yes: number
+    no: number
+  }>
   direction: 'buy_yes' | 'buy_no' | string
   entry_price?: number | null
   edge_percent?: number | null
@@ -282,6 +298,63 @@ export interface TradersOverview {
   }
 }
 
+export interface PoolMember {
+  address: string
+  username?: string | null
+  display_name?: string | null
+  name_source?: 'username' | 'tracked_label' | 'cluster_label' | 'unresolved' | string
+  tracked_label?: string | null
+  cluster_label?: string | null
+  in_top_pool: boolean
+  pool_tier?: string | null
+  pool_membership_reason?: string | null
+  rank_score: number
+  composite_score: number
+  quality_score: number
+  activity_score: number
+  stability_score?: number
+  selection_score?: number
+  selection_rank?: number | null
+  selection_percentile?: number | null
+  selection_reasons?: Array<{
+    code: string
+    label: string
+    detail?: string
+  }>
+  selection_breakdown?: Record<string, number>
+  selection_updated_at?: string | null
+  trades_1h: number
+  trades_24h: number
+  last_trade_at?: string | null
+  total_trades: number
+  total_pnl: number
+  win_rate: number
+  tags: string[]
+  strategies_detected: string[]
+  market_categories: string[]
+  tracked_wallet: boolean
+  pool_flags: {
+    manual_include: boolean
+    manual_exclude: boolean
+    blacklisted: boolean
+  }
+}
+
+export interface PoolMembersResponse {
+  total: number
+  offset: number
+  limit: number
+  members: PoolMember[]
+  stats: {
+    pool_members: number
+    blacklisted: number
+    manual_included: number
+    manual_excluded: number
+    tracked_in_pool: number
+    tracked_total: number
+  }
+}
+
 export const discoveryApi = {
   getLeaderboard: async (params: {
     limit?: number
@@ -299,6 +372,9 @@ export const discoveryApi = {
     min_activity_score?: number
     pool_only?: boolean
     tier?: string
+    search?: string
+    unique_entities_only?: boolean
+    market_category?: string
   } = {}) => {
     const { data } = await discoveryHttp.get(`${API_BASE}/leaderboard`, { params })
     return data
@@ -340,6 +416,62 @@ export const discoveryApi = {
 
   getPoolStats: async (): Promise<PoolStats> => {
     const { data } = await discoveryHttp.get(`${API_BASE}/pool/stats`)
+    return data
+  },
+
+  getPoolMembers: async (params: {
+    limit?: number
+    offset?: number
+    pool_only?: boolean
+    include_blacklisted?: boolean
+    tier?: 'core' | 'rising'
+    search?: string
+    sort_by?: 'selection_score' | 'composite_score' | 'quality_score' | 'activity_score' | 'trades_24h' | 'trades_1h' | 'last_trade_at' | 'rank_score'
+    sort_dir?: 'asc' | 'desc'
+  } = {}): Promise<PoolMembersResponse> => {
+    const { data } = await discoveryHttp.get(`${API_BASE}/pool/members`, { params })
+    return data
+  },
+
+  poolManualInclude: async (address: string, reason?: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.post(`${API_BASE}/pool/members/${address}/manual-include`, reason ? { reason } : undefined)
+    return data
+  },
+
+  clearPoolManualInclude: async (address: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.delete(`${API_BASE}/pool/members/${address}/manual-include`)
+    return data
+  },
+
+  poolManualExclude: async (address: string, reason?: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.post(`${API_BASE}/pool/members/${address}/manual-exclude`, reason ? { reason } : undefined)
+    return data
+  },
+
+  clearPoolManualExclude: async (address: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.delete(`${API_BASE}/pool/members/${address}/manual-exclude`)
+    return data
+  },
+
+  blacklistPoolWallet: async (address: string, reason?: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.post(`${API_BASE}/pool/members/${address}/blacklist`, reason ? { reason } : undefined)
+    return data
+  },
+
+  unblacklistPoolWallet: async (address: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.delete(`${API_BASE}/pool/members/${address}/blacklist`)
+    return data
+  },
+
+  deletePoolWallet: async (address: string): Promise<{ status: string }> => {
+    const { data } = await discoveryHttp.delete(`${API_BASE}/pool/members/${address}`)
+    return data
+  },
+
+  promoteTrackedWalletsToPool: async (limit = 300): Promise<{ status: string; promoted: number; created: number; updated: number }> => {
+    const { data } = await discoveryHttp.post(`${API_BASE}/pool/actions/promote-tracked`, null, {
+      params: { limit },
+    })
     return data
   },
 

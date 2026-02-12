@@ -50,6 +50,7 @@ import httpx
 from sqlalchemy import case, func, select
 
 from models.database import AppSettings, AsyncSessionLocal, LLMModelCache, LLMUsageLog
+from services.pause_state import global_pause_state
 from utils.secrets import decrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -2106,6 +2107,10 @@ class LLMManager:
                 f"wait until next month."
             )
 
+    def _check_global_pause(self) -> None:
+        if global_pause_state.is_paused:
+            raise RuntimeError("Global pause is active; LLM requests are disabled.")
+
     async def _log_usage(
         self,
         provider: str,
@@ -2195,6 +2200,7 @@ class LLMManager:
             requested_model, provider_enum
         )
         provider = self._get_provider(provider_enum)
+        self._check_global_pause()
         self._check_spend_limit()
 
         try:
@@ -2288,6 +2294,7 @@ class LLMManager:
             requested_model, provider_enum
         )
         provider = self._get_provider(provider_enum)
+        self._check_global_pause()
         self._check_spend_limit()
 
         start_time = time.time()

@@ -1,4 +1,4 @@
-import { Activity, Layers3, Play, Settings2, ShieldAlert, Square } from 'lucide-react'
+import { Activity, Play, Settings2, ShieldAlert, Square } from 'lucide-react'
 
 import type { AutoTraderStatus } from '../../services/api'
 import { cn } from '../../lib/utils'
@@ -13,7 +13,6 @@ interface CommandCenterHeaderProps {
   stopPending: boolean
   emergencyPending: boolean
   onOpenSettings: () => void
-  onOpenSources: () => void
   onStart: () => void
   onStop: () => void
   onEmergencyStop: () => void
@@ -30,13 +29,14 @@ export default function CommandCenterHeader({
   stopPending,
   emergencyPending,
   onOpenSettings,
-  onOpenSources,
   onStart,
   onStop,
   onEmergencyStop,
 }: CommandCenterHeaderProps) {
   const stats = status?.stats
   const tradingActive = Boolean(status?.trading_active)
+  const mode = String(status?.mode || 'paper')
+  const requiresLiveWizard = mode === 'live'
 
   return (
     <Card className="border-border/50 bg-card/40">
@@ -52,7 +52,9 @@ export default function CommandCenterHeader({
             <div>
               <p className="text-sm font-semibold">AutoTrader Command Center</p>
               <p className="text-xs text-muted-foreground">
-                Manual start required after launch.
+                {requiresLiveWizard
+                  ? 'Live mode requires preflight + arm before start.'
+                  : 'Manual start required after launch.'}
               </p>
             </div>
             <Badge
@@ -77,14 +79,6 @@ export default function CommandCenterHeader({
             <Settings2 className="w-3.5 h-3.5 mr-1" />
             Settings
           </Button>
-          <Button
-            variant="outline"
-            onClick={onOpenSources}
-            className="h-8 px-3 text-xs"
-          >
-            <Layers3 className="w-3.5 h-3.5 mr-1" />
-            Sources
-          </Button>
           {tradingActive ? (
             <Button
                 variant="secondary"
@@ -99,10 +93,15 @@ export default function CommandCenterHeader({
               <Button
                 onClick={onStart}
                 disabled={!canStart || startPending}
-                className="h-8 px-3 text-xs bg-emerald-600 hover:bg-emerald-500"
+                className={cn(
+                  'h-8 px-3 text-xs',
+                  requiresLiveWizard
+                    ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                    : 'bg-emerald-600 hover:bg-emerald-500'
+                )}
               >
                 <Play className="w-3.5 h-3.5 mr-1" />
-                Start
+                {requiresLiveWizard ? 'Live Wizard' : 'Start'}
               </Button>
             )}
             <Button

@@ -232,7 +232,7 @@ export default function AICopilotPanel({
               </p>
 
               {/* Quick Actions */}
-              {contextType === 'opportunity' && (
+              {(contextType === 'opportunity' || contextType === 'trader_signal') && (
                 <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
                   {quickActions.map((action) => (
                     <Card

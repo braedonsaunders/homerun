@@ -19,22 +19,7 @@ import Sparkline from './Sparkline'
 
 // ─── Constants ────────────────────────────────────────────
 
-const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const
-type Asset = typeof ASSETS[number]
-
-const ASSET_COLORS: Record<string, string> = {
-  BTC: 'text-orange-400',
-  ETH: 'text-blue-400',
-  SOL: 'text-purple-400',
-  XRP: 'text-cyan-400',
-}
-
-const ASSET_BG: Record<string, string> = {
-  BTC: 'bg-orange-500/10 border-orange-500/20',
-  ETH: 'bg-blue-500/10 border-blue-500/20',
-  SOL: 'bg-purple-500/10 border-purple-500/20',
-  XRP: 'bg-cyan-500/10 border-cyan-500/20',
-}
+const WS_MARKETS_STALE_MS = 30000
 
 const ASSET_BAR: Record<string, string> = {
   BTC: 'bg-orange-400',
@@ -67,6 +52,14 @@ function formatPrice(n: number | null | undefined, decimals = 2): string {
 function toFiniteNumber(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function extractCryptoMarketsFromInit(payload: any): CryptoMarket[] | null {
+  const workers = payload?.workers_status
+  if (!Array.isArray(workers)) return null
+  const cryptoWorker = workers.find((worker) => worker?.worker_name === 'crypto')
+  const markets = cryptoWorker?.stats?.markets
+  return Array.isArray(markets) ? markets as CryptoMarket[] : null
 }
 
 // ─── Countdown Timer ─────────────────────────────────────
@@ -362,31 +355,57 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
   void onExecute
   void onOpenCopilot
   const { isConnected, lastMessage } = useWebSocket('/ws')
-  const [selectedAsset, setSelectedAsset] = useState<Asset>('ALL')
   const [wsMarkets, setWsMarkets] = useState<CryptoMarket[] | null>(null)
+  const [wsMarketsUpdatedAtMs, setWsMarketsUpdatedAtMs] = useState<number | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   // Listen for real-time WebSocket pushes
   useEffect(() => {
-    if (lastMessage?.type === 'crypto_markets_update' && lastMessage.data?.markets) {
+    if (lastMessage?.type === 'crypto_markets_update' && Array.isArray(lastMessage.data?.markets)) {
       setWsMarkets(lastMessage.data.markets)
+      setWsMarketsUpdatedAtMs(Date.now())
+      return
+    }
+
+    if (lastMessage?.type === 'init') {
+      const seededMarkets = extractCryptoMarketsFromInit(lastMessage.data)
+      if (seededMarkets) {
+        setWsMarkets(seededMarkets)
+        setWsMarketsUpdatedAtMs(Date.now())
+      }
     }
   }, [lastMessage])
+
+  // If websocket disconnects, immediately stop trusting any stale ws cache.
+  useEffect(() => {
+    if (!isConnected) {
+      setWsMarkets(null)
+      setWsMarketsUpdatedAtMs(null)
+    }
+  }, [isConnected])
+
+  useEffect(() => {
+    const iv = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(iv)
+  }, [])
+
+  const hasFreshWsMarkets =
+    !!wsMarkets &&
+    wsMarketsUpdatedAtMs !== null &&
+    nowMs - wsMarketsUpdatedAtMs <= WS_MARKETS_STALE_MS
 
   // HTTP polling as fallback only
   const { data: httpMarkets, isLoading } = useQuery({
     queryKey: ['crypto-live-markets'],
     queryFn: getCryptoMarkets,
-    refetchInterval: isConnected ? 30000 : 5000,
-    staleTime: 2000,
+    refetchInterval: hasFreshWsMarkets ? 5000 : 2000,
+    refetchIntervalInBackground: true,
+    staleTime: 1000,
   })
 
-  const allMarkets = wsMarkets || httpMarkets || []
-
-  // Filter by asset
-  const filtered = useMemo(() => {
-    if (selectedAsset === 'ALL') return allMarkets
-    return allMarkets.filter(m => m.asset === selectedAsset)
-  }, [allMarkets, selectedAsset])
+  const allMarkets = hasFreshWsMarkets
+    ? (wsMarkets || httpMarkets || [])
+    : (httpMarkets || wsMarkets || [])
 
   // Stats from series data
   const stats = useMemo(() => {
@@ -401,10 +420,10 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
 
   return (
     <div className="space-y-4">
-      {/* Header Dashboard */}
-      <div className="rounded-lg border border-border/50 bg-card/60 overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/30">
-          <div className="flex items-center gap-2">
+      {/* Header */}
+      <div className="rounded-xl border border-border/40 bg-card/60 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="relative">
               <ArrowUpDown className="w-4 h-4 text-orange-400" />
               <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
@@ -414,70 +433,46 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
               LIVE
             </Badge>
           </div>
-          <div className="text-[10px] text-muted-foreground font-data flex items-center gap-1.5">
-            {isConnected && wsMarkets ? (
+          <div className="text-[11px] text-muted-foreground font-data flex items-center gap-1.5">
+            {isConnected ? (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                Real-time via WebSocket
+                {hasFreshWsMarkets ? 'Real-time via WebSocket' : 'WebSocket connected'}
               </>
             ) : (
               <>
                 <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                Polling
+                Polling fallback (2s)
               </>
             )}
           </div>
         </div>
-
-        {/* Stats row */}
-        <div className="grid grid-cols-5 divide-x divide-border/20">
-          {[
-            { label: 'Markets', value: <span className="text-sm font-bold font-data text-foreground">{stats.total}</span>, sub: `${stats.live} live` },
-            { label: 'Series Liquidity', value: <span className="text-sm font-bold font-data text-foreground">{formatUsd(stats.totalLiquidity)}</span>, sub: 'all assets' },
-            { label: 'Series 24h Vol', value: <span className="text-sm font-bold font-data text-foreground">{formatUsd(stats.totalVolume24h)}</span>, sub: 'combined' },
-            { label: 'Avg Spread', value: <span className={cn("text-sm font-bold font-data", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>{(stats.avgSpread * 100).toFixed(2)}%</span>, sub: 'from $1.00' },
-            { label: 'Taker Fee', value: <span className="text-sm font-bold font-data text-muted-foreground">1.56%</span>, sub: 'max at 50%' },
-          ].map((stat, i) => (
-            <div key={i} className="px-3 py-2.5 text-center">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">{stat.label}</div>
-              <div>{stat.value}</div>
-              <div className="text-[9px] text-muted-foreground/60 mt-0.5">{stat.sub}</div>
-            </div>
-          ))}
-        </div>
       </div>
 
-      {/* Asset filter */}
-      <div className="flex items-center gap-0.5 border border-border/50 rounded-lg p-0.5 bg-card/50 w-fit">
-        {ASSETS.map((asset) => {
-          const count = asset === 'ALL' ? allMarkets.length : allMarkets.filter(m => m.asset === asset).length
-          return (
-            <button
-              key={asset}
-              onClick={() => setSelectedAsset(asset)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                selectedAsset === asset
-                  ? asset === 'ALL'
-                    ? 'bg-primary/20 text-primary'
-                    : cn('bg-opacity-20', ASSET_BG[asset], ASSET_COLORS[asset])
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              )}
-            >
-              {asset}
-              {count > 0 && <span className="text-[9px] font-data bg-muted/50 px-1 rounded">{count}</span>}
-            </button>
-          )
-        })}
+      {/* KPI row */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        {[
+          { label: 'Markets', value: <span className="text-lg font-bold font-data text-foreground">{stats.total}</span>, sub: `${stats.live} live` },
+          { label: 'Series Liquidity', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalLiquidity)}</span>, sub: 'all assets' },
+          { label: 'Series 24h Vol', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalVolume24h)}</span>, sub: 'combined' },
+          { label: 'Avg Spread', value: <span className={cn("text-lg font-bold font-data", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>{(stats.avgSpread * 100).toFixed(2)}%</span>, sub: 'from $1.00' },
+          { label: 'Taker Fee', value: <span className="text-lg font-bold font-data text-muted-foreground">1.56%</span>, sub: 'max at 50%' },
+        ].map((stat, i) => (
+          <Card key={i} className="rounded-lg border border-border/40 bg-card/40 p-3">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{stat.label}</div>
+            <div>{stat.value}</div>
+            <div className="text-[10px] text-muted-foreground/60 mt-0.5">{stat.sub}</div>
+          </Card>
+        ))}
       </div>
 
       {/* Content */}
-      {isLoading && !wsMarkets ? (
+      {isLoading && !hasFreshWsMarkets ? (
         <div className="flex items-center justify-center py-16">
           <RefreshCw className="w-8 h-8 animate-spin text-orange-400" />
           <span className="ml-3 text-muted-foreground">Loading crypto markets...</span>
         </div>
-      ) : filtered.length === 0 ? (
+      ) : allMarkets.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16">
           <Activity className="w-12 h-12 text-muted-foreground/30 mb-4" />
           <p className="text-muted-foreground font-medium">No live crypto markets found</p>
@@ -487,7 +482,7 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          {filtered.map((market) => (
+          {allMarkets.map((market) => (
             <CryptoMarketCard key={market.id} market={market} />
           ))}
         </div>

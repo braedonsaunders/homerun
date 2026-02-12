@@ -19,10 +19,13 @@ from sqlalchemy import and_, select
 
 from models.database import (
     AppSettings,
+    AutoTraderTrade,
     AsyncSessionLocal,
     OpportunityHistory,
     StrategyValidationProfile,
+    TradeSignal,
     ValidationJob,
+    WorldIntelligenceSignal,
 )
 from services.param_optimizer import param_optimizer
 from utils.logger import get_logger
@@ -257,6 +260,216 @@ class ValidationService:
                 }
             )
         return trend
+
+    async def compute_autotrader_execution_metrics(self, days: int = 30) -> dict[str, Any]:
+        cutoff = utcnow() - timedelta(days=days)
+        async with AsyncSessionLocal() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(
+                            AutoTraderTrade.source,
+                            TradeSignal.strategy_type,
+                            AutoTraderTrade.status,
+                            AutoTraderTrade.mode,
+                            AutoTraderTrade.notional_usd,
+                            AutoTraderTrade.actual_profit,
+                            AutoTraderTrade.edge_percent,
+                            AutoTraderTrade.confidence,
+                        )
+                        .join(TradeSignal, AutoTraderTrade.signal_id == TradeSignal.id, isouter=True)
+                        .where(AutoTraderTrade.created_at >= cutoff)
+                    )
+                )
+                .all()
+            )
+
+        summary = {
+            "window_days": int(days),
+            "sample_size": len(rows),
+            "executed_or_open": 0,
+            "failed": 0,
+            "resolved": 0,
+            "failure_rate": 0.0,
+            "avg_edge_percent": 0.0,
+            "avg_confidence": 0.0,
+            "notional_total_usd": 0.0,
+            "realized_pnl_total": 0.0,
+            "by_source": {},
+            "by_strategy": {},
+        }
+        if not rows:
+            return summary
+
+        edges: list[float] = []
+        confidences: list[float] = []
+        by_source: dict[str, dict[str, Any]] = {}
+        by_strategy: dict[str, dict[str, Any]] = {}
+
+        for source, strategy_type, status, mode, notional, actual_profit, edge, confidence in rows:
+            source_key = str(source or "unknown")
+            strategy_key = str(strategy_type or "unknown")
+            status_key = str(status or "unknown")
+
+            if edge is not None:
+                edges.append(float(edge))
+            if confidence is not None:
+                confidences.append(float(confidence))
+
+            notional_value = float(notional or 0.0)
+            pnl_value = float(actual_profit or 0.0)
+            is_failed = status_key == "failed"
+            is_executed_or_open = status_key in {"submitted", "executed", "open"}
+            is_resolved = status_key in {"resolved_win", "resolved_loss"}
+
+            if is_executed_or_open:
+                summary["executed_or_open"] += 1
+            if is_failed:
+                summary["failed"] += 1
+            if is_resolved:
+                summary["resolved"] += 1
+            summary["notional_total_usd"] += notional_value
+            summary["realized_pnl_total"] += pnl_value
+
+            source_row = by_source.setdefault(
+                source_key,
+                {
+                    "source": source_key,
+                    "total": 0,
+                    "failed": 0,
+                    "executed_or_open": 0,
+                    "resolved": 0,
+                    "notional_total_usd": 0.0,
+                    "realized_pnl_total": 0.0,
+                    "modes": {},
+                },
+            )
+            source_row["total"] += 1
+            source_row["failed"] += int(is_failed)
+            source_row["executed_or_open"] += int(is_executed_or_open)
+            source_row["resolved"] += int(is_resolved)
+            source_row["notional_total_usd"] += notional_value
+            source_row["realized_pnl_total"] += pnl_value
+            mode_key = str(mode or "unknown")
+            source_row["modes"][mode_key] = int(source_row["modes"].get(mode_key, 0)) + 1
+
+            strategy_row = by_strategy.setdefault(
+                strategy_key,
+                {
+                    "strategy_type": strategy_key,
+                    "total": 0,
+                    "failed": 0,
+                    "executed_or_open": 0,
+                    "resolved": 0,
+                    "notional_total_usd": 0.0,
+                    "realized_pnl_total": 0.0,
+                },
+            )
+            strategy_row["total"] += 1
+            strategy_row["failed"] += int(is_failed)
+            strategy_row["executed_or_open"] += int(is_executed_or_open)
+            strategy_row["resolved"] += int(is_resolved)
+            strategy_row["notional_total_usd"] += notional_value
+            strategy_row["realized_pnl_total"] += pnl_value
+
+        sample_size = int(summary["sample_size"])
+        summary["failure_rate"] = (
+            float(summary["failed"]) / sample_size if sample_size > 0 else 0.0
+        )
+        summary["avg_edge_percent"] = (
+            sum(edges) / len(edges) if edges else 0.0
+        )
+        summary["avg_confidence"] = (
+            sum(confidences) / len(confidences) if confidences else 0.0
+        )
+        summary["by_source"] = sorted(
+            by_source.values(),
+            key=lambda row: (
+                float(row["notional_total_usd"]),
+                int(row["total"]),
+            ),
+            reverse=True,
+        )
+        summary["by_strategy"] = sorted(
+            by_strategy.values(),
+            key=lambda row: (
+                float(row["notional_total_usd"]),
+                int(row["total"]),
+            ),
+            reverse=True,
+        )
+        return summary
+
+    async def compute_world_intel_resolver_metrics(
+        self,
+        days: int = 7,
+        max_signals: int = 500,
+    ) -> dict[str, Any]:
+        cutoff = utcnow() - timedelta(days=days)
+        async with AsyncSessionLocal() as session:
+            signals = (
+                (
+                    await session.execute(
+                        select(WorldIntelligenceSignal)
+                        .where(WorldIntelligenceSignal.detected_at >= cutoff)
+                        .order_by(WorldIntelligenceSignal.detected_at.desc())
+                        .limit(max(1, min(max_signals, 5000)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            if not signals:
+                return {
+                    "window_days": int(days),
+                    "signals_sampled": 0,
+                    "candidates": 0,
+                    "tradable": 0,
+                    "tradable_rate": 0.0,
+                    "by_signal_type": {},
+                }
+
+            from services.world_intelligence.resolver import resolve_world_signal_opportunities
+
+            candidates = await resolve_world_signal_opportunities(
+                session,
+                signals,
+                max_markets_per_signal=5,
+            )
+
+        tradable = [row for row in candidates if bool(row.get("tradable"))]
+        by_type: dict[str, dict[str, Any]] = {}
+        for row in candidates:
+            key = str(row.get("signal_type") or "unknown")
+            entry = by_type.setdefault(
+                key,
+                {"signal_type": key, "candidates": 0, "tradable": 0, "tradable_rate": 0.0},
+            )
+            entry["candidates"] += 1
+            if bool(row.get("tradable")):
+                entry["tradable"] += 1
+        for row in by_type.values():
+            total = int(row["candidates"] or 0)
+            row["tradable_rate"] = (
+                float(row["tradable"]) / total if total > 0 else 0.0
+            )
+
+        total_candidates = len(candidates)
+        return {
+            "window_days": int(days),
+            "signals_sampled": len(signals),
+            "candidates": total_candidates,
+            "tradable": len(tradable),
+            "tradable_rate": (
+                len(tradable) / total_candidates if total_candidates > 0 else 0.0
+            ),
+            "by_signal_type": sorted(
+                by_type.values(),
+                key=lambda row: int(row["candidates"]),
+                reverse=True,
+            ),
+        }
 
     async def evaluate_guardrails(self) -> dict[str, Any]:
         cfg = await self.get_guardrail_config()
@@ -643,4 +856,3 @@ class ValidationService:
 
 
 validation_service = ValidationService()
-

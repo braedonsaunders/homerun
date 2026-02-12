@@ -80,8 +80,13 @@ class IntentGenerator:
                     "article_id": finding.article_id,
                     "signal_key": getattr(finding, "signal_key", None),
                     "cache_key": getattr(finding, "cache_key", None),
+                    "reasoning": finding.reasoning or "",
+                    "evidence": finding.evidence or {},
                 },
             }
+            supporting_articles = self._extract_supporting_articles(finding)
+            metadata["supporting_articles"] = supporting_articles
+            metadata["supporting_article_count"] = len(supporting_articles)
 
             intent = {
                 "id": signal_key[:16],
@@ -110,6 +115,57 @@ class IntentGenerator:
             len(findings),
         )
         return intents
+
+    @staticmethod
+    def _extract_supporting_articles(finding: WorkflowFinding) -> list[dict[str, Any]]:
+        evidence = finding.evidence if isinstance(finding.evidence, dict) else {}
+        cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
+        refs: list[dict[str, Any]] = []
+
+        if isinstance(cluster, dict):
+            raw_refs = cluster.get("article_refs")
+            if isinstance(raw_refs, list):
+                for raw in raw_refs:
+                    if not isinstance(raw, dict):
+                        continue
+                    refs.append(
+                        {
+                            "article_id": str(raw.get("article_id") or ""),
+                            "title": str(raw.get("title") or ""),
+                            "url": str(raw.get("url") or ""),
+                            "source": str(raw.get("source") or ""),
+                            "published": raw.get("published"),
+                            "fetched_at": raw.get("fetched_at"),
+                        }
+                    )
+
+        if not refs:
+            refs = [
+                {
+                    "article_id": finding.article_id,
+                    "title": finding.article_title,
+                    "url": finding.article_url,
+                    "source": finding.article_source,
+                    "published": None,
+                    "fetched_at": finding.created_at.isoformat()
+                    if finding.created_at
+                    else None,
+                }
+            ]
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for ref in refs:
+            key = (
+                str(ref.get("article_id") or "").strip()
+                or str(ref.get("url") or "").strip()
+                or str(ref.get("title") or "").strip().lower()
+            )
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(ref)
+        return deduped[:8]
 
     @staticmethod
     def _signal_key(finding: WorkflowFinding) -> str:

@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AutoTraderControl,
     AutoTraderDecision,
+    AutoTraderDecisionCheck,
+    AutoTraderEvent,
+    AutoTraderConfigRevision,
     AutoTraderPolicy,
+    AutoTraderPreflightRun,
     AutoTraderSnapshot,
     AutoTraderTrade,
     TradeSignal,
@@ -23,6 +29,8 @@ from models.database import (
 
 AUTOTRADER_CONTROL_ID = "default"
 AUTOTRADER_SNAPSHOT_ID = "latest"
+OPEN_TRADE_STATUSES = ("submitted", "executed", "open")
+RESOLVED_TRADE_STATUSES = ("resolved_win", "resolved_loss")
 
 DEFAULT_SOURCE_POLICIES: dict[str, dict[str, Any]] = {
     "scanner": {
@@ -51,6 +59,15 @@ DEFAULT_SOURCE_POLICIES: dict[str, dict[str, Any]] = {
         "min_signal_score": 0.2,
         "size_multiplier": 1.0,
         "cooldown_seconds": 60,
+    },
+    "world_intelligence": {
+        "enabled": True,
+        "weight": 1.05,
+        "daily_budget_usd": 90.0,
+        "max_open_positions": 6,
+        "min_signal_score": 0.2,
+        "size_multiplier": 0.9,
+        "cooldown_seconds": 45,
     },
     "crypto": {
         "enabled": True,
@@ -106,6 +123,30 @@ DEFAULT_GLOBAL_POLICY: dict[str, Any] = {
     "kill_switch": False,
 }
 
+DEFAULT_TRADING_DOMAINS: tuple[str, ...] = ("event_markets", "crypto")
+SOURCE_DOMAIN_MAP: dict[str, str] = {
+    "scanner": "event_markets",
+    "news": "event_markets",
+    "weather": "event_markets",
+    "world_intelligence": "event_markets",
+    "tracked_traders": "event_markets",
+    "copy": "event_markets",
+    "insider": "event_markets",
+    "crypto": "crypto",
+}
+
+
+def normalize_trading_domains(raw: Any) -> list[str]:
+    domains: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            key = str(item or "").strip().lower()
+            if key in {"event_markets", "crypto"} and key not in domains:
+                domains.append(key)
+    if not domains:
+        domains = list(DEFAULT_TRADING_DOMAINS)
+    return domains
+
 
 def _now() -> datetime:
     return utcnow()
@@ -119,6 +160,34 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     else:
         dt = dt.astimezone(timezone.utc)
     return dt.replace(tzinfo=None).isoformat() + "Z"
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _default_decision_checks(
+    decision: str,
+    score: Optional[float],
+    reason: Optional[str],
+    risk_snapshot: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    passed = decision in {"submitted", "executed"}
+    risk_rule = (
+        str((risk_snapshot or {}).get("rule")).strip() if isinstance(risk_snapshot, dict) else ""
+    )
+    checks.append(
+        {
+            "check_key": risk_rule or "selection",
+            "check_label": "Selection Decision",
+            "passed": passed,
+            "score": score,
+            "detail": reason or "",
+            "payload": {"decision": decision, "risk_rule": risk_rule or None},
+        }
+    )
+    return checks
 
 
 async def ensure_autotrader_control(session: AsyncSession) -> AutoTraderControl:
@@ -442,7 +511,7 @@ async def get_autotrader_exposure(session: AsyncSession) -> dict[str, Any]:
                 ).where(
                     and_(
                         AutoTraderTrade.created_at >= today_start,
-                        AutoTraderTrade.status.in_(("submitted", "executed")),
+                        AutoTraderTrade.status.in_(OPEN_TRADE_STATUSES),
                     )
                 ).group_by(AutoTraderTrade.source)
             )
@@ -461,7 +530,7 @@ async def get_autotrader_exposure(session: AsyncSession) -> dict[str, Any]:
                     func.coalesce(func.sum(AutoTraderTrade.notional_usd), 0.0),
                     func.count(AutoTraderTrade.id),
                 ).where(
-                    AutoTraderTrade.status.in_(("submitted", "executed"))
+                    AutoTraderTrade.status.in_(OPEN_TRADE_STATUSES)
                 ).group_by(AutoTraderTrade.market_id, AutoTraderTrade.direction)
             )
         )
@@ -488,7 +557,7 @@ async def get_autotrader_exposure(session: AsyncSession) -> dict[str, Any]:
                     func.coalesce(func.sum(AutoTraderTrade.notional_usd), 0.0),
                     func.count(AutoTraderTrade.id),
                 )
-                .where(AutoTraderTrade.status.in_(("submitted", "executed")))
+                .where(AutoTraderTrade.status.in_(OPEN_TRADE_STATUSES))
                 .group_by(AutoTraderTrade.payload_json)
             )
         )
@@ -858,6 +927,435 @@ async def get_autotrader_metrics(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+def compose_autotrader_config(
+    control: dict[str, Any],
+    policies: dict[str, Any],
+) -> dict[str, Any]:
+    settings = dict(control.get("settings") or {})
+    global_policy = (policies or {}).get("global") or {}
+    sources = (policies or {}).get("sources") or {}
+
+    return {
+        "mode": control.get("mode") or "paper",
+        "enabled_strategies": settings.get("enabled_strategies") or [],
+        "llm_verify_trades": bool(settings.get("llm_verify_trades", False)),
+        "llm_verify_strategies": settings.get("llm_verify_strategies") or [],
+        "auto_ai_scoring": bool(settings.get("auto_ai_scoring", False)),
+        "max_daily_loss_usd": float(global_policy.get("max_daily_loss") or 0.0),
+        "max_concurrent_positions": int(global_policy.get("max_total_open_positions") or 0),
+        "max_per_market_exposure": float(global_policy.get("max_per_market_exposure") or 0.0),
+        "max_per_event_exposure": float(global_policy.get("max_per_event_exposure") or 0.0),
+        "trading_domains": normalize_trading_domains(settings.get("trading_domains")),
+        "run_interval_seconds": int(control.get("run_interval_seconds") or 2),
+        "news_workflow_enabled": bool((sources.get("news") or {}).get("enabled", True)),
+        "weather_workflow_enabled": bool((sources.get("weather") or {}).get("enabled", True)),
+        "paper_account_id": settings.get("paper_account_id"),
+        "paper_enable_spread_exits": bool(settings.get("paper_enable_spread_exits", True)),
+        "paper_take_profit_pct": float(settings.get("paper_take_profit_pct", 5.0) or 0.0),
+        "paper_stop_loss_pct": float(settings.get("paper_stop_loss_pct", 10.0) or 0.0),
+    }
+
+
+async def create_autotrader_event(
+    session: AsyncSession,
+    *,
+    event_type: str,
+    severity: str = "info",
+    source: Optional[str] = None,
+    operator: Optional[str] = None,
+    message: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+    created_at: Optional[datetime] = None,
+    commit: bool = True,
+) -> AutoTraderEvent:
+    row = AutoTraderEvent(
+        id=uuid.uuid4().hex,
+        event_type=str(event_type),
+        severity=str(severity or "info"),
+        source=source,
+        operator=operator,
+        message=message,
+        trace_id=trace_id,
+        payload_json=payload or {},
+        created_at=created_at or _now(),
+    )
+    session.add(row)
+    if commit:
+        await session.commit()
+    return row
+
+
+async def list_autotrader_events(
+    session: AsyncSession,
+    *,
+    cursor: Optional[str] = None,
+    limit: int = 200,
+    event_types: Optional[list[str]] = None,
+) -> tuple[list[AutoTraderEvent], Optional[str]]:
+    query = select(AutoTraderEvent).order_by(
+        desc(AutoTraderEvent.created_at),
+        desc(AutoTraderEvent.id),
+    )
+    if event_types:
+        query = query.where(AutoTraderEvent.event_type.in_(event_types))
+
+    if cursor:
+        cursor_row = await session.get(AutoTraderEvent, cursor)
+        if cursor_row is not None:
+            query = query.where(
+                or_(
+                    AutoTraderEvent.created_at < cursor_row.created_at,
+                    and_(
+                        AutoTraderEvent.created_at == cursor_row.created_at,
+                        AutoTraderEvent.id < cursor_row.id,
+                    ),
+                )
+            )
+
+    bounded_limit = max(1, min(int(limit or 200), 500))
+    query = query.limit(bounded_limit)
+    rows = list((await session.execute(query)).scalars().all())
+    next_cursor = rows[-1].id if len(rows) == bounded_limit else None
+    return rows, next_cursor
+
+
+async def create_config_revision(
+    session: AsyncSession,
+    *,
+    control_before: dict[str, Any],
+    policies_before: dict[str, Any],
+    control_after: dict[str, Any],
+    policies_after: dict[str, Any],
+    operator: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> AutoTraderConfigRevision:
+    row = AutoTraderConfigRevision(
+        id=uuid.uuid4().hex,
+        operator=operator,
+        reason=reason,
+        control_before_json=control_before or {},
+        policies_before_json=policies_before or {},
+        control_after_json=control_after or {},
+        policies_after_json=policies_after or {},
+        created_at=_now(),
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
+async def create_preflight_run(
+    session: AsyncSession,
+    *,
+    requested_mode: str,
+    checks: list[dict[str, Any]],
+    requested_by: Optional[str] = None,
+) -> AutoTraderPreflightRun:
+    failed_checks = [check for check in checks if not bool(check.get("ok"))]
+    status = "passed" if not failed_checks else "failed"
+    row = AutoTraderPreflightRun(
+        id=uuid.uuid4().hex,
+        requested_mode=requested_mode,
+        requested_by=requested_by,
+        status=status,
+        checks_json=checks,
+        failed_checks_json=failed_checks,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
+async def arm_preflight_run(
+    session: AsyncSession,
+    *,
+    preflight_id: str,
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    row = await session.get(AutoTraderPreflightRun, preflight_id)
+    if row is None:
+        raise ValueError("Preflight run not found")
+    if row.status != "passed":
+        raise ValueError("Preflight run did not pass")
+
+    token = secrets.token_urlsafe(24)
+    now = _now()
+    expires_at = now + timedelta(seconds=max(30, min(ttl_seconds, 1800)))
+    row.arm_token_hash = _hash_token(token)
+    row.armed_at = now
+    row.arm_expires_at = expires_at
+    row.updated_at = now
+    await session.commit()
+    return {
+        "preflight_id": row.id,
+        "arm_token": token,
+        "expires_at": _iso(expires_at),
+    }
+
+
+async def consume_arm_token(
+    session: AsyncSession,
+    *,
+    arm_token: str,
+) -> dict[str, Any]:
+    token_hash = _hash_token(arm_token)
+    result = await session.execute(
+        select(AutoTraderPreflightRun)
+        .where(AutoTraderPreflightRun.arm_token_hash == token_hash)
+        .order_by(desc(AutoTraderPreflightRun.created_at))
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return {"ok": False, "reason": "token_not_found"}
+
+    now = _now()
+    if row.consumed_at is not None:
+        return {"ok": False, "reason": "token_consumed", "preflight_id": row.id}
+    if row.arm_expires_at is None or row.arm_expires_at < now:
+        return {"ok": False, "reason": "token_expired", "preflight_id": row.id}
+    if row.status != "passed":
+        return {"ok": False, "reason": "preflight_failed", "preflight_id": row.id}
+
+    row.consumed_at = now
+    row.updated_at = now
+    await session.commit()
+    return {"ok": True, "preflight_id": row.id}
+
+
+async def get_autotrader_decision_detail(
+    session: AsyncSession,
+    decision_id: str,
+) -> Optional[dict[str, Any]]:
+    decision_row = await session.get(AutoTraderDecision, decision_id)
+    if decision_row is None:
+        return None
+
+    checks = list(
+        (
+            await session.execute(
+                select(AutoTraderDecisionCheck)
+                .where(AutoTraderDecisionCheck.decision_id == decision_id)
+                .order_by(AutoTraderDecisionCheck.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    trade = (
+        (
+            await session.execute(
+                select(AutoTraderTrade)
+                .where(AutoTraderTrade.decision_id == decision_id)
+                .order_by(desc(AutoTraderTrade.created_at))
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    return {
+        "decision": {
+            "id": decision_row.id,
+            "signal_id": decision_row.signal_id,
+            "source": decision_row.source,
+            "decision": decision_row.decision,
+            "reason": decision_row.reason,
+            "score": decision_row.score,
+            "event_id": decision_row.event_id,
+            "trace_id": decision_row.trace_id,
+            "policy_snapshot": decision_row.policy_snapshot_json or {},
+            "risk_snapshot": decision_row.risk_snapshot_json or {},
+            "payload": decision_row.payload_json or {},
+            "created_at": _iso(decision_row.created_at),
+        },
+        "checks": [
+            {
+                "id": row.id,
+                "check_key": row.check_key,
+                "check_label": row.check_label,
+                "passed": bool(row.passed),
+                "score": row.score,
+                "detail": row.detail,
+                "payload": row.payload_json or {},
+                "created_at": _iso(row.created_at),
+            }
+            for row in checks
+        ],
+        "trade": (
+            {
+                "id": trade.id,
+                "signal_id": trade.signal_id,
+                "source": trade.source,
+                "status": trade.status,
+                "mode": trade.mode,
+                "market_id": trade.market_id,
+                "market_question": trade.market_question,
+                "direction": trade.direction,
+                "notional_usd": trade.notional_usd,
+                "entry_price": trade.entry_price,
+                "effective_price": trade.effective_price,
+                "actual_profit": trade.actual_profit,
+                "reason": trade.reason,
+                "payload": trade.payload_json or {},
+                "error_message": trade.error_message,
+                "created_at": _iso(trade.created_at),
+                "executed_at": _iso(trade.executed_at),
+                "updated_at": _iso(trade.updated_at),
+                "event_id": trade.event_id,
+                "trace_id": trade.trace_id,
+            }
+            if trade
+            else None
+        ),
+    }
+
+
+async def get_autotrader_overview(session: AsyncSession) -> dict[str, Any]:
+    control = await read_autotrader_control(session)
+    snapshot = await read_autotrader_snapshot(session)
+    policies = await read_autotrader_policies(session)
+    exposure = await get_autotrader_exposure(session)
+    metrics = await get_autotrader_metrics(session)
+
+    trade_counts = {
+        "executed": 0,
+        "submitted": 0,
+        "open": 0,
+        "resolved_win": 0,
+        "resolved_loss": 0,
+        "failed": 0,
+        "skipped": 0,
+    }
+    notional_total = 0.0
+    realized_pnl_total = 0.0
+    unrealized_pnl_total = 0.0
+    realized_count = 0
+    win_count = 0
+    loss_count = 0
+    rows = (
+        (
+            await session.execute(
+                select(
+                    AutoTraderTrade.status,
+                    func.count(AutoTraderTrade.id),
+                    func.coalesce(func.sum(AutoTraderTrade.notional_usd), 0.0),
+                    func.coalesce(func.sum(AutoTraderTrade.actual_profit), 0.0),
+                ).group_by(AutoTraderTrade.status)
+            )
+        )
+        .all()
+    )
+    for status, count, notional, pnl in rows:
+        key = str(status or "unknown")
+        trade_counts[key] = int(count or 0)
+        notional_total += float(notional or 0.0)
+        if key in RESOLVED_TRADE_STATUSES:
+            realized_pnl_total += float(pnl or 0.0)
+            realized_count += int(count or 0)
+            if key == "resolved_win":
+                win_count += int(count or 0)
+            elif key == "resolved_loss":
+                loss_count += int(count or 0)
+
+    open_payload_rows = (
+        (
+            await session.execute(
+                select(AutoTraderTrade.payload_json).where(
+                    and_(
+                        AutoTraderTrade.mode == "paper",
+                        AutoTraderTrade.status.in_(OPEN_TRADE_STATUSES),
+                    )
+                )
+            )
+        )
+        .all()
+    )
+    for (payload,) in open_payload_rows:
+        if not isinstance(payload, dict):
+            continue
+        try:
+            unrealized_pnl_total += float(payload.get("unrealized_pnl") or 0.0)
+        except Exception:
+            continue
+    total_pnl = realized_pnl_total + unrealized_pnl_total
+
+    enabled_sources = [
+        source
+        for source, cfg in (policies.get("sources") or {}).items()
+        if bool((cfg or {}).get("enabled"))
+    ]
+    active_domains = normalize_trading_domains((control.get("settings") or {}).get("trading_domains"))
+    covered_sources = [
+        source
+        for source in enabled_sources
+        if SOURCE_DOMAIN_MAP.get(source, "event_markets") in set(active_domains)
+    ]
+    lag_seconds: Optional[float] = None
+    try:
+        if snapshot.get("last_run_at"):
+            last_run = datetime.fromisoformat(str(snapshot["last_run_at"]).replace("Z", "+00:00"))
+            lag_seconds = max(0.0, (_now() - last_run.replace(tzinfo=None)).total_seconds())
+    except Exception:
+        lag_seconds = None
+
+    checks = [
+        {
+            "id": "kill_switch_clear",
+            "ok": not bool(control.get("kill_switch")),
+            "message": "Kill switch must be disabled",
+        },
+        {
+            "id": "sources_enabled",
+            "ok": len(enabled_sources) > 0,
+            "message": "At least one source policy must be enabled",
+        },
+        {
+            "id": "domains_enabled",
+            "ok": len(active_domains) > 0 and len(covered_sources) > 0,
+            "message": "At least one trading domain with enabled sources is required",
+            "active_domains": active_domains,
+        },
+        {
+            "id": "worker_recent",
+            "ok": lag_seconds is None or lag_seconds <= 30.0,
+            "message": "Worker snapshot freshness must be <= 30s",
+            "lag_seconds": lag_seconds,
+        },
+    ]
+
+    return {
+        "version": 2,
+        "last_updated_at": _iso(_now()),
+        "control": control,
+        "worker": snapshot,
+        "policies": policies,
+        "config": compose_autotrader_config(control, policies),
+        "risk": exposure,
+        "metrics": metrics,
+        "performance": {
+            "trade_counts": trade_counts,
+            "notional_total": notional_total,
+            "actual_profit_total": realized_pnl_total,
+            "realized_pnl_total": realized_pnl_total,
+            "unrealized_pnl_total": unrealized_pnl_total,
+            "total_pnl": total_pnl,
+            "realized_trade_count": realized_count,
+            "winning_trades": win_count,
+            "losing_trades": loss_count,
+            "win_rate": (win_count / realized_count) if realized_count > 0 else 0.0,
+        },
+        "health": {
+            "ok": all(bool(check.get("ok")) for check in checks),
+            "checks": checks,
+        },
+    }
+
+
 async def create_autotrader_decision(
     session: AsyncSession,
     *,
@@ -869,7 +1367,10 @@ async def create_autotrader_decision(
     policy_snapshot: Optional[dict[str, Any]] = None,
     risk_snapshot: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
+    trace_id: Optional[str] = None,
+    checks: Optional[list[dict[str, Any]]] = None,
 ) -> AutoTraderDecision:
+    resolved_trace_id = trace_id or uuid.uuid4().hex
     row = AutoTraderDecision(
         id=uuid.uuid4().hex,
         signal_id=signal_id,
@@ -877,12 +1378,53 @@ async def create_autotrader_decision(
         decision=decision,
         reason=reason,
         score=score,
+        trace_id=resolved_trace_id,
         policy_snapshot_json=policy_snapshot or {},
         risk_snapshot_json=risk_snapshot or {},
         payload_json=payload or {},
         created_at=_now(),
     )
     session.add(row)
+    check_rows = checks or _default_decision_checks(
+        decision=decision,
+        score=score,
+        reason=reason,
+        risk_snapshot=risk_snapshot,
+    )
+    for check in check_rows:
+        session.add(
+            AutoTraderDecisionCheck(
+                id=uuid.uuid4().hex,
+                decision_id=row.id,
+                check_key=str(check.get("check_key") or "selection"),
+                check_label=str(check.get("check_label") or "Selection Check"),
+                passed=bool(check.get("passed")),
+                score=check.get("score"),
+                detail=check.get("detail"),
+                payload_json=check.get("payload") or {},
+                created_at=_now(),
+            )
+        )
+
+    event = await create_autotrader_event(
+        session,
+        event_type="decision",
+        severity="error" if decision == "failed" else ("warn" if decision == "skipped" else "info"),
+        source=source,
+        message=reason,
+        trace_id=resolved_trace_id,
+        payload={
+            "decision_id": row.id,
+            "signal_id": signal_id,
+            "decision": decision,
+            "score": score,
+            "risk_snapshot": risk_snapshot or {},
+            "payload": payload or {},
+        },
+        created_at=row.created_at,
+        commit=False,
+    )
+    row.event_id = event.id
     await session.commit()
     return row
 
@@ -906,8 +1448,26 @@ async def create_autotrader_trade(
     reason: Optional[str],
     payload: Optional[dict[str, Any]],
     error_message: Optional[str] = None,
+    actual_profit: Optional[float] = None,
+    trace_id: Optional[str] = None,
 ) -> AutoTraderTrade:
     now = _now()
+    resolved_trace_id = trace_id
+    resolved_event_id: Optional[str] = None
+    if decision_id and (resolved_trace_id is None or resolved_event_id is None):
+        decision_row = await session.get(AutoTraderDecision, decision_id)
+        if decision_row is not None:
+            resolved_trace_id = resolved_trace_id or decision_row.trace_id
+            resolved_event_id = decision_row.event_id
+
+    if actual_profit is None and isinstance(payload, dict):
+        try:
+            maybe_profit = payload.get("actual_profit")
+            if maybe_profit is not None:
+                actual_profit = float(maybe_profit)
+        except Exception:
+            actual_profit = None
+
     row = AutoTraderTrade(
         id=uuid.uuid4().hex,
         signal_id=signal_id,
@@ -916,6 +1476,8 @@ async def create_autotrader_trade(
         market_id=market_id,
         market_question=market_question,
         direction=direction,
+        event_id=resolved_event_id,
+        trace_id=resolved_trace_id,
         mode=mode,
         status=status,
         notional_usd=notional_usd,
@@ -923,14 +1485,39 @@ async def create_autotrader_trade(
         effective_price=effective_price,
         edge_percent=edge_percent,
         confidence=confidence,
+        actual_profit=actual_profit,
         reason=reason,
         payload_json=payload or {},
         error_message=error_message,
         created_at=now,
-        executed_at=now if status == "executed" else None,
+        executed_at=now if status in {"executed", "open"} else None,
         updated_at=now,
     )
     session.add(row)
+
+    trade_event = await create_autotrader_event(
+        session,
+        event_type="trade",
+        severity="error" if status == "failed" else "info",
+        source=source,
+        message=reason,
+        trace_id=resolved_trace_id,
+        payload={
+            "trade_id": row.id,
+            "decision_id": decision_id,
+            "signal_id": signal_id,
+            "market_id": market_id,
+            "status": status,
+            "mode": mode,
+            "notional_usd": notional_usd,
+            "actual_profit": actual_profit,
+            "error_message": error_message,
+            "payload": payload or {},
+        },
+        created_at=row.created_at,
+        commit=False,
+    )
+    row.event_id = trade_event.id
     await session.commit()
     return row
 

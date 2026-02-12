@@ -43,16 +43,18 @@ import {
   getScannerStatus,
   triggerScan,
   getStrategies,
-  startScanner,
-  pauseScanner,
+  getWorkersStatus,
+  pauseAllWorkers,
+  resumeAllWorkers,
   judgeOpportunitiesBulk,
   getSimulationAccounts,
-  Opportunity
+  Opportunity,
+  WorkerStatus,
 } from './services/api'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
 import { useRealtimeInvalidation } from './hooks/useRealtimeInvalidation'
-import { shortcutsHelpOpenAtom, accountModeAtom, selectedAccountIdAtom } from './store/atoms'
+import { shortcutsHelpOpenAtom, selectedAccountIdAtom } from './store/atoms'
 import { buildNewsSearchKeywords, processPolymarketSearchResults } from './lib/opportunitySearch'
 
 // shadcn/ui components
@@ -68,18 +70,17 @@ import OpportunityCard from './components/OpportunityCard'
 import OpportunityTable from './components/OpportunityTable'
 import OpportunityTerminal from './components/OpportunityTerminal'
 import TradeExecutionModal from './components/TradeExecutionModal'
-import WalletTracker from './components/WalletTracker'
-import SimulationPanel from './components/SimulationPanel'
-import LiveAccountPanel from './components/LiveAccountPanel'
+import AccountsPanel from './components/AccountsPanel'
 import WalletAnalysisPanel from './components/WalletAnalysisPanel'
 import TradingPanel from './components/TradingPanel'
-import PositionsPanel from './components/PositionsPanel'
-import PerformancePanel from './components/PerformancePanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
+import TrackedTradersPanel from './components/TrackedTradersPanel'
 import SettingsPanel from './components/SettingsPanel'
 import AIPanel from './components/AIPanel'
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
+import PositionsPanel from './components/PositionsPanel'
+import PerformancePanel from './components/PerformancePanel'
 import ThemeToggle from './components/ThemeToggle'
 import KeyboardShortcutsHelp from './components/KeyboardShortcutsHelp'
 import DiscoveryPanel from './components/DiscoveryPanel'
@@ -93,8 +94,8 @@ import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 import WorldIntelligencePanel from './components/WorldIntelligencePanel'
 
-type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'world' | 'settings'
-type TradersSubTab = 'discovery' | 'tracked' | 'analysis'
+type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
+type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
 
 const ITEMS_PER_PAGE = 20
 
@@ -106,13 +107,83 @@ const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: st
   { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '5' },
   { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '6' },
   { id: 'ai', icon: Brain, label: 'AI', shortcut: '7' },
-  { id: 'world', icon: Globe, label: 'World', shortcut: '8' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '9' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '8' },
 ]
+
+type WorkerHealthTone = 'green' | 'amber' | 'red'
+
+const WORKER_HEALTH_ORDER = [
+  'scanner',
+  'discovery',
+  'weather',
+  'news',
+  'crypto',
+  'tracked_traders',
+  'autotrader',
+  'world_intelligence',
+] as const
+
+const WORKER_HEALTH_LABELS: Record<string, string> = {
+  scanner: 'Scanner',
+  discovery: 'Discovery',
+  weather: 'Weather',
+  news: 'News',
+  crypto: 'Crypto',
+  tracked_traders: 'Tracked Traders',
+  autotrader: 'AutoTrader',
+  world_intelligence: 'World Intel',
+}
+
+const WORKER_TONE_CLASS: Record<WorkerHealthTone, string> = {
+  green: 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.7)]',
+  amber: 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.65)]',
+  red: 'bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.7)]',
+}
+
+function resolveWorkerHealth(worker?: WorkerStatus): {
+  state: string
+  tone: WorkerHealthTone
+  detail: string
+} {
+  if (!worker) {
+    return { state: 'OFFLINE', tone: 'red', detail: 'No telemetry received yet.' }
+  }
+
+  const control = (worker.control || {}) as Record<string, any>
+  const paused = Boolean(control.is_paused)
+  const enabled =
+    typeof control.is_enabled === 'boolean'
+      ? Boolean(control.is_enabled)
+      : Boolean(worker.enabled)
+  const running = Boolean(worker.running)
+  const lastError = String(worker.last_error || '').trim()
+
+  if (lastError) {
+    return { state: 'ERROR', tone: 'red', detail: lastError }
+  }
+  if (paused || !enabled) {
+    return {
+      state: 'PAUSED',
+      tone: 'amber',
+      detail: String(worker.current_activity || 'Paused by operator'),
+    }
+  }
+  if (running) {
+    return {
+      state: 'RUNNING',
+      tone: 'green',
+      detail: String(worker.current_activity || 'Healthy'),
+    }
+  }
+  return {
+    state: 'IDLE',
+    tone: 'amber',
+    detail: String(worker.current_activity || 'Idle'),
+  }
+}
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
-  const [accountMode] = useAtom(accountModeAtom)
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
@@ -125,7 +196,7 @@ function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
-  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'search'>('arbitrage')
+  const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'world' | 'search'>('arbitrage')
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -258,6 +329,50 @@ function App() {
     refetchInterval: isConnected ? false : 5000,
   })
 
+  const { data: workersData } = useQuery({
+    queryKey: ['workers-status'],
+    queryFn: getWorkersStatus,
+    refetchInterval: 5000,
+  })
+
+  const workers = workersData?.workers || []
+
+  const workerHealth = useMemo(() => {
+    const byName = new Map(workers.map((worker) => [worker.worker_name, worker]))
+    const rows = WORKER_HEALTH_ORDER.map((workerName) => {
+      const worker = byName.get(workerName)
+      const resolved = resolveWorkerHealth(worker)
+      return {
+        workerName,
+        label: WORKER_HEALTH_LABELS[workerName] || workerName,
+        ...resolved,
+      }
+    })
+    const red = rows.filter((row) => row.tone === 'red').length
+    const amber = rows.filter((row) => row.tone === 'amber').length
+    const green = rows.filter((row) => row.tone === 'green').length
+
+    let overallTone: WorkerHealthTone = 'green'
+    if (red > 0) {
+      overallTone = 'red'
+    } else if (amber > 0) {
+      overallTone = 'amber'
+    }
+
+    return {
+      rows,
+      overallTone,
+      counts: { green, amber, red, total: rows.length },
+    }
+  }, [workers])
+
+  const globallyPaused = useMemo(() => {
+    if (workers.length === 0) {
+      return Boolean(status && !status.enabled)
+    }
+    return workers.every((worker) => Boolean((worker.control || {}).is_paused))
+  }, [workers, status?.enabled])
+
   // Sync scanner activity from polled status as fallback
   useEffect(() => {
     if (status?.current_activity) {
@@ -335,17 +450,17 @@ function App() {
     },
   })
 
-  const startMutation = useMutation({
-    mutationFn: startScanner,
+  const resumeAllMutation = useMutation({
+    mutationFn: resumeAllWorkers,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+      queryClient.invalidateQueries()
     },
   })
 
-  const pauseMutation = useMutation({
-    mutationFn: pauseScanner,
+  const pauseAllMutation = useMutation({
+    mutationFn: pauseAllWorkers,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+      queryClient.invalidateQueries()
     },
   })
 
@@ -393,10 +508,13 @@ function App() {
     { key: '5', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
     { key: '6', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
     { key: '7', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
-    { key: '8', description: 'Go to World', category: 'Navigation', action: () => setActiveTab('world') },
-    { key: '9', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
+    { key: '8', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
     { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
-    { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => scanMutation.mutate() },
+    { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => {
+      if (!globallyPaused) {
+        scanMutation.mutate()
+      }
+    } },
     { key: '/', description: 'Focus Search', category: 'Actions', action: () => {
       headerSearchRef.current?.focus()
       setHeaderSearchOpen(true)
@@ -411,7 +529,7 @@ function App() {
       setAccountSettingsOpen(false)
       setSearchFiltersOpen(false)
     }},
-  ], [scanMutation, setShortcutsHelpOpen])
+  ], [globallyPaused, scanMutation, setShortcutsHelpOpen])
 
   useKeyboardShortcuts(shortcuts)
 
@@ -420,11 +538,14 @@ function App() {
   // If data shrinks while user is on a later page, clamp back to the last valid page.
   useEffect(() => {
     if (opportunitiesView !== 'arbitrage') return
+    // During page transitions React Query may briefly clear `data`; avoid
+    // clamping to page 0 until we have a real opportunities snapshot.
+    if (!opportunitiesData) return
     const maxPage = Math.max(totalPages - 1, 0)
     if (currentPage > maxPage) {
       setCurrentPage(maxPage)
     }
-  }, [opportunitiesView, currentPage, totalPages])
+  }, [opportunitiesView, currentPage, totalPages, opportunitiesData])
 
   const scannerIsSettled =
     scannerActivity.startsWith('Idle')
@@ -582,6 +703,42 @@ function App() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-1.5 ml-auto">
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Worker health status"
+                  className="h-8 w-8 rounded-md border border-border/60 bg-card/60 hover:bg-card/90 transition-colors flex items-center justify-center cursor-help"
+                >
+                  <span className={cn("h-2.5 w-2.5 rounded-full", WORKER_TONE_CLASS[workerHealth.overallTone])} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" align="end" className="w-[280px] p-2.5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span>Worker health</span>
+                    <span className="font-data">
+                      {workerHealth.counts.green}/{workerHealth.counts.total} green
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {workerHealth.rows.map((worker) => (
+                      <div key={worker.workerName} className="rounded-md border border-border/40 bg-background/70 px-2 py-1.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="flex items-center gap-1.5">
+                            <span className={cn("h-1.5 w-1.5 rounded-full", WORKER_TONE_CLASS[worker.tone])} />
+                            <span>{worker.label}</span>
+                          </span>
+                          <span className="font-data text-muted-foreground">{worker.state}</span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-muted-foreground truncate">{worker.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+
             <ThemeToggle />
 
             <Tooltip>
@@ -589,23 +746,25 @@ function App() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => status?.enabled ? pauseMutation.mutate() : startMutation.mutate()}
-                  disabled={pauseMutation.isPending || startMutation.isPending}
+                  onClick={() => globallyPaused ? resumeAllMutation.mutate() : pauseAllMutation.mutate()}
+                  disabled={pauseAllMutation.isPending || resumeAllMutation.isPending}
                   className={cn(
                     "h-7 px-2 text-xs gap-1",
-                    status?.enabled
-                      ? "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 hover:text-yellow-500"
-                      : "bg-green-500/10 text-green-500 hover:bg-green-500/20 hover:text-green-500"
+                    globallyPaused
+                      ? "bg-green-500/10 text-green-500 hover:bg-green-500/20 hover:text-green-500"
+                      : "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 hover:text-yellow-500"
                   )}
                 >
-                  {status?.enabled ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                  {status?.enabled ? 'Pause' : 'Start'}
+                  {globallyPaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                  {globallyPaused ? 'Resume' : 'Pause'}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{status?.enabled ? 'Pause scanner' : 'Start scanner'}</TooltipContent>
+              <TooltipContent>
+                {globallyPaused
+                  ? 'Resume all workers and services'
+                  : 'Pause trading, scans, LLM calls, and ingestion'}
+              </TooltipContent>
             </Tooltip>
-
-
           </div>
         </header>
 
@@ -657,10 +816,18 @@ function App() {
           <main className="flex-1 overflow-hidden flex flex-col dot-grid-bg">
             {/* ==================== Opportunities ==================== */}
             {activeTab === 'opportunities' && (
-              <div className="flex-1 overflow-y-auto section-enter">
-                <div className={cn("mx-auto px-6 py-5", oppsViewMode === 'terminal' ? 'max-w-[1600px]' : 'max-w-[1600px]')}>
+              <div className={cn("flex-1 section-enter", opportunitiesView === 'world' ? 'overflow-hidden' : 'overflow-y-auto')}>
+                <div
+                  className={cn(
+                    "mx-auto",
+                    opportunitiesView === 'world'
+                      ? 'h-full min-h-0 px-6 py-4 flex flex-col overflow-hidden max-w-[1600px]'
+                      : "px-6 py-5 max-w-[1600px]",
+                    oppsViewMode === 'terminal' ? 'max-w-[1600px]' : 'max-w-[1600px]'
+                  )}
+                >
                   {/* View Toggle + View Mode */}
-                  <div className="flex items-center gap-2 mb-4">
+                  <div className={cn("flex items-center gap-2", opportunitiesView === 'world' ? 'mb-3 shrink-0' : 'mb-4')}>
                     <Button
                       variant="outline"
                       size="sm"
@@ -736,6 +903,20 @@ function App() {
                       <ArrowUpDown className="w-3.5 h-3.5" />
                       Crypto
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setOpportunitiesView('world')}
+                      className={cn(
+                        "gap-1.5 text-xs h-8",
+                        opportunitiesView === 'world'
+                          ? "bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30 hover:text-blue-400"
+                          : "bg-card text-muted-foreground hover:text-foreground border-border"
+                      )}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      World Intel
+                    </Button>
 
                     {/* Search results subtab — only visible when a search is active */}
                     {polymarketSearchSubmitted && (
@@ -777,7 +958,7 @@ function App() {
                     )}
 
                     {/* View Mode Switcher */}
-                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search' || opportunitiesView === 'recent_trades') && (
+                    {(opportunitiesView === 'arbitrage' || opportunitiesView === 'search' || opportunitiesView === 'recent_trades' || opportunitiesView === 'weather') && (
                       <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
                         {([
                           { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
@@ -928,30 +1109,33 @@ function App() {
                           </div>
 
                           {/* Category filter row */}
-                          <div className="flex gap-3 mb-4">
-                            <div className="flex-1 max-w-xs">
-                              <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
-                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
-                                  <SelectValue placeholder="All Categories" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="_all">All Categories</SelectItem>
-                                  {[
-                                    { value: 'politics', label: 'Politics' },
-                                    { value: 'sports', label: 'Sports' },
-                                    { value: 'crypto', label: 'Crypto' },
-                                    { value: 'culture', label: 'Culture' },
-                                    { value: 'economics', label: 'Economics' },
-                                    { value: 'tech', label: 'Tech' },
-                                    { value: 'finance', label: 'Finance' },
-                                    { value: 'weather', label: 'Weather' },
-                                  ].map((cat) => (
-                                    <SelectItem key={cat.value} value={cat.value}>
-                                      {cat.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                          <div className="mb-4 rounded-xl border border-border/40 bg-card/40 p-3">
+                            <div className="flex gap-3">
+                              <div className="flex-1 max-w-xs">
+                                <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
+                                <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
+                                  <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
+                                    <SelectValue placeholder="All Categories" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="_all">All Categories</SelectItem>
+                                    {[
+                                      { value: 'politics', label: 'Politics' },
+                                      { value: 'sports', label: 'Sports' },
+                                      { value: 'crypto', label: 'Crypto' },
+                                      { value: 'culture', label: 'Culture' },
+                                      { value: 'economics', label: 'Economics' },
+                                      { value: 'tech', label: 'Tech' },
+                                      { value: 'finance', label: 'Finance' },
+                                      { value: 'weather', label: 'Weather' },
+                                    ].map((cat) => (
+                                      <SelectItem key={cat.value} value={cat.value}>
+                                        {cat.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
                             </div>
                           </div>
 
@@ -1031,11 +1215,19 @@ function App() {
                   ) : opportunitiesView === 'news' ? (
                     <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} />
                   ) : opportunitiesView === 'weather' ? (
-                    <WeatherOpportunitiesPanel onExecute={setExecutingOpportunity} />
+                    <WeatherOpportunitiesPanel
+                      onExecute={setExecutingOpportunity}
+                      viewMode={oppsViewMode}
+                    />
+                  ) : opportunitiesView === 'world' ? (
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <WorldIntelligencePanel isConnected={isConnected} />
+                    </div>
                   ) : opportunitiesView === 'recent_trades' ? (
                     <RecentTradesPanel
                       mode="opportunities"
                       viewMode={oppsViewMode}
+                      onOpenCopilot={handleOpenCopilot}
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
                         setActiveTab('traders')
@@ -1044,157 +1236,144 @@ function App() {
                     />
                   ) : (
                     <>
-                      {/* Search Input */}
-                      <div className="mb-4">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      {/* Markets Controls */}
+                      <div className="mb-4 rounded-xl border border-border/40 bg-card/40 p-3">
+                        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                          <div className="relative min-w-[220px] flex-1">
+                            <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                            <Input
+                              type="text"
+                              placeholder="Search markets..."
+                              value={searchQuery}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              className="pl-8 bg-card border-border h-8 text-xs"
+                            />
+                          </div>
+
+                          <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
+                            <SelectTrigger className="w-[170px] shrink-0 bg-card border-border h-8 text-xs">
+                              <SelectValue placeholder="Strategy" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="_all">All Strategies</SelectItem>
+                              {strategies.map((s) => (
+                                <SelectItem
+                                  key={s.type}
+                                  value={s.type}
+                                  suffix={opportunityCounts?.strategies[s.type] != null ? (
+                                    <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
+                                      {opportunityCounts.strategies[s.type]}
+                                    </span>
+                                  ) : undefined}
+                                >
+                                  {s.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+
+                          <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
+                            <SelectTrigger className="w-[155px] shrink-0 bg-card border-border h-8 text-xs">
+                              <SelectValue placeholder="Category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="_all">All Categories</SelectItem>
+                              {[
+                                { value: 'politics', label: 'Politics' },
+                                { value: 'sports', label: 'Sports' },
+                                { value: 'crypto', label: 'Crypto' },
+                                { value: 'culture', label: 'Culture' },
+                                { value: 'economics', label: 'Economics' },
+                                { value: 'tech', label: 'Tech' },
+                                { value: 'finance', label: 'Finance' },
+                                { value: 'weather', label: 'Weather' },
+                              ].map((cat) => (
+                                <SelectItem
+                                  key={cat.value}
+                                  value={cat.value}
+                                  suffix={opportunityCounts?.categories[cat.value] != null ? (
+                                    <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
+                                      {opportunityCounts.categories[cat.value]}
+                                    </span>
+                                  ) : undefined}
+                                >
+                                  {cat.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+
                           <Input
-                            type="text"
-                            placeholder="Filter opportunities by market, event, or keyword..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-10 bg-card border-border h-9"
+                            type="number"
+                            value={minProfit}
+                            onChange={(e) => setMinProfit(parseFloat(e.target.value) || 0)}
+                            step={0.5}
+                            min={0}
+                            placeholder="Min %"
+                            className="w-[84px] shrink-0 bg-card border-border h-8 text-xs"
                           />
+
+                          <div className="w-[120px] shrink-0">
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>Risk</span>
+                              <span>{maxRisk.toFixed(1)}</span>
+                            </div>
+                            <input
+                              type="range"
+                              value={maxRisk}
+                              onChange={(e) => setMaxRisk(parseFloat(e.target.value))}
+                              step="0.1"
+                              min="0"
+                              max="1"
+                              className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer"
+                            />
+                          </div>
+
+                          <Select
+                            value={sortBy}
+                            onValueChange={(value) => {
+                              setSortBy(value)
+                              setSortDir('desc')
+                            }}
+                          >
+                            <SelectTrigger className="w-[130px] shrink-0 bg-card border-border h-8 text-xs">
+                              <SelectValue placeholder="Sort" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="roi">ROI</SelectItem>
+                              <SelectItem value="ai_score">AI Score</SelectItem>
+                              <SelectItem value="profit">Profit</SelectItem>
+                              <SelectItem value="liquidity">Liquidity</SelectItem>
+                              <SelectItem value="risk">Risk</SelectItem>
+                            </SelectContent>
+                          </Select>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSortDir((d) => d === 'desc' ? 'asc' : 'desc')}
+                            className="w-8 h-8 p-0 shrink-0"
+                            title={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
+                          >
+                            {sortDir === 'desc' ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => analyzeAllMutation.mutate()}
+                            disabled={analyzeAllMutation.isPending || displayOpportunities.length === 0}
+                            className="text-xs gap-1.5 h-8 px-2.5 shrink-0 whitespace-nowrap"
+                          >
+                            {analyzeAllMutation.isPending ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Brain className="w-3 h-3" />
+                            )}
+                            {analyzeAllMutation.isPending ? 'Analyzing...' : 'Analyze'}
+                          </Button>
                         </div>
                       </div>
-
-                      {/* Filters */}
-                      <div className="flex gap-3 mb-4">
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Strategy</label>
-                              <Select value={selectedStrategy || '_all'} onValueChange={(v) => setSelectedStrategy(v === '_all' ? '' : v)}>
-                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
-                                  <SelectValue placeholder="All Strategies" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="_all">All Strategies</SelectItem>
-                                  {strategies.map((s) => (
-                                    <SelectItem
-                                      key={s.type}
-                                      value={s.type}
-                                      suffix={opportunityCounts?.strategies[s.type] != null ? (
-                                        <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
-                                          {opportunityCounts.strategies[s.type]}
-                                        </span>
-                                      ) : undefined}
-                                    >
-                                      {s.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="flex-1">
-                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
-                              <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
-                                <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
-                                  <SelectValue placeholder="All Categories" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="_all">All Categories</SelectItem>
-                                  {[
-                                    { value: 'politics', label: 'Politics' },
-                                    { value: 'sports', label: 'Sports' },
-                                    { value: 'crypto', label: 'Crypto' },
-                                    { value: 'culture', label: 'Culture' },
-                                    { value: 'economics', label: 'Economics' },
-                                    { value: 'tech', label: 'Tech' },
-                                    { value: 'finance', label: 'Finance' },
-                                    { value: 'weather', label: 'Weather' },
-                                  ].map((cat) => (
-                                    <SelectItem
-                                      key={cat.value}
-                                      value={cat.value}
-                                      suffix={opportunityCounts?.categories[cat.value] != null ? (
-                                        <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
-                                          {opportunityCounts.categories[cat.value]}
-                                        </span>
-                                      ) : undefined}
-                                    >
-                                      {cat.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="w-32">
-                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Min Profit %</label>
-                              <Input
-                                type="number"
-                                value={minProfit}
-                                onChange={(e) => setMinProfit(parseFloat(e.target.value) || 0)}
-                                step={0.5}
-                                min={0}
-                                className="bg-card border-border h-8"
-                              />
-                            </div>
-                            <div className="w-40">
-                              <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Risk: {maxRisk.toFixed(1)}</label>
-                              <input
-                                type="range"
-                                value={maxRisk}
-                                onChange={(e) => setMaxRisk(parseFloat(e.target.value))}
-                                step="0.1"
-                                min="0"
-                                max="1"
-                                className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer mt-1.5"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Sort Controls */}
-                          <div className="flex items-center gap-2 mb-4">
-                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Sort:</span>
-                            {([
-                              ['roi', 'ROI'],
-                              ['ai_score', 'AI Score'],
-                              ['profit', 'Profit'],
-                              ['liquidity', 'Liquidity'],
-                              ['risk', 'Risk'],
-                            ] as const).map(([key, label]) => (
-                              <button
-                                key={key}
-                                onClick={() => {
-                                  if (sortBy === key) {
-                                    setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-                                  } else {
-                                    setSortBy(key)
-                                    setSortDir('desc')
-                                  }
-                                }}
-                                className={cn(
-                                  'px-2 py-1 rounded text-xs font-medium transition-colors',
-                                  sortBy === key
-                                    ? 'bg-primary/20 text-primary'
-                                    : 'bg-muted/50 text-muted-foreground hover:bg-muted'
-                                )}
-                              >
-                                {label}
-                                {sortBy === key && (
-                                  sortDir === 'desc'
-                                    ? <ChevronDown className="w-3 h-3 inline ml-0.5" />
-                                    : <ChevronUp className="w-3 h-3 inline ml-0.5" />
-                                )}
-                              </button>
-                            ))}
-
-                            <div className="ml-auto">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => analyzeAllMutation.mutate()}
-                                disabled={analyzeAllMutation.isPending || displayOpportunities.length === 0}
-                                className="text-xs gap-1.5"
-                              >
-                                {analyzeAllMutation.isPending ? (
-                                  <RefreshCw className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <Brain className="w-3 h-3" />
-                                )}
-                                {analyzeAllMutation.isPending ? 'Analyzing...' : 'Analyze All'}
-                              </Button>
-                            </div>
-                          </div>
 
                           {/* Opportunities List */}
                           {oppsLoading ? (
@@ -1318,26 +1497,8 @@ function App() {
             {/* ==================== Accounts ==================== */}
             {activeTab === 'accounts' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
-                <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
-                  <div className="ml-auto">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setAccountSettingsOpen(true)}
-                      className="gap-1.5 text-xs h-8 bg-card text-muted-foreground hover:text-green-400 border-border hover:border-green-500/30"
-                    >
-                      <Settings className="w-3.5 h-3.5" />
-                      Account Settings
-                    </Button>
-                  </div>
-                </div>
                 <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className={accountMode === 'sandbox' ? '' : 'hidden'}>
-                    <SimulationPanel />
-                  </div>
-                  <div className={accountMode === 'live' ? '' : 'hidden'}>
-                    <LiveAccountPanel />
-                  </div>
+                  <AccountsPanel onOpenSettings={() => setAccountSettingsOpen(true)} />
                 </div>
               </div>
             )}
@@ -1377,6 +1538,20 @@ function App() {
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => setTradersSubTab('pool')}
+                    className={cn(
+                      "gap-1.5 text-xs h-8",
+                      tradersSubTab === 'pool'
+                        ? "bg-amber-500/20 text-amber-300 border-amber-500/30 hover:bg-amber-500/30 hover:text-amber-300"
+                        : "bg-card text-muted-foreground hover:text-foreground border-border"
+                    )}
+                  >
+                    <Activity className="w-3.5 h-3.5" />
+                    Pool
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setTradersSubTab('analysis')}
                     className={cn(
                       "gap-1.5 text-xs h-8",
@@ -1392,12 +1567,18 @@ function App() {
                 <div className="flex-1 overflow-y-auto px-6 py-4">
                   <div className={tradersSubTab === 'discovery' ? '' : 'hidden'}>
                     <DiscoveryPanel
+                      view="discovery"
+                      onAnalyzeWallet={handleAnalyzeWallet}
+                    />
+                  </div>
+                  <div className={tradersSubTab === 'pool' ? '' : 'hidden'}>
+                    <DiscoveryPanel
+                      view="pool"
                       onAnalyzeWallet={handleAnalyzeWallet}
                     />
                   </div>
                   <div className={tradersSubTab === 'tracked' ? '' : 'hidden'}>
-                    <WalletTracker
-                      section="tracked"
+                    <TrackedTradersPanel
                       onAnalyzeWallet={handleAnalyzeWallet}
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
@@ -1418,15 +1599,19 @@ function App() {
 
             {/* ==================== Positions ==================== */}
             {activeTab === 'positions' && (
-              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
-                <PositionsPanel />
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                  <PositionsPanel />
+                </div>
               </div>
             )}
 
             {/* ==================== Performance ==================== */}
             {activeTab === 'performance' && (
-              <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
-                <PerformancePanel />
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+                  <PerformancePanel />
+                </div>
               </div>
             )}
 
@@ -1434,13 +1619,6 @@ function App() {
             {activeTab === 'ai' && (
               <div className="flex-1 overflow-y-auto px-6 py-5 section-enter">
                 <AIPanel />
-              </div>
-            )}
-
-            {/* ==================== World Intelligence ==================== */}
-            {activeTab === 'world' && (
-              <div className="flex-1 overflow-hidden section-enter">
-                <WorldIntelligencePanel />
               </div>
             )}
 
@@ -1462,7 +1640,7 @@ function App() {
         )}
 
         {/* Floating AI FAB — bottom-right */}
-        {!copilotOpen && (
+        {!copilotOpen && !(activeTab === 'opportunities' && opportunitiesView === 'world') && (
           <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">
             <Tooltip>
               <TooltipTrigger asChild>

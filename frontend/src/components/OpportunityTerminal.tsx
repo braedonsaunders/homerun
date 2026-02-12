@@ -32,9 +32,9 @@ export default function OpportunityTerminal({ opportunities, onExecute, onOpenCo
   }, [])
 
   return (
-    <div className="terminal-view bg-[#0a0c10] border border-green-500/20 rounded-lg overflow-hidden font-data text-[11px] leading-relaxed">
+    <div className="terminal-view terminal-surface border rounded-lg overflow-hidden font-data text-[11px] leading-relaxed">
       {/* Terminal Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#0d1017] border-b border-green-500/15">
+      <div className="terminal-header flex items-center justify-between px-3 py-1.5">
         <div className="flex items-center gap-2">
           <Terminal className="w-3.5 h-3.5 text-green-400" />
           <span className="text-green-400 font-bold text-xs">HOMERUN SCANNER</span>
@@ -132,7 +132,7 @@ function TerminalEntry({
       ? 'text-yellow-400'
       : recommendation.includes('skip') || recommendation === 'avoid'
         ? 'text-red-400'
-        : 'text-muted-foreground/40'
+        : 'text-green-500/35'
 
   const riskColor = opportunity.risk_score < 0.3
     ? 'text-green-400'
