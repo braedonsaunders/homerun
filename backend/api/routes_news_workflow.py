@@ -179,9 +179,9 @@ class WorkflowSettingsRequest(BaseModel):
     min_edge_percent: Optional[float] = Field(None, ge=0.0, le=100.0)
     min_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     require_second_source: Optional[bool] = None
-    auto_trader_enabled: Optional[bool] = None
-    auto_trader_min_edge: Optional[float] = Field(None, ge=0.0, le=100.0)
-    auto_trader_max_age_minutes: Optional[int] = Field(None, ge=1, le=1440)
+    orchestrator_enabled: Optional[bool] = None
+    orchestrator_min_edge: Optional[float] = Field(None, ge=0.0, le=100.0)
+    orchestrator_max_age_minutes: Optional[int] = Field(None, ge=1, le=1440)
     cycle_spend_cap_usd: Optional[float] = Field(None, ge=0.0, le=100.0)
     hourly_spend_cap_usd: Optional[float] = Field(None, ge=0.0, le=1000.0)
     cycle_llm_call_cap: Optional[int] = Field(None, ge=0, le=500)
@@ -359,7 +359,7 @@ async def get_findings(
                 "evidence": r.evidence,
                 "reasoning": r.reasoning,
                 "actionable": r.actionable,
-                "consumed_by_auto_trader": r.consumed_by_auto_trader,
+                "consumed_by_orchestrator": r.consumed_by_orchestrator,
                 "supporting_articles": supporting_articles,
                 "supporting_article_count": int(len(supporting_articles)),
                 "created_at": _to_iso_utc_z(r.created_at),

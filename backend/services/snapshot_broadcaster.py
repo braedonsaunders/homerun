@@ -16,16 +16,17 @@ from sqlalchemy import select
 from api.websocket import manager
 from models.database import (
     AsyncSessionLocal,
-    AutoTraderDecision,
-    AutoTraderTrade,
     OpportunityEvent,
     TradeSignalSnapshot,
+    TraderDecision,
+    TraderEvent,
+    TraderOrder,
     WorldIntelligenceSignal,
     WorldIntelligenceSnapshot,
 )
-from services.autotrader_state import read_autotrader_snapshot
 from services import shared_state
 from services.news import shared_state as news_shared_state
+from services.trader_orchestrator_state import read_orchestrator_snapshot
 from services.worker_state import list_worker_snapshots
 from services.weather import shared_state as weather_shared_state
 from utils.logger import get_logger
@@ -52,9 +53,10 @@ class SnapshotBroadcaster:
         self._last_signals_sig: Optional[tuple] = None
         self._last_world_status_sig: Optional[tuple] = None
         self._last_world_update_sig: Optional[tuple] = None
-        self._last_autotrader_status_sig: Optional[tuple] = None
-        self._last_autotrader_decision_ts: Optional[datetime] = None
-        self._last_autotrader_trade_ts: Optional[datetime] = None
+        self._last_orchestrator_status_sig: Optional[tuple] = None
+        self._last_trader_decision_ts: Optional[datetime] = None
+        self._last_trader_order_ts: Optional[datetime] = None
+        self._last_trader_event_ts: Optional[datetime] = None
 
     @staticmethod
     def _opportunity_ai_signature(opportunities: list) -> int:
@@ -115,9 +117,10 @@ class SnapshotBroadcaster:
         self._last_signals_sig = None
         self._last_world_status_sig = None
         self._last_world_update_sig = None
-        self._last_autotrader_status_sig = None
-        self._last_autotrader_decision_ts = None
-        self._last_autotrader_trade_ts = None
+        self._last_orchestrator_status_sig = None
+        self._last_trader_decision_ts = None
+        self._last_trader_order_ts = None
+        self._last_trader_event_ts = None
         logger.info("Snapshot broadcaster stopped")
 
     async def _run_loop(self, interval_seconds: float) -> None:
@@ -132,7 +135,7 @@ class SnapshotBroadcaster:
                     weather_status["opportunities_count"] = len(weather_opps)
                     news_status = await news_shared_state.get_news_status_from_db(session)
                     worker_statuses = await list_worker_snapshots(session)
-                    autotrader_status = await read_autotrader_snapshot(session)
+                    orchestrator_status = await read_orchestrator_snapshot(session)
                     signal_rows = (
                         (
                             await session.execute(
@@ -178,28 +181,41 @@ class SnapshotBroadcaster:
                     event_rows = (
                         (await session.execute(event_query)).scalars().all()
                     )
-                    decision_query = select(AutoTraderDecision).order_by(
-                        AutoTraderDecision.created_at.asc()
+                    decision_query = select(TraderDecision).order_by(
+                        TraderDecision.created_at.asc()
                     )
-                    if self._last_autotrader_decision_ts is not None:
+                    if self._last_trader_decision_ts is not None:
                         decision_query = decision_query.where(
-                            AutoTraderDecision.created_at > self._last_autotrader_decision_ts
+                            TraderDecision.created_at > self._last_trader_decision_ts
                         )
                     decision_query = decision_query.limit(200)
                     decision_rows = (
                         (await session.execute(decision_query)).scalars().all()
                     )
 
-                    trade_query = select(AutoTraderTrade).order_by(
-                        AutoTraderTrade.updated_at.asc(),
-                        AutoTraderTrade.id.asc(),
+                    trader_event_query = select(TraderEvent).order_by(
+                        TraderEvent.created_at.asc(),
+                        TraderEvent.id.asc(),
                     )
-                    if self._last_autotrader_trade_ts is not None:
+                    if self._last_trader_event_ts is not None:
+                        trader_event_query = trader_event_query.where(
+                            TraderEvent.created_at > self._last_trader_event_ts
+                        )
+                    trader_event_query = trader_event_query.limit(200)
+                    trader_event_rows = (
+                        (await session.execute(trader_event_query)).scalars().all()
+                    )
+
+                    trade_query = select(TraderOrder).order_by(
+                        TraderOrder.updated_at.asc(),
+                        TraderOrder.id.asc(),
+                    )
+                    if self._last_trader_order_ts is not None:
                         trade_query = trade_query.where(
-                            AutoTraderTrade.updated_at > self._last_autotrader_trade_ts
+                            TraderOrder.updated_at > self._last_trader_order_ts
                         )
                     trade_query = trade_query.limit(200)
-                    trade_rows = (
+                    order_rows = (
                         (await session.execute(trade_query)).scalars().all()
                     )
 
@@ -514,39 +530,44 @@ class SnapshotBroadcaster:
                         }
                     )
 
-                autotrader_sig = (
-                    autotrader_status.get("running"),
-                    autotrader_status.get("enabled"),
-                    autotrader_status.get("last_run_at"),
-                    autotrader_status.get("signals_seen"),
-                    autotrader_status.get("signals_selected"),
-                    autotrader_status.get("decisions_count"),
-                    autotrader_status.get("trades_count"),
-                    autotrader_status.get("open_positions"),
-                    autotrader_status.get("last_error"),
+                orchestrator_sig = (
+                    orchestrator_status.get("running"),
+                    orchestrator_status.get("enabled"),
+                    orchestrator_status.get("last_run_at"),
+                    orchestrator_status.get("decisions_count"),
+                    orchestrator_status.get("orders_count"),
+                    orchestrator_status.get("open_orders"),
+                    orchestrator_status.get("gross_exposure_usd"),
+                    orchestrator_status.get("daily_pnl"),
+                    orchestrator_status.get("last_error"),
                 )
-                if autotrader_sig != self._last_autotrader_status_sig:
-                    self._last_autotrader_status_sig = autotrader_sig
+                if orchestrator_sig != self._last_orchestrator_status_sig:
+                    self._last_orchestrator_status_sig = orchestrator_sig
                     await manager.broadcast(
-                        {"type": "autotrader_status", "data": autotrader_status}
+                        {
+                            "type": "trader_orchestrator_status",
+                            "data": orchestrator_status,
+                        }
                     )
 
                 if decision_rows:
-                    self._last_autotrader_decision_ts = decision_rows[-1].created_at
+                    self._last_trader_decision_ts = decision_rows[-1].created_at
                     for row in decision_rows:
                         await manager.broadcast(
                             {
-                                "type": "autotrader_decision",
+                                "type": "trader_decision",
                                 "data": {
                                     "id": row.id,
+                                    "trader_id": row.trader_id,
                                     "signal_id": row.signal_id,
                                     "source": row.source,
+                                    "strategy_key": row.strategy_key,
                                     "decision": row.decision,
                                     "reason": row.reason,
                                     "score": row.score,
                                     "event_id": row.event_id,
                                     "trace_id": row.trace_id,
-                                    "policy_snapshot": row.policy_snapshot_json or {},
+                                    "checks_summary": row.checks_summary_json or {},
                                     "risk_snapshot": row.risk_snapshot_json or {},
                                     "payload": row.payload_json or {},
                                     "created_at": row.created_at.isoformat()
@@ -556,18 +577,41 @@ class SnapshotBroadcaster:
                             }
                         )
 
-                if trade_rows:
-                    latest_trade = trade_rows[-1]
-                    self._last_autotrader_trade_ts = (
-                        latest_trade.updated_at
-                        or latest_trade.created_at
-                    )
-                    for row in trade_rows:
+                if trader_event_rows:
+                    self._last_trader_event_ts = trader_event_rows[-1].created_at
+                    for row in trader_event_rows:
                         await manager.broadcast(
                             {
-                                "type": "autotrader_trade",
+                                "type": "trader_event",
                                 "data": {
                                     "id": row.id,
+                                    "trader_id": row.trader_id,
+                                    "event_type": row.event_type,
+                                    "severity": row.severity,
+                                    "source": row.source,
+                                    "operator": row.operator,
+                                    "message": row.message,
+                                    "trace_id": row.trace_id,
+                                    "payload": row.payload_json or {},
+                                    "created_at": row.created_at.isoformat()
+                                    if row.created_at
+                                    else None,
+                                },
+                            }
+                        )
+
+                if order_rows:
+                    latest_order = order_rows[-1]
+                    self._last_trader_order_ts = (
+                        latest_order.updated_at or latest_order.created_at
+                    )
+                    for row in order_rows:
+                        await manager.broadcast(
+                            {
+                                "type": "trader_order",
+                                "data": {
+                                    "id": row.id,
+                                    "trader_id": row.trader_id,
                                     "signal_id": row.signal_id,
                                     "decision_id": row.decision_id,
                                     "source": row.source,

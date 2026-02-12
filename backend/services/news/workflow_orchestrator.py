@@ -534,10 +534,10 @@ class WorkflowOrchestrator:
 
             actionable = [f for f in deduped_findings if f.actionable]
             intents: list[dict] = []
-            if bool(wf_settings.get("auto_trader_enabled", True)):
+            if bool(wf_settings.get("orchestrator_enabled", True)):
                 intents = await intent_generator.generate(
                     actionable,
-                    min_edge=float(wf_settings.get("auto_trader_min_edge", 10.0) or 10.0),
+                    min_edge=float(wf_settings.get("orchestrator_min_edge", 10.0) or 10.0),
                     min_confidence=min_conf,
                     market_metadata_by_id=market_metadata_by_id,
                 )

@@ -56,7 +56,7 @@ WORKER_STATUS_ORDER: list[tuple[str, str]] = [
     ("news", "NEWS"),
     ("crypto", "CRYPTO"),
     ("tracked_traders", "TRACKED"),
-    ("autotrader", "AUTOTRADER"),
+    ("trader_orchestrator", "ORCHESTRATOR"),
     ("world_intelligence", "WORLD INTEL"),
 ]
 
@@ -67,7 +67,7 @@ WORKER_TAG_TO_NAME: dict[str, str] = {
     "NEWS": "news",
     "CRYPTO": "crypto",
     "TRACKED": "tracked_traders",
-    "AUTOTRADER": "autotrader",
+    "ORCHESTRATOR": "trader_orchestrator",
     "WORLDINTEL": "world_intelligence",
 }
 
@@ -78,7 +78,7 @@ WORKER_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
     ("news_worker", "news"),
     ("crypto_worker", "crypto"),
     ("tracked_traders_worker", "tracked_traders"),
-    ("autotrader_worker", "autotrader"),
+    ("trader_orchestrator_worker", "trader_orchestrator"),
     ("world_intelligence_worker", "world_intelligence"),
 )
 
@@ -598,7 +598,7 @@ class HomerunApp(App):
     news_worker_proc: Optional[subprocess.Popen] = None
     crypto_worker_proc: Optional[subprocess.Popen] = None
     tracked_worker_proc: Optional[subprocess.Popen] = None
-    autotrader_worker_proc: Optional[subprocess.Popen] = None
+    trader_orchestrator_worker_proc: Optional[subprocess.Popen] = None
     backend_proc: Optional[subprocess.Popen] = None
     frontend_proc: Optional[subprocess.Popen] = None
 
@@ -1341,7 +1341,7 @@ class HomerunApp(App):
             ("news_worker_proc", "workers.news_worker", "NEWS", "news"),
             ("crypto_worker_proc", "workers.crypto_worker", "CRYPTO", "crypto"),
             ("tracked_worker_proc", "workers.tracked_traders_worker", "TRACKED", "tracked-traders"),
-            ("autotrader_worker_proc", "workers.autotrader_worker", "AUTOTRADER", "autotrader"),
+            ("trader_orchestrator_worker_proc", "workers.trader_orchestrator_worker", "ORCHESTRATOR", "trader-orchestrator"),
             ("world_intel_worker_proc", "workers.world_intelligence_worker", "WORLDINTEL", "world-intelligence"),
         ]
         for attr, module_name, tag, label in worker_specs:
@@ -1555,8 +1555,8 @@ class HomerunApp(App):
             )
         elif worker_name == "news":
             running = bool(services.get("news_workflow", {}).get("running", False))
-        elif worker_name == "autotrader":
-            running = bool(services.get("auto_trader", {}).get("running", False))
+        elif worker_name == "trader_orchestrator":
+            running = bool(services.get("trader_orchestrator", {}).get("running", False))
         elif worker_name == "crypto":
             running = bool(
                 self.crypto_worker_proc is not None and self.crypto_worker_proc.poll() is None
@@ -1639,7 +1639,7 @@ class HomerunApp(App):
         "news": "news_worker_proc",
         "crypto": "crypto_worker_proc",
         "tracked_traders": "tracked_worker_proc",
-        "autotrader": "autotrader_worker_proc",
+        "trader_orchestrator": "trader_orchestrator_worker_proc",
         "world_intelligence": "world_intel_worker_proc",
     }
 
@@ -1803,7 +1803,7 @@ class HomerunApp(App):
                 self.news_worker_proc,
                 self.crypto_worker_proc,
                 self.tracked_worker_proc,
-                self.autotrader_worker_proc,
+                self.trader_orchestrator_worker_proc,
                 self.backend_proc,
                 self.frontend_proc,
             )
@@ -1868,3 +1868,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -13,10 +13,6 @@ from utils.utcnow import utcnow
 
 from services.maintenance import maintenance_service
 from models.database import (
-    AutoTraderControl,
-    AutoTraderPreflightRun,
-    AutoTraderSnapshot,
-    AutoTraderTrade,
     NewsArticleCache,
     NewsMarketWatcher,
     NewsTradeIntent,
@@ -31,6 +27,13 @@ from models.database import (
     TradeSignal,
     TradeSignalSnapshot,
     TradeStatus,
+    TraderDecision,
+    TraderDecisionCheck,
+    TraderEvent,
+    TraderOrder,
+    TraderOrchestratorControl,
+    TraderOrchestratorSnapshot,
+    TraderSignalConsumption,
     WeatherSnapshot,
     WeatherTradeIntent,
     get_db_session,
@@ -97,10 +100,10 @@ class DeleteTradesRequest(BaseModel):
     )
 
 
-FlushTarget = Literal["scanner", "weather", "news", "autotrader", "all"]
+FlushTarget = Literal["scanner", "weather", "news", "trader_orchestrator", "all"]
 
 PROTECTED_DATASETS = (
-    "auto_trader_trades (live/executed trade history)",
+    "trader_orders (live/executed order history)",
     "simulation_positions (position ledger)",
     "simulation_trades (trade history ledger)",
 )
@@ -111,7 +114,7 @@ class FlushDataRequest(BaseModel):
 
     target: FlushTarget = Field(
         ...,
-        description="Dataset to flush: scanner, weather, news, autotrader, or all",
+        description="Dataset to flush: scanner, weather, news, trader_orchestrator, or all",
     )
     confirm: bool = Field(
         default=False,
@@ -209,10 +212,10 @@ async def _flush_weather_data(session: AsyncSession) -> dict[str, int]:
     }
 
 
-async def _flush_autotrader_runtime_data(session: AsyncSession) -> dict[str, int]:
+async def _flush_trader_orchestrator_runtime_data(session: AsyncSession) -> dict[str, int]:
     signal_id_subquery = (
-        select(AutoTraderTrade.signal_id)
-        .where(AutoTraderTrade.signal_id.is_not(None))
+        select(TraderOrder.signal_id)
+        .where(TraderOrder.signal_id.is_not(None))
         .distinct()
     )
     orphan_signal_delete = await session.execute(
@@ -223,7 +226,9 @@ async def _flush_autotrader_runtime_data(session: AsyncSession) -> dict[str, int
     snapshot = (
         (
             await session.execute(
-                select(AutoTraderSnapshot).where(AutoTraderSnapshot.id == "latest")
+                select(TraderOrchestratorSnapshot).where(
+                    TraderOrchestratorSnapshot.id == "latest"
+                )
             )
         )
         .scalars()
@@ -233,13 +238,15 @@ async def _flush_autotrader_runtime_data(session: AsyncSession) -> dict[str, int
         snapshot.last_error = None
         snapshot.stats_json = {}
         snapshot.current_activity = (
-            "Autotrader runtime caches cleared by manual maintenance flush."
+            "Trader orchestrator runtime caches cleared by manual maintenance flush."
         )
 
     control = (
         (
             await session.execute(
-                select(AutoTraderControl).where(AutoTraderControl.id == "default")
+                select(TraderOrchestratorControl).where(
+                    TraderOrchestratorControl.id == "default"
+                )
             )
         )
         .scalars()
@@ -251,14 +258,17 @@ async def _flush_autotrader_runtime_data(session: AsyncSession) -> dict[str, int
     return {
         "trade_signal_snapshots": await _delete_rows(session, TradeSignalSnapshot),
         "trade_signals_orphaned": orphan_signals_cleared,
-        "autotrader_preflight_runs": await _delete_rows(session, AutoTraderPreflightRun),
+        "trader_signal_consumption": await _delete_rows(session, TraderSignalConsumption),
+        "trader_decision_checks": await _delete_rows(session, TraderDecisionCheck),
+        "trader_decisions": await _delete_rows(session, TraderDecision),
+        "trader_events": await _delete_rows(session, TraderEvent),
     }
 
 
 async def _run_flush(session: AsyncSession, target: FlushTarget) -> dict[str, dict[str, int]]:
     selected_targets: tuple[FlushTarget, ...]
     if target == "all":
-        selected_targets = ("scanner", "weather", "news", "autotrader")
+        selected_targets = ("scanner", "weather", "news", "trader_orchestrator")
     else:
         selected_targets = (target,)
 
@@ -270,8 +280,8 @@ async def _run_flush(session: AsyncSession, target: FlushTarget) -> dict[str, di
             results[selected] = await _flush_weather_data(session)
         elif selected == "news":
             results[selected] = await _flush_news_data(session)
-        elif selected == "autotrader":
-            results[selected] = await _flush_autotrader_runtime_data(session)
+        elif selected == "trader_orchestrator":
+            results[selected] = await _flush_trader_orchestrator_runtime_data(session)
     return results
 
 

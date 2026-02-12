@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import get_db_session
 from services import discovery_shared_state, shared_state
-from services.autotrader_state import read_autotrader_control, update_autotrader_control
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
+from services.trader_orchestrator_state import (
+    read_orchestrator_control,
+    update_orchestrator_control,
+)
 from services.weather import shared_state as weather_shared_state
 from services.worker_state import (
     clear_worker_run_request,
@@ -27,7 +32,7 @@ ALLOWED_WORKERS = {
     "weather",
     "crypto",
     "tracked_traders",
-    "autotrader",
+    "trader_orchestrator",
     "discovery",
     "world_intelligence",
 }
@@ -38,7 +43,7 @@ WORKER_DISPLAY_ORDER = (
     "news",
     "crypto",
     "tracked_traders",
-    "autotrader",
+    "trader_orchestrator",
     "world_intelligence",
 )
 GENERIC_WORKERS = ("crypto", "tracked_traders", "world_intelligence")
@@ -55,8 +60,7 @@ def _normalize_worker_name(raw: str) -> str:
         "news": "news",
         "weather": "weather",
         "crypto": "crypto",
-        "autotrader": "autotrader",
-        "auto_trader": "autotrader",
+        "trader_orchestrator": "trader_orchestrator",
         "discovery": "discovery",
         "world_intelligence": "world_intelligence",
         "worldintelligence": "world_intelligence",
@@ -121,8 +125,8 @@ async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
             if control.get("requested_run_at")
             else None,
         }
-    elif worker_name == "autotrader":
-        control = await read_autotrader_control(session)
+    elif worker_name == "trader_orchestrator":
+        control = await read_orchestrator_control(session)
         snapshot["control"] = control
     else:
         control = await read_worker_control(session, worker_name)
@@ -150,10 +154,10 @@ async def _set_all_workers_paused(session: AsyncSession, paused: bool) -> None:
     await news_shared_state.set_news_paused(session, paused)
     await weather_shared_state.set_weather_paused(session, paused)
     await discovery_shared_state.set_discovery_paused(session, paused)
-    await update_autotrader_control(
+    await update_orchestrator_control(
         session,
         is_paused=paused,
-        requested_run=False if paused else None,
+        requested_run_at=None if paused else None,
     )
 
     if paused:
@@ -209,8 +213,8 @@ async def start_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
         await weather_shared_state.set_weather_paused(session, False)
     elif name == "discovery":
         await discovery_shared_state.set_discovery_paused(session, False)
-    elif name == "autotrader":
-        await update_autotrader_control(session, is_paused=False, is_enabled=True)
+    elif name == "trader_orchestrator":
+        await update_orchestrator_control(session, is_paused=False, is_enabled=True)
     else:
         await set_worker_paused(session, name, False)
 
@@ -230,8 +234,8 @@ async def pause_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
         await weather_shared_state.set_weather_paused(session, True)
     elif name == "discovery":
         await discovery_shared_state.set_discovery_paused(session, True)
-    elif name == "autotrader":
-        await update_autotrader_control(session, is_paused=True)
+    elif name == "trader_orchestrator":
+        await update_orchestrator_control(session, is_paused=True)
     else:
         await set_worker_paused(session, name, True)
 
@@ -257,8 +261,8 @@ async def run_worker_once(worker: str, session: AsyncSession = Depends(get_db_se
         await weather_shared_state.request_one_weather_scan(session)
     elif name == "discovery":
         await discovery_shared_state.request_one_discovery_run(session)
-    elif name == "autotrader":
-        await update_autotrader_control(session, requested_run=True)
+    elif name == "trader_orchestrator":
+        await update_orchestrator_control(session, requested_run_at=datetime.utcnow())
     else:
         await request_worker_run(session, name)
 
@@ -284,8 +288,10 @@ async def set_worker_run_interval(
         await discovery_shared_state.set_discovery_interval(
             session, max(1, interval_seconds // 60)
         )
-    elif name == "autotrader":
-        await update_autotrader_control(session, run_interval_seconds=interval_seconds)
+    elif name == "trader_orchestrator":
+        await update_orchestrator_control(
+            session, run_interval_seconds=interval_seconds
+        )
     else:
         await set_worker_interval(session, name, interval_seconds)
 

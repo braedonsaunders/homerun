@@ -24,7 +24,7 @@ async def test_set_all_workers_paused_true_clears_requests(monkeypatch):
     clear_weather_scan_request = AsyncMock()
     set_discovery_paused = AsyncMock()
     clear_discovery_run_request = AsyncMock()
-    update_autotrader_control = AsyncMock()
+    update_orchestrator_control = AsyncMock()
     set_worker_paused = AsyncMock()
     clear_worker_run_request = AsyncMock()
 
@@ -59,8 +59,8 @@ async def test_set_all_workers_paused_true_clears_requests(monkeypatch):
     )
     monkeypatch.setattr(
         routes_workers,
-        "update_autotrader_control",
-        update_autotrader_control,
+        "update_orchestrator_control",
+        update_orchestrator_control,
     )
     monkeypatch.setattr(routes_workers, "set_worker_paused", set_worker_paused)
     monkeypatch.setattr(
@@ -87,10 +87,10 @@ async def test_set_all_workers_paused_true_clears_requests(monkeypatch):
     clear_weather_scan_request.assert_awaited_once_with(fake_session)
     set_discovery_paused.assert_awaited_once_with(fake_session, True)
     clear_discovery_run_request.assert_awaited_once_with(fake_session)
-    update_autotrader_control.assert_awaited_once_with(
+    update_orchestrator_control.assert_awaited_once_with(
         fake_session,
         is_paused=True,
-        requested_run=False,
+        requested_run_at=None,
     )
 
     assert set_worker_paused.await_count == len(routes_workers.GENERIC_WORKERS)
@@ -108,7 +108,7 @@ async def test_set_all_workers_paused_false_resumes_without_clears(monkeypatch):
     clear_weather_scan_request = AsyncMock()
     clear_discovery_run_request = AsyncMock()
     clear_worker_run_request = AsyncMock()
-    update_autotrader_control = AsyncMock()
+    update_orchestrator_control = AsyncMock()
 
     pause_called = {"value": False}
     resume_called = {"value": False}
@@ -141,8 +141,8 @@ async def test_set_all_workers_paused_false_resumes_without_clears(monkeypatch):
     )
     monkeypatch.setattr(
         routes_workers,
-        "update_autotrader_control",
-        update_autotrader_control,
+        "update_orchestrator_control",
+        update_orchestrator_control,
     )
     monkeypatch.setattr(routes_workers, "set_worker_paused", AsyncMock())
     monkeypatch.setattr(
@@ -161,10 +161,10 @@ async def test_set_all_workers_paused_false_resumes_without_clears(monkeypatch):
 
     await routes_workers._set_all_workers_paused(fake_session, False)
 
-    update_autotrader_control.assert_awaited_once_with(
+    update_orchestrator_control.assert_awaited_once_with(
         fake_session,
         is_paused=False,
-        requested_run=None,
+        requested_run_at=None,
     )
     clear_scan_request.assert_not_awaited()
     clear_news_scan_request.assert_not_awaited()
@@ -197,3 +197,4 @@ async def test_run_worker_once_blocked_when_global_pause_active():
         assert excinfo.value.status_code == 409
     finally:
         routes_workers.global_pause_state.resume()
+

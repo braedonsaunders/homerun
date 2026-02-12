@@ -356,17 +356,17 @@ export default function SettingsPanel() {
     },
   })
 
-  const runAutoTraderOnceMutation = useMutation({
-    mutationFn: () => runWorkerOnce('autotrader'),
+  const runOrchestratorOnceMutation = useMutation({
+    mutationFn: () => runWorkerOnce('trader_orchestrator'),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['autotrader-overview'] })
-      queryClient.invalidateQueries({ queryKey: ['autotrader-status'] })
-      setSaveMessage({ type: 'success', text: 'Auto-trader one-time run queued' })
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-status'] })
+      setSaveMessage({ type: 'success', text: 'Trader orchestrator one-time run queued' })
       setTimeout(() => setSaveMessage(null), 4000)
     },
     onError: (error: any) => {
       const detail = error?.response?.data?.detail
-      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to queue auto-trader run' })
+      setSaveMessage({ type: 'error', text: detail || error?.message || 'Failed to queue trader orchestrator run' })
       setTimeout(() => setSaveMessage(null), 7000)
     },
   })
@@ -528,7 +528,7 @@ export default function SettingsPanel() {
       scanner: 'Scanner/Market data',
       weather: 'Weather workflow data',
       news: 'News workflow/feed data',
-      autotrader: 'Auto-trader runtime data',
+      trader_orchestrator: 'Trader orchestrator runtime data',
       all: 'ALL non-trading datasets',
     }
 
@@ -1835,7 +1835,7 @@ export default function SettingsPanel() {
                             <div>
                               <p className="font-medium text-sm">Manual Data Flush</p>
                               <p className="text-xs text-muted-foreground">
-                                Manually clear runtime/cache datasets for scanner, weather, news, and auto-trader pipelines.
+                                Manually clear runtime/cache datasets for scanner, weather, news, and trader orchestrator pipelines.
                               </p>
                               <p className="text-[11px] text-emerald-400/80 mt-1">
                                 Protected automatically: live/executed positions and trade history.
@@ -1886,13 +1886,13 @@ export default function SettingsPanel() {
                                 variant="outline"
                                 size="sm"
                                 className="justify-start border-red-500/30 hover:bg-red-500/10"
-                                onClick={() => handleFlushTarget('autotrader')}
+                                onClick={() => handleFlushTarget('trader_orchestrator')}
                                 disabled={flushDataMutation.isPending}
                               >
-                                {flushDataMutation.isPending && activeFlushTarget === 'autotrader'
+                                {flushDataMutation.isPending && activeFlushTarget === 'trader_orchestrator'
                                   ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
                                   : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
-                                Flush Auto-Trader Runtime
+                                Flush Trader Orchestrator Runtime
                               </Button>
                             </div>
 
@@ -1913,17 +1913,17 @@ export default function SettingsPanel() {
                               <Button
                                 variant="secondary"
                                 size="sm"
-                                onClick={() => runAutoTraderOnceMutation.mutate()}
-                                disabled={runAutoTraderOnceMutation.isPending}
+                                onClick={() => runOrchestratorOnceMutation.mutate()}
+                                disabled={runOrchestratorOnceMutation.isPending}
                               >
-                                {runAutoTraderOnceMutation.isPending
+                                {runOrchestratorOnceMutation.isPending
                                   ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
                                   : <Play className="w-3.5 h-3.5 mr-1.5" />}
-                                Run Auto-Trader Once
+                                Run Trader Orchestrator Once
                               </Button>
 
                               <p className="text-[10px] text-muted-foreground">
-                                Auto-trader run is non-destructive and queues one immediate cycle.
+                                Trader orchestrator run is non-destructive and queues one immediate cycle.
                               </p>
                             </div>
                           </CardContent>

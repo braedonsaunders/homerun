@@ -34,20 +34,20 @@ async def test_run_flush_all_calls_all_handlers(monkeypatch):
     flush_scanner = AsyncMock(return_value={"scanner_snapshot_opportunities": 3})
     flush_weather = AsyncMock(return_value={"weather_trade_intents": 2})
     flush_news = AsyncMock(return_value={"news_article_cache": 5})
-    flush_autotrader = AsyncMock(return_value={"trade_signal_snapshots": 1})
+    flush_trader_orchestrator = AsyncMock(return_value={"trade_signal_snapshots": 1})
 
     monkeypatch.setattr(routes_maintenance, "_flush_scanner_data", flush_scanner)
     monkeypatch.setattr(routes_maintenance, "_flush_weather_data", flush_weather)
     monkeypatch.setattr(routes_maintenance, "_flush_news_data", flush_news)
-    monkeypatch.setattr(routes_maintenance, "_flush_autotrader_runtime_data", flush_autotrader)
+    monkeypatch.setattr(routes_maintenance, "_flush_trader_orchestrator_runtime_data", flush_trader_orchestrator)
 
     result = await routes_maintenance._run_flush(session, "all")
 
-    assert list(result.keys()) == ["scanner", "weather", "news", "autotrader"]
+    assert list(result.keys()) == ["scanner", "weather", "news", "trader_orchestrator"]
     flush_scanner.assert_awaited_once_with(session)
     flush_weather.assert_awaited_once_with(session)
     flush_news.assert_awaited_once_with(session)
-    flush_autotrader.assert_awaited_once_with(session)
+    flush_trader_orchestrator.assert_awaited_once_with(session)
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_flush_data_commits_and_returns_payload(monkeypatch):
     assert response["status"] == "success"
     assert response["target"] == "scanner"
     assert "protected_datasets" in response
-    assert any("auto_trader_trades" in value for value in response["protected_datasets"])
+    assert any("trader_orders" in value for value in response["protected_datasets"])
 
 
 @pytest.mark.asyncio
@@ -88,3 +88,4 @@ async def test_flush_data_rolls_back_on_error(monkeypatch):
     assert excinfo.value.status_code == 500
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once()
+

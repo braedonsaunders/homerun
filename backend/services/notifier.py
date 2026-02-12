@@ -164,7 +164,7 @@ class TelegramNotifier:
         self._daily_stats.reset()
         self._daily_summary_task = asyncio.create_task(self._daily_summary_scheduler())
 
-        # Register with scanner and auto_trader
+        # Register with scanner and trader orchestrator
         self._register_callbacks()
 
         logger.info("Telegram notifier started")
@@ -232,8 +232,8 @@ class TelegramNotifier:
     def _register_callbacks(self):
         """Hook into scanner callbacks.
 
-        AutoTrader runtime is worker-owned and DB-backed; notifier integration
-        should consume persisted autotrader decisions/trades instead of
+        Trader orchestrator runtime is worker-owned and DB-backed; notifier integration
+        should consume persisted trader decisions/orders instead of
         in-process callback wiring.
         """
         from services.scanner import scanner
@@ -256,10 +256,10 @@ class TelegramNotifier:
             if opp.roi_percent >= self._notify_min_roi:
                 await self.notify_opportunity(opp)
 
-    # ── Auto-trader callback ─────────────────────────────────────
+    # ── Trader orchestrator callback ─────────────────────────────────────
 
     async def _on_trade_event(self, event: str, data: dict):
-        """Called by auto_trader on trade lifecycle events."""
+        """Called by trader orchestrator on order lifecycle events."""
         if event == "trade_executed":
             trade = data.get("trade")
             opp = data.get("opportunity")
@@ -599,3 +599,5 @@ class TelegramNotifier:
 
 # Singleton instance
 notifier = TelegramNotifier()
+
+

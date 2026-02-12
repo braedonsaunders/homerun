@@ -28,7 +28,7 @@ class PipelineLatencyLog(Base):
 
     id = Column(String, primary_key=True)
     opportunity_id = Column(String, nullable=True)
-    trade_context = Column(String, nullable=True)  # "auto_trader", "copy_trader"
+    trade_context = Column(String, nullable=True)  # "trader_orchestrator", "copy_trader"
 
     # Stage timings (milliseconds)
     detection_ms = Column(Float, nullable=True)

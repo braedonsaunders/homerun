@@ -368,7 +368,7 @@ export default function TradeExecutionModal({ opportunity, onClose }: TradeExecu
 
               <p className="text-xs text-muted-foreground/60 flex items-start gap-1.5">
                 <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-                Take-profit and stop-loss are monitored while the auto-trader is running. They will trigger sell orders automatically when price thresholds are hit.
+                Take-profit and stop-loss are monitored while the trader orchestrator is running. They will trigger sell orders automatically when price thresholds are hit.
               </p>
             </div>
           )}

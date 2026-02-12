@@ -34,9 +34,9 @@ const DEFAULTS: WeatherWorkflowSettings = {
   min_model_agreement: 0.75,
   min_liquidity: 500,
   max_markets_per_scan: 200,
-  auto_trader_enabled: true,
-  auto_trader_min_edge: 10,
-  auto_trader_max_age_minutes: 240,
+  orchestrator_enabled: true,
+  orchestrator_min_edge: 10,
+  orchestrator_max_age_minutes: 240,
   default_size_usd: 10,
   max_size_usd: 50,
   model: null,
@@ -236,16 +236,16 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Bot className="w-3.5 h-3.5 text-violet-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Auto-Trader Handoff</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Orchestrator Handoff</h4>
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Auto-Trader Enabled</p>
-                <p className="text-[10px] text-muted-foreground">Allow auto-trader to consume weather intents</p>
+                <p className="text-xs font-medium">Orchestrator Enabled</p>
+                <p className="text-[10px] text-muted-foreground">Allow trader orchestrator to consume weather intents</p>
               </div>
               <Switch
-                checked={form.auto_trader_enabled}
-                onCheckedChange={(v) => set('auto_trader_enabled', v)}
+                checked={form.orchestrator_enabled}
+                onCheckedChange={(v) => set('orchestrator_enabled', v)}
                 className="scale-75"
                 disabled={!form.enabled}
               />
@@ -253,21 +253,21 @@ export default function WeatherWorkflowSettingsFlyout({
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
                 label="Auto Min Edge %"
-                value={form.auto_trader_min_edge}
-                onChange={(v) => set('auto_trader_min_edge', v)}
+                value={form.orchestrator_min_edge}
+                onChange={(v) => set('orchestrator_min_edge', v)}
                 min={0}
                 max={100}
                 step={0.5}
-                disabled={!form.enabled || !form.auto_trader_enabled}
+                disabled={!form.enabled || !form.orchestrator_enabled}
               />
               <NumericField
                 label="Auto Max Intent Age (min)"
-                value={form.auto_trader_max_age_minutes}
-                onChange={(v) => set('auto_trader_max_age_minutes', Math.max(1, Math.round(v)))}
+                value={form.orchestrator_max_age_minutes}
+                onChange={(v) => set('orchestrator_max_age_minutes', Math.max(1, Math.round(v)))}
                 min={1}
                 max={1440}
                 step={1}
-                disabled={!form.enabled || !form.auto_trader_enabled}
+                disabled={!form.enabled || !form.orchestrator_enabled}
               />
               <NumericField
                 label="Default Size ($)"
@@ -312,3 +312,4 @@ export default function WeatherWorkflowSettingsFlyout({
     </>
   )
 }
+

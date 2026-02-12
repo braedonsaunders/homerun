@@ -301,7 +301,7 @@ export default function ValidationEnginePanel() {
 
   const demotedCount = strategyHealth.filter((row) => row.status === 'demoted').length
   const jobs = jobsData?.jobs || []
-  const executionFailureRate = overview?.autotrader_execution_30d?.failure_rate
+  const executionFailureRate = overview?.trader_orchestrator_execution_30d?.failure_rate
   const resolverTradableRate = overview?.world_intel_resolver_7d?.tradable_rate
 
   const activeSetLabel = useMemo(() => {

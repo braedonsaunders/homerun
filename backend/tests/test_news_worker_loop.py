@@ -39,6 +39,7 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
 
     monkeypatch.setattr(news_worker, "AsyncSessionLocal", lambda: _DummySession())
     monkeypatch.setattr(news_worker.shared_state, "write_news_snapshot", AsyncMock())
+    monkeypatch.setattr(news_worker, "write_worker_snapshot", AsyncMock())
     monkeypatch.setattr(
         news_worker.shared_state,
         "read_news_control",
@@ -59,7 +60,7 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
                 "enabled": True,
                 "auto_run": True,
                 "scan_interval_seconds": 120,
-                "auto_trader_max_age_minutes": 120,
+                "orchestrator_max_age_minutes": 120,
             }
         ),
     )
@@ -107,6 +108,7 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
 
     monkeypatch.setattr(news_worker, "AsyncSessionLocal", lambda: _DummySession())
     monkeypatch.setattr(news_worker.shared_state, "write_news_snapshot", AsyncMock())
+    monkeypatch.setattr(news_worker, "write_worker_snapshot", AsyncMock())
     monkeypatch.setattr(
         news_worker.shared_state,
         "read_news_control",
@@ -127,7 +129,7 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
                 "enabled": True,
                 "auto_run": True,
                 "scan_interval_seconds": 120,
-                "auto_trader_max_age_minutes": 120,
+                "orchestrator_max_age_minutes": 120,
             }
         ),
     )
@@ -137,6 +139,10 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
     monkeypatch.setattr(
         news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0)
     )
+    monkeypatch.setattr(
+        news_worker.shared_state, "list_news_intents", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(news_worker, "emit_news_intent_signals", AsyncMock(return_value=0))
     run_cycle_mock = AsyncMock(
         return_value={"status": "completed", "findings": 1, "intents": 1, "stats": {}}
     )

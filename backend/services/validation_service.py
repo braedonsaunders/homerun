@@ -19,11 +19,11 @@ from sqlalchemy import and_, select
 
 from models.database import (
     AppSettings,
-    AutoTraderTrade,
     AsyncSessionLocal,
     OpportunityHistory,
     StrategyValidationProfile,
     TradeSignal,
+    TraderOrder,
     ValidationJob,
     WorldIntelligenceSignal,
 )
@@ -261,24 +261,26 @@ class ValidationService:
             )
         return trend
 
-    async def compute_autotrader_execution_metrics(self, days: int = 30) -> dict[str, Any]:
+    async def compute_trader_orchestrator_execution_metrics(
+        self, days: int = 30
+    ) -> dict[str, Any]:
         cutoff = utcnow() - timedelta(days=days)
         async with AsyncSessionLocal() as session:
             rows = (
                 (
                     await session.execute(
                         select(
-                            AutoTraderTrade.source,
+                            TraderOrder.source,
                             TradeSignal.strategy_type,
-                            AutoTraderTrade.status,
-                            AutoTraderTrade.mode,
-                            AutoTraderTrade.notional_usd,
-                            AutoTraderTrade.actual_profit,
-                            AutoTraderTrade.edge_percent,
-                            AutoTraderTrade.confidence,
+                            TraderOrder.status,
+                            TraderOrder.mode,
+                            TraderOrder.notional_usd,
+                            TraderOrder.actual_profit,
+                            TraderOrder.edge_percent,
+                            TraderOrder.confidence,
                         )
-                        .join(TradeSignal, AutoTraderTrade.signal_id == TradeSignal.id, isouter=True)
-                        .where(AutoTraderTrade.created_at >= cutoff)
+                        .join(TradeSignal, TraderOrder.signal_id == TradeSignal.id, isouter=True)
+                        .where(TraderOrder.created_at >= cutoff)
                     )
                 )
                 .all()

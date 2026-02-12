@@ -441,7 +441,7 @@ async def _run_loop() -> None:
             conflict_events = getattr(acled_client, "_last_events", [])
             persisted_conflicts = await _persist_conflict_events(conflict_events)
 
-            # World intelligence should run independently of autotrader by default.
+            # World intelligence should run independently of trader orchestrator by default.
             emitted_signals = 0
             if bool(getattr(settings, "WORLD_INTEL_EMIT_TRADE_SIGNALS", False)):
                 try:

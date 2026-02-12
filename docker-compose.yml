@@ -105,12 +105,12 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
-  autotrader-worker:
+  trader-orchestrator-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: polymarket-autotrader-worker
-    command: ["python", "-m", "workers.autotrader_worker"]
+    container_name: polymarket-trader-orchestrator-worker
+    command: ["python", "-m", "workers.trader_orchestrator_worker"]
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/arbitrage.db
     env_file:

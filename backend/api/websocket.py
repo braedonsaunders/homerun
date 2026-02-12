@@ -5,8 +5,11 @@ import json
 from models.database import AsyncSessionLocal, WorldIntelligenceSnapshot
 from sqlalchemy import select
 from services import shared_state, wallet_tracker
-from services.autotrader_state import read_autotrader_snapshot
 from services.news import shared_state as news_shared_state
+from services.trader_orchestrator_state import (
+    list_traders,
+    read_orchestrator_snapshot,
+)
 from services.worker_state import list_worker_snapshots
 from services.weather import shared_state as weather_shared_state
 
@@ -65,7 +68,8 @@ async def handle_websocket(websocket: WebSocket):
         weather_status = await weather_shared_state.get_weather_status_from_db(session)
         news_workflow_status = await news_shared_state.get_news_status_from_db(session)
         worker_statuses = await list_worker_snapshots(session)
-        autotrader_status = await read_autotrader_snapshot(session)
+        orchestrator_status = await read_orchestrator_snapshot(session)
+        traders = await list_traders(session)
         world_snapshot = (
             (
                 await session.execute(
@@ -91,7 +95,8 @@ async def handle_websocket(websocket: WebSocket):
                 "weather_status": weather_status,
                 "news_workflow_status": news_workflow_status,
                 "workers_status": worker_statuses,
-                "autotrader_status": autotrader_status,
+                "trader_orchestrator_status": orchestrator_status,
+                "traders": traders,
                 "world_intelligence_status": {
                     "status": (world_snapshot.status if world_snapshot else {}) or {},
                     "stats": (world_snapshot.stats if world_snapshot else {}) or {},

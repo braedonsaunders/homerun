@@ -746,7 +746,7 @@ class WorldSignalAggregator:
             logger.error("Instability scoring failed: %s", exc)
             _record_source("instability", started, 0, error=exc)
 
-        # 11. Market relevance matching (DB cache only; no autotrader coupling)
+        # 11. Market relevance matching (DB cache only; no trader orchestrator coupling)
         started = datetime.now(timezone.utc)
         try:
             active_markets = await self._load_active_markets()

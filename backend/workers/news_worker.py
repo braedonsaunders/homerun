@@ -156,7 +156,7 @@ async def _run_loop() -> None:
                     max_age_minutes=int(
                         max(
                             1,
-                            wf_settings.get("auto_trader_max_age_minutes", 120) or 120,
+                            wf_settings.get("orchestrator_max_age_minutes", 120) or 120,
                         )
                     ),
                 )
@@ -270,7 +270,7 @@ async def _run_loop() -> None:
                     max_age_minutes=int(
                         max(
                             1,
-                            wf_settings.get("auto_trader_max_age_minutes", 120) or 120,
+                            wf_settings.get("orchestrator_max_age_minutes", 120) or 120,
                         )
                     ),
                 )
@@ -311,7 +311,7 @@ async def _run_loop() -> None:
                     max_age_minutes=int(
                         max(
                             1,
-                            wf_settings.get("auto_trader_max_age_minutes", 120) or 120,
+                            wf_settings.get("orchestrator_max_age_minutes", 120) or 120,
                         )
                     ),
                 )

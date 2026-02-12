@@ -299,7 +299,7 @@ class Settings(BaseSettings):
     # World Intelligence Settings
     WORLD_INTELLIGENCE_ENABLED: bool = True
     WORLD_INTELLIGENCE_INTERVAL_SECONDS: int = 300  # 5 minutes
-    WORLD_INTEL_EMIT_TRADE_SIGNALS: bool = False  # keep decoupled from autotrader by default
+    WORLD_INTEL_EMIT_TRADE_SIGNALS: bool = False  # keep decoupled from trader orchestrator by default
     ACLED_API_KEY: Optional[str] = None  # ACLED API key (free registration)
     ACLED_EMAIL: Optional[str] = None  # Email for ACLED API auth
     OPENSKY_USERNAME: Optional[str] = None  # OpenSky Network credentials (optional)

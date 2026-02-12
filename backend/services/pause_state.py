@@ -1,6 +1,6 @@
 """Global pause state shared across all services.
 
-When paused, all background services (scanner, auto trader, copy trader,
+When paused, all background services (scanner, trader orchestrator, copy trader,
 wallet tracker, wallet discovery, wallet intelligence) skip their work cycles.
 
 This module exists as a standalone singleton to avoid circular imports between
@@ -30,5 +30,6 @@ class GlobalPauseState:
         self._paused = False
 
 
-# Singleton — import this from any service
+# Singleton - import this from any service
 global_pause_state = GlobalPauseState()
+

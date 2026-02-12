@@ -43,7 +43,7 @@ CSV_COLUMNS = [
 @dataclass
 class TradeLogEntry:
     timestamp: str
-    context: str  # "auto_trader", "copy_trader"
+    context: str  # "trader_orchestrator", "copy_trader"
     token_id: str
     side: str
     whale_shares: float = 0.0

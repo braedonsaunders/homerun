@@ -1,4 +1,4 @@
-"""Shared DB state for news workflow worker/API/autotrader."""
+"""Shared DB state for news workflow worker/API/orchestrator."""
 
 from __future__ import annotations
 
@@ -316,7 +316,7 @@ async def mark_news_intent(
         )
         finding_row = finding.scalar_one_or_none()
         if finding_row is not None:
-            finding_row.consumed_by_auto_trader = True
+            finding_row.consumed_by_orchestrator = True
     await session.commit()
     return True
 
@@ -410,14 +410,14 @@ async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
         "require_second_source": bool(
             getattr(db, "news_workflow_require_second_source", False)
         ),
-        "auto_trader_enabled": bool(
-            getattr(db, "news_workflow_auto_trader_enabled", True)
+        "orchestrator_enabled": bool(
+            getattr(db, "news_workflow_orchestrator_enabled", True)
         ),
-        "auto_trader_min_edge": float(
-            getattr(db, "news_workflow_auto_trader_min_edge", 10.0) or 10.0
+        "orchestrator_min_edge": float(
+            getattr(db, "news_workflow_orchestrator_min_edge", 10.0) or 10.0
         ),
-        "auto_trader_max_age_minutes": int(
-            getattr(db, "news_workflow_auto_trader_max_age_minutes", 120) or 120
+        "orchestrator_max_age_minutes": int(
+            getattr(db, "news_workflow_orchestrator_max_age_minutes", 120) or 120
         ),
         "model": getattr(db, "news_workflow_model", None),
         "article_max_age_hours": min(int(app_settings.NEWS_ARTICLE_TTL_HOURS), 48),
@@ -465,9 +465,9 @@ async def update_news_settings(
         "min_edge_percent": "news_workflow_min_edge_percent",
         "min_confidence": "news_workflow_min_confidence",
         "require_second_source": "news_workflow_require_second_source",
-        "auto_trader_enabled": "news_workflow_auto_trader_enabled",
-        "auto_trader_min_edge": "news_workflow_auto_trader_min_edge",
-        "auto_trader_max_age_minutes": "news_workflow_auto_trader_max_age_minutes",
+        "orchestrator_enabled": "news_workflow_orchestrator_enabled",
+        "orchestrator_min_edge": "news_workflow_orchestrator_min_edge",
+        "orchestrator_max_age_minutes": "news_workflow_orchestrator_max_age_minutes",
         "model": "news_workflow_model",
         "cycle_spend_cap_usd": "news_workflow_cycle_spend_cap_usd",
         "hourly_spend_cap_usd": "news_workflow_hourly_spend_cap_usd",

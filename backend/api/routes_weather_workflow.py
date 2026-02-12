@@ -34,9 +34,9 @@ class WeatherWorkflowSettingsRequest(BaseModel):
     min_model_agreement: Optional[float] = Field(None, ge=0, le=1)
     min_liquidity: Optional[float] = Field(None, ge=0)
     max_markets_per_scan: Optional[int] = Field(None, ge=10, le=5000)
-    auto_trader_enabled: Optional[bool] = None
-    auto_trader_min_edge: Optional[float] = Field(None, ge=0, le=100)
-    auto_trader_max_age_minutes: Optional[int] = Field(None, ge=1, le=1440)
+    orchestrator_enabled: Optional[bool] = None
+    orchestrator_min_edge: Optional[float] = Field(None, ge=0, le=100)
+    orchestrator_max_age_minutes: Optional[int] = Field(None, ge=1, le=1440)
     default_size_usd: Optional[float] = Field(None, ge=1, le=1000)
     max_size_usd: Optional[float] = Field(None, ge=1, le=5000)
     model: Optional[str] = None

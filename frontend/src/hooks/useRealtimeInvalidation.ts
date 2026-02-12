@@ -88,24 +88,22 @@ export function useRealtimeInvalidation(
       queryClient.invalidateQueries({ queryKey: ['signals'] })
       queryClient.invalidateQueries({ queryKey: ['signals-stats'] })
     }
-    if (lastMessage?.type === 'autotrader_status') {
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-overview'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-events'] })
+    if (lastMessage?.type === 'trader_orchestrator_status') {
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-status'] })
+      queryClient.invalidateQueries({ queryKey: ['traders-list'] })
     }
-    if (lastMessage?.type === 'autotrader_decision') {
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-overview'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-decisions'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-events'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-metrics'] })
+    if (lastMessage?.type === 'trader_decision') {
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['traders-decisions'] })
     }
-    if (lastMessage?.type === 'autotrader_trade') {
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-overview'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-status'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-trades'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-events'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-exposure'] })
-      queryClient.invalidateQueries({ queryKey: ['auto-trader-metrics'] })
+    if (lastMessage?.type === 'trader_order') {
+      queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['traders-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['traders-decisions'] })
+    }
+    if (lastMessage?.type === 'trader_event') {
+      queryClient.invalidateQueries({ queryKey: ['traders-events'] })
     }
   }, [lastMessage, queryClient, setScannerActivity])
 }

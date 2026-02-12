@@ -18,8 +18,8 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import {
   getSimulationAccounts,
   getAccountTrades,
-  getAutoTraderStats,
-  getAutoTraderTrades,
+  getTraderOrchestratorStats,
+  getAllTraderOrders,
   SimulationAccount,
   SimulationTrade
 } from '../services/api'
@@ -47,10 +47,10 @@ export default function PerformancePanel() {
     enabled: activeSubTab === 'overview',
   })
 
-  // Fetch auto trader stats
+  // Fetch orchestrator stats
   const { isLoading: autoStatsLoading } = useQuery({
-    queryKey: ['auto-trader-stats'],
-    queryFn: getAutoTraderStats,
+    queryKey: ['trader-orchestrator-stats'],
+    queryFn: getTraderOrchestratorStats,
     enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
   })
 
@@ -75,10 +75,18 @@ export default function PerformancePanel() {
     enabled: activeSubTab === 'overview' && accounts.length > 0 && (viewMode === 'simulation' || viewMode === 'all'),
   })
 
-  // Fetch auto trader trades
+  // Fetch orchestrator orders
   const { data: autoTrades = [], isLoading: autoTradesLoading, refetch: refetchAutoTrades } = useQuery({
-    queryKey: ['auto-trader-trades'],
-    queryFn: () => getAutoTraderTrades(200),
+    queryKey: ['trader-orders'],
+    queryFn: async () => {
+      const rows = await getAllTraderOrders(200)
+      return rows.map((row: any) => ({
+        ...row,
+        executed_at: row.executed_at || row.created_at || new Date().toISOString(),
+        total_cost: Number(row.notional_usd || 0),
+        strategy: String(row.source || 'unknown'),
+      }))
+    },
     enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
   })
 
@@ -152,7 +160,7 @@ export default function PerformancePanel() {
     }
   }, [filteredSimTrades])
 
-  // Calculate auto trader performance metrics
+  // Calculate orchestrator performance metrics
   const autoMetrics = useMemo(() => {
     const trades = filteredAutoTrades
     const resolved = trades.filter(t => t.status === 'resolved' || t.status === 'win' || t.status === 'loss')

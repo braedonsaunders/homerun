@@ -1,4 +1,4 @@
-"""Shared DB state for weather workflow worker/API/autotrader."""
+"""Shared DB state for weather workflow worker/API/orchestrator."""
 
 from __future__ import annotations
 
@@ -479,14 +479,14 @@ async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
                 app_settings.WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN,
             )
         ),
-        "auto_trader_enabled": bool(
-            getattr(db, "weather_workflow_auto_trader_enabled", True)
+        "orchestrator_enabled": bool(
+            getattr(db, "weather_workflow_orchestrator_enabled", True)
         ),
-        "auto_trader_min_edge": float(
-            getattr(db, "weather_workflow_auto_trader_min_edge", 10.0)
+        "orchestrator_min_edge": float(
+            getattr(db, "weather_workflow_orchestrator_min_edge", 10.0)
         ),
-        "auto_trader_max_age_minutes": int(
-            getattr(db, "weather_workflow_auto_trader_max_age_minutes", 240)
+        "orchestrator_max_age_minutes": int(
+            getattr(db, "weather_workflow_orchestrator_max_age_minutes", 240)
         ),
         "default_size_usd": float(
             getattr(db, "weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD)
@@ -516,9 +516,9 @@ async def update_weather_settings(
         "min_model_agreement": "weather_workflow_min_model_agreement",
         "min_liquidity": "weather_workflow_min_liquidity",
         "max_markets_per_scan": "weather_workflow_max_markets_per_scan",
-        "auto_trader_enabled": "weather_workflow_auto_trader_enabled",
-        "auto_trader_min_edge": "weather_workflow_auto_trader_min_edge",
-        "auto_trader_max_age_minutes": "weather_workflow_auto_trader_max_age_minutes",
+        "orchestrator_enabled": "weather_workflow_orchestrator_enabled",
+        "orchestrator_min_edge": "weather_workflow_orchestrator_min_edge",
+        "orchestrator_max_age_minutes": "weather_workflow_orchestrator_max_age_minutes",
         "default_size_usd": "weather_workflow_default_size_usd",
         "max_size_usd": "weather_workflow_max_size_usd",
         "model": "weather_workflow_model",

@@ -29,7 +29,6 @@ from api.routes_simulation import simulation_router
 from api.routes_copy_trading import copy_trading_router
 from api.routes_anomaly import anomaly_router
 from api.routes_trading import router as trading_router
-from api.routes_auto_trader import router as auto_trader_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_settings import router as settings_router
 from api.routes_ai import router as ai_router
@@ -44,6 +43,9 @@ from api.routes_world_intelligence import router as world_intelligence_router
 from api.routes_signals import router as signals_router
 from api.routes_workers import router as workers_router
 from api.routes_validation import router as validation_router
+from api.routes_trader_orchestrator import router as trader_orchestrator_router
+from api.routes_trader_sources import router as trader_sources_router
+from api.routes_traders import router as traders_router
 from services import wallet_tracker
 from services.copy_trader import copy_trader
 from services.trading import trading_service
@@ -54,9 +56,12 @@ from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from models.database import AsyncSessionLocal, init_database
 from services import discovery_shared_state, shared_state
-from services.autotrader_state import read_autotrader_control, read_autotrader_snapshot
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
+from services.trader_orchestrator_state import (
+    read_orchestrator_control,
+    read_orchestrator_snapshot,
+)
 from services.weather import shared_state as weather_shared_state
 from services.worker_state import list_worker_snapshots, read_worker_control
 from utils.logger import setup_logging, get_logger
@@ -121,7 +126,7 @@ async def lifespan(app: FastAPI):
                 discovery_control = await discovery_shared_state.read_discovery_control(
                     session
                 )
-                autotrader_control = await read_autotrader_control(session)
+                orchestrator_control = await read_orchestrator_control(session)
                 crypto_control = await read_worker_control(session, "crypto")
                 tracked_control = await read_worker_control(session, "tracked_traders")
                 world_intel_control = await read_worker_control(
@@ -135,7 +140,7 @@ async def lifespan(app: FastAPI):
                     news_control,
                     weather_control,
                     discovery_control,
-                    autotrader_control,
+                    orchestrator_control,
                     crypto_control,
                     tracked_control,
                     world_intel_control,
@@ -252,7 +257,7 @@ async def lifespan(app: FastAPI):
                     "Trading service initialization failed - check credentials"
                 )
 
-        # Intelligence, crypto, tracked-trader, and autotrader runtimes are worker-owned.
+        # Intelligence, crypto, tracked-trader, and trader-orchestrator runtimes are worker-owned.
         logger.info("API runtime running in orchestration/read-only mode for worker-owned loops")
 
         # Start background cleanup if enabled
@@ -394,7 +399,9 @@ app.include_router(
 )
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(trading_router, prefix="/api", tags=["Trading"])
-app.include_router(auto_trader_router, prefix="/api", tags=["Auto Trader"])
+app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
+app.include_router(traders_router, prefix="/api", tags=["Traders"])
+app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])
@@ -510,7 +517,7 @@ async def detailed_health_check():
         except Exception:
             news_workflow_status = {}
         worker_status_rows = await list_worker_snapshots(session)
-        autotrader_snapshot = await read_autotrader_snapshot(session)
+        orchestrator_snapshot = await read_orchestrator_snapshot(session)
     worker_status = {row.get("worker_name"): row for row in worker_status_rows}
 
     return {
@@ -536,9 +543,9 @@ async def detailed_health_check():
                 if trading_service.is_ready()
                 else None,
             },
-            "auto_trader": {
-                "running": bool(autotrader_snapshot.get("running", False)),
-                "stats": autotrader_snapshot,
+            "trader_orchestrator": {
+                "running": bool(orchestrator_snapshot.get("running", False)),
+                "stats": orchestrator_snapshot,
             },
             "maintenance": {
                 "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
@@ -604,7 +611,7 @@ async def metrics():
     """Prometheus-compatible metrics"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
-        autotrader_snapshot = await read_autotrader_snapshot(session)
+        orchestrator_snapshot = await read_orchestrator_snapshot(session)
         try:
             from services.news import shared_state as news_shared_state
 
@@ -638,17 +645,17 @@ polymarket_copy_configs {len(copy_trader._active_configs)}
 # TYPE polymarket_trading_enabled gauge
 polymarket_trading_enabled {1 if settings.TRADING_ENABLED else 0}
 
-# HELP polymarket_auto_trader_running Auto trader running status
-# TYPE polymarket_auto_trader_running gauge
-polymarket_auto_trader_running {1 if autotrader_snapshot.get("running", False) else 0}
+# HELP polymarket_trader_orchestrator_running Trader orchestrator running status
+# TYPE polymarket_trader_orchestrator_running gauge
+polymarket_trader_orchestrator_running {1 if orchestrator_snapshot.get("running", False) else 0}
 
-# HELP polymarket_auto_trader_trades Total auto trades executed
-# TYPE polymarket_auto_trader_trades counter
-polymarket_auto_trader_trades {autotrader_snapshot.get("trades_count", 0)}
+# HELP polymarket_trader_orchestrator_orders Total trader orders executed/submitted
+# TYPE polymarket_trader_orchestrator_orders counter
+polymarket_trader_orchestrator_orders {orchestrator_snapshot.get("orders_count", 0)}
 
-# HELP polymarket_auto_trader_profit Total auto trader profit
-# TYPE polymarket_auto_trader_profit gauge
-polymarket_auto_trader_profit {autotrader_snapshot.get("daily_pnl", 0.0)}
+# HELP polymarket_trader_orchestrator_profit Daily trader orchestrator realized pnl
+# TYPE polymarket_trader_orchestrator_profit gauge
+polymarket_trader_orchestrator_profit {orchestrator_snapshot.get("daily_pnl", 0.0)}
 
 # HELP polymarket_news_workflow_running News workflow worker running status
 # TYPE polymarket_news_workflow_running gauge

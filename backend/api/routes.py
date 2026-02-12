@@ -786,13 +786,13 @@ async def get_strategies():
         {
             "type": StrategyType.NEWS_EDGE.value,
             "name": "News Edge",
-            "description": "News workflow informational edge intents consumed by auto trader",
+            "description": "News workflow informational edge intents consumed by trader orchestrator",
             "is_plugin": False,
         },
         {
             "type": StrategyType.WEATHER_EDGE.value,
             "name": "Weather Edge",
-            "description": "Weather workflow forecast-consensus intents consumed by auto trader",
+            "description": "Weather workflow forecast-consensus intents consumed by trader orchestrator",
             "is_plugin": False,
         },
         {

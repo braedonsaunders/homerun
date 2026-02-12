@@ -119,7 +119,7 @@ const WORKER_HEALTH_ORDER = [
   'news',
   'crypto',
   'tracked_traders',
-  'autotrader',
+  'trader_orchestrator',
   'world_intelligence',
 ] as const
 
@@ -130,7 +130,7 @@ const WORKER_HEALTH_LABELS: Record<string, string> = {
   news: 'News',
   crypto: 'Crypto',
   tracked_traders: 'Tracked Traders',
-  autotrader: 'AutoTrader',
+  trader_orchestrator: 'Orchestrator',
   world_intelligence: 'World Intel',
 }
 

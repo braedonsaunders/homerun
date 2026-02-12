@@ -177,7 +177,7 @@ This isn't a script. It's a platform.
 | Tab | What It Does |
 |-----|-------------|
 | **Opportunities** | Live arbitrage feed with 4 views: card, table, terminal, and Polymarket search |
-| **Trading** | Auto-trader controls + copy trading config |
+| **Trading** | Trader orchestrator cockpit + copy trading config |
 | **Accounts** | Paper and live account management |
 | **Traders** | Wallet discovery, tracking, and deep analysis |
 | **Positions** | Open positions across all accounts |
@@ -339,21 +339,23 @@ GET  /api/simulation/accounts/{id}/equity  # Equity curve data
 </details>
 
 <details>
-<summary><strong>Auto Trading</strong></summary>
+<summary><strong>Trader Orchestrator</strong></summary>
 
 ```
-GET   /api/auto-trader/overview                  # Canonical command center payload
-GET   /api/auto-trader/events                    # Unified timeline feed (cursor + type filters)
-GET   /api/auto-trader/decisions/{decision_id}   # Full explainability payload
-PATCH /api/auto-trader/config                    # Typed config writes with validation
-POST  /api/auto-trader/start                     # Compatibility start endpoint
-POST  /api/auto-trader/stop                      # Compatibility stop endpoint
-POST  /api/auto-trader/kill-switch               # Compatibility kill switch endpoint
-POST  /api/auto-trader/live/preflight            # Strict live-mode preflight checks
-POST  /api/auto-trader/live/arm                  # Arm live start and mint expiring arm token
-POST  /api/auto-trader/live/start                # Start live mode (requires valid arm token)
-POST  /api/auto-trader/live/stop                 # Stop live mode
-POST  /api/auto-trader/live/kill-switch          # Live kill switch
+GET    /api/trader-orchestrator/overview
+GET    /api/trader-orchestrator/status
+POST   /api/trader-orchestrator/start
+POST   /api/trader-orchestrator/stop
+POST   /api/trader-orchestrator/kill-switch
+POST   /api/trader-orchestrator/live/preflight
+POST   /api/trader-orchestrator/live/arm
+POST   /api/trader-orchestrator/live/start
+POST   /api/trader-orchestrator/live/stop
+GET    /api/traders
+POST   /api/traders
+GET    /api/traders/{trader_id}
+PUT    /api/traders/{trader_id}
+DELETE /api/traders/{trader_id}
 ```
 
 </details>
@@ -450,7 +452,7 @@ backend/
 ├── api/                         # REST + WebSocket endpoints (11 route modules)
 ├── services/
 │   ├── scanner.py               # Orchestrates all 18 strategies
-│   ├── auto_trader.py           # Autonomous execution engine
+│   ├── trader_orchestrator/      # Multi-trader orchestration engine
 │   ├── trading.py               # Polymarket CLOB execution
 │   ├── copy_trader.py           # Copy trading orchestration
 │   ├── crypto_service.py        # Dedicated crypto market pipeline
@@ -531,3 +533,4 @@ Found a vulnerability? **Do not open a public issue.** See [**SECURITY.md**](SEC
 ## License
 
 [MIT](LICENSE)
+

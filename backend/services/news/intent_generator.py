@@ -2,7 +2,7 @@
 Intent Generator -- Converts high-conviction findings into trade intents.
 
 Applies sizing policy and deterministic keys before creating NewsTradeIntent
-records that the auto-trader can consume.
+records that the trader orchestrator can consume.
 
 Pattern from: Quant-tool (signal-to-trade conversion with confidence scoring).
 """

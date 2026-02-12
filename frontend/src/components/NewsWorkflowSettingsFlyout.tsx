@@ -110,9 +110,9 @@ const DEFAULTS: NewsWorkflowSettings = {
   min_edge_percent: 8.0,
   min_confidence: 0.6,
   require_second_source: false,
-  auto_trader_enabled: true,
-  auto_trader_min_edge: 10.0,
-  auto_trader_max_age_minutes: 120,
+  orchestrator_enabled: true,
+  orchestrator_min_edge: 10.0,
+  orchestrator_max_age_minutes: 120,
   cycle_spend_cap_usd: 0.25,
   hourly_spend_cap_usd: 2.0,
   cycle_llm_call_cap: 30,
@@ -572,27 +572,27 @@ export default function NewsWorkflowSettingsFlyout({
             </div>
           </Section>
 
-          {/* Auto-Trader Handoff */}
-          <Section title="Auto-Trader Handoff" icon={Bot} color="text-purple-500">
+          {/* Orchestrator Handoff */}
+          <Section title="Orchestrator Handoff" icon={Bot} color="text-purple-500">
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              Control how high-conviction findings are fed to the auto-trader for execution.
+              Control how high-conviction findings are fed to the trader orchestrator for execution.
             </p>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs font-medium">Enable Auto-Trading</p>
-                <p className="text-[10px] text-muted-foreground">Allow auto-trader to consume news trade intents</p>
+                <p className="text-[10px] text-muted-foreground">Allow trader orchestrator to consume news trade intents</p>
               </div>
-              <Switch checked={form.auto_trader_enabled} onCheckedChange={(v) => set('auto_trader_enabled', v)} className="scale-75" disabled={!form.enabled} />
+              <Switch checked={form.orchestrator_enabled} onCheckedChange={(v) => set('orchestrator_enabled', v)} className="scale-75" disabled={!form.enabled} />
             </div>
             <div className="grid grid-cols-2 gap-2.5">
-              <NumericField label="Min Edge for Auto-Trade %" help="Higher bar than detection" value={form.auto_trader_min_edge} onChange={(v) => set('auto_trader_min_edge', v)} min={0} max={100} step={0.5} disabled={!form.enabled || !form.auto_trader_enabled} />
-              <NumericField label="Max Intent Age (min)" help="Expire stale intents" value={form.auto_trader_max_age_minutes} onChange={(v) => set('auto_trader_max_age_minutes', v)} min={1} max={1440} disabled={!form.enabled || !form.auto_trader_enabled} />
+              <NumericField label="Min Edge for Orchestrator Trade %" help="Higher bar than detection" value={form.orchestrator_min_edge} onChange={(v) => set('orchestrator_min_edge', v)} min={0} max={100} step={0.5} disabled={!form.enabled || !form.orchestrator_enabled} />
+              <NumericField label="Max Intent Age (min)" help="Expire stale intents" value={form.orchestrator_max_age_minutes} onChange={(v) => set('orchestrator_max_age_minutes', v)} min={1} max={1440} disabled={!form.enabled || !form.orchestrator_enabled} />
             </div>
             {/* Info */}
             <div className="flex items-start gap-2 p-2.5 bg-purple-500/5 border border-purple-500/20 rounded-lg">
               <Target className="w-3.5 h-3.5 text-purple-400 mt-0.5 shrink-0" />
               <p className="text-[10px] text-muted-foreground">
-                Trade intents flow through the auto-trader's full safety pipeline: circuit breakers, risk scoring, AI judge, depth analysis, and position limits.
+                Trade intents flow through the trader orchestrator's full safety pipeline: circuit breakers, risk scoring, AI judge, depth analysis, and position limits.
               </p>
             </div>
           </Section>
@@ -679,3 +679,4 @@ export default function NewsWorkflowSettingsFlyout({
     </>
   )
 }
+

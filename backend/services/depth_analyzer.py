@@ -71,7 +71,7 @@ class DepthCheck(Base):
     vwap_price = Column(Float)
     slippage_percent = Column(Float)
     checked_at = Column(DateTime, default=datetime.utcnow)
-    trade_context = Column(String, nullable=True)  # "auto_trader" or "copy_trader"
+    trade_context = Column(String, nullable=True)  # "trader_orchestrator" or "copy_trader"
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ class DepthAnalyzer:
         required_size_usd : float
             How much USD-equivalent liquidity the trade needs.
         trade_context : str, optional
-            Free-form label persisted for auditing (e.g. ``"auto_trader"``).
+            Free-form label persisted for auditing (e.g. ``"trader_orchestrator"``).
 
         Returns
         -------

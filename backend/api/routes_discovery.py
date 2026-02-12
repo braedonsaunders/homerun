@@ -1544,7 +1544,7 @@ async def get_insider_intents(
     ),
     limit: int = Query(default=100, ge=1, le=1000),
 ):
-    """List insider trade intents for the autotrader pipeline."""
+    """List insider trade intents for the trader orchestrator pipeline."""
     if status_filter and status_filter not in {
         "pending",
         "submitted",

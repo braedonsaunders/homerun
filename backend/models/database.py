@@ -454,14 +454,14 @@ class NewsWorkflowFinding(Base):
     evidence = Column(JSON, nullable=True)
     reasoning = Column(Text, nullable=True)
     actionable = Column(Boolean, default=False, nullable=False)
-    consumed_by_auto_trader = Column(Boolean, default=False, nullable=False)
+    consumed_by_orchestrator = Column(Boolean, default=False, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         Index("idx_news_finding_created", "created_at"),
         Index("idx_news_finding_actionable", "actionable"),
-        Index("idx_news_finding_consumed", "consumed_by_auto_trader"),
+        Index("idx_news_finding_consumed", "consumed_by_orchestrator"),
         Index("idx_news_finding_signal", "signal_key", unique=True),
     )
 
@@ -865,9 +865,9 @@ class AppSettings(Base):
     news_workflow_min_edge_percent = Column(Float, default=8.0)
     news_workflow_min_confidence = Column(Float, default=0.6)
     news_workflow_require_second_source = Column(Boolean, default=False)
-    news_workflow_auto_trader_enabled = Column(Boolean, default=True)
-    news_workflow_auto_trader_min_edge = Column(Float, default=10.0)
-    news_workflow_auto_trader_max_age_minutes = Column(Integer, default=120)
+    news_workflow_orchestrator_enabled = Column(Boolean, default=True)
+    news_workflow_orchestrator_min_edge = Column(Float, default=10.0)
+    news_workflow_orchestrator_max_age_minutes = Column(Integer, default=120)
     news_workflow_scan_interval_seconds = Column(Integer, default=120)
     news_workflow_model = Column(String, nullable=True)
     news_workflow_cycle_spend_cap_usd = Column(Float, default=0.25)
@@ -891,9 +891,9 @@ class AppSettings(Base):
     weather_workflow_min_model_agreement = Column(Float, default=0.75)
     weather_workflow_min_liquidity = Column(Float, default=500.0)
     weather_workflow_max_markets_per_scan = Column(Integer, default=200)
-    weather_workflow_auto_trader_enabled = Column(Boolean, default=True)
-    weather_workflow_auto_trader_min_edge = Column(Float, default=10.0)
-    weather_workflow_auto_trader_max_age_minutes = Column(Integer, default=240)
+    weather_workflow_orchestrator_enabled = Column(Boolean, default=True)
+    weather_workflow_orchestrator_min_edge = Column(Float, default=10.0)
+    weather_workflow_orchestrator_max_age_minutes = Column(Integer, default=240)
     weather_workflow_default_size_usd = Column(Float, default=10.0)
     weather_workflow_max_size_usd = Column(Float, default=50.0)
     weather_workflow_model = Column(String, nullable=True)
@@ -1935,13 +1935,13 @@ class WorkerSnapshot(Base):
     stats_json = Column(JSON, default=dict)
 
 
-# ==================== AUTOTRADER PERSISTENCE ====================
+# ==================== TRADER ORCHESTRATOR PERSISTENCE ====================
 
 
-class AutoTraderControl(Base):
-    """Control flags for the dedicated autotrader worker loop."""
+class TraderOrchestratorControl(Base):
+    """Control flags for the dedicated trader orchestrator worker loop."""
 
-    __tablename__ = "auto_trader_control"
+    __tablename__ = "trader_orchestrator_control"
 
     id = Column(String, primary_key=True, default="default")
     is_enabled = Column(Boolean, default=False)
@@ -1954,10 +1954,10 @@ class AutoTraderControl(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class AutoTraderSnapshot(Base):
-    """Latest autotrader status/performance snapshot."""
+class TraderOrchestratorSnapshot(Base):
+    """Latest orchestrator status/performance snapshot."""
 
-    __tablename__ = "auto_trader_snapshot"
+    __tablename__ = "trader_orchestrator_snapshot"
 
     id = Column(String, primary_key=True, default="latest")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1966,76 +1966,136 @@ class AutoTraderSnapshot(Base):
     enabled = Column(Boolean, default=False)
     current_activity = Column(String, nullable=True)
     interval_seconds = Column(Integer, default=2)
-    signals_seen = Column(Integer, default=0)
-    signals_selected = Column(Integer, default=0)
+    traders_total = Column(Integer, default=0)
+    traders_running = Column(Integer, default=0)
     decisions_count = Column(Integer, default=0)
-    trades_count = Column(Integer, default=0)
-    open_positions = Column(Integer, default=0)
+    orders_count = Column(Integer, default=0)
+    open_orders = Column(Integer, default=0)
+    gross_exposure_usd = Column(Float, default=0.0)
     daily_pnl = Column(Float, default=0.0)
     last_error = Column(Text, nullable=True)
     stats_json = Column(JSON, default=dict)
 
 
-class AutoTraderPolicy(Base):
-    """Source-level and global policies used by autotrader selection/risk engine."""
+class Trader(Base):
+    """Single trader definition owned by the orchestrator."""
 
-    __tablename__ = "auto_trader_policies"
+    __tablename__ = "traders"
 
-    policy_key = Column(String, primary_key=True)  # global | source:<name>
-    source = Column(String, nullable=True, index=True)  # null when global policy row
-    enabled = Column(Boolean, default=True)
-    weight = Column(Float, default=1.0)
-    daily_budget_usd = Column(Float, default=100.0)
-    max_open_positions = Column(Integer, default=10)
-    min_signal_score = Column(Float, default=0.0)
-    size_multiplier = Column(Float, default=1.0)
-    cooldown_seconds = Column(Integer, default=0)
-    max_daily_loss = Column(Float, nullable=True)
-    max_total_open_positions = Column(Integer, nullable=True)
-    max_per_market_exposure = Column(Float, nullable=True)
-    max_per_event_exposure = Column(Float, nullable=True)
-    kill_switch = Column(Boolean, nullable=True)
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    strategy_key = Column(String, nullable=False, index=True)
+    strategy_version = Column(String, nullable=False, default="v1")
+    sources_json = Column(JSON, default=list)
+    params_json = Column(JSON, default=dict)
+    risk_limits_json = Column(JSON, default=dict)
     metadata_json = Column(JSON, default=dict)
+    is_enabled = Column(Boolean, default=True)
+    is_paused = Column(Boolean, default=False)
+    interval_seconds = Column(Integer, default=60)
+    requested_run_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class AutoTraderDecision(Base):
-    """Audit log for all autotrader decisions, including skipped signals."""
+class TraderSignalCursor(Base):
+    """Per-trader cursor to bound signal scans and reduce repeated range scans."""
 
-    __tablename__ = "auto_trader_decisions"
+    __tablename__ = "trader_signal_cursor"
+
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_signal_created_at = Column(DateTime, nullable=True)
+    last_signal_id = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TraderDecision(Base):
+    """Decision audit log for every trader evaluation."""
+
+    __tablename__ = "trader_decisions"
 
     id = Column(String, primary_key=True)
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     signal_id = Column(
-        String, ForeignKey("trade_signals.id", ondelete="SET NULL"), nullable=True
+        String,
+        ForeignKey("trade_signals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     source = Column(String, nullable=False, index=True)
-    decision = Column(String, nullable=False)  # selected | skipped | submitted | executed | failed
+    strategy_key = Column(String, nullable=False, index=True)
+    decision = Column(String, nullable=False)  # selected | skipped | blocked | failed
     reason = Column(Text, nullable=True)
     score = Column(Float, nullable=True)
     event_id = Column(String, nullable=True, index=True)
     trace_id = Column(String, nullable=True, index=True)
-    policy_snapshot_json = Column(JSON, default=dict)
+    checks_summary_json = Column(JSON, default=dict)
     risk_snapshot_json = Column(JSON, default=dict)
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        Index("idx_auto_trader_decisions_created", "created_at"),
-        Index("idx_auto_trader_decisions_signal", "signal_id"),
-        Index("idx_auto_trader_decisions_decision", "decision"),
+        Index("idx_trader_decisions_created", "created_at"),
+        Index("idx_trader_decisions_decision", "decision"),
+        Index("idx_trader_decisions_trader_signal", "trader_id", "signal_id"),
     )
 
 
-class AutoTraderTrade(Base):
-    """Persisted execution records tied back to originating normalized signals."""
+class TraderDecisionCheck(Base):
+    """Per-rule decision evaluation records for explainability."""
 
-    __tablename__ = "auto_trader_trades"
+    __tablename__ = "trader_decision_checks"
 
     id = Column(String, primary_key=True)
-    signal_id = Column(String, ForeignKey("trade_signals.id"), nullable=False, index=True)
     decision_id = Column(
-        String, ForeignKey("auto_trader_decisions.id", ondelete="SET NULL"), nullable=True
+        String,
+        ForeignKey("trader_decisions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    check_key = Column(String, nullable=False, index=True)
+    check_label = Column(String, nullable=False)
+    passed = Column(Boolean, nullable=False, default=False)
+    score = Column(Float, nullable=True)
+    detail = Column(Text, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),
+    )
+
+
+class TraderOrder(Base):
+    """Execution records owned by a trader and tied to a decision/signal."""
+
+    __tablename__ = "trader_orders"
+
+    id = Column(String, primary_key=True)
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    signal_id = Column(String, ForeignKey("trade_signals.id"), nullable=True, index=True)
+    decision_id = Column(
+        String,
+        ForeignKey("trader_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     source = Column(String, nullable=False, index=True)
     market_id = Column(String, nullable=False, index=True)
@@ -2059,17 +2119,59 @@ class AutoTraderTrade(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
-        Index("idx_auto_trader_trades_created", "created_at"),
-        Index("idx_auto_trader_trades_status", "status"),
+        Index("idx_trader_orders_created", "created_at"),
+        Index("idx_trader_orders_status", "status"),
+        Index("idx_trader_orders_trader_created", "trader_id", "created_at"),
     )
 
 
-class AutoTraderEvent(Base):
-    """Immutable audit/event log for all command center activity."""
+class TraderSignalConsumption(Base):
+    """Per-trader signal consumption ledger."""
 
-    __tablename__ = "auto_trader_events"
+    __tablename__ = "trader_signal_consumption"
 
     id = Column(String, primary_key=True)
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    signal_id = Column(
+        String,
+        ForeignKey("trade_signals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    decision_id = Column(
+        String,
+        ForeignKey("trader_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    outcome = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    consumed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("trader_id", "signal_id", name="uq_trader_signal_consumption"),
+        Index("idx_trader_signal_consumption_consumed", "consumed_at"),
+    )
+
+
+class TraderEvent(Base):
+    """Immutable audit/event log for orchestrator and trader lifecycle events."""
+
+    __tablename__ = "trader_events"
+
+    id = Column(String, primary_key=True)
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     event_type = Column(String, nullable=False, index=True)
     severity = Column(String, nullable=False, default="info")
     source = Column(String, nullable=True, index=True)
@@ -2080,70 +2182,28 @@ class AutoTraderEvent(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     __table_args__ = (
-        Index("idx_auto_trader_events_type_created", "event_type", "created_at"),
+        Index("idx_trader_events_type_created", "event_type", "created_at"),
     )
 
 
-class AutoTraderDecisionCheck(Base):
-    """Per-rule decision evaluation records for explainability."""
+class TraderConfigRevision(Base):
+    """Versioned orchestrator/trader snapshots for audit and rollback."""
 
-    __tablename__ = "auto_trader_decision_checks"
+    __tablename__ = "trader_config_revisions"
 
     id = Column(String, primary_key=True)
-    decision_id = Column(
+    trader_id = Column(
         String,
-        ForeignKey("auto_trader_decisions.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("traders.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
-    check_key = Column(String, nullable=False, index=True)
-    check_label = Column(String, nullable=False)
-    passed = Column(Boolean, nullable=False, default=False)
-    score = Column(Float, nullable=True)
-    detail = Column(Text, nullable=True)
-    payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    __table_args__ = (
-        Index("idx_auto_trader_decision_checks_decision_created", "decision_id", "created_at"),
-    )
-
-
-class AutoTraderPreflightRun(Base):
-    """Live-start preflight checks and arming token lifecycle."""
-
-    __tablename__ = "auto_trader_preflight_runs"
-
-    id = Column(String, primary_key=True)
-    requested_mode = Column(String, nullable=False, default="live")
-    requested_by = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="failed")  # passed | failed
-    checks_json = Column(JSON, default=list)
-    failed_checks_json = Column(JSON, default=list)
-    arm_token_hash = Column(String, nullable=True, index=True)
-    arm_expires_at = Column(DateTime, nullable=True)
-    armed_at = Column(DateTime, nullable=True)
-    consumed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    __table_args__ = (
-        Index("idx_auto_trader_preflight_status_created", "status", "created_at"),
-    )
-
-
-class AutoTraderConfigRevision(Base):
-    """Versioned control/policy snapshots for rollback and audit history."""
-
-    __tablename__ = "auto_trader_config_revisions"
-
-    id = Column(String, primary_key=True)
     operator = Column(String, nullable=True)
     reason = Column(Text, nullable=True)
-    control_before_json = Column(JSON, default=dict)
-    policies_before_json = Column(JSON, default=dict)
-    control_after_json = Column(JSON, default=dict)
-    policies_after_json = Column(JSON, default=dict)
+    orchestrator_before_json = Column(JSON, default=dict)
+    orchestrator_after_json = Column(JSON, default=dict)
+    trader_before_json = Column(JSON, default=dict)
+    trader_after_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 # ==================== WORLD INTELLIGENCE ====================
@@ -2553,12 +2613,54 @@ def _migrate_schema(connection):
             logger.debug("idx_war_identity_unique may already exist: %s", e)
 
 
+def _legacy_autotrader_tables(connection) -> list[str]:
+    inspector = sa_inspect(connection)
+    return sorted(
+        table_name
+        for table_name in inspector.get_table_names()
+        if table_name.startswith("auto_trader_")
+    )
+
+
+def _drop_all_user_tables(connection) -> None:
+    inspector = sa_inspect(connection)
+    table_names = [
+        table_name
+        for table_name in inspector.get_table_names()
+        if not table_name.startswith("sqlite_")
+    ]
+    if not table_names:
+        return
+
+    if connection.dialect.name == "sqlite":
+        connection.execute(text("PRAGMA foreign_keys=OFF"))
+    try:
+        for table_name in table_names:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+    finally:
+        if connection.dialect.name == "sqlite":
+            connection.execute(text("PRAGMA foreign_keys=ON"))
+
+
 async def init_database():
     """Initialize database tables and migrate schema for existing databases."""
     async with async_engine.begin() as conn:
+        legacy_tables = await conn.run_sync(_legacy_autotrader_tables)
+        if legacy_tables:
+            logger.warning(
+                "Legacy autotrader schema detected. Performing destructive reset.",
+                extra={"legacy_tables": legacy_tables},
+            )
+            await conn.run_sync(_drop_all_user_tables)
+
         await conn.run_sync(_prepare_news_uniqueness)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_schema)
+        remaining_legacy = await conn.run_sync(_legacy_autotrader_tables)
+        if remaining_legacy:
+            raise RuntimeError(
+                f"Legacy auto_trader tables remain after init: {remaining_legacy}"
+            )
 
 
 async def get_db_session() -> AsyncSession:

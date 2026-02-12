@@ -732,7 +732,7 @@ class MLClassifier:
         self, opportunity: ArbitrageOpportunity
     ) -> tuple[bool, str, dict]:
         """
-        Integration point for auto_trader.
+        Integration point for trader orchestrator.
 
         Returns
         -------

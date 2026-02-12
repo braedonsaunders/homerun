@@ -1,6 +1,6 @@
 """Normalized trade signal bus helpers.
 
-Worker pipelines emit into ``trade_signals`` and consumers (autotrader/UI)
+Worker pipelines emit into ``trade_signals`` and consumers (trader orchestrator/UI)
 read from one normalized contract.
 """
 

@@ -178,7 +178,7 @@ DEFAULT_PARAM_SPECS: list[ParameterSpec] = [
         1000.0,
         20000.0,
         1000.0,
-        "Minimum market liquidity for auto trader (USD)",
+        "Minimum market liquidity for trader orchestrator (USD)",
         "entry_criteria",
     ),
     ParameterSpec(

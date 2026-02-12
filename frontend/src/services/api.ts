@@ -1251,42 +1251,21 @@ export const emergencyStopTrading = async (): Promise<{ status: string; cancelle
   return data
 }
 
-// ==================== AUTO TRADER ====================
+// ==================== TRADER ORCHESTRATOR ====================
 
-export interface AutoTraderConfig {
+export interface TraderOrchestratorConfig {
   mode: string
+  kill_switch: boolean
   run_interval_seconds: number
-  trading_domains?: string[]
+  global_risk: {
+    max_gross_exposure_usd: number
+    max_daily_loss_usd: number
+    max_orders_per_cycle: number
+  }
+  trading_domains: string[]
   enabled_strategies: string[]
   llm_verify_trades: boolean
-  llm_verify_strategies: string[]
-  auto_ai_scoring: boolean
   paper_account_id?: string | null
-  paper_enable_spread_exits?: boolean
-  paper_take_profit_pct?: number
-  paper_stop_loss_pct?: number
-  max_daily_loss_usd: number
-  max_concurrent_positions: number
-  max_per_market_exposure: number
-  max_per_event_exposure: number
-  news_workflow_enabled: boolean
-  weather_workflow_enabled: boolean
-}
-
-export interface AutoTraderSourcePolicy {
-  enabled: boolean
-  weight: number
-  daily_budget_usd: number
-  max_open_positions: number
-  min_signal_score: number
-  size_multiplier: number
-  cooldown_seconds: number
-  max_daily_loss?: number | null
-  max_total_open_positions?: number | null
-  max_per_market_exposure?: number | null
-  max_per_event_exposure?: number | null
-  kill_switch?: boolean | null
-  metadata?: Record<string, any>
 }
 
 export interface WorkerStatus {
@@ -1325,143 +1304,7 @@ export interface TradeSignal {
   updated_at: string | null
 }
 
-export interface AutoTraderTrade {
-  id: string
-  opportunity_id: string
-  strategy: string
-  executed_at: string
-  total_cost: number
-  expected_profit: number
-  actual_profit: number | null
-  status: string
-  mode: string
-  source?: string
-  market_id?: string
-  market_question?: string | null
-  direction?: string | null
-  reason?: string | null
-  created_at?: string | null
-  event_id?: string | null
-  trace_id?: string | null
-  decision_id?: string | null
-  signal_id?: string | null
-  payload?: Record<string, any>
-  error_message?: string | null
-}
-
-export interface AutoTraderExposure {
-  as_of: string | null
-  global: {
-    daily_budget_usd: number
-    budget_used_usd: number
-    budget_remaining_usd: number
-    budget_utilization_pct: number
-    max_total_open_positions: number
-    open_positions: number
-    max_per_market_exposure: number
-    max_per_event_exposure: number
-    kill_switch: boolean
-  }
-  sources: Array<{
-    source: string
-    enabled: boolean
-    daily_budget_usd: number
-    budget_used_usd: number
-    budget_remaining_usd: number
-    budget_utilization_pct: number
-    max_open_positions: number
-    open_positions: number
-    open_position_utilization_pct: number
-    weight: number
-    min_signal_score: number
-    size_multiplier: number
-    cooldown_seconds: number
-    metadata: Record<string, any>
-  }>
-  markets: Array<{
-    market_id: string
-    notional_usd: number
-    open_positions: number
-    directions: string[]
-  }>
-  events: Array<{
-    event_key: string
-    notional_usd: number
-    open_positions: number
-  }>
-}
-
-export interface AutoTraderSourceMetrics {
-  source: string
-  policy_enabled: boolean
-  pending_signals: number
-  decisions_total: number
-  selected: number
-  skipped: number
-  executed: number
-  submitted: number
-  failed: number
-  skip_rate: number
-  success_rate: number
-  trades: Record<string, number>
-  avg_decision_score: number
-  decisions_last_hour: number
-  throughput_per_minute: number
-  avg_decision_to_trade_latency_seconds: number
-  top_skip_reasons: Array<{ reason: string; count: number }>
-  last_decision_at: string | null
-  last_trade_at: string | null
-  last_pending_signal_at: string | null
-}
-
-export interface AutoTraderMetrics {
-  as_of: string | null
-  summary: {
-    sources_tracked: number
-    active_sources: number
-    decisions_last_hour: number
-  }
-  decision_funnel: {
-    seen: number
-    pending: number
-    selected: number
-    skipped: number
-    submitted: number
-    executed: number
-    failed: number
-  }
-  skip_reasons: Array<{ reason: string; count: number }>
-  sources: AutoTraderSourceMetrics[]
-}
-
-export interface AutoTraderDecision {
-  id: string
-  signal_id: string | null
-  source: string
-  decision: string
-  reason: string | null
-  score: number | null
-  event_id?: string | null
-  trace_id?: string | null
-  policy_snapshot: Record<string, any>
-  risk_snapshot: Record<string, any>
-  payload: Record<string, any>
-  created_at: string | null
-}
-
-export interface AutoTraderEvent {
-  id: string
-  event_type: string
-  severity: 'info' | 'warn' | 'error' | string
-  source: string | null
-  operator: string | null
-  message: string | null
-  trace_id: string | null
-  payload: Record<string, any>
-  created_at: string | null
-}
-
-export interface AutoTraderDecisionCheck {
+export interface TraderDecisionCheck {
   id: string
   check_key: string
   check_label: string
@@ -1472,31 +1315,7 @@ export interface AutoTraderDecisionCheck {
   created_at: string | null
 }
 
-export interface AutoTraderDecisionDetail {
-  decision: AutoTraderDecision
-  checks: AutoTraderDecisionCheck[]
-  trade: {
-    id: string
-    signal_id: string | null
-    source: string
-    status: string
-    mode: string
-    market_id: string
-    market_question: string | null
-    direction: string | null
-    notional_usd: number | null
-    entry_price: number | null
-    effective_price: number | null
-    actual_profit: number | null
-    error_message: string | null
-    created_at: string | null
-    executed_at: string | null
-  } | null
-}
-
-export interface AutoTraderOverview {
-  version: number
-  last_updated_at: string | null
+export interface TraderOrchestratorOverview {
   control: {
     is_enabled: boolean
     is_paused: boolean
@@ -1523,38 +1342,20 @@ export interface AutoTraderOverview {
     updated_at: string | null
     stats: Record<string, any>
   }
-  policies: {
-    global: AutoTraderSourcePolicy
-    sources: Record<string, AutoTraderSourcePolicy>
+  config: TraderOrchestratorConfig
+  metrics: {
+    traders_total: number
+    traders_running: number
+    decisions_count: number
+    orders_count: number
+    open_orders: number
+    gross_exposure_usd: number
+    daily_pnl: number
   }
-  config: AutoTraderConfig
-  risk: AutoTraderExposure
-  metrics: AutoTraderMetrics
-  performance: {
-    trade_counts: Record<string, number>
-    notional_total: number
-    actual_profit_total: number
-    realized_pnl_total?: number
-    unrealized_pnl_total?: number
-    total_pnl?: number
-    realized_trade_count: number
-    winning_trades: number
-    losing_trades: number
-    win_rate: number
-  }
-  health: {
-    ok: boolean
-    checks: Array<{
-      id: string
-      ok: boolean
-      message: string
-      lag_seconds?: number | null
-      enabled_sources?: string[]
-    }>
-  }
+  traders: Trader[]
 }
 
-export interface AutoTraderStatus {
+export interface TraderOrchestratorStatus {
   mode: string
   running: boolean
   trading_active: boolean
@@ -1580,7 +1381,7 @@ export interface AutoTraderStatus {
     trades_count: number
     daily_pnl: number
   }
-  config: AutoTraderConfig
+  config: TraderOrchestratorConfig
   stats: {
     total_trades: number
     winning_trades: number
@@ -1600,12 +1401,7 @@ export interface AutoTraderStatus {
   }
 }
 
-export interface AutoTraderEventsResponse {
-  events: AutoTraderEvent[]
-  next_cursor: string | null
-}
-
-export interface AutoTraderLivePreflightResponse {
+export interface TraderOrchestratorLivePreflightResponse {
   status: 'passed' | 'failed' | string
   preflight_id: string
   requested_mode: string
@@ -1613,7 +1409,7 @@ export interface AutoTraderLivePreflightResponse {
   failed_checks: Array<Record<string, any>>
 }
 
-export interface AutoTraderLiveArmResponse {
+export interface TraderOrchestratorLiveArmResponse {
   status: 'armed' | string
   preflight_id: string
   arm_token: string
@@ -1621,12 +1417,12 @@ export interface AutoTraderLiveArmResponse {
   ttl_seconds: number
 }
 
-const mapOverviewToStatus = (overview: AutoTraderOverview): AutoTraderStatus => {
-  const control = overview.control || ({} as AutoTraderOverview['control'])
-  const worker = overview.worker || ({} as AutoTraderOverview['worker'])
-  const performance = overview.performance || ({} as AutoTraderOverview['performance'])
+const mapOverviewToStatus = (overview: TraderOrchestratorOverview): TraderOrchestratorStatus => {
+  const control = overview.control || ({} as TraderOrchestratorOverview['control'])
+  const worker = overview.worker || ({} as TraderOrchestratorOverview['worker'])
+  const metrics = overview.metrics || ({} as TraderOrchestratorOverview['metrics'])
   const tradingActive = Boolean(control.is_enabled) && !Boolean(control.is_paused) && !Boolean(control.kill_switch)
-  const totalTrades = Object.values(performance.trade_counts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
+  const totalTrades = Number(metrics.orders_count || 0)
 
   return {
     mode: control.mode || 'paper',
@@ -1657,43 +1453,283 @@ const mapOverviewToStatus = (overview: AutoTraderOverview): AutoTraderStatus => 
     config: overview.config,
     stats: {
       total_trades: totalTrades,
-      winning_trades: Number(performance.winning_trades || 0),
-      losing_trades: Number(performance.losing_trades || 0),
-      win_rate: Number(performance.win_rate || 0),
-      total_profit: Number((performance.total_pnl ?? performance.actual_profit_total) || 0),
-      total_invested: Number(performance.notional_total || 0),
-      roi_percent:
-        Number(performance.notional_total || 0) > 0
-          ? Number((Number((performance.total_pnl ?? performance.actual_profit_total) || 0) / Number(performance.notional_total || 0)) * 100)
-          : 0,
-      daily_trades: Number(worker.trades_count || 0),
-      daily_profit: Number(worker.daily_pnl || 0),
+      winning_trades: 0,
+      losing_trades: 0,
+      win_rate: 0,
+      total_profit: Number(metrics.daily_pnl || 0),
+      total_invested: Number(metrics.gross_exposure_usd || 0),
+      roi_percent: 0,
+      daily_trades: Number(metrics.orders_count || 0),
+      daily_profit: Number(metrics.daily_pnl || 0),
       consecutive_losses: 0,
       circuit_breaker_active: Boolean(control.kill_switch),
       last_trade_at: worker.last_run_at || null,
-      opportunities_seen: Number(worker.signals_seen || 0),
-      opportunities_executed: Number(worker.signals_selected || 0),
-      opportunities_skipped: Math.max(0, Number(worker.signals_seen || 0) - Number(worker.signals_selected || 0)),
+      opportunities_seen: Number(metrics.decisions_count || 0),
+      opportunities_executed: Number(metrics.orders_count || 0),
+      opportunities_skipped: Math.max(0, Number(metrics.decisions_count || 0) - Number(metrics.orders_count || 0)),
     },
   }
 }
 
-export const getAutoTraderOverview = async (): Promise<AutoTraderOverview> => {
-  const { data } = await api.get('/auto-trader/overview')
+export const getTraderOrchestratorOverview = async (): Promise<TraderOrchestratorOverview> => {
+  const { data } = await api.get('/trader-orchestrator/overview')
   return data
 }
 
-export const getAutoTraderStatus = async (): Promise<AutoTraderStatus> => {
-  const overview = await getAutoTraderOverview()
+export const getTraderOrchestratorStatus = async (): Promise<TraderOrchestratorStatus> => {
+  const overview = await getTraderOrchestratorOverview()
   return mapOverviewToStatus(overview)
 }
 
-export const getAutoTraderEvents = async (params?: {
-  cursor?: string
-  limit?: number
-  types?: string[]
-}): Promise<AutoTraderEventsResponse> => {
-  const { data } = await api.get('/auto-trader/events', {
+export const startTraderOrchestrator = async (payload?: {
+  mode?: string
+  requested_by?: string
+}): Promise<{ status: string; mode: string; message: string }> => {
+  const { data } = await api.post('/trader-orchestrator/start', {
+    mode: payload?.mode || 'paper',
+    requested_by: payload?.requested_by,
+  })
+  return {
+    status: data.status || 'started',
+    mode: data.control?.mode || payload?.mode || 'paper',
+    message: 'Trader orchestrator start command submitted.',
+  }
+}
+
+export const stopTraderOrchestrator = async (): Promise<{ status: string }> => {
+  const { data } = await api.post('/trader-orchestrator/stop')
+  return { status: data.status || 'stopped' }
+}
+
+export const runTraderOrchestratorLivePreflight = async (payload?: {
+  mode?: string
+  requested_by?: string
+}): Promise<TraderOrchestratorLivePreflightResponse> => {
+  const { data } = await api.post('/trader-orchestrator/live/preflight', {
+    mode: payload?.mode || 'live',
+    requested_by: payload?.requested_by,
+  })
+  return data
+}
+
+export const armTraderOrchestratorLiveStart = async (payload: {
+  preflight_id: string
+  ttl_seconds?: number
+  requested_by?: string
+}): Promise<TraderOrchestratorLiveArmResponse> => {
+  const { data } = await api.post('/trader-orchestrator/live/arm', {
+    preflight_id: payload.preflight_id,
+    ttl_seconds: payload.ttl_seconds ?? 300,
+    requested_by: payload.requested_by,
+  })
+  return data
+}
+
+export const startTraderOrchestratorLive = async (payload: {
+  arm_token: string
+  mode?: string
+  requested_by?: string
+}) => {
+  const { data } = await api.post('/trader-orchestrator/live/start', {
+    arm_token: payload.arm_token,
+    mode: payload.mode || 'live',
+    requested_by: payload.requested_by,
+  })
+  return data
+}
+
+export const stopTraderOrchestratorLive = async (requestedBy?: string) => {
+  const { data } = await api.post('/trader-orchestrator/live/stop', {
+    requested_by: requestedBy,
+  })
+  return data
+}
+
+export const setTraderOrchestratorLiveKillSwitch = async (enabled: boolean, requestedBy?: string) => {
+  const { data } = await api.post('/trader-orchestrator/kill-switch', {
+    enabled,
+    requested_by: requestedBy,
+  })
+  return data
+}
+
+export interface Trader {
+  id: string
+  name: string
+  description?: string | null
+  strategy_key: string
+  strategy_version: string
+  sources: string[]
+  params: Record<string, any>
+  risk_limits: Record<string, any>
+  metadata: Record<string, any>
+  is_enabled: boolean
+  is_paused: boolean
+  interval_seconds: number
+  requested_run_at: string | null
+  last_run_at: string | null
+  next_run_at: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface TraderTemplate {
+  id: string
+  name: string
+  description?: string | null
+  strategy_key: string
+  sources: string[]
+  interval_seconds: number
+  params: Record<string, any>
+  risk_limits: Record<string, any>
+}
+
+export interface TraderDecision {
+  id: string
+  trader_id: string
+  signal_id: string | null
+  source: string
+  strategy_key: string
+  decision: string
+  reason: string | null
+  score: number | null
+  event_id: string | null
+  trace_id: string | null
+  checks_summary: Record<string, any>
+  risk_snapshot: Record<string, any>
+  payload: Record<string, any>
+  created_at: string | null
+}
+
+export interface TraderOrder {
+  id: string
+  trader_id: string
+  signal_id: string | null
+  decision_id: string | null
+  source: string
+  market_id: string
+  market_question: string | null
+  direction: string | null
+  mode: string
+  status: string
+  notional_usd: number | null
+  entry_price: number | null
+  effective_price: number | null
+  edge_percent: number | null
+  confidence: number | null
+  actual_profit: number | null
+  reason: string | null
+  payload: Record<string, any>
+  error_message: string | null
+  event_id: string | null
+  trace_id: string | null
+  created_at: string | null
+  executed_at: string | null
+  updated_at: string | null
+}
+
+export interface TraderEvent {
+  id: string
+  trader_id: string | null
+  event_type: string
+  severity: string
+  source: string | null
+  operator: string | null
+  message: string | null
+  trace_id: string | null
+  payload: Record<string, any>
+  created_at: string | null
+}
+
+export interface TraderDecisionDetail {
+  decision: TraderDecision
+  checks: TraderDecisionCheck[]
+  orders: TraderOrder[]
+}
+
+export interface TraderSource {
+  key: string
+  label: string
+  description: string
+  domains: string[]
+  signal_types: string[]
+}
+
+export const getTraders = async (): Promise<Trader[]> => {
+  const { data } = await api.get('/traders')
+  return data.traders || []
+}
+
+export const createTrader = async (payload: Record<string, any>): Promise<Trader> => {
+  const { data } = await api.post('/traders', payload)
+  return data
+}
+
+export const getTrader = async (traderId: string): Promise<Trader> => {
+  const { data } = await api.get(`/traders/${traderId}`)
+  return data
+}
+
+export const updateTrader = async (traderId: string, payload: Record<string, any>): Promise<Trader> => {
+  const { data } = await api.put(`/traders/${traderId}`, payload)
+  return data
+}
+
+export const deleteTrader = async (traderId: string): Promise<{ status: string; trader_id: string }> => {
+  const { data } = await api.delete(`/traders/${traderId}`)
+  return data
+}
+
+export const startTrader = async (traderId: string): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/start`)
+  return data
+}
+
+export const pauseTrader = async (traderId: string): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/pause`)
+  return data
+}
+
+export const runTraderOnce = async (traderId: string): Promise<Trader> => {
+  const { data } = await api.post(`/traders/${traderId}/run-once`)
+  return data
+}
+
+export const getTraderDecisions = async (
+  traderId: string,
+  params?: { decision?: string; limit?: number }
+): Promise<TraderDecision[]> => {
+  const { data } = await api.get(`/traders/${traderId}/decisions`, { params })
+  return data.decisions || []
+}
+
+export const getTraderOrders = async (
+  traderId: string,
+  params?: { status?: string; limit?: number }
+): Promise<TraderOrder[]> => {
+  const { data } = await api.get(`/traders/${traderId}/orders`, { params })
+  return data.orders || []
+}
+
+export const getAllTraderOrders = async (limitPerTrader = 150): Promise<TraderOrder[]> => {
+  const traders = await getTraders()
+  const rows = await Promise.all(
+    traders.map((trader) => getTraderOrders(trader.id, { limit: limitPerTrader }))
+  )
+  return rows
+    .flat()
+    .sort((a, b) => {
+      const left = new Date(a.created_at || 0).getTime()
+      const right = new Date(b.created_at || 0).getTime()
+      return right - left
+    })
+}
+
+export const getTraderEvents = async (
+  traderId: string,
+  params?: { cursor?: string; limit?: number; types?: string[] }
+): Promise<{ events: TraderEvent[]; next_cursor: string | null }> => {
+  const { data } = await api.get(`/traders/${traderId}/events`, {
     params: {
       cursor: params?.cursor,
       limit: params?.limit ?? 200,
@@ -1706,231 +1742,52 @@ export const getAutoTraderEvents = async (params?: {
   }
 }
 
-export const getAutoTraderDecisionDetail = async (decisionId: string): Promise<AutoTraderDecisionDetail> => {
-  const { data } = await api.get(`/auto-trader/decisions/${decisionId}`)
+export const getTraderDecisionDetail = async (decisionId: string): Promise<TraderDecisionDetail> => {
+  const { data } = await api.get(`/traders/decisions/${decisionId}`)
   return data
 }
 
-export const startAutoTrader = async (
-  mode?: string,
-  accountId?: string,
-  armToken?: string
-): Promise<{ status: string; mode: string; message: string }> => {
-  const params: Record<string, any> = { mode: mode || 'paper' }
-  if (accountId) params.account_id = accountId
-  if (armToken) params.arm_token = armToken
-  const { data } = await api.post('/auto-trader/start', null, { params })
-  return {
-    status: data.status || 'started',
-    mode: data.control?.mode || mode || 'paper',
-    message: 'Auto-trader start command submitted.',
-  }
+export const getTraderTemplates = async (): Promise<TraderTemplate[]> => {
+  const { data } = await api.get('/traders/templates')
+  return data.templates || []
 }
 
-export const stopAutoTrader = async (): Promise<{ status: string }> => {
-  const { data } = await api.post('/auto-trader/stop')
-  return { status: data.status || 'stopped' }
-}
-
-export const runAutoTraderLivePreflight = async (payload?: {
-  mode?: string
+export const createTraderFromTemplate = async (payload: {
+  template_id: string
+  overrides?: Record<string, any>
   requested_by?: string
-}): Promise<AutoTraderLivePreflightResponse> => {
-  const { data } = await api.post('/auto-trader/live/preflight', {
-    mode: payload?.mode || 'live',
-    requested_by: payload?.requested_by,
-  })
+}): Promise<Trader> => {
+  const { data } = await api.post('/traders/from-template', payload)
   return data
 }
 
-export const armAutoTraderLiveStart = async (payload: {
-  preflight_id: string
-  ttl_seconds?: number
-  requested_by?: string
-}): Promise<AutoTraderLiveArmResponse> => {
-  const { data } = await api.post('/auto-trader/live/arm', {
-    preflight_id: payload.preflight_id,
-    ttl_seconds: payload.ttl_seconds ?? 300,
-    requested_by: payload.requested_by,
-  })
-  return data
+export const getTraderSources = async (): Promise<TraderSource[]> => {
+  const { data } = await api.get('/trader-sources')
+  return data.sources || []
 }
 
-export const startAutoTraderLive = async (payload: {
-  arm_token: string
-  mode?: string
-  requested_by?: string
-}) => {
-  const { data } = await api.post('/auto-trader/live/start', {
-    arm_token: payload.arm_token,
-    mode: payload.mode || 'live',
-    requested_by: payload.requested_by,
-  })
-  return data
-}
-
-export const stopAutoTraderLive = async (requestedBy?: string) => {
-  const { data } = await api.post('/auto-trader/live/stop', null, {
-    params: { requested_by: requestedBy },
-  })
-  return data
-}
-
-export const setAutoTraderLiveKillSwitch = async (enabled: boolean, requestedBy?: string) => {
-  const { data } = await api.post('/auto-trader/live/kill-switch', {
-    enabled,
-    requested_by: requestedBy,
-  })
-  return data
-}
-
-export const updateAutoTraderConfig = async (
-  config: Partial<AutoTraderConfig> & { requested_by?: string; reason?: string }
-): Promise<{ status: string; config: AutoTraderConfig; control: Record<string, any>; policies: Record<string, any> }> => {
-  const payload: Record<string, any> = {}
-  if (config.mode !== undefined) payload.mode = config.mode
-  if (config.run_interval_seconds !== undefined) payload.run_interval_seconds = config.run_interval_seconds
-  if (config.trading_domains !== undefined) payload.trading_domains = config.trading_domains
-  if (config.enabled_strategies !== undefined) payload.enabled_strategies = config.enabled_strategies
-  if (config.llm_verify_trades !== undefined) payload.llm_verify_trades = config.llm_verify_trades
-  if (config.llm_verify_strategies !== undefined) payload.llm_verify_strategies = config.llm_verify_strategies
-  if (config.auto_ai_scoring !== undefined) payload.auto_ai_scoring = config.auto_ai_scoring
-  if (config.paper_account_id !== undefined) payload.paper_account_id = config.paper_account_id
-  if (config.paper_enable_spread_exits !== undefined) payload.paper_enable_spread_exits = config.paper_enable_spread_exits
-  if (config.paper_take_profit_pct !== undefined) payload.paper_take_profit_pct = config.paper_take_profit_pct
-  if (config.paper_stop_loss_pct !== undefined) payload.paper_stop_loss_pct = config.paper_stop_loss_pct
-  if (config.max_daily_loss_usd !== undefined) payload.max_daily_loss_usd = config.max_daily_loss_usd
-  if (config.max_concurrent_positions !== undefined) payload.max_concurrent_positions = config.max_concurrent_positions
-  if (config.max_per_market_exposure !== undefined) payload.max_per_market_exposure = config.max_per_market_exposure
-  if (config.max_per_event_exposure !== undefined) payload.max_per_event_exposure = config.max_per_event_exposure
-  if (config.news_workflow_enabled !== undefined) payload.news_workflow_enabled = config.news_workflow_enabled
-  if (config.weather_workflow_enabled !== undefined) payload.weather_workflow_enabled = config.weather_workflow_enabled
-  if (config.requested_by !== undefined) payload.requested_by = config.requested_by
-  if (config.reason !== undefined) payload.reason = config.reason
-
-  const { data } = await api.patch('/auto-trader/config', payload)
+export const getTraderOrchestratorStats = async (): Promise<TraderOrchestratorStatus['stats']> => {
+  const overview = await getTraderOrchestratorOverview()
+  const metrics: any = overview?.metrics || {}
+  const worker: any = overview?.worker || {}
+  const control: any = overview?.control || {}
   return {
-    status: data.status || 'updated',
-    config: data.config,
-    control: data.control || {},
-    policies: data.policies || {},
+    total_trades: Number(metrics.orders_count || 0),
+    winning_trades: 0,
+    losing_trades: 0,
+    win_rate: 0,
+    total_profit: Number(metrics.daily_pnl || 0),
+    total_invested: Number(metrics.gross_exposure_usd || 0),
+    roi_percent: 0,
+    daily_trades: Number(metrics.orders_count || 0),
+    daily_profit: Number(metrics.daily_pnl || 0),
+    consecutive_losses: 0,
+    circuit_breaker_active: Boolean(control.kill_switch),
+    last_trade_at: worker.last_run_at || null,
+    opportunities_seen: Number(metrics.decisions_count || 0),
+    opportunities_executed: Number(metrics.orders_count || 0),
+    opportunities_skipped: Math.max(0, Number(metrics.decisions_count || 0) - Number(metrics.orders_count || 0)),
   }
-}
-
-export const getAutoTraderTrades = async (limit = 100, status?: string): Promise<AutoTraderTrade[]> => {
-  const { data } = await api.get('/auto-trader/trades', { params: { limit, status } })
-  const trades = data.trades || []
-  return trades.map((t: any) => ({
-    id: t.id,
-    opportunity_id: t.signal_id,
-    strategy: t.source || 'unknown',
-    executed_at: t.executed_at || t.created_at || '',
-    total_cost: Number(t.notional_usd || 0),
-    expected_profit: Number(t.payload?.expected_profit || 0),
-    actual_profit: t.actual_profit == null ? null : Number(t.actual_profit),
-    status: t.status,
-    mode: t.mode,
-    source: t.source,
-    market_id: t.market_id,
-    market_question: t.market_question,
-    direction: t.direction,
-    reason: t.reason,
-    created_at: t.created_at,
-    event_id: t.event_id,
-    trace_id: t.trace_id,
-    decision_id: t.decision_id,
-    signal_id: t.signal_id,
-    payload: t.payload,
-    error_message: t.error_message,
-  }))
-}
-
-export const getAutoTraderStats = async (): Promise<AutoTraderStatus['stats']> => {
-  const overview = await getAutoTraderOverview()
-  return mapOverviewToStatus(overview).stats
-}
-
-export const resetAutoTraderStats = async (): Promise<{ status: string; message: string }> => {
-  return { status: 'noop', message: 'Auto-trader stats are persisted and audit-backed.' }
-}
-
-export const resetCircuitBreaker = async (): Promise<{ status: string; message: string }> => {
-  const data = await setAutoTraderLiveKillSwitch(false)
-  return { status: data.status || 'updated', message: 'Kill switch disabled' }
-}
-
-export const enableLiveTrading = async (
-  maxDailyLoss = 100
-): Promise<{ status: string; warning: string; max_daily_loss: number; config: Record<string, any> }> => {
-  await updateAutoTraderConfig({
-    mode: 'live',
-    max_daily_loss_usd: maxDailyLoss,
-    reason: 'enable_live_trading',
-  })
-  const preflight = await runAutoTraderLivePreflight({ mode: 'live' })
-  if (preflight.status !== 'passed') {
-    throw new Error('Live preflight failed. Review failed checks before starting live mode.')
-  }
-  const armed = await armAutoTraderLiveStart({ preflight_id: preflight.preflight_id })
-  const started = await startAutoTraderLive({ arm_token: armed.arm_token, mode: 'live' })
-  return {
-    status: started.status || 'started',
-    warning: 'Auto-trader is now running in live mode with strict preflight gating.',
-    max_daily_loss: maxDailyLoss,
-    config: started.control || {},
-  }
-}
-
-export const emergencyStopAutoTrader = async (): Promise<{
-  status: string
-  auto_trader: string
-  mode: string
-  cancelled_orders: number
-  message: string
-}> => {
-  const data = await setAutoTraderLiveKillSwitch(true)
-  return {
-    status: data.status || 'updated',
-    auto_trader: 'paused',
-    mode: 'kill_switch',
-    cancelled_orders: 0,
-    message: 'Kill switch enabled; autotrader worker will stop selecting trades.',
-  }
-}
-
-export const getAutoTraderDecisions = async (params?: {
-  source?: string
-  decision?: string
-  limit?: number
-}): Promise<{ total: number; decisions: AutoTraderDecision[] }> => {
-  const { data } = await api.get('/auto-trader/decisions', { params })
-  return data
-}
-
-export const getAutoTraderPolicies = async (): Promise<{
-  global: AutoTraderSourcePolicy
-  sources: Record<string, AutoTraderSourcePolicy>
-}> => {
-  const { data } = await api.get('/auto-trader/policies')
-  return data
-}
-
-export const getAutoTraderExposure = async (): Promise<AutoTraderExposure> => {
-  const { data } = await api.get('/auto-trader/exposure')
-  return data
-}
-
-export const getAutoTraderMetrics = async (): Promise<AutoTraderMetrics> => {
-  const { data } = await api.get('/auto-trader/metrics')
-  return data
-}
-
-export const updateAutoTraderPolicies = async (payload: {
-  global?: Partial<AutoTraderSourcePolicy>
-  sources?: Record<string, Partial<AutoTraderSourcePolicy>>
-}) => {
-  const { data } = await api.put('/auto-trader/policies', payload)
-  return data
 }
 
 export const getSignals = async (params?: {
@@ -1981,7 +1838,7 @@ export const runWorkerOnce = async (worker: string) => {
   return data
 }
 
-export type DatabaseFlushTarget = 'scanner' | 'weather' | 'news' | 'autotrader' | 'all'
+export type DatabaseFlushTarget = 'scanner' | 'weather' | 'news' | 'trader_orchestrator' | 'all'
 
 export interface DatabaseFlushResponse {
   status: string
@@ -2297,7 +2154,7 @@ export interface ValidationOverview {
   combinatorial_validation: Record<string, unknown>
   strategy_health: ValidationStrategyHealth[]
   guardrail_config: ValidationGuardrailConfig
-  autotrader_execution_30d?: {
+  trader_orchestrator_execution_30d?: {
     window_days: number
     sample_size: number
     executed_or_open: number
@@ -2746,7 +2603,7 @@ export interface NewsWorkflowFinding {
   evidence: Record<string, unknown>
   reasoning: string
   actionable: boolean
-  consumed_by_auto_trader: boolean
+  consumed_by_orchestrator: boolean
   supporting_articles?: NewsSupportingArticle[]
   supporting_article_count?: number
   created_at: string
@@ -2849,9 +2706,9 @@ export interface NewsWorkflowSettings {
   min_edge_percent: number
   min_confidence: number
   require_second_source: boolean
-  auto_trader_enabled: boolean
-  auto_trader_min_edge: number
-  auto_trader_max_age_minutes: number
+  orchestrator_enabled: boolean
+  orchestrator_min_edge: number
+  orchestrator_max_age_minutes: number
   cycle_spend_cap_usd: number
   hourly_spend_cap_usd: number
   cycle_llm_call_cap: number
@@ -2954,9 +2811,9 @@ export interface WeatherWorkflowSettings {
   min_model_agreement: number
   min_liquidity: number
   max_markets_per_scan: number
-  auto_trader_enabled: boolean
-  auto_trader_min_edge: number
-  auto_trader_max_age_minutes: number
+  orchestrator_enabled: boolean
+  orchestrator_min_edge: number
+  orchestrator_max_age_minutes: number
   default_size_usd: number
   max_size_usd: number
   model: string | null
@@ -3070,3 +2927,4 @@ export const getWeatherWorkflowPerformance = async (
 }
 
 export default api
+

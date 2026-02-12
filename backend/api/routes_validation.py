@@ -80,7 +80,9 @@ async def get_validation_overview():
         combinatorial_validation = _get_combinatorial_validation_stats()
         strategy_health = await validation_service.get_strategy_health()
         guardrail_config = await validation_service.get_guardrail_config()
-        autotrader_execution = await validation_service.compute_autotrader_execution_metrics(days=30)
+        trader_orchestrator_execution = (
+            await validation_service.compute_trader_orchestrator_execution_metrics(days=30)
+        )
         world_intel_resolver = await validation_service.compute_world_intel_resolver_metrics(days=7)
 
         latest_optimization = optimization_results[0] if optimization_results else None
@@ -99,7 +101,7 @@ async def get_validation_overview():
             "combinatorial_validation": combinatorial_validation,
             "strategy_health": strategy_health,
             "guardrail_config": guardrail_config,
-            "autotrader_execution_30d": autotrader_execution,
+            "trader_orchestrator_execution_30d": trader_orchestrator_execution,
             "world_intel_resolver_7d": world_intel_resolver,
             "jobs": jobs,
         }
