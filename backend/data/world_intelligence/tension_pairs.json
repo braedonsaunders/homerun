@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-12T00:00:00Z",
+  "default_pairs": [
+    "US-CN",
+    "US-RU",
+    "RU-UA",
+    "IL-IR",
+    "CN-TW",
+    "IN-PK",
+    "KP-KR",
+    "US-IR",
+    "CN-PH",
+    "SA-IR"
+  ],
+  "query_names": {
+    "US": "United States",
+    "CN": "China",
+    "RU": "Russia",
+    "UA": "Ukraine",
+    "IL": "Israel",
+    "IR": "Iran",
+    "TW": "Taiwan",
+    "IN": "India",
+    "PK": "Pakistan",
+    "KP": "North Korea",
+    "KR": "South Korea",
+    "PH": "Philippines",
+    "SA": "Saudi Arabia"
+  }
+}

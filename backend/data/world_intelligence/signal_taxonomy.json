@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-12T00:00:00Z",
+  "world_signal_types": [
+    "conflict",
+    "tension",
+    "instability",
+    "convergence",
+    "anomaly",
+    "military",
+    "infrastructure"
+  ],
+  "convergence_signal_types": [
+    "conflict",
+    "protest",
+    "military_flight",
+    "military_vessel",
+    "internet_outage",
+    "fire",
+    "earthquake",
+    "infrastructure_disruption"
+  ],
+  "anomaly_monitored_signal_types": [
+    "military_flights",
+    "naval_vessels",
+    "protests",
+    "news_velocity",
+    "internet_outages",
+    "conflict_events"
+  ],
+  "market_keyword_map": {
+    "conflict": ["war", "conflict", "attack", "ceasefire", "invasion"],
+    "tension": ["sanctions", "diplomacy", "tensions", "relations"],
+    "instability": ["coup", "revolution", "collapse", "crisis"],
+    "military": ["military", "defense", "nato", "nuclear", "missile"],
+    "infrastructure": ["internet", "outage", "pipeline", "trade", "shipping"],
+    "anomaly": ["surge", "spike", "unusual"],
+    "convergence": ["escalation", "crisis"]
+  },
+  "convergence_market_keyword_map": {
+    "conflict": ["war", "conflict", "attack", "military"],
+    "protest": ["protest", "unrest", "demonstration"],
+    "military_flight": ["military", "defense", "nato"],
+    "internet_outage": ["internet", "outage", "blackout"],
+    "infrastructure_disruption": ["infrastructure", "pipeline", "port"]
+  },
+  "tension_title_keywords": [
+    "conflict",
+    "military",
+    "sanctions",
+    "war",
+    "attack",
+    "threat",
+    "nuclear"
+  ],
+  "convergence_signal_map": {
+    "protests": "protest",
+    "riots": "protest",
+    "battles": "conflict",
+    "explosions/remote violence": "conflict",
+    "violence against civilians": "conflict"
+  },
+  "acled_event_type_weights": {
+    "violence against civilians": 1.0,
+    "explosions/remote violence": 0.8,
+    "battles": 0.7,
+    "riots": 0.5,
+    "protests": 0.3,
+    "strategic developments": 0.2
+  }
+}

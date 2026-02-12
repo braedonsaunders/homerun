@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-12T00:00:00Z",
+  "feeds": {
+    "white_house": [
+      {
+        "url": "https://www.whitehouse.gov/feed/",
+        "name": "White House Blog",
+        "priority": "high",
+        "country_iso3": "USA"
+      },
+      {
+        "url": "https://www.whitehouse.gov/briefing-room/statements-releases/feed/",
+        "name": "WH Statements",
+        "priority": "critical",
+        "country_iso3": "USA"
+      },
+      {
+        "url": "https://www.whitehouse.gov/briefing-room/presidential-actions/feed/",
+        "name": "Presidential Actions",
+        "priority": "critical",
+        "country_iso3": "USA"
+      }
+    ],
+    "state_department": [
+      {
+        "url": "https://www.state.gov/rss-feed/press-releases/feed/",
+        "name": "State Dept Press",
+        "priority": "high",
+        "country_iso3": "USA"
+      },
+      {
+        "url": "https://www.state.gov/rss-feed/travel-advisories/feed/",
+        "name": "Travel Advisories",
+        "priority": "medium",
+        "country_iso3": "USA"
+      }
+    ],
+    "defense": [
+      {
+        "url": "https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945",
+        "name": "DoD News",
+        "priority": "high",
+        "country_iso3": "USA"
+      }
+    ],
+    "treasury": [
+      {
+        "url": "https://home.treasury.gov/system/files/136/treasury-rss.xml",
+        "name": "Treasury",
+        "priority": "high",
+        "country_iso3": "USA"
+      }
+    ],
+    "federal_reserve": [
+      {
+        "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+        "name": "Fed Press Releases",
+        "priority": "critical",
+        "country_iso3": "USA"
+      },
+      {
+        "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        "name": "Fed Monetary Policy",
+        "priority": "critical",
+        "country_iso3": "USA"
+      }
+    ],
+    "sec": [
+      {
+        "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&dateb=&owner=include&count=20&search_text=&start=0&output=atom",
+        "name": "SEC EDGAR Filings",
+        "priority": "medium",
+        "country_iso3": "USA"
+      },
+      {
+        "url": "https://www.sec.gov/news/pressreleases.rss",
+        "name": "SEC Press Releases",
+        "priority": "high",
+        "country_iso3": "USA"
+      }
+    ],
+    "justice": [
+      {
+        "url": "https://www.justice.gov/feeds/opa/justice-news.xml",
+        "name": "DOJ News",
+        "priority": "high",
+        "country_iso3": "USA"
+      }
+    ],
+    "cdc": [
+      {
+        "url": "https://tools.cdc.gov/api/v2/resources/media/rss?topic=outbreaks",
+        "name": "CDC Outbreaks",
+        "priority": "high",
+        "country_iso3": "USA"
+      }
+    ],
+    "faa": [
+      {
+        "url": "https://www.faa.gov/rss/all",
+        "name": "FAA Notices",
+        "priority": "medium",
+        "country_iso3": "USA"
+      }
+    ]
+  }
+}

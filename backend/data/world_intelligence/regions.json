@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-11T00:00:00Z",
+  "hotspots": [
+    {
+      "id": "black_sea",
+      "name": "Black Sea",
+      "lat_min": 41.0,
+      "lat_max": 47.0,
+      "lon_min": 27.5,
+      "lon_max": 42.0
+    },
+    {
+      "id": "eastern_med",
+      "name": "Eastern Mediterranean",
+      "lat_min": 31.0,
+      "lat_max": 37.0,
+      "lon_min": 24.0,
+      "lon_max": 36.0
+    },
+    {
+      "id": "taiwan_strait",
+      "name": "Taiwan Strait",
+      "lat_min": 22.0,
+      "lat_max": 26.0,
+      "lon_min": 117.0,
+      "lon_max": 122.0
+    },
+    {
+      "id": "korean_dmz",
+      "name": "Korean DMZ",
+      "lat_min": 37.0,
+      "lat_max": 39.0,
+      "lon_min": 125.0,
+      "lon_max": 130.0
+    },
+    {
+      "id": "persian_gulf",
+      "name": "Persian Gulf",
+      "lat_min": 24.0,
+      "lat_max": 30.0,
+      "lon_min": 48.0,
+      "lon_max": 57.0
+    },
+    {
+      "id": "south_china_sea",
+      "name": "South China Sea",
+      "lat_min": 5.0,
+      "lat_max": 22.0,
+      "lon_min": 105.0,
+      "lon_max": 121.0
+    },
+    {
+      "id": "baltics",
+      "name": "Baltic Region",
+      "lat_min": 54.0,
+      "lat_max": 60.0,
+      "lon_min": 20.0,
+      "lon_max": 28.0
+    }
+  ],
+  "chokepoints": [
+    {
+      "id": "suez_canal",
+      "name": "Suez Canal",
+      "latitude": 30.46,
+      "longitude": 32.34
+    },
+    {
+      "id": "strait_of_hormuz",
+      "name": "Strait of Hormuz",
+      "latitude": 26.57,
+      "longitude": 56.25
+    },
+    {
+      "id": "malacca_strait",
+      "name": "Malacca Strait",
+      "latitude": 2.5,
+      "longitude": 101.8
+    },
+    {
+      "id": "panama_canal",
+      "name": "Panama Canal",
+      "latitude": 9.08,
+      "longitude": -79.68
+    },
+    {
+      "id": "bosphorus",
+      "name": "Bosphorus",
+      "latitude": 41.12,
+      "longitude": 29.05
+    }
+  ]
+}
