@@ -23,6 +23,7 @@ from textual.widgets import (
     Button,
     Footer,
     Header,
+    Input,
     Label,
     Select,
     Static,
@@ -81,6 +82,40 @@ WORKER_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
     ("trader_orchestrator_worker", "trader_orchestrator"),
     ("world_intelligence_worker", "world_intelligence"),
 )
+
+SOURCE_FILTER_BY_BUTTON: dict[str, str] = {
+    "src-all": "all",
+    "src-backend": "backend",
+    "src-workers": "workers",
+    "src-frontend": "frontend",
+    "src-system": "system",
+}
+
+SOURCE_FILTER_LABELS: dict[str, str] = {
+    "all": "All Sources",
+    "backend": "Backend",
+    "workers": "Workers",
+    "frontend": "Frontend",
+    "system": "System",
+}
+
+LEVEL_FILTER_BY_BUTTON: dict[str, str] = {
+    "lvl-all": "all",
+    "lvl-error": "error",
+    "lvl-warning": "warning",
+    "lvl-info": "info",
+    "lvl-debug": "debug",
+}
+
+LEVEL_FILTER_LABELS: dict[str, str] = {
+    "all": "All Levels",
+    "error": "Error+",
+    "warning": "Warning+",
+    "info": "Info+",
+    "debug": "Debug+",
+}
+
+WORKER_FILTER_LABELS: dict[str, str] = {name: label for name, label in WORKER_STATUS_ORDER}
 
 WORKER_MINI_LOG_LINES = 2
 WORKER_MINI_LOG_WIDTH = 84
@@ -284,20 +319,33 @@ Screen {
 }
 
 #log-controls {
-    layout: horizontal;
+    layout: vertical;
     height: auto;
-    max-height: 5;
+    max-height: 8;
     padding: 0 1;
     margin: 0 1 0 1;
 }
 
+.log-controls-row {
+    layout: horizontal;
+    height: 3;
+    margin: 0;
+}
+
 #log-controls Button {
-    min-width: 12;
+    min-width: 10;
     margin: 0 1 0 0;
 }
 
-#log-level-select {
-    max-width: 22;
+#log-worker-select {
+    width: 24;
+    min-width: 18;
+    margin: 0 1 0 0;
+}
+
+#log-search-input {
+    width: 1fr;
+    min-width: 24;
     margin: 0 1 0 0;
 }
 
@@ -613,18 +661,20 @@ class HomerunApp(App):
         super().__init__()
         # Thread-safe log line buffer: worker threads append here,
         # a periodic timer flushes into the TextArea on the main thread.
-        self._log_buf: collections.deque[tuple[str, str, str]] = collections.deque(
+        self._log_buf: collections.deque[tuple[str, str, str, str]] = collections.deque(
             maxlen=2000
         )
         self._log_lock = threading.Lock()
         # Master list of all log entries for rebuilding filtered views.
-        self._log_entries: list[tuple[str, str, str]] = []  # (text, source, level)
+        self._log_entries: list[tuple[str, str, str, str]] = []  # (text, source, level, worker)
         self._log_line_count = 0
         # Track whether user is scrolled to the bottom (auto-follow mode).
         self._log_follow = True
         # Filter state
-        self._source_filter = "all"  # "all", "backend", "frontend"
+        self._source_filter = "all"  # "all", "backend", "workers", "frontend", "system"
         self._level_filter = "all"  # "all", "debug", "info", "warning", "error"
+        self._worker_filter = "all"  # "all", "none", "scanner", ...
+        self._search_filter = ""
         # Shutdown flag so reader threads can exit
         self._shutting_down = False
         # Guard against starting frontend twice (race between worker thread and @work)
@@ -676,7 +726,7 @@ class HomerunApp(App):
         # Runtime metrics bar
         with Horizontal(id="metrics-bar"):
             yield Static("Uptime [bold]--:--:--[/]", id="metric-uptime", classes="metric-item")
-            yield Static("Workers [bold]0/7[/]", id="metric-workers", classes="metric-item")
+            yield Static("Workers [bold]0/8[/]", id="metric-workers", classes="metric-item")
             yield Static("Health [bold red]OFFLINE[/]", id="metric-health", classes="metric-item")
             yield Static("Polls [bold]0[/]", id="metric-polls", classes="metric-item")
             yield Static("Logs [bold]0[/]", id="metric-logs", classes="metric-item")
@@ -694,32 +744,44 @@ class HomerunApp(App):
         with Vertical(id="log-pane"):
             with Horizontal(id="log-header"):
                 yield Static(
-                    "[bold]LOGS[/]  [dim]Ctrl+C or Copy button to copy[/]",
+                    "[bold]LOGS[/]",
                     id="log-header-left",
                 )
                 yield Static(
-                    "[bold green]FOLLOWING[/]  0 lines",
+                    "[bold green]FOLLOWING[/]  0/0 lines",
                     id="log-header-right",
                 )
-            with Horizontal(id="log-controls"):
-                yield Button("All", id="src-all", variant="primary")
-                yield Button("Backend", id="src-backend", variant="default")
-                yield Button("Frontend", id="src-frontend", variant="default")
-                yield Select(
-                    [
-                        ("All Levels", "all"),
-                        ("Error", "error"),
-                        ("Warning", "warning"),
-                        ("Info", "info"),
-                        ("Debug", "debug"),
-                    ],
-                    value="all",
-                    id="log-level-select",
-                    allow_blank=False,
-                )
-                yield Button("Clear", id="log-clear-btn", variant="warning")
-                yield Button("Copy", id="log-copy-btn", variant="success")
-                yield Button("↓ Bottom", id="log-bottom-btn", variant="primary")
+            with Vertical(id="log-controls"):
+                with Horizontal(classes="log-controls-row"):
+                    yield Button("All", id="src-all", variant="primary")
+                    yield Button("Backend", id="src-backend", variant="default")
+                    yield Button("Workers", id="src-workers", variant="default")
+                    yield Button("Frontend", id="src-frontend", variant="default")
+                    yield Button("System", id="src-system", variant="default")
+                    yield Button("Any", id="lvl-all", variant="primary")
+                    yield Button("Error+", id="lvl-error", variant="default")
+                    yield Button("Warn+", id="lvl-warning", variant="default")
+                    yield Button("Info+", id="lvl-info", variant="default")
+                    yield Button("Debug+", id="lvl-debug", variant="default")
+                with Horizontal(classes="log-controls-row"):
+                    yield Select(
+                        [
+                            ("All Workers", "all"),
+                            ("No Worker", "none"),
+                            *[(label, worker_name) for worker_name, label in WORKER_STATUS_ORDER],
+                        ],
+                        value="all",
+                        id="log-worker-select",
+                        allow_blank=False,
+                    )
+                    yield Input(
+                        placeholder="Search logs (message, symbol, error...)",
+                        id="log-search-input",
+                    )
+                    yield Button("Pause", id="log-follow-toggle-btn", variant="default")
+                    yield Button("Clear", id="log-clear-btn", variant="warning")
+                    yield Button("Copy", id="log-copy-btn", variant="success")
+                    yield Button("↓ Bottom", id="log-bottom-btn", variant="primary")
             yield TextArea(
                 "",
                 id="log-output",
@@ -732,6 +794,11 @@ class HomerunApp(App):
     # ---- Lifecycle ----
     def on_mount(self) -> None:
         self.start_time = time.time()
+        # Remove "active" press animation delay so UI clicks feel immediate.
+        for button in self.query(Button):
+            button.active_effect_duration = 0.0
+        self._sync_filter_button_variants()
+        self._update_log_header()
         self._start_services()
         self._poll_health()
         self._update_uptime()
@@ -824,17 +891,70 @@ class HomerunApp(App):
         self._do_copy()
 
     # ---- Log filter helpers ----
-    def _matches_filter(self, source: str, level: str) -> bool:
-        """Check if a log entry matches the current source and level filters."""
+    def _source_bucket(self, source: str) -> str:
+        source_upper = source.upper()
+        if source_upper == "FRONTEND":
+            return "frontend"
+        if source_upper == "SYSTEM":
+            return "system"
+        if source_upper in WORKER_TAG_TO_NAME:
+            return "workers"
+        return "backend"
+
+    def _matches_filter(self, text: str, source: str, level: str, worker_name: str) -> bool:
+        """Check if a log entry matches the current filters."""
         if self._source_filter != "all":
-            if source.lower() != self._source_filter:
+            if self._source_bucket(source) != self._source_filter:
                 return False
         if self._level_filter != "all":
             min_level = LOG_LEVEL_ORDER.get(self._level_filter.upper(), 0)
             entry_level = LOG_LEVEL_ORDER.get(level.upper(), 1)
             if entry_level < min_level:
                 return False
+        if self._worker_filter == "none":
+            if worker_name:
+                return False
+        elif self._worker_filter != "all":
+            if worker_name != self._worker_filter:
+                return False
+        if self._search_filter:
+            if self._search_filter not in text.lower():
+                return False
         return True
+
+    def _worker_filter_text(self) -> str:
+        if self._worker_filter == "all":
+            return "All Workers"
+        if self._worker_filter == "none":
+            return "No Worker"
+        label = WORKER_FILTER_LABELS.get(self._worker_filter)
+        return label if label else self._worker_filter.replace("_", " ").upper()
+
+    def _format_filter_summary(self) -> str:
+        source = SOURCE_FILTER_LABELS.get(self._source_filter, self._source_filter)
+        level = LEVEL_FILTER_LABELS.get(self._level_filter, self._level_filter)
+        worker = self._worker_filter_text()
+        summary = f"source={source}  level={level}  worker={worker}"
+        if self._search_filter:
+            query = self._search_filter
+            if len(query) > 40:
+                query = query[:37] + "..."
+            summary += f"  search='{query}'"
+        return summary
+
+    def _sync_filter_button_variants(self) -> None:
+        for button_id, value in SOURCE_FILTER_BY_BUTTON.items():
+            try:
+                button = self.query_one(f"#{button_id}", Button)
+                button.variant = "primary" if self._source_filter == value else "default"
+            except Exception:
+                pass
+        for button_id, value in LEVEL_FILTER_BY_BUTTON.items():
+            try:
+                button = self.query_one(f"#{button_id}", Button)
+                button.variant = "primary" if self._level_filter == value else "default"
+            except Exception:
+                pass
 
     def _rebuild_log_view(self) -> None:
         """Rebuild the TextArea content from master entries based on current filters."""
@@ -845,8 +965,8 @@ class HomerunApp(App):
 
         matching = [
             text
-            for text, source, level in self._log_entries
-            if self._matches_filter(source, level)
+            for text, source, level, worker_name in self._log_entries
+            if self._matches_filter(text, source, level, worker_name)
         ]
 
         # Clear the TextArea
@@ -867,9 +987,9 @@ class HomerunApp(App):
     # ---- Log buffer: thread-safe batched writes ----
     def _enqueue_log(self, text: str, source: str = "BACKEND", level: str = "INFO") -> None:
         """Called from worker threads. Appends to buffer; main-thread timer flushes."""
+        worker_name = self._infer_worker_from_log(source, text) or ""
         with self._log_lock:
-            self._log_buf.append((text, source, level))
-            worker_name = self._infer_worker_from_log(source, text)
+            self._log_buf.append((text, source, level, worker_name))
             if worker_name:
                 self._worker_event_buf.append((worker_name, text))
 
@@ -892,8 +1012,8 @@ class HomerunApp(App):
         # Filter new entries for current display
         matching = [
             text
-            for text, source, level in entries
-            if self._matches_filter(source, level)
+            for text, source, level, worker_name in entries
+            if self._matches_filter(text, source, level, worker_name)
         ]
 
         if not matching:
@@ -968,9 +1088,25 @@ class HomerunApp(App):
             else "[bold yellow]PAUSED[/]"
         )
         try:
-            self.query_one("#log-header-right", Static).update(
-                f"{follow_label}  {self._log_line_count:,} lines"
+            self.query_one("#log-header-left", Static).update(
+                f"[bold]LOGS[/]  [dim]{self._format_filter_summary()}[/]"
             )
+        except Exception:
+            pass
+        try:
+            self.query_one("#log-header-right", Static).update(
+                f"{follow_label}  {self._log_line_count:,}/{len(self._log_entries):,} lines"
+            )
+        except Exception:
+            pass
+        try:
+            follow_button = self.query_one("#log-follow-toggle-btn", Button)
+            if self._log_follow:
+                follow_button.label = "Pause"
+                follow_button.variant = "default"
+            else:
+                follow_button.label = "Resume"
+                follow_button.variant = "primary"
         except Exception:
             pass
         # Show/hide the snap-to-bottom button
@@ -1032,21 +1168,27 @@ class HomerunApp(App):
         return line
 
     # ---- Button / Select handlers ----
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id
+    def _handle_button_action(self, btn_id: Optional[str]) -> None:
+        if not btn_id:
+            return
 
         # Source filter buttons
-        if btn_id in ("src-all", "src-backend", "src-frontend"):
-            self._source_filter = btn_id.replace("src-", "")
-            for sid in ("src-all", "src-backend", "src-frontend"):
-                try:
-                    btn = self.query_one(f"#{sid}", Button)
-                    btn.variant = "primary" if sid == btn_id else "default"
-                except Exception:
-                    pass
+        source_filter = SOURCE_FILTER_BY_BUTTON.get(btn_id)
+        if source_filter is not None:
+            self._source_filter = source_filter
+            self._sync_filter_button_variants()
             self._rebuild_log_view()
+            return
 
-        elif btn_id == "log-clear-btn":
+        # Level filter buttons
+        level_filter = LEVEL_FILTER_BY_BUTTON.get(btn_id)
+        if level_filter is not None:
+            self._level_filter = level_filter
+            self._sync_filter_button_variants()
+            self._rebuild_log_view()
+            return
+
+        if btn_id == "log-clear-btn":
             self._log_entries.clear()
             try:
                 ta = self.query_one("#log-output", TextArea)
@@ -1056,13 +1198,26 @@ class HomerunApp(App):
             except Exception:
                 pass
             self._log_line_count = 0
+            self._log_follow = True
             self._update_log_header()
             self.notify("Logs cleared", timeout=2)
+            return
 
-        elif btn_id == "log-copy-btn":
+        if btn_id == "log-copy-btn":
             self._do_copy()
+            return
 
-        elif btn_id == "log-bottom-btn":
+        if btn_id == "log-follow-toggle-btn":
+            self._log_follow = not self._log_follow
+            if self._log_follow:
+                try:
+                    self.query_one("#log-output", TextArea).scroll_end(animate=False)
+                except Exception:
+                    pass
+            self._update_log_header()
+            return
+
+        if btn_id == "log-bottom-btn":
             try:
                 ta = self.query_one("#log-output", TextArea)
                 ta.scroll_end(animate=False)
@@ -1070,12 +1225,28 @@ class HomerunApp(App):
                 self._update_log_header()
             except Exception:
                 pass
+            return
 
-        elif btn_id == "restart-btn":
+        if btn_id == "restart-btn":
             self._restart_services()
+            return
 
-        elif btn_id == "update-btn":
+        if btn_id == "update-btn":
             self._update_and_restart()
+            return
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self._handle_button_action(event.button.id)
+
+    @on(Select.Changed, "#log-worker-select")
+    def _on_worker_changed(self, event: Select.Changed) -> None:
+        self._worker_filter = str(event.value)
+        self._rebuild_log_view()
+
+    @on(Input.Changed, "#log-search-input")
+    def _on_search_changed(self, event: Input.Changed) -> None:
+        self._search_filter = event.value.strip().lower()
+        self._rebuild_log_view()
 
     def _set_action_buttons_enabled(self, enabled: bool) -> None:
         for button_id in ("restart-btn", "update-btn"):
@@ -1244,11 +1415,6 @@ class HomerunApp(App):
         )
         self._service_op_in_progress = False
         self.call_from_thread(self._set_action_buttons_enabled, True)
-
-    @on(Select.Changed, "#log-level-select")
-    def _on_level_changed(self, event: Select.Changed) -> None:
-        self._level_filter = str(event.value)
-        self._rebuild_log_view()
 
     def _spawn_worker_process(
         self,
@@ -1868,4 +2034,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

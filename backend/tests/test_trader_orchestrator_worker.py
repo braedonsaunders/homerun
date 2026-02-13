@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,21 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from workers import trader_orchestrator_worker
+
+
+def test_supports_live_market_context_excludes_crypto_source():
+    assert (
+        trader_orchestrator_worker._supports_live_market_context(
+            SimpleNamespace(source="crypto")
+        )
+        is False
+    )
+    assert (
+        trader_orchestrator_worker._supports_live_market_context(
+            SimpleNamespace(source="weather")
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio

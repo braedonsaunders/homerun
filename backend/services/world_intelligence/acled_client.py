@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-ACLED_API_URL = "https://api.acleddata.com/acled/read"
+ACLED_API_URL = "https://acleddata.com/api/acled/read"
 
 # Rate limiting: max 5 requests per minute
 _RATE_LIMIT_MAX_REQUESTS = int(
@@ -191,6 +191,12 @@ class ACLEDClient:
         Returns:
             List of parsed ConflictEvent instances, newest first.
         """
+        if not (self._api_key and self._email):
+            # ACLED API now requires authenticated requests.
+            self._last_error = "credentials_missing"
+            self._last_events = []
+            return []
+
         if self._circuit_open():
             logger.warning("ACLED circuit breaker open, skipping request")
             return []
@@ -328,6 +334,7 @@ class ACLEDClient:
         return {
             "enabled": True,
             "authenticated": bool(self._api_key and self._email),
+            "credentials_configured": bool(self._api_key and self._email),
             "circuit_open": self._circuit_open(),
             "consecutive_failures": self._consecutive_failures,
             "cooldown_seconds": _CB_COOLDOWN_SECONDS,

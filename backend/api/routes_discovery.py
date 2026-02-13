@@ -1,11 +1,12 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
+import json
 from utils.utcnow import utcnow
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, delete
-from typing import Optional
+from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -33,6 +34,7 @@ from services.smart_wallet_pool import (
 )
 from services.wallet_tracker import wallet_tracker
 from services.worker_state import read_worker_snapshot
+from services.polymarket import polymarket_client
 from utils.validation import validate_eth_address
 
 # Maps time_period query values to rolling window keys stored in the DB
@@ -198,6 +200,58 @@ def _extract_yes_no_from_history(history: list[dict]) -> tuple[Optional[float], 
     return yes_v, no_v
 
 
+def _extract_outcome_labels(raw: object) -> list[str]:
+    candidates: list[object] = []
+    if isinstance(raw, list):
+        candidates = raw
+    elif isinstance(raw, tuple):
+        candidates = list(raw)
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                candidates = parsed
+
+    labels: list[str] = []
+    for item in candidates:
+        text = str(item or "").strip()
+        if text:
+            labels.append(text)
+    return labels[:2]
+
+
+def _extract_outcome_prices(raw: object) -> tuple[Optional[float], Optional[float]]:
+    candidates: list[object] = []
+    if isinstance(raw, list):
+        candidates = raw
+    elif isinstance(raw, tuple):
+        candidates = list(raw)
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                candidates = parsed
+
+    parsed_values: list[float] = []
+    for item in candidates:
+        value = _safe_float(item)
+        if value is not None:
+            parsed_values.append(value)
+    if len(parsed_values) >= 2:
+        return parsed_values[0], parsed_values[1]
+    if len(parsed_values) == 1:
+        return parsed_values[0], None
+    return None, None
+
+
 async def _load_scanner_market_history(session: AsyncSession) -> dict[str, list[dict]]:
     """Read scanner snapshot market history map used by main opportunities sparklines."""
     result = await session.execute(
@@ -244,6 +298,537 @@ def _attach_market_history_to_signal_rows(
             slug_fallback = _humanize_market_slug(row.get("market_slug"))
             if slug_fallback:
                 row["market_question"] = slug_fallback
+
+
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def _normalize_signal_wallet_address(value: object) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if not text or not text.startswith("0x"):
+        return None
+    return text
+
+
+def _extract_signal_wallet_addresses(signal: dict[str, Any]) -> list[str]:
+    addresses: set[str] = set()
+
+    def _add_candidate(raw: object) -> None:
+        normalized = _normalize_signal_wallet_address(raw)
+        if normalized:
+            addresses.add(normalized)
+
+    raw_wallets = signal.get("wallets")
+    if isinstance(raw_wallets, list):
+        for item in raw_wallets:
+            if isinstance(item, dict):
+                _add_candidate(item.get("address"))
+            else:
+                _add_candidate(item)
+
+    top_wallet = signal.get("top_wallet")
+    if isinstance(top_wallet, dict):
+        _add_candidate(top_wallet.get("address"))
+
+    top_wallets = signal.get("top_wallets")
+    if isinstance(top_wallets, list):
+        for item in top_wallets:
+            if isinstance(item, dict):
+                _add_candidate(item.get("address"))
+
+    wallet_addresses = signal.get("wallet_addresses")
+    if isinstance(wallet_addresses, list):
+        for item in wallet_addresses:
+            _add_candidate(item)
+
+    return sorted(addresses)
+
+
+def _signal_has_direction(signal: dict[str, Any]) -> bool:
+    outcome = str(signal.get("outcome") or "").strip().upper()
+    if outcome in {"YES", "NO"}:
+        return True
+
+    direction = str(signal.get("direction") or "").strip().lower()
+    if direction in {"buy_yes", "buy_no", "buy", "sell", "yes", "no"}:
+        return True
+
+    signal_type = str(signal.get("signal_type") or "").strip().lower()
+    return any(token in signal_type for token in ("buy", "sell", "accumulation"))
+
+
+def _signal_has_price_reference(signal: dict[str, Any]) -> tuple[bool, bool]:
+    prices: list[float] = []
+    for key in ("yes_price", "no_price", "entry_price", "avg_entry_price"):
+        parsed = _safe_float(signal.get(key))
+        if parsed is not None:
+            prices.append(parsed)
+
+    if not prices:
+        return False, False
+    return True, all(0.0 <= value <= 1.0 for value in prices)
+
+
+def _build_signal_validation_payload(
+    signal: dict[str, Any],
+    wallet_addresses: list[str],
+    has_qualified_source: bool,
+) -> dict[str, Any]:
+    has_market_id = bool(_normalize_market_id(signal.get("market_id")))
+    has_wallets = bool(wallet_addresses)
+    has_direction = _signal_has_direction(signal)
+    has_price_reference, price_in_bounds = _signal_has_price_reference(signal)
+    upstream_tradable = bool(signal.get("is_tradeable", True))
+
+    reasons: list[str] = []
+    if not has_market_id:
+        reasons.append("missing_market_id")
+    if not has_wallets:
+        reasons.append("missing_wallets")
+    if not has_direction:
+        reasons.append("missing_direction")
+    if not has_price_reference:
+        reasons.append("missing_price_reference")
+    elif not price_in_bounds:
+        reasons.append("price_out_of_bounds")
+    if not has_qualified_source:
+        reasons.append("unqualified_wallet_source")
+    if not upstream_tradable:
+        reasons.append("market_not_tradable")
+
+    is_valid = (
+        has_market_id
+        and has_wallets
+        and has_direction
+        and has_price_reference
+        and price_in_bounds
+    )
+    is_actionable = is_valid and has_qualified_source
+    is_tradeable = upstream_tradable and is_actionable
+
+    return {
+        "is_valid": is_valid,
+        "is_actionable": is_actionable,
+        "is_tradeable": is_tradeable,
+        "checks": {
+            "has_market_id": has_market_id,
+            "has_wallets": has_wallets,
+            "has_direction": has_direction,
+            "has_price_reference": has_price_reference,
+            "price_in_bounds": price_in_bounds,
+            "has_qualified_source": has_qualified_source,
+            "upstream_tradable": upstream_tradable,
+        },
+        "reasons": reasons,
+    }
+
+
+def _extract_outcome_labels_from_market_info(
+    market_info: Optional[dict[str, Any]],
+    *,
+    fallback_slug: str = "",
+    fallback_question: str = "",
+) -> list[str]:
+    if not isinstance(market_info, dict):
+        market_info = {}
+
+    labels = _extract_outcome_labels(market_info.get("outcomes"))
+    if not labels:
+        tokens = market_info.get("tokens")
+        if isinstance(tokens, list):
+            from_tokens: list[str] = []
+            for token in tokens:
+                if not isinstance(token, dict):
+                    continue
+                label = str(token.get("outcome") or token.get("name") or "").strip()
+                if label:
+                    from_tokens.append(label)
+                if len(from_tokens) >= 2:
+                    break
+            labels = from_tokens
+
+    if not labels:
+        slug = str(market_info.get("slug") or fallback_slug or "").strip().lower()
+        if slug:
+            parts = [part for part in slug.split("-") if part]
+            if len(parts) >= 3 and 2 <= len(parts[1]) <= 4 and 2 <= len(parts[2]) <= 4:
+                if parts[1].isalpha() and parts[2].isalpha():
+                    labels = [parts[1].upper(), parts[2].upper()]
+
+    if not labels:
+        question = str(
+            market_info.get("groupItemTitle")
+            or market_info.get("question")
+            or fallback_question
+            or ""
+        ).strip()
+        if " vs " in question.lower():
+            lowered = question.lower()
+            splitter = " vs. " if " vs. " in lowered else " vs "
+            chunks = [chunk.strip() for chunk in question.split(splitter) if chunk.strip()]
+            if len(chunks) >= 2:
+                labels = [chunks[0], chunks[1]]
+
+    if not labels:
+        return ["Yes", "No"]
+    if len(labels) == 1:
+        return [labels[0], "No"]
+    return labels[:2]
+
+
+def _extract_outcome_prices_from_market_info(
+    market_info: Optional[dict[str, Any]],
+) -> tuple[Optional[float], Optional[float]]:
+    if not isinstance(market_info, dict):
+        return None, None
+
+    yes_price = _safe_float(
+        market_info.get("yes_price")
+        if market_info.get("yes_price") is not None
+        else market_info.get("yesPrice")
+    )
+    no_price = _safe_float(
+        market_info.get("no_price")
+        if market_info.get("no_price") is not None
+        else market_info.get("noPrice")
+    )
+    if yes_price is not None or no_price is not None:
+        return yes_price, no_price
+
+    prices = market_info.get("outcome_prices")
+    if prices is None:
+        prices = market_info.get("outcomePrices")
+    return _extract_outcome_prices(prices)
+
+
+async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+
+    market_info_cache: dict[str, Optional[dict[str, Any]]] = {}
+
+    async def _load_market_info(market_id: str) -> Optional[dict[str, Any]]:
+        normalized = _normalize_market_id(market_id)
+        if not normalized:
+            return None
+        if normalized in market_info_cache:
+            return market_info_cache[normalized]
+        info: Optional[dict[str, Any]] = None
+        try:
+            if normalized.startswith("0x"):
+                info = await polymarket_client.get_market_by_condition_id(normalized)
+            else:
+                info = await polymarket_client.get_market_by_token_id(normalized)
+        except Exception:
+            info = None
+        market_info_cache[normalized] = info
+        return info
+
+    for row in rows:
+        market_id = _normalize_market_id(row.get("market_id"))
+        if not market_id:
+            row["outcome_labels"] = ["Yes", "No"]
+            row["yes_label"] = "Yes"
+            row["no_label"] = "No"
+            continue
+
+        info = await _load_market_info(market_id)
+        labels = _extract_outcome_labels_from_market_info(
+            info,
+            fallback_slug=str(row.get("market_slug") or ""),
+            fallback_question=str(row.get("market_question") or ""),
+        )
+        info_yes, info_no = _extract_outcome_prices_from_market_info(info)
+        token_ids = [
+            str(token_id).strip().lower()
+            for token_id in (info.get("token_ids") or [])
+            if str(token_id or "").strip()
+        ] if isinstance(info, dict) else []
+
+        existing_yes = _safe_float(row.get("yes_price"))
+        existing_no = _safe_float(row.get("no_price"))
+        current_yes = existing_yes if existing_yes is not None else info_yes
+        current_no = existing_no if existing_no is not None else info_no
+
+        if current_yes is not None:
+            row["yes_price"] = current_yes
+            row["current_yes_price"] = current_yes
+        elif row.get("current_yes_price") is None:
+            row["current_yes_price"] = None
+
+        if current_no is not None:
+            row["no_price"] = current_no
+            row["current_no_price"] = current_no
+        elif row.get("current_no_price") is None:
+            row["current_no_price"] = None
+
+        row["outcome_labels"] = labels
+        row["yes_label"] = labels[0]
+        row["no_label"] = labels[1]
+        row["market_token_ids"] = token_ids
+
+    return rows
+
+
+def _history_candidates_for_row(row: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    primary = _normalize_market_id(row.get("market_id"))
+    if primary:
+        candidates.extend([primary, primary.upper()])
+    token_ids = row.get("market_token_ids")
+    if isinstance(token_ids, list):
+        for token_id in token_ids:
+            token_norm = _normalize_market_id(token_id)
+            if token_norm:
+                candidates.extend([token_norm, token_norm.upper()])
+    return list(dict.fromkeys(candidates))
+
+
+def _attach_history_from_aliases(
+    rows: list[dict[str, Any]],
+    market_history: dict[str, list[dict]],
+) -> None:
+    if not rows or not market_history:
+        return
+
+    for row in rows:
+        existing = row.get("price_history")
+        if isinstance(existing, list) and len(existing) >= 2:
+            continue
+
+        for candidate in _history_candidates_for_row(row):
+            history = market_history.get(candidate) or market_history.get(candidate.lower())
+            if isinstance(history, list) and len(history) >= 2:
+                compact = history[-20:]
+                row["price_history"] = compact
+                yes_price, no_price = _extract_yes_no_from_history(compact)
+                if yes_price is not None:
+                    row["yes_price"] = yes_price
+                    row["current_yes_price"] = yes_price
+                if no_price is not None:
+                    row["no_price"] = no_price
+                    row["current_no_price"] = no_price
+                break
+
+
+def _infer_yes_no_from_trade(
+    *,
+    outcome_hint: str,
+    direction_hint: str,
+    side: str,
+    price: float,
+) -> tuple[float, float]:
+    side_u = side.upper()
+    outcome_u = outcome_hint.upper()
+    if not outcome_u:
+        if direction_hint == "buy_yes":
+            outcome_u = "YES"
+        elif direction_hint == "buy_no":
+            outcome_u = "NO"
+
+    if outcome_u == "YES":
+        if side_u == "SELL":
+            return 1.0 - price, price
+        return price, 1.0 - price
+
+    if outcome_u == "NO":
+        if side_u == "SELL":
+            return price, 1.0 - price
+        return 1.0 - price, price
+
+    if side_u == "SELL":
+        return 1.0 - price, price
+    return price, 1.0 - price
+
+
+async def _attach_activity_history_fallback(
+    session: AsyncSession,
+    rows: list[dict[str, Any]],
+) -> None:
+    if not rows:
+        return
+
+    aliases_by_row: dict[int, list[str]] = {}
+    requested_ids: set[str] = set()
+    for idx, row in enumerate(rows):
+        existing = row.get("price_history")
+        if isinstance(existing, list) and len(existing) >= 2:
+            continue
+        aliases = _history_candidates_for_row(row)
+        if not aliases:
+            continue
+        aliases_by_row[idx] = aliases
+        requested_ids.update(alias.lower() for alias in aliases)
+
+    if not requested_ids:
+        return
+
+    result = await session.execute(
+        select(
+            WalletActivityRollup.market_id,
+            WalletActivityRollup.traded_at,
+            WalletActivityRollup.side,
+            WalletActivityRollup.price,
+        )
+        .where(func.lower(WalletActivityRollup.market_id).in_(list(requested_ids)))
+        .order_by(WalletActivityRollup.traded_at.asc())
+    )
+    raw_rows = result.all()
+    if not raw_rows:
+        return
+
+    events_by_market: dict[str, list[tuple[datetime, str, float]]] = defaultdict(list)
+    for market_id, traded_at, side, price in raw_rows:
+        market_norm = _normalize_market_id(market_id)
+        if not market_norm or traded_at is None:
+            continue
+        price_f = _safe_float(price)
+        if price_f is None or price_f < 0.0 or price_f > 1.01:
+            continue
+        events_by_market[market_norm].append(
+            (traded_at, str(side or ""), float(price_f))
+        )
+
+    for idx, aliases in aliases_by_row.items():
+        row = rows[idx]
+        outcome_hint = str(row.get("outcome") or "")
+        direction_hint = str(row.get("direction") or "").strip().lower()
+        points: list[dict[str, float]] = []
+        for alias in aliases:
+            market_events = events_by_market.get(alias.lower()) or []
+            if market_events:
+                for traded_at, side, price in market_events[-120:]:
+                    yes_price, no_price = _infer_yes_no_from_trade(
+                        outcome_hint=outcome_hint,
+                        direction_hint=direction_hint,
+                        side=side,
+                        price=price,
+                    )
+                    points.append(
+                        {
+                            "t": float(traded_at.timestamp() * 1000.0),
+                            "yes": round(yes_price, 6),
+                            "no": round(no_price, 6),
+                        }
+                    )
+                break
+
+        if len(points) < 2:
+            continue
+
+        points.sort(key=lambda item: item["t"])
+        compact = points[-20:]
+        row["price_history"] = compact
+        yes_last, no_last = _extract_yes_no_from_history(compact)
+        if yes_last is not None:
+            row["yes_price"] = yes_last
+            row["current_yes_price"] = yes_last
+        if no_last is not None:
+            row["no_price"] = no_last
+            row["current_no_price"] = no_last
+
+
+async def _annotate_trader_signal_rows(
+    session: AsyncSession,
+    rows: list[dict],
+) -> list[dict]:
+    if not rows:
+        return rows
+
+    wallets_by_signal: list[list[str]] = []
+    unique_addresses: set[str] = set()
+    for row in rows:
+        addresses = _extract_signal_wallet_addresses(row)
+        wallets_by_signal.append(addresses)
+        unique_addresses.update(addresses)
+
+    pool_addresses: set[str] = set()
+    tracked_addresses: set[str] = set()
+    group_ids_by_address: dict[str, set[str]] = defaultdict(set)
+
+    if unique_addresses:
+        discovered_rows = await session.execute(
+            select(DiscoveredWallet.address, DiscoveredWallet.in_top_pool).where(
+                DiscoveredWallet.address.in_(list(unique_addresses))
+            )
+        )
+        for address, in_top_pool in discovered_rows.all():
+            normalized = _normalize_signal_wallet_address(address)
+            if normalized and bool(in_top_pool):
+                pool_addresses.add(normalized)
+
+        tracked_rows = await session.execute(
+            select(TrackedWallet.address).where(
+                TrackedWallet.address.in_(list(unique_addresses))
+            )
+        )
+        for (address,) in tracked_rows.all():
+            normalized = _normalize_signal_wallet_address(address)
+            if normalized:
+                tracked_addresses.add(normalized)
+
+        group_rows = await session.execute(
+            select(TraderGroupMember.wallet_address, TraderGroupMember.group_id)
+            .join(TraderGroup, TraderGroupMember.group_id == TraderGroup.id)
+            .where(
+                TraderGroup.is_active == True,  # noqa: E712
+                TraderGroupMember.wallet_address.in_(list(unique_addresses)),
+            )
+        )
+        for address, group_id in group_rows.all():
+            normalized = _normalize_signal_wallet_address(address)
+            if normalized and group_id:
+                group_ids_by_address[normalized].add(str(group_id))
+
+    for row, wallet_addresses in zip(rows, wallets_by_signal):
+        pool_wallets = sum(1 for addr in wallet_addresses if addr in pool_addresses)
+        tracked_wallets = sum(1 for addr in wallet_addresses if addr in tracked_addresses)
+        group_wallets = sum(1 for addr in wallet_addresses if group_ids_by_address.get(addr))
+        matched_group_ids = sorted(
+            {
+                group_id
+                for addr in wallet_addresses
+                for group_id in group_ids_by_address.get(addr, set())
+            }
+        )
+
+        has_qualified_source = bool(pool_wallets or tracked_wallets or group_wallets)
+        source_flags = {
+            "from_pool": pool_wallets > 0,
+            "from_tracked_traders": tracked_wallets > 0,
+            "from_trader_groups": group_wallets > 0,
+            "qualified": has_qualified_source,
+        }
+        source_breakdown = {
+            "wallets_considered": len(wallet_addresses),
+            "pool_wallets": pool_wallets,
+            "tracked_wallets": tracked_wallets,
+            "group_wallets": group_wallets,
+            "group_count": len(matched_group_ids),
+            "group_ids": matched_group_ids,
+        }
+        validation = _build_signal_validation_payload(
+            signal=row,
+            wallet_addresses=wallet_addresses,
+            has_qualified_source=has_qualified_source,
+        )
+
+        row["source_flags"] = source_flags
+        row["source_breakdown"] = source_breakdown
+        row["validation"] = validation
+        row["is_valid"] = bool(validation.get("is_valid"))
+        row["is_actionable"] = bool(validation.get("is_actionable"))
+        row["is_tradeable"] = bool(validation.get("is_tradeable"))
+        row["validation_reasons"] = list(validation.get("reasons") or [])
+
+    return rows
 
 
 def _first_valid_trade_time(trade: dict) -> Optional[datetime]:
@@ -1485,6 +2070,10 @@ async def get_traders_overview(
         )
         market_history = await _load_scanner_market_history(session)
         _attach_market_history_to_signal_rows(confluence_signals, market_history)
+        await _attach_signal_market_metadata(confluence_signals)
+        _attach_history_from_aliases(confluence_signals, market_history)
+        await _attach_activity_history_fallback(session, confluence_signals)
+        await _annotate_trader_signal_rows(session, confluence_signals)
 
         groups = await _fetch_group_payload(session=session, include_members=False)
 
@@ -1535,6 +2124,10 @@ async def get_tracked_trader_opportunities(
                 pass
         market_history = await _load_scanner_market_history(session)
         _attach_market_history_to_signal_rows(opportunities, market_history)
+        await _attach_signal_market_metadata(opportunities)
+        _attach_history_from_aliases(opportunities, market_history)
+        await _attach_activity_history_fallback(session, opportunities)
+        await _annotate_trader_signal_rows(session, opportunities)
         return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1564,6 +2157,10 @@ async def get_insider_opportunities(
         opportunities = payload.get("opportunities") if isinstance(payload, dict) else None
         if isinstance(opportunities, list):
             _attach_market_history_to_signal_rows(opportunities, market_history)
+            await _attach_signal_market_metadata(opportunities)
+            _attach_history_from_aliases(opportunities, market_history)
+            await _attach_activity_history_fallback(session, opportunities)
+            await _annotate_trader_signal_rows(session, opportunities)
         return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

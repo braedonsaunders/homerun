@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import {
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock,
   ExternalLink,
   MessageCircle,
+  ShieldAlert,
   Terminal,
   TrendingUp,
   TrendingDown,
@@ -28,6 +30,11 @@ export interface UnifiedTraderSignal {
   market_slug?: string | null
   yes_price?: number | null
   no_price?: number | null
+  current_yes_price?: number | null
+  current_no_price?: number | null
+  outcome_labels?: string[]
+  yes_label?: string | null
+  no_label?: string | null
   price_history?: Array<{
     t: number
     yes: number
@@ -83,6 +90,32 @@ export interface UnifiedTraderSignal {
 
   // Computed
   market_url: string
+  source_flags?: {
+    from_pool?: boolean
+    from_tracked_traders?: boolean
+    from_trader_groups?: boolean
+    qualified?: boolean
+  } | null
+  source_breakdown?: {
+    wallets_considered?: number
+    pool_wallets?: number
+    tracked_wallets?: number
+    group_wallets?: number
+    group_count?: number
+    group_ids?: string[]
+  } | null
+  validation?: {
+    is_valid?: boolean
+    is_actionable?: boolean
+    is_tradeable?: boolean
+    checks?: Record<string, boolean>
+    reasons?: string[]
+  } | null
+  is_valid: boolean
+  is_actionable: boolean
+  is_tradeable: boolean
+  validation_reasons: string[]
+  source_coverage_score: number
 }
 
 // ─── Normalization ─────────────────────────────────────────
@@ -104,8 +137,77 @@ function toTier(value: string | null | undefined): 'WATCH' | 'HIGH' | 'EXTREME' 
   return 'WATCH'
 }
 
+function normalizeSourceCoverageScore(
+  sourceFlags: UnifiedTraderSignal['source_flags'],
+): number {
+  if (!sourceFlags) return 0
+  return (
+    (sourceFlags.from_pool ? 1 : 0)
+    + (sourceFlags.from_tracked_traders ? 1 : 0)
+    + (sourceFlags.from_trader_groups ? 1 : 0)
+  )
+}
+
+function normalizeSignalQualityFlags(signal: {
+  source_flags?: UnifiedTraderSignal['source_flags']
+  validation?: UnifiedTraderSignal['validation']
+  is_valid?: boolean
+  is_actionable?: boolean
+  is_tradeable?: boolean
+  validation_reasons?: string[]
+}): {
+  sourceFlags: UnifiedTraderSignal['source_flags']
+  validation: UnifiedTraderSignal['validation']
+  isValid: boolean
+  isActionable: boolean
+  isTradeable: boolean
+  reasons: string[]
+  sourceCoverageScore: number
+} {
+  const sourceFlags = signal.source_flags ?? null
+  const validation = signal.validation ?? null
+  const isValid = Boolean(
+    signal.is_valid
+    ?? validation?.is_valid
+    ?? (
+      validation?.checks?.has_market_id
+      && validation?.checks?.has_wallets
+      && validation?.checks?.has_direction
+      && validation?.checks?.has_price_reference
+      && validation?.checks?.price_in_bounds
+    ),
+  )
+  const isActionable = Boolean(
+    signal.is_actionable
+    ?? validation?.is_actionable
+    ?? (isValid && sourceFlags?.qualified),
+  )
+  const isTradeable = Boolean(
+    signal.is_tradeable
+    ?? validation?.is_tradeable
+    ?? isActionable,
+  )
+  const reasons = (
+    signal.validation_reasons
+    || validation?.reasons
+    || []
+  ).map((reason) => String(reason))
+  const sourceCoverageScore = normalizeSourceCoverageScore(sourceFlags)
+
+  return {
+    sourceFlags,
+    validation,
+    isValid,
+    isActionable,
+    isTradeable,
+    reasons,
+    sourceCoverageScore,
+  }
+}
+
 export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): UnifiedTraderSignal {
   const direction = getConfluenceDirection(signal)
+  const quality = normalizeSignalQualityFlags(signal)
   return {
     id: signal.id,
     source: 'confluence',
@@ -114,6 +216,11 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     market_slug: signal.market_slug,
     yes_price: signal.yes_price,
     no_price: signal.no_price,
+    current_yes_price: signal.current_yes_price ?? signal.yes_price ?? null,
+    current_no_price: signal.current_no_price ?? signal.no_price ?? null,
+    outcome_labels: signal.outcome_labels,
+    yes_label: signal.yes_label ?? signal.outcome_labels?.[0] ?? null,
+    no_label: signal.no_label ?? signal.outcome_labels?.[1] ?? null,
     price_history: signal.price_history,
     direction,
     confidence: signal.conviction_score || Math.round(signal.strength * 100) || 0,
@@ -131,11 +238,20 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     last_seen_at: signal.last_seen_at ?? undefined,
     first_seen_at: signal.first_seen_at ?? undefined,
     market_url: buildPolymarketMarketUrl({ eventSlug: signal.market_slug }) || '',
+    source_flags: quality.sourceFlags,
+    source_breakdown: signal.source_breakdown ?? null,
+    validation: quality.validation,
+    is_valid: quality.isValid,
+    is_actionable: quality.isActionable,
+    is_tradeable: quality.isTradeable,
+    validation_reasons: quality.reasons,
+    source_coverage_score: quality.sourceCoverageScore,
   }
 }
 
 export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSignal {
   const isYes = (opp.direction || '').toLowerCase() === 'buy_yes'
+  const quality = normalizeSignalQualityFlags(opp)
   return {
     id: opp.id,
     source: 'insider',
@@ -144,6 +260,11 @@ export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSi
     market_slug: opp.market_slug,
     yes_price: opp.yes_price,
     no_price: opp.no_price,
+    current_yes_price: opp.current_yes_price ?? opp.yes_price ?? null,
+    current_no_price: opp.current_no_price ?? opp.no_price ?? null,
+    outcome_labels: opp.outcome_labels,
+    yes_label: opp.yes_label ?? opp.outcome_labels?.[0] ?? null,
+    no_label: opp.no_label ?? opp.outcome_labels?.[1] ?? null,
     price_history: opp.price_history,
     direction: isYes ? 'BUY' : 'SELL',
     confidence: Math.round((opp.confidence || 0) * 100),
@@ -160,6 +281,14 @@ export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSi
     wallets: opp.wallets,
     detected_at: opp.created_at || new Date().toISOString(),
     market_url: buildPolymarketMarketUrl({ marketId: opp.market_id }) || '',
+    source_flags: quality.sourceFlags,
+    source_breakdown: opp.source_breakdown ?? null,
+    validation: quality.validation,
+    is_valid: quality.isValid,
+    is_actionable: quality.isActionable,
+    is_tradeable: quality.isTradeable,
+    validation_reasons: quality.reasons,
+    source_coverage_score: quality.sourceCoverageScore,
   }
 }
 
@@ -253,6 +382,43 @@ function normalizeMarketLabel(signal: UnifiedTraderSignal): string {
   return question || marketId || 'Unknown market'
 }
 
+function sanitizeOutcomeLabel(value: string | null | undefined, fallback: string): string {
+  const text = String(value || '').trim()
+  return text || fallback
+}
+
+function yesOutcomeLabel(signal: UnifiedTraderSignal): string {
+  return sanitizeOutcomeLabel(signal.yes_label || signal.outcome_labels?.[0], 'Yes')
+}
+
+function noOutcomeLabel(signal: UnifiedTraderSignal): string {
+  return sanitizeOutcomeLabel(signal.no_label || signal.outcome_labels?.[1], 'No')
+}
+
+function directionOutcomeLabel(signal: UnifiedTraderSignal): string {
+  if (signal.direction === 'BUY') return yesOutcomeLabel(signal)
+  if (signal.direction === 'SELL') return noOutcomeLabel(signal)
+  return sanitizeOutcomeLabel(signal.outcome, 'Signal')
+}
+
+function compactOutcomeLabel(label: string, maxChars = 14): string {
+  const text = String(label || '').trim()
+  if (!text) return '\u2014'
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, Math.max(1, maxChars - 1))}\u2026`
+}
+
+function formatSignalReason(reason: string): string {
+  return reason
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function formatPriceCents(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '\u2014'
+  return `${(value * 100).toFixed(0)}\u00a2`
+}
+
 // ═══════════════════════════════════════════════════════════
 // CARD VIEW
 // ═══════════════════════════════════════════════════════════
@@ -288,16 +454,47 @@ function TraderSignalCard({
   onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const chartRef = useRef<HTMLDivElement>(null)
+  const [chartWidth, setChartWidth] = useState(280)
   const isBuy = signal.direction === 'BUY'
   const marketLabel = normalizeMarketLabel(signal)
+  const yesLabel = yesOutcomeLabel(signal)
+  const noLabel = noOutcomeLabel(signal)
+  const directionLabel = directionOutcomeLabel(signal)
+  const directionLabelCompact = compactOutcomeLabel(directionLabel, 18)
+  const currentYes = signal.current_yes_price ?? signal.yes_price
+  const currentNo = signal.current_no_price ?? signal.no_price
   const sparkData = useMemo(
-    () => buildYesNoSparklineSeries(signal.price_history, signal.yes_price, signal.no_price),
-    [signal.price_history, signal.yes_price, signal.no_price],
+    () => buildYesNoSparklineSeries(signal.price_history, currentYes, currentNo),
+    [signal.price_history, currentYes, currentNo],
   )
   const hasSparkline = sparkData.yes.length >= 2
   const yesLast = sparkData.yes[sparkData.yes.length - 1]
   const noLast = sparkData.no[sparkData.no.length - 1]
   const accentBar = ACCENT_BAR_COLORS[signal.tier] || 'bg-yellow-500'
+
+  const poolWallets = signal.source_breakdown?.pool_wallets || 0
+  const trackedWallets = signal.source_breakdown?.tracked_wallets || 0
+  const groupWallets = signal.source_breakdown?.group_wallets || 0
+  const walletsConsidered = signal.source_breakdown?.wallets_considered || signal.wallet_count || 0
+  const actionPrice = isBuy
+    ? currentYes
+    : signal.direction === 'SELL'
+      ? currentNo
+      : currentYes ?? currentNo
+  const sourceCoverageLabel = `${signal.source_coverage_score}/3`
+
+  const qualityPillClass = signal.is_tradeable
+    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+    : signal.is_valid
+      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+      : 'bg-red-500/10 text-red-300 border-red-500/30'
+  const qualityLabel = signal.is_tradeable
+    ? 'TRADEABLE'
+    : signal.is_valid
+      ? 'SOURCE CHECK'
+      : 'INVALID'
+
   const bgGradient = signal.source === 'insider'
     ? 'from-purple-500/[0.04] via-transparent to-transparent'
     : signal.tier === 'EXTREME'
@@ -305,6 +502,18 @@ function TraderSignalCard({
       : signal.tier === 'HIGH'
         ? 'from-orange-500/[0.04] via-transparent to-transparent'
         : 'from-yellow-500/[0.03] via-transparent to-transparent'
+
+  useEffect(() => {
+    if (!chartRef.current) return
+    const measure = () => {
+      if (!chartRef.current) return
+      setChartWidth(Math.max(140, chartRef.current.offsetWidth - 4))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(chartRef.current)
+    return () => ro.disconnect()
+  }, [])
 
   return (
     <div
@@ -318,7 +527,7 @@ function TraderSignalCard({
       <div className={cn('absolute left-0 top-0 bottom-0 w-1', accentBar)} />
 
       <div className={cn('bg-gradient-to-r p-4 pl-4', bgGradient)}>
-        {/* Row 1: Source badge + Tier + Direction + Confidence */}
+        {/* Row 1: Header badges */}
         <div className="flex items-center gap-1.5 flex-wrap mb-2">
           <Badge
             variant="outline"
@@ -343,7 +552,16 @@ function TraderSignalCard({
                   : 'bg-blue-500/10 text-blue-400 border-blue-500/20',
             )}
           >
-            {isBuy ? 'BUY YES' : signal.direction === 'SELL' ? 'BUY NO' : signal.outcome || signal.signal_type?.replace(/_/g, ' ') || 'SIGNAL'}
+            {signal.direction === 'BUY' || signal.direction === 'SELL'
+              ? `BUY ${directionLabelCompact}`
+              : signal.outcome || signal.signal_type?.replace(/_/g, ' ') || 'SIGNAL'}
+          </Badge>
+          <Badge
+            variant="outline"
+            className={cn('text-[10px] font-medium border inline-flex items-center gap-1', qualityPillClass)}
+          >
+            {signal.is_tradeable ? <CheckCircle2 className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
+            {qualityLabel}
           </Badge>
 
           <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground/70">
@@ -352,32 +570,71 @@ function TraderSignalCard({
           </div>
         </div>
 
-        {/* Row 2: Title */}
+        {/* Row 2: Market title */}
         <h3 className="font-medium text-sm text-foreground line-clamp-2 mb-3">
           {marketLabel}
         </h3>
 
-        {/* Row 3: Sparkline */}
+        {/* Row 3: source coverage */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          {poolWallets > 0 && (
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+              Pool {poolWallets}
+            </Badge>
+          )}
+          {trackedWallets > 0 && (
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-blue-500/30 bg-blue-500/10 text-blue-300">
+              Tracked {trackedWallets}
+            </Badge>
+          )}
+          {groupWallets > 0 && (
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-amber-500/30 bg-amber-500/10 text-amber-300">
+              Groups {groupWallets}
+            </Badge>
+          )}
+          {signal.source_coverage_score === 0 && (
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-red-500/30 bg-red-500/10 text-red-300">
+              No qualified source
+            </Badge>
+          )}
+        </div>
+
+        {/* Row 4: Sparkline */}
         {hasSparkline && (
-          <div className="mb-3">
+          <div ref={chartRef} className="mb-3 w-full">
             <Sparkline
               data={sparkData.yes}
               data2={sparkData.no}
-              width={220}
-              height={40}
+              width={chartWidth}
+              height={44}
               color="#22c55e"
               color2="#ef4444"
               lineWidth={1.5}
               showDots
             />
-            <div className="flex justify-between text-[10px] text-muted-foreground font-data mt-1 px-0.5">
-              <span className="text-green-400/70">YES {Number.isFinite(yesLast) ? `${(yesLast * 100).toFixed(0)}¢` : '—'}</span>
-              <span className="text-red-400/70">NO {Number.isFinite(noLast) ? `${(noLast * 100).toFixed(0)}¢` : '—'}</span>
+            <div className="flex justify-between text-xs font-data font-bold mt-1 px-0.5">
+              <span className="text-green-300">{yesLabel} {Number.isFinite(yesLast) ? `${(yesLast * 100).toFixed(0)}¢` : '—'}</span>
+              <span className="text-red-300">{noLabel} {Number.isFinite(noLast) ? `${(noLast * 100).toFixed(0)}¢` : '—'}</span>
             </div>
           </div>
         )}
 
-        {/* Row 4: Metrics grid */}
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div className="rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1.5">
+            <p className="text-sm font-bold text-green-300 truncate">{yesLabel}</p>
+            <p className="text-xs font-semibold text-green-300 font-data">
+              {formatPriceCents(currentYes)}
+            </p>
+          </div>
+          <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5">
+            <p className="text-sm font-bold text-red-300 truncate">{noLabel}</p>
+            <p className="text-xs font-semibold text-red-300 font-data">
+              {formatPriceCents(currentNo)}
+            </p>
+          </div>
+        </div>
+
+        {/* Row 5: Metrics grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">
           <div>
             <p className="text-muted-foreground/70">Confidence</p>
@@ -392,6 +649,20 @@ function TraderSignalCard({
                 : signal.wallet_count}
             </p>
           </div>
+          <div>
+            <p className="text-muted-foreground/70">Entry</p>
+            <p className="font-semibold text-foreground font-data">
+              {formatPriceCents(actionPrice)}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground/70">Source Fit</p>
+            <p className="font-semibold text-foreground font-data">{sourceCoverageLabel}</p>
+          </div>
+        </div>
+
+        {/* Row 6: Secondary metrics */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">
           {signal.source === 'confluence' ? (
             <>
               <div>
@@ -423,9 +694,19 @@ function TraderSignalCard({
               </div>
             </>
           )}
+          <div>
+            <p className="text-muted-foreground/70">Qualified</p>
+            <p className={cn('font-semibold font-data', signal.is_tradeable ? 'text-emerald-300' : 'text-red-300')}>
+              {signal.is_tradeable ? 'YES' : 'NO'}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground/70">Wallet Base</p>
+            <p className="font-semibold text-foreground font-data">{walletsConsidered}</p>
+          </div>
         </div>
 
-        {/* Row 5: Confidence bar */}
+        {/* Row 7: Confidence bar */}
         <div>
           <div className="flex items-center justify-between text-[11px] mb-1">
             <span className="text-muted-foreground/70">
@@ -441,7 +722,21 @@ function TraderSignalCard({
           </div>
         </div>
 
-        {/* Row 6: Insider-specific metrics */}
+        {/* Row 8: Validation reasons */}
+        {!signal.is_tradeable && signal.validation_reasons.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {signal.validation_reasons.slice(0, 3).map((reason) => (
+              <span
+                key={`${signal.id}-${reason}`}
+                className="inline-flex items-center rounded-md border border-red-500/20 bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-200/90"
+              >
+                {formatSignalReason(reason)}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Row 9: Insider-specific metrics */}
         {signal.source === 'insider' && (
           <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground/70">
             {signal.insider_score != null && (
@@ -456,7 +751,7 @@ function TraderSignalCard({
           </div>
         )}
 
-        {/* Row 7: Wallets */}
+        {/* Row 10: Wallets */}
         {signal.source === 'confluence' && signal.top_wallets && signal.top_wallets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {signal.top_wallets.slice(0, 4).map((wallet) => (
@@ -496,7 +791,7 @@ function TraderSignalCard({
           </div>
         )}
 
-        {/* Row 8: Actions */}
+        {/* Row 11: Actions */}
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border/50">
           {signal.market_url && (
             <a
@@ -534,6 +829,25 @@ function TraderSignalCard({
         {/* Expanded details */}
         {expanded && (
           <div className="mt-3 pt-3 border-t border-border/50 space-y-2 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div>
+                <p className="text-muted-foreground/70">Pool Wallets</p>
+                <p className="font-semibold text-foreground">{poolWallets}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground/70">Tracked Wallets</p>
+                <p className="font-semibold text-foreground">{trackedWallets}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground/70">Group Wallets</p>
+                <p className="font-semibold text-foreground">{groupWallets}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground/70">Coverage</p>
+                <p className="font-semibold text-foreground">{sourceCoverageLabel}</p>
+              </div>
+            </div>
+
             {signal.source === 'confluence' && (
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -586,6 +900,23 @@ function TraderSignalCard({
                 )}
               </>
             )}
+
+            {signal.validation_reasons.length > 0 && (
+              <div>
+                <p className="text-muted-foreground/70 mb-1">Validation</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {signal.validation_reasons.map((reason) => (
+                    <span
+                      key={`${signal.id}-validation-${reason}`}
+                      className="inline-flex items-center rounded-md border border-border/60 bg-muted/50 px-1.5 py-0.5 text-[10px] text-foreground/80"
+                    >
+                      {formatSignalReason(reason)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-4 text-[11px] text-muted-foreground/70 pt-1">
               <span className="inline-flex items-center gap-1">
                 <Clock className="w-3 h-3" />
@@ -660,6 +991,7 @@ function TraderSignalTableRow({
   const [expanded, setExpanded] = useState(false)
   const isBuy = signal.direction === 'BUY'
   const marketLabel = normalizeMarketLabel(signal)
+  const directionLabel = compactOutcomeLabel(directionOutcomeLabel(signal), 9)
 
   const confidenceColor = signal.confidence >= 80
     ? 'text-green-400'
@@ -727,7 +1059,9 @@ function TraderSignalTableRow({
             )}
           >
             {isBuy ? <TrendingUp className="w-2.5 h-2.5" /> : signal.direction === 'SELL' ? <TrendingDown className="w-2.5 h-2.5" /> : null}
-            {isBuy ? 'YES' : signal.direction === 'SELL' ? 'NO' : '\u2014'}
+            {signal.direction === 'BUY' || signal.direction === 'SELL'
+              ? directionLabel
+              : '\u2014'}
           </span>
         </div>
 
@@ -1016,6 +1350,9 @@ function TerminalSignalEntry({
   const tierTag = signal.tier === 'INSIDER' ? 'INS' : signal.tier
   const isBuy = signal.direction === 'BUY'
   const marketLabel = normalizeMarketLabel(signal)
+  const directionLabel = compactOutcomeLabel(directionOutcomeLabel(signal), 18)
+    .toUpperCase()
+    .replace(/\s+/g, '_')
 
   const tierColor = signal.tier === 'EXTREME'
     ? 'text-red-400'
@@ -1061,7 +1398,9 @@ function TerminalSignalEntry({
           WLTS:{signal.source === 'confluence' ? signal.cluster_adjusted_wallet_count || signal.wallet_count : signal.wallet_count}
         </span>
         <span className={cn('font-bold mr-2', dirColor)}>
-          {isBuy ? 'BUY_YES' : signal.direction === 'SELL' ? 'BUY_NO' : signal.outcome || 'SIGNAL'}
+          {signal.direction === 'BUY' || signal.direction === 'SELL'
+            ? `BUY_${directionLabel}`
+            : signal.outcome || 'SIGNAL'}
         </span>
         {signal.source === 'insider' && signal.edge_percent != null && (
           <span className="text-purple-300/80 mr-2">EDGE:{signal.edge_percent.toFixed(1)}%</span>

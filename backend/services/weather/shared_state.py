@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -49,6 +50,94 @@ def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
 def _normalize_weather_edge_title(title: str) -> str:
     prefix = "weather edge:"
     return title[len(prefix) :].lstrip() if title.lower().startswith(prefix) else title
+
+
+def _coerce_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc)
+            return parsed.date()
+        except Exception:
+            pass
+        try:
+            return date.fromisoformat(text[:10])
+        except Exception:
+            return None
+    return None
+
+
+def _parse_date_from_text(
+    text: str,
+    *,
+    default_year: Optional[int] = None,
+) -> Optional[date]:
+    if not text:
+        return None
+    candidates: list[str] = []
+    for pattern in (
+        r"\bon\s+([A-Za-z]{3,9}\s+\d{1,2}(?:,\s*\d{4})?)",
+        r"\b([A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})\b",
+        r"\b([A-Za-z]{3,9}\s+\d{1,2})\b",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidates.append(match.group(1).strip())
+
+    year = default_year or datetime.now(timezone.utc).year
+    for raw in candidates:
+        for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %d", "%b %d"):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+            if "%Y" not in fmt:
+                parsed = parsed.replace(year=year)
+            return parsed.date()
+    return None
+
+
+def _opportunity_target_date(opp: ArbitrageOpportunity) -> Optional[date]:
+    for market in opp.markets or []:
+        if not isinstance(market, dict):
+            continue
+        weather = market.get("weather")
+        if not isinstance(weather, dict):
+            continue
+        dt = _coerce_date(weather.get("target_time"))
+        if dt is not None:
+            return dt
+    resolution_date = _coerce_date(opp.resolution_date)
+    if resolution_date is not None:
+        return resolution_date
+
+    default_year = datetime.now(timezone.utc).year
+    for market in opp.markets or []:
+        if not isinstance(market, dict):
+            continue
+        for key in ("question", "group_item_title", "groupItemTitle"):
+            candidate = _parse_date_from_text(
+                str(market.get(key) or ""),
+                default_year=default_year,
+            )
+            if candidate is not None:
+                return candidate
+
+    return _parse_date_from_text(opp.title or "", default_year=default_year)
 
 
 def _default_status() -> dict[str, Any]:
@@ -141,6 +230,7 @@ async def get_weather_opportunities_from_db(
     direction: Optional[str] = None,
     max_entry_price: Optional[float] = None,
     location_query: Optional[str] = None,
+    target_date: Optional[date] = None,
     require_tradable_markets: bool = False,
     exclude_near_resolution: bool = False,
 ) -> list[ArbitrageOpportunity]:
@@ -206,6 +296,11 @@ async def get_weather_opportunities_from_db(
             or q in o.description.lower()
         ]
 
+    if target_date is not None:
+        opportunities = [
+            o for o in opportunities if _opportunity_target_date(o) == target_date
+        ]
+
     if opportunities and require_tradable_markets:
         market_ids: set[str] = set()
         by_index: dict[int, list[str]] = {}
@@ -232,6 +327,39 @@ async def get_weather_opportunities_from_db(
             ]
 
     return opportunities
+
+
+async def get_weather_target_date_counts_from_db(
+    session: AsyncSession,
+    min_edge_percent: Optional[float] = None,
+    direction: Optional[str] = None,
+    max_entry_price: Optional[float] = None,
+    location_query: Optional[str] = None,
+    require_tradable_markets: bool = False,
+    exclude_near_resolution: bool = False,
+) -> list[dict[str, Any]]:
+    opportunities = await get_weather_opportunities_from_db(
+        session,
+        min_edge_percent=min_edge_percent,
+        direction=direction,
+        max_entry_price=max_entry_price,
+        location_query=location_query,
+        target_date=None,
+        require_tradable_markets=require_tradable_markets,
+        exclude_near_resolution=exclude_near_resolution,
+    )
+
+    counts: dict[date, int] = {}
+    for opp in opportunities:
+        d = _opportunity_target_date(opp)
+        if d is None:
+            continue
+        counts[d] = counts.get(d, 0) + 1
+
+    return [
+        {"date": d.isoformat(), "count": counts[d]}
+        for d in sorted(counts.keys())
+    ]
 
 
 async def get_weather_status_from_db(session: AsyncSession) -> dict[str, Any]:

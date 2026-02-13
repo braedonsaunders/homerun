@@ -147,6 +147,72 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to load UCDP conflict lists: {e}")
 
+        # Load DB-backed ITU MID mapping for vessel country normalization.
+        try:
+            from services.world_intelligence.mid_reference_source import (
+                load_mid_reference_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                mid_status = await load_mid_reference_from_db(session)
+            logger.info(
+                "World MID reference loaded",
+                source=mid_status.get("source"),
+                count=mid_status.get("count"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load MID reference mapping: {e}")
+
+        # Load DB-backed trade dependency overlay for infrastructure cascade risk.
+        try:
+            from services.world_intelligence.trade_dependency_source import (
+                load_trade_dependencies_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                trade_status = await load_trade_dependencies_from_db(session)
+            logger.info(
+                "World trade dependency overlay loaded",
+                source=trade_status.get("source"),
+                countries=trade_status.get("countries"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load trade dependency overlay: {e}")
+
+        # Load DB-backed chokepoint rows so runtime has a persisted fallback
+        # independent of static JSON files.
+        try:
+            from services.world_intelligence.chokepoint_reference_source import (
+                load_chokepoint_reference_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                chokepoint_status = await load_chokepoint_reference_from_db(session)
+            logger.info(
+                "World chokepoint reference loaded",
+                source=chokepoint_status.get("source"),
+                count=chokepoint_status.get("count"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load chokepoint reference rows: {e}")
+
+        # Load DB-backed GDELT world-news query config for world-intelligence.
+        try:
+            from services.world_intelligence.gdelt_news_source import (
+                load_gdelt_news_config_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                gdelt_news_status = await load_gdelt_news_config_from_db(session)
+            logger.info(
+                "World GDELT news config loaded",
+                source=gdelt_news_status.get("source"),
+                queries=gdelt_news_status.get("queries"),
+                enabled=gdelt_news_status.get("enabled"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load world GDELT news config: {e}")
+
         # Restore global pause state from persisted worker controls.
         # This keeps API-owned loops (copy trader, wallet tracker, LLM/trading gates)
         # aligned with worker controls across restarts.

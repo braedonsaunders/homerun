@@ -864,6 +864,35 @@ async def get_open_order_count_for_trader(session: AsyncSession, trader_id: str)
     )
 
 
+async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:
+    rows = (
+        await session.execute(
+            select(
+                TraderOrder.mode,
+                func.count(TraderOrder.id).label("count"),
+            )
+            .where(
+                TraderOrder.trader_id == trader_id,
+                TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
+            )
+            .group_by(TraderOrder.mode)
+        )
+    ).all()
+
+    summary = {"live": 0, "paper": 0, "other": 0, "total": 0}
+    for row in rows:
+        mode = str(row.mode or "other").lower()
+        count = int(row.count or 0)
+        if mode == "live":
+            summary["live"] += count
+        elif mode == "paper":
+            summary["paper"] += count
+        else:
+            summary["other"] += count
+        summary["total"] += count
+    return summary
+
+
 async def get_market_exposure(session: AsyncSession, market_id: str) -> float:
     return float(
         (

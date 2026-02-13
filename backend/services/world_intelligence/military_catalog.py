@@ -32,9 +32,30 @@ class IcaoRange:
 class MilitaryCatalog:
     def __init__(self) -> None:
         self._catalog = WorldIntelJsonCatalog("military_profiles.json", _DEFAULT)
+        self._runtime_mid_iso3: dict[str, str] | None = None
+        self._runtime_mid_source: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return self._catalog.payload()
+
+    def set_runtime_vessel_mid_iso3(
+        self,
+        mapping: dict[str, str] | None,
+        *,
+        source: str | None = None,
+    ) -> None:
+        if not isinstance(mapping, dict) or not mapping:
+            self._runtime_mid_iso3 = None
+            self._runtime_mid_source = None
+            return
+        cleaned: dict[str, str] = {}
+        for key, value in mapping.items():
+            mid = str(key).strip()
+            iso3 = str(value).strip().upper()
+            if mid and len(iso3) == 3:
+                cleaned[mid] = iso3
+        self._runtime_mid_iso3 = cleaned or None
+        self._runtime_mid_source = str(source or "").strip() or None
 
     def callsign_prefixes(self) -> list[str]:
         rows = self.payload().get("callsign_prefixes") or []
@@ -96,14 +117,19 @@ class MilitaryCatalog:
     def vessel_mid_iso3(self) -> dict[str, str]:
         raw = (self.payload().get("vessel") or {}).get("mid_iso3") or {}
         if not isinstance(raw, dict):
-            return {}
-        out: dict[str, str] = {}
-        for key, value in raw.items():
-            k = str(key).strip()
-            v = str(value).strip().upper()
-            if k and len(v) == 3:
-                out[k] = v
-        return out
+            base = {}
+        else:
+            base: dict[str, str] = {}
+            for key, value in raw.items():
+                k = str(key).strip()
+                v = str(value).strip().upper()
+                if k and len(v) == 3:
+                    base[k] = v
+        if self._runtime_mid_iso3:
+            merged = dict(base)
+            merged.update(self._runtime_mid_iso3)
+            return merged
+        return base
 
     def country_aliases(self) -> dict[str, str]:
         raw = self.payload().get("country_aliases") or {}
@@ -116,6 +142,9 @@ class MilitaryCatalog:
             if alias and len(code) == 3:
                 out[alias] = code
         return out
+
+    def runtime_mid_source(self) -> str | None:
+        return self._runtime_mid_source
 
 
 military_catalog = MilitaryCatalog()

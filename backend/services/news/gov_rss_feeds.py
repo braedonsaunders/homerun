@@ -14,7 +14,6 @@ from xml.etree import ElementTree
 import httpx
 from sqlalchemy import select
 
-from config import settings
 from models.database import AppSettings, AsyncSessionLocal
 from services.news.rss_config import default_gov_rss_feeds, normalize_gov_rss_feeds
 
@@ -37,7 +36,7 @@ class GovArticle:
     country_iso3: str = "USA"
     published: Optional[datetime] = None
     summary: str = ""
-    feed_source: str = "gov_rss"
+    feed_source: str = "rss"
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -53,11 +52,11 @@ class GovRSSFeedService:
         self._last_errors: list[str] = []
         self._failed_feeds: int = 0
         self._configured_feeds_count: int = 0
-        self._enabled: bool = bool(getattr(settings, "NEWS_GOV_RSS_ENABLED", True))
+        self._enabled: bool = True
 
     async def _load_configuration(self) -> tuple[bool, list[dict[str, Any]]]:
         """Load enabled flag + feed rows from DB-backed app settings."""
-        default_enabled = bool(getattr(settings, "NEWS_GOV_RSS_ENABLED", True))
+        default_enabled = True
         default_feeds = default_gov_rss_feeds()
 
         try:
@@ -85,7 +84,7 @@ class GovRSSFeedService:
                     row.news_gov_rss_feeds_json = rows
                     await session.commit()
         except Exception as exc:
-            logger.debug("Gov RSS config DB read failed, using defaults: %s", exc)
+            logger.debug("RSS config DB read failed, using defaults: %s", exc)
             self._enabled = default_enabled
             self._configured_feeds_count = len(default_feeds)
             return self._enabled, default_feeds
@@ -108,7 +107,7 @@ class GovRSSFeedService:
         self._last_errors = []
         self._failed_feeds = 0
         if not feed_rows:
-            self._last_errors.append("No gov RSS feeds configured")
+            self._last_errors.append("No RSS feeds configured")
             return []
 
         tasks = [
@@ -117,14 +116,14 @@ class GovRSSFeedService:
             if bool(feed_info.get("enabled", True))
         ]
         if not tasks:
-            self._last_errors.append("All gov RSS feeds are disabled")
+            self._last_errors.append("All RSS feeds are disabled")
             return []
 
         new_articles: list[GovArticle] = []
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
-                logger.debug("Gov RSS fetch error: %s", result)
+                logger.debug("RSS fetch error: %s", result)
                 self._failed_feeds += 1
                 self._last_errors.append(str(result))
                 continue
@@ -141,7 +140,7 @@ class GovRSSFeedService:
 
         if new_articles:
             logger.info(
-                "Gov RSS: %d new articles from %d agencies",
+                "RSS: %d new articles from %d agencies",
                 len(new_articles),
                 len({a.agency for a in new_articles}),
             )
@@ -218,7 +217,7 @@ class GovRSSFeedService:
                 return articles
 
         except Exception as exc:
-            logger.debug("Gov RSS fetch failed for '%s' (%s): %s", name, url, exc)
+            logger.debug("RSS fetch failed for '%s' (%s): %s", name, url, exc)
             self._failed_feeds += 1
             self._last_errors.append(f"{name}: {exc}")
             return []
@@ -289,3 +288,5 @@ def _strip_html(text: str) -> str:
 
 
 gov_rss_service = GovRSSFeedService()
+# Rebranded alias. Keep legacy name for compatibility.
+rss_service = gov_rss_service

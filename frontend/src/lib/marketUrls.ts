@@ -21,17 +21,13 @@ function isLikelyKalshiTicker(value: NullableString): boolean {
   return /^KX[A-Z0-9-]+$/.test(ticker)
 }
 
-function normalizeKalshiTicker(value: NullableString): string {
-  return cleanSegment(value).replace(/_(yes|no)$/i, '')
+function isLikelyPolymarketSlug(value: NullableString): boolean {
+  const slug = cleanSegment(value).toLowerCase()
+  return /^(?=.*[a-z])[a-z0-9-]+$/.test(slug)
 }
 
-function normalizeKalshiSlug(value: NullableString): string {
-  return cleanSegment(value)
-    .toLowerCase()
-    .replace(/[_\s]+/g, '-')
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
+function normalizeKalshiTicker(value: NullableString): string {
+  return cleanSegment(value).replace(/_(yes|no)$/i, '')
 }
 
 export function deriveKalshiEventTicker(marketTicker: NullableString): string {
@@ -48,6 +44,7 @@ export function inferMarketPlatform(params: {
   marketId?: NullableString
   marketSlug?: NullableString
   conditionId?: NullableString
+  eventTicker?: NullableString
 }): MarketPlatform {
   const explicit = cleanSegment(params.platform).toLowerCase()
   if (explicit === 'kalshi') return 'kalshi'
@@ -56,7 +53,11 @@ export function inferMarketPlatform(params: {
   const conditionId = cleanSegment(params.conditionId)
   if (isConditionId(conditionId)) return 'polymarket'
 
-  if (isLikelyKalshiTicker(params.marketId) || isLikelyKalshiTicker(params.marketSlug)) {
+  if (
+    isLikelyKalshiTicker(params.marketId)
+    || isLikelyKalshiTicker(params.marketSlug)
+    || isLikelyKalshiTicker(params.eventTicker)
+  ) {
     return 'kalshi'
   }
 
@@ -69,24 +70,23 @@ export function buildPolymarketMarketUrl(params: {
   marketId?: NullableString
   conditionId?: NullableString
 }): string | null {
-  const eventSlug = cleanSegment(params.eventSlug)
-  const marketSlug = cleanSegment(params.marketSlug)
-  const marketId = cleanSegment(params.marketId)
+  const eventSlug = cleanSegment(params.eventSlug).toLowerCase()
+  const marketSlug = cleanSegment(params.marketSlug).toLowerCase()
+  const marketId = cleanSegment(params.marketId).toLowerCase()
   const conditionId = cleanSegment(params.conditionId)
 
   if (eventSlug && marketSlug && eventSlug !== marketSlug) {
     return `${POLYMARKET_BASE_URL}/event/${encodeSegment(eventSlug)}/${encodeSegment(marketSlug)}`
   }
+  if (marketSlug) {
+    // /market/{market_slug} redirects to canonical event routes.
+    return `${POLYMARKET_BASE_URL}/market/${encodeSegment(marketSlug)}`
+  }
   if (eventSlug) {
     return `${POLYMARKET_BASE_URL}/event/${encodeSegment(eventSlug)}`
   }
-  if (marketSlug) {
-    return `${POLYMARKET_BASE_URL}/event/${encodeSegment(marketSlug)}`
-  }
-  if (conditionId) {
-    return `${POLYMARKET_BASE_URL}/market/${encodeSegment(conditionId)}`
-  }
-  if (marketId) {
+  // condition/token/numeric IDs are not stable website routes on polymarket.com.
+  if (!isConditionId(conditionId) && isLikelyPolymarketSlug(marketId) && !isLikelyKalshiTicker(marketId)) {
     return `${POLYMARKET_BASE_URL}/market/${encodeSegment(marketId)}`
   }
   return null
@@ -98,26 +98,95 @@ export function buildKalshiMarketUrl(params: {
   eventSlug?: NullableString
 }): string | null {
   const marketTicker = normalizeKalshiTicker(params.marketTicker)
-  if (!marketTicker) return null
+  if (isLikelyKalshiTicker(marketTicker)) {
+    return `${KALSHI_BASE_URL}/markets/${encodeSegment(marketTicker)}`
+  }
 
-  const marketTickerSegment = encodeSegment(marketTicker.toLowerCase())
   const eventTicker = cleanSegment(params.eventTicker) || deriveKalshiEventTicker(marketTicker)
-  if (!eventTicker) return `${KALSHI_BASE_URL}/markets/${marketTickerSegment}`
-
-  const eventTickerSegment = encodeSegment(eventTicker.toLowerCase())
-  const eventSlug = normalizeKalshiSlug(params.eventSlug)
-  const marketTickerLower = marketTicker.toLowerCase()
-  const eventTickerLower = eventTicker.toLowerCase()
-  if (!eventSlug || eventSlug === marketTickerLower || eventSlug === eventTickerLower) {
-    // Fallback to ticker-only path when we don't have a reliable SEO slug.
-    return `${KALSHI_BASE_URL}/markets/${marketTickerSegment}`
+  if (isLikelyKalshiTicker(eventTicker)) {
+    return `${KALSHI_BASE_URL}/markets/${encodeSegment(eventTicker)}`
   }
 
-  const eventSlugSegment = encodeSegment(eventSlug)
+  return null
+}
 
-  if (eventTickerLower === marketTickerLower) {
-    return `${KALSHI_BASE_URL}/markets/${eventTickerSegment}/${eventSlugSegment}`
-  }
+function cleanAbsoluteUrl(value: NullableString): string | null {
+  const text = (value || '').trim()
+  if (!text) return null
+  if (text.startsWith('http://') || text.startsWith('https://')) return text
+  return null
+}
 
-  return `${KALSHI_BASE_URL}/markets/${eventTickerSegment}/${eventSlugSegment}/${marketTickerSegment}`
+type OpportunityMarketForLinks = {
+  id?: NullableString
+  market_id?: NullableString
+  ticker?: NullableString
+  slug?: NullableString
+  market_slug?: NullableString
+  event_slug?: NullableString
+  event_ticker?: NullableString
+  condition_id?: NullableString
+  conditionId?: NullableString
+  platform?: NullableString
+  url?: NullableString
+  market_url?: NullableString
+}
+
+type OpportunityForLinks = {
+  event_slug?: NullableString
+  markets?: OpportunityMarketForLinks[]
+  polymarket_url?: NullableString
+  kalshi_url?: NullableString
+}
+
+export type OpportunityLinkEntry = {
+  platform: MarketPlatform
+  url: string | null
+}
+
+export type OpportunityPlatformLinks = {
+  polymarketUrl: string | null
+  kalshiUrl: string | null
+  marketLinks: OpportunityLinkEntry[]
+}
+
+// Single global resolver used by opportunities views. It prefers API-provided links.
+export function getOpportunityPlatformLinks(opportunity: OpportunityForLinks | null | undefined): OpportunityPlatformLinks {
+  const markets = Array.isArray(opportunity?.markets) ? opportunity!.markets : []
+  const eventSlug = opportunity?.event_slug
+
+  let polymarketUrl = cleanAbsoluteUrl(opportunity?.polymarket_url)
+  let kalshiUrl = cleanAbsoluteUrl(opportunity?.kalshi_url)
+
+  const marketLinks = markets.map((market): OpportunityLinkEntry => {
+    const platform = inferMarketPlatform({
+      platform: market.platform,
+      marketId: market.id || market.market_id || market.ticker,
+      marketSlug: market.slug || market.market_slug,
+      conditionId: market.condition_id || market.conditionId,
+      eventTicker: market.event_ticker,
+    })
+
+    const apiUrl = cleanAbsoluteUrl(market.url || market.market_url)
+    const fallbackUrl = platform === 'kalshi'
+      ? buildKalshiMarketUrl({
+          marketTicker: market.id || market.market_id || market.ticker,
+          eventTicker: market.event_ticker || market.event_slug,
+          eventSlug: market.event_slug || market.slug || market.market_slug,
+        })
+      : buildPolymarketMarketUrl({
+          eventSlug: market.event_slug || eventSlug,
+          marketSlug: market.slug || market.market_slug,
+          marketId: market.id || market.market_id,
+          conditionId: market.condition_id || market.conditionId,
+        })
+
+    const url = apiUrl || fallbackUrl || null
+    if (platform === 'polymarket' && !polymarketUrl && url) polymarketUrl = url
+    if (platform === 'kalshi' && !kalshiUrl && url) kalshiUrl = url
+
+    return { platform, url }
+  })
+
+  return { polymarketUrl, kalshiUrl, marketLinks }
 }

@@ -25,11 +25,11 @@ from .infrastructure_monitor import infrastructure_monitor, InfrastructureEvent
 from .instability_scorer import instability_scorer, CountryInstabilityScore
 from .military_monitor import military_monitor, MilitaryActivity
 from .chokepoint_feed import chokepoint_feed
+from .gdelt_news_source import gdelt_world_news_service, GDELTWorldArticle
 from .military_catalog import military_catalog
 from .tension_tracker import tension_tracker, CountryPairTension
 from .usgs_client import usgs_client, Earthquake
 from .taxonomy_catalog import taxonomy_catalog
-from services.news.gov_rss_feeds import gov_rss_service, GovArticle
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +269,7 @@ def _infrastructure_to_signal(event: InfrastructureEvent) -> WorldSignal:
     )
 
 
-def _gov_article_to_signal(article: GovArticle) -> WorldSignal:
+def _gdelt_article_to_signal(article: GDELTWorldArticle) -> WorldSignal:
     severity_map = {
         "critical": 0.75,
         "high": 0.6,
@@ -277,16 +277,17 @@ def _gov_article_to_signal(article: GovArticle) -> WorldSignal:
     }
     severity = severity_map.get(article.priority, 0.35)
     return WorldSignal(
-        signal_id=_stable_signal_id("gov_rss", article.article_id),
+        signal_id=_stable_signal_id("gdelt_news", article.article_id),
         signal_type="tension",
         severity=severity,
         country=_normalize_iso3(article.country_iso3),
         title=f"{article.source}: {article.title}",
         description=article.summary or article.title,
-        source="gov_rss",
+        source="gdelt_news",
         detected_at=article.published or article.fetched_at,
         metadata={
-            "agency": article.agency,
+            "query": article.query,
+            "tone": article.tone,
             "priority": article.priority,
             "url": article.url,
         },
@@ -389,6 +390,26 @@ class WorldSignalAggregator:
         source_status: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
 
+        def _is_benign_provider_error(message: str | None) -> bool:
+            text = str(message or "").strip().lower()
+            if not text:
+                return False
+            benign_markers = (
+                "credentials_missing",
+                "missing_api_key",
+                "missing_api_token",
+                "disabled",
+                "rate-limited",
+                "rate limited",
+                "http 429",
+                "client error '429",
+                "status code 429",
+                "soft rate-limit",
+                "soft rate-limited",
+                "please limit requests to one every 5 seconds",
+            )
+            return any(marker in text for marker in benign_markers)
+
         def _record_source(
             name: str,
             started_at: datetime,
@@ -423,12 +444,16 @@ class WorldSignalAggregator:
                 signals.append(_conflict_to_signal(ev))
             health = acled_client.get_health()
             acled_error = str(health.get("last_error") or "").strip() or None
+            acled_authenticated = bool(health.get("authenticated"))
+            acled_ok = (not acled_error) or (not acled_authenticated) or _is_benign_provider_error(
+                acled_error
+            )
             _record_source(
                 "acled",
                 started,
                 len(conflict_events),
-                ok=not acled_error,
-                error_message=acled_error,
+                ok=acled_ok,
+                error_message=None if acled_ok else acled_error,
                 extra=health,
             )
         except Exception as exc:
@@ -444,12 +469,13 @@ class WorldSignalAggregator:
                 signals.append(_tension_to_signal(t))
             tension_health = tension_tracker.get_health()
             tension_error = str(tension_health.get("last_error") or "").strip() or None
+            tension_ok = (not tension_error) or _is_benign_provider_error(tension_error)
             _record_source(
                 "gdelt_tensions",
                 started,
                 len(tensions),
-                ok=not tension_error,
-                error_message=tension_error,
+                ok=tension_ok,
+                error_message=None if tension_ok else tension_error,
                 extra=tension_health,
             )
         except Exception as exc:
@@ -474,11 +500,23 @@ class WorldSignalAggregator:
                 for m in military_events:
                     signals.append(_military_to_signal(m))
             military_health = military_monitor.get_health()
-            military_error = str(
-                military_health.get("last_error")
-                or military_health.get("last_vessel_error")
-                or ""
-            ).strip() or None
+            provider_status = military_health.get("provider_status") or {}
+            provider_errors: list[str] = []
+            if isinstance(provider_status, dict):
+                for provider_name, provider_details in provider_status.items():
+                    if not isinstance(provider_details, dict):
+                        continue
+                    provider_enabled = bool(provider_details.get("enabled", True))
+                    provider_ok = bool(provider_details.get("ok", True))
+                    provider_error = str(provider_details.get("error") or "").strip()
+                    if not provider_enabled:
+                        continue
+                    if provider_name == "aisstream" and _is_benign_provider_error(provider_error):
+                        continue
+                    if (not provider_ok) and provider_error:
+                        provider_errors.append(f"{provider_name}:{provider_error}")
+
+            military_error = "; ".join(provider_errors[:2]) or None
             military_ok = (not military_error) or (not military_enabled)
             _record_source(
                 "military",
@@ -507,39 +545,49 @@ class WorldSignalAggregator:
                 signals.append(_infrastructure_to_signal(ie))
             infra_health = infrastructure_monitor.get_health()
             infra_error = str(infra_health.get("last_error") or "").strip() or None
+            infra_ok = (not infra_error) or _is_benign_provider_error(infra_error)
             _record_source(
                 "infrastructure",
                 started,
                 len(infra_events),
-                ok=not infra_error,
-                error_message=infra_error,
+                ok=infra_ok,
+                error_message=None if infra_ok else infra_error,
                 extra=infra_health,
             )
         except Exception as exc:
             logger.error("Infrastructure monitor collection failed: %s", exc)
             _record_source("infrastructure", started, 0, error=exc)
 
-        # 5. Government RSS
-        gov_articles: list[GovArticle] = []
+        # 5. GDELT world-news pulse
+        gdelt_articles: list[GDELTWorldArticle] = []
         started = datetime.now(timezone.utc)
         try:
-            gov_articles = await gov_rss_service.fetch_all(consumer="world_intelligence")
-            for article in gov_articles:
-                signals.append(_gov_article_to_signal(article))
-            gov_health = gov_rss_service.get_health()
-            gov_error = str(gov_health.get("last_error") or "").strip() or None
-            gov_ok = (not gov_error) or gov_error == "disabled"
+            gdelt_enabled = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True))
+            if gdelt_enabled:
+                gdelt_articles = await gdelt_world_news_service.fetch_all(
+                    consumer="world_intelligence"
+                )
+                for article in gdelt_articles:
+                    signals.append(_gdelt_article_to_signal(article))
+            gdelt_health = gdelt_world_news_service.get_health()
+            gdelt_error = str(gdelt_health.get("last_error") or "").strip() or None
+            gdelt_ok = (
+                (not gdelt_error)
+                or (not gdelt_enabled)
+                or gdelt_error == "disabled"
+                or _is_benign_provider_error(gdelt_error)
+            )
             _record_source(
-                "gov_rss",
+                "gdelt_news",
                 started,
-                len(gov_articles),
-                ok=gov_ok,
-                error_message=gov_error,
-                extra=gov_health,
+                len(gdelt_articles),
+                ok=gdelt_ok,
+                error_message=None if gdelt_ok else gdelt_error,
+                extra=gdelt_health,
             )
         except Exception as exc:
-            logger.error("Gov RSS collection failed: %s", exc)
-            _record_source("gov_rss", started, 0, error=exc)
+            logger.error("GDELT world-news collection failed: %s", exc)
+            _record_source("gdelt_news", started, 0, error=exc)
 
         # 6. USGS earthquakes
         earthquakes: list[Earthquake] = []
@@ -693,7 +741,7 @@ class WorldSignalAggregator:
                 anomaly_detector.record_observation("internet_outages", iso3, float(count))
 
             news_counts: dict[str, int] = {}
-            for article in gov_articles:
+            for article in gdelt_articles:
                 iso3 = _normalize_iso3(article.country_iso3)
                 if not iso3:
                     continue
@@ -713,7 +761,7 @@ class WorldSignalAggregator:
         started = datetime.now(timezone.utc)
         try:
             news_velocity: dict[str, float] = {}
-            for article in gov_articles:
+            for article in gdelt_articles:
                 iso3 = _normalize_iso3(article.country_iso3)
                 if not iso3:
                     continue

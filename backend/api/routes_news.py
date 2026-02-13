@@ -35,6 +35,13 @@ def _article_recency_timestamp(article) -> float:
     return 0.0
 
 
+def _normalize_feed_source(raw: Optional[str]) -> str:
+    source = str(raw or "").strip().lower()
+    if source == "gov_rss":
+        return "rss"
+    return source or "unknown"
+
+
 @router.get("/news/feed/status")
 async def get_feed_status():
     """Get current feed status and source distribution."""
@@ -43,7 +50,7 @@ async def get_feed_status():
     articles = news_feed_service.get_articles()
     sources: dict[str, int] = {}
     for article in articles:
-        key = article.feed_source or "unknown"
+        key = _normalize_feed_source(getattr(article, "feed_source", None))
         sources[key] = sources.get(key, 0) + 1
 
     return {
@@ -67,7 +74,7 @@ async def trigger_news_fetch():
                 {
                     "title": a.title,
                     "source": a.source,
-                    "feed_source": a.feed_source,
+                    "feed_source": _normalize_feed_source(a.feed_source),
                     "url": a.url,
                     "published": _to_iso_utc_z(a.published),
                     "category": a.category,
@@ -92,7 +99,13 @@ async def get_articles(
     articles = news_feed_service.get_articles(max_age_hours=max_age_hours)
 
     if source:
-        articles = [article for article in articles if article.feed_source == source]
+        filter_key = _normalize_feed_source(source)
+        articles = [
+            article
+            for article in articles
+            if _normalize_feed_source(getattr(article, "feed_source", None))
+            == filter_key
+        ]
 
     articles.sort(key=_article_recency_timestamp, reverse=True)
     total = len(articles)
@@ -108,7 +121,7 @@ async def get_articles(
                 "article_id": a.article_id,
                 "title": a.title,
                 "source": a.source,
-                "feed_source": a.feed_source,
+                "feed_source": _normalize_feed_source(a.feed_source),
                 "url": a.url,
                 "published": _to_iso_utc_z(a.published),
                 "category": a.category,
@@ -143,7 +156,7 @@ async def search_articles(
                 "article_id": a.article_id,
                 "title": a.title,
                 "source": a.source,
-                "feed_source": a.feed_source,
+                "feed_source": _normalize_feed_source(a.feed_source),
                 "url": a.url,
                 "published": _to_iso_utc_z(a.published),
                 "category": a.category,
@@ -163,4 +176,3 @@ async def clear_articles():
 
     count = news_feed_service.clear()
     return {"cleared": count}
-

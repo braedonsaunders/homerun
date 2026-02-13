@@ -11,11 +11,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db_session
+from models.database import AsyncSessionLocal, get_db_session
 from services.chainlink_feed import get_chainlink_feed
 from config import settings as _cfg
 from services.crypto_service import get_crypto_service
-from services.worker_state import read_worker_snapshot
+from services.worker_state import read_worker_snapshot, request_worker_run
 from utils.logger import get_logger
 
 router = APIRouter()
@@ -256,8 +256,22 @@ async def _build_live_markets_from_source(snapshot_markets: list[dict]) -> list[
 
 
 @router.get("/crypto/markets")
-async def get_crypto_markets(session: AsyncSession = Depends(get_db_session)):
+async def get_crypto_markets(
+    session: AsyncSession = Depends(get_db_session),
+    viewer_active: bool = False,
+):
     """Return live crypto markets with stale-snapshot source fallback."""
+    if viewer_active:
+        # Mark active viewer demand for the crypto worker. The worker uses this
+        # to stay in fast mode while the crypto panel is open.
+        try:
+            # Use an isolated session so heartbeat writes cannot trigger
+            # autoflush on the request's read-path session.
+            async with AsyncSessionLocal() as heartbeat_session:
+                await request_worker_run(heartbeat_session, "crypto")
+        except Exception:
+            pass
+
     snapshot = await read_worker_snapshot(session, "crypto")
     markets = _snapshot_markets(snapshot)
     snapshot_timeframes = {

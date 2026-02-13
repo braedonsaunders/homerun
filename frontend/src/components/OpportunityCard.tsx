@@ -12,11 +12,12 @@ import {
   RefreshCw,
   MessageCircle,
   Clock,
+  CalendarDays,
   Layers,
   Newspaper,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { buildKalshiMarketUrl, buildPolymarketMarketUrl, inferMarketPlatform } from '../lib/marketUrls'
+import { getOpportunityPlatformLinks } from '../lib/marketUrls'
 import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import { Opportunity, WeatherForecastSource, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
@@ -140,6 +141,16 @@ function timeUntil(dateStr?: string | null): string {
   const hrs = Math.floor(diffMs / 3_600_000)
   if (hrs > 0) return `${hrs}h`
   return `${Math.floor(diffMs / 60_000)}m`
+}
+
+function formatWeatherTargetDisplay(dateStr?: string | null): { date: string; time: string } | null {
+  if (!dateStr) return null
+  const dt = new Date(dateStr)
+  if (Number.isNaN(dt.getTime())) return null
+  return {
+    date: dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+    time: dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+  }
 }
 
 /** Safely format a number with toFixed, returning a fallback for null/undefined/NaN */
@@ -298,6 +309,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const weatherTargetLabel = weather?.target_time
     ? new Date(weather.target_time).toLocaleString()
     : '—'
+  const weatherTargetDisplay = useMemo(
+    () => formatWeatherTargetDisplay(weather?.target_time ?? opportunity.resolution_date ?? null),
+    [weather?.target_time, opportunity.resolution_date]
+  )
 
   const sparkData = useMemo(() => {
     if (!market) return { yes: [], no: [] }
@@ -312,40 +327,12 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || 'bg-border') : 'bg-border/50'
   const bgGradient = recommendation ? (CARD_BG_GRADIENT[recommendation] || '') : ''
 
-  // Platform URLs
-  const polyMarket = opportunity.markets.find(
-    (m: any) =>
-      inferMarketPlatform({
-        platform: m.platform,
-        marketId: m.id,
-        marketSlug: m.slug,
-        conditionId: (m as any).condition_id ?? (m as any).conditionId,
-      }) === 'polymarket'
+  const opportunityLinks = useMemo(
+    () => getOpportunityPlatformLinks(opportunity as any),
+    [opportunity]
   )
-  const polyUrl = polyMarket
-    ? buildPolymarketMarketUrl({
-        eventSlug: opportunity.event_slug || (polyMarket as any)?.event_slug,
-        marketSlug: (polyMarket as any)?.slug,
-        marketId: (polyMarket as any)?.id,
-        conditionId: (polyMarket as any)?.condition_id ?? (polyMarket as any)?.conditionId,
-      })
-    : null
-  const kalshiMarket = opportunity.markets.find(
-    (m: any) =>
-      inferMarketPlatform({
-        platform: m.platform,
-        marketId: m.id,
-        marketSlug: m.slug,
-        conditionId: (m as any).condition_id ?? (m as any).conditionId,
-      }) === 'kalshi'
-  )
-  const kalshiUrl = kalshiMarket
-    ? buildKalshiMarketUrl({
-        marketTicker: kalshiMarket.id,
-        eventTicker: (kalshiMarket as any).event_slug,
-        eventSlug: (kalshiMarket as any).slug,
-      })
-    : null
+  const polyUrl = opportunityLinks.polymarketUrl
+  const kalshiUrl = opportunityLinks.kalshiUrl
 
   // ROI direction
   const roiPositive = opportunity.roi_percent >= 0
@@ -363,7 +350,15 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         {/* ── Row 1: Badges + ROI / Prices ── */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-            {!isSearch && (
+            {isWeatherOpportunity && weatherTargetDisplay && (
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-cyan-500/12 text-cyan-200 border-cyan-500/25">
+                <span className="inline-flex items-center gap-1">
+                  <CalendarDays className="w-2.5 h-2.5" />
+                  {weatherTargetDisplay.date}
+                </span>
+              </Badge>
+            )}
+            {!isSearch && !isWeatherOpportunity && (
               <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", STRATEGY_COLORS[opportunity.strategy])}>
                 {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
               </Badge>
@@ -373,7 +368,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                 {(opportunity as any).platform === 'kalshi' ? 'Kalshi' : 'Polymarket'}
               </Badge>
             )}
-            {opportunity.category && (
+            {opportunity.category && !isWeatherOpportunity && (
               <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground border-border/60">
                 {opportunity.category}
               </Badge>
@@ -428,6 +423,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         <h3 className="text-sm font-medium text-foreground truncate leading-tight" title={opportunity.title}>
           {opportunity.title}
         </h3>
+
+        {isWeatherOpportunity && weatherTargetDisplay && (
+          <div className="flex items-center justify-between rounded-md border border-cyan-500/25 bg-cyan-500/[0.08] px-2 py-1">
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <CalendarDays className="w-3 h-3 text-cyan-300 shrink-0" />
+              <span className="text-xs font-semibold text-cyan-100 truncate">{weatherTargetDisplay.date}</span>
+            </span>
+            <span className="text-[10px] font-data text-cyan-200/90 ml-2 shrink-0">{weatherTargetDisplay.time}</span>
+          </div>
+        )}
 
         {/* ── Row 3: Sparkline + Metrics ── */}
         <div className="flex items-stretch gap-3">
@@ -723,24 +728,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
                 {/* Market link */}
                 {opportunity.markets.map((mkt, idx) => {
-                  const isKalshi = inferMarketPlatform({
-                    platform: (mkt as any).platform,
-                    marketId: (mkt as any).id,
-                    marketSlug: (mkt as any).slug,
-                    conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
-                  }) === 'kalshi'
-                  const url = isKalshi
-                    ? buildKalshiMarketUrl({
-                        marketTicker: mkt.id,
-                        eventTicker: (mkt as any).event_slug,
-                        eventSlug: (mkt as any).slug,
-                      })
-                    : buildPolymarketMarketUrl({
-                        eventSlug: (mkt as any).event_slug || opportunity.event_slug,
-                        marketSlug: mkt.slug,
-                        marketId: mkt.id,
-                        conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
-                      })
+                  const marketLink = opportunityLinks.marketLinks[idx]
+                  const url = marketLink?.url || null
                   return (
                     <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
                       <div className="min-w-0 flex-1">
@@ -904,24 +893,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Markets ({opportunity.markets.length})</h4>
                   <div className="space-y-1.5">
                     {opportunity.markets.map((mkt, idx) => {
-                      const isKalshi = inferMarketPlatform({
-                        platform: (mkt as any).platform,
-                        marketId: (mkt as any).id,
-                        marketSlug: (mkt as any).slug,
-                        conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
-                      }) === 'kalshi'
-                      const url = isKalshi
-                        ? buildKalshiMarketUrl({
-                            marketTicker: mkt.id,
-                            eventTicker: (mkt as any).event_slug,
-                            eventSlug: (mkt as any).slug,
-                          })
-                        : buildPolymarketMarketUrl({
-                            eventSlug: (mkt as any).event_slug || opportunity.event_slug,
-                            marketSlug: mkt.slug,
-                            marketId: mkt.id,
-                            conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
-                          })
+                      const marketLink = opportunityLinks.marketLinks[idx]
+                      const url = marketLink?.url || null
                       return (
                         <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
                           <div className="min-w-0 flex-1">

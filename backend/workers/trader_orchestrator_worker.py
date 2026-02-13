@@ -17,6 +17,10 @@ from models.database import (
     init_database,
 )
 from services.trader_orchestrator.order_manager import submit_order
+from services.trader_orchestrator.live_market_context import (
+    RuntimeTradeSignalView,
+    build_live_signal_contexts,
+)
 from services.trader_orchestrator.risk_manager import evaluate_risk
 from services.trader_orchestrator.strategies.registry import get_strategy
 from services.trader_orchestrator_state import (
@@ -51,6 +55,26 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return parsed
     except Exception:
         return None
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _supports_live_market_context(signal: Any) -> bool:
+    """Only apply HTTP live-market enrichment to non-crypto signals."""
+    source = str(getattr(signal, "source", "") or "").strip().lower()
+    return source != "crypto"
 
 
 def _is_due(trader: dict[str, Any], now: datetime) -> bool:
@@ -117,17 +141,114 @@ async def _run_trader_once(
         strategy = get_strategy(str(trader.get("strategy_key") or ""))
         params = trader.get("params") or {}
         risk_limits = trader.get("risk_limits") or {}
+        control_settings = control.get("settings") or {}
+        enable_live_market_context = bool(
+            control_settings.get("enable_live_market_context", True)
+        )
+        history_window_seconds = int(
+            max(
+                300,
+                min(
+                    21600,
+                    _safe_int(
+                        control_settings.get("live_market_history_window_seconds", 7200),
+                        7200,
+                    ),
+                ),
+            )
+        )
+        history_fidelity_seconds = int(
+            max(
+                30,
+                min(
+                    1800,
+                    _safe_int(
+                        control_settings.get("live_market_history_fidelity_seconds", 300),
+                        300,
+                    ),
+                ),
+            )
+        )
+        max_history_points = int(
+            max(
+                20,
+                min(
+                    240,
+                    _safe_int(
+                        control_settings.get("live_market_history_max_points", 120),
+                        120,
+                    ),
+                ),
+            )
+        )
+
+        live_contexts: dict[str, dict[str, Any]] = {}
+        if enable_live_market_context and signals:
+            context_candidates = [sig for sig in signals if _supports_live_market_context(sig)]
+            try:
+                live_contexts = await build_live_signal_contexts(
+                    context_candidates,
+                    history_window_seconds=history_window_seconds,
+                    history_fidelity_seconds=history_fidelity_seconds,
+                    max_history_points=max_history_points,
+                )
+            except Exception as exc:
+                logger.warning("Live market context refresh failed: %s", exc)
+                live_contexts = {}
 
         for signal in signals:
+            live_context = live_contexts.get(str(signal.id), {})
+            runtime_signal = RuntimeTradeSignalView(signal, live_context=live_context)
             decision_obj = strategy.evaluate(
-                signal,
+                runtime_signal,
                 {
                     "params": params,
                     "trader": trader,
                     "mode": control.get("mode", "paper"),
+                    "live_market": live_context,
                 },
             )
             checks_payload = _checks_to_payload(decision_obj.checks)
+
+            if live_context:
+                live_price = live_context.get("live_selected_price")
+                checks_payload.append(
+                    {
+                        "check_key": "live_market_price",
+                        "check_label": "Live market price",
+                        "passed": live_price is not None,
+                        "score": live_price,
+                        "detail": (
+                            "Using live selected-outcome midpoint"
+                            if live_price is not None
+                            else "Live selected-outcome midpoint unavailable"
+                        ),
+                        "payload": {
+                            "selected_outcome": live_context.get("selected_outcome"),
+                            "fetched_at": live_context.get("fetched_at"),
+                        },
+                    }
+                )
+                drift_pct = live_context.get("entry_price_delta_pct")
+                drift_score = _safe_float(drift_pct)
+                checks_payload.append(
+                    {
+                        "check_key": "live_entry_drift",
+                        "check_label": "Entry drift from signal",
+                        "passed": drift_score is None or abs(drift_score) <= 1000.0,
+                        "score": drift_score,
+                        "detail": (
+                            f"drift={drift_score:.2f}%"
+                            if drift_score is not None
+                            else "Signal entry unavailable; drift skipped"
+                        ),
+                        "payload": {
+                            "signal_entry_price": live_context.get("signal_entry_price"),
+                            "live_selected_price": live_context.get("live_selected_price"),
+                            "adverse_price_move": live_context.get("adverse_price_move"),
+                        },
+                    }
+                )
 
             final_decision = decision_obj.decision
             final_reason = decision_obj.reason
@@ -193,6 +314,18 @@ async def _run_trader_once(
                 payload={
                     "strategy_payload": decision_obj.payload,
                     "size_usd": size_usd,
+                    "live_market": {
+                        "available": bool(live_context.get("available")),
+                        "fetched_at": live_context.get("fetched_at"),
+                        "selected_outcome": live_context.get("selected_outcome"),
+                        "live_selected_price": live_context.get("live_selected_price"),
+                        "signal_entry_price": live_context.get("signal_entry_price"),
+                        "entry_price_delta": live_context.get("entry_price_delta"),
+                        "entry_price_delta_pct": live_context.get("entry_price_delta_pct"),
+                        "live_edge_percent": live_context.get("live_edge_percent"),
+                        "history_summary": live_context.get("history_summary") or {},
+                        "history_tail": live_context.get("history_tail") or [],
+                    },
                 },
             )
             decisions_written += 1
@@ -207,13 +340,13 @@ async def _run_trader_once(
             if final_decision == "selected":
                 status, effective_price, error_message, execution_payload = await submit_order(
                     mode=str(control.get("mode", "paper")),
-                    signal=signal,
+                    signal=runtime_signal,
                     size_usd=size_usd,
                 )
                 await create_trader_order(
                     session,
                     trader_id=str(trader["id"]),
-                    signal=signal,
+                    signal=runtime_signal,
                     decision_id=decision_row.id,
                     mode=str(control.get("mode", "paper")),
                     status=status,

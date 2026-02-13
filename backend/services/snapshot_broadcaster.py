@@ -30,6 +30,7 @@ from services.trader_orchestrator_state import read_orchestrator_snapshot
 from services.worker_state import list_worker_snapshots
 from services.weather import shared_state as weather_shared_state
 from utils.logger import get_logger
+from utils.market_urls import serialize_opportunity_with_links
 
 logger = get_logger("snapshot_broadcaster")
 
@@ -277,7 +278,8 @@ class SnapshotBroadcaster:
                             "data": {
                                 "count": len(opportunities),
                                 "opportunities": [
-                                    o.model_dump(mode="json") for o in opportunities[:50]
+                                    serialize_opportunity_with_links(o)
+                                    for o in opportunities[:50]
                                 ],
                             },
                         }
@@ -311,7 +313,8 @@ class SnapshotBroadcaster:
                             "data": {
                                 "count": len(weather_opps),
                                 "opportunities": [
-                                    o.model_dump(mode="json") for o in weather_opps[:100]
+                                    serialize_opportunity_with_links(o)
+                                    for o in weather_opps[:100]
                                 ],
                                 "status": weather_status,
                             },

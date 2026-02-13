@@ -73,14 +73,26 @@ async def upsert_trade_signal(
     commit: bool = True,
 ) -> TradeSignal:
     """Idempotently upsert a normalized trade signal by ``(source, dedupe_key)``."""
+    row: Optional[TradeSignal] = None
 
-    result = await session.execute(
-        select(TradeSignal).where(
-            TradeSignal.source == source,
-            TradeSignal.dedupe_key == dedupe_key,
-        )
-    )
-    row = result.scalar_one_or_none()
+    # Prefer pending in-session rows first so we can avoid query-invoked
+    # autoflush while still preserving same-transaction dedupe behavior.
+    for pending in session.new:
+        if not isinstance(pending, TradeSignal):
+            continue
+        if pending.source == source and pending.dedupe_key == dedupe_key:
+            row = pending
+            break
+
+    if row is None:
+        with session.no_autoflush:
+            result = await session.execute(
+                select(TradeSignal).where(
+                    TradeSignal.source == source,
+                    TradeSignal.dedupe_key == dedupe_key,
+                )
+            )
+            row = result.scalar_one_or_none()
 
     if row is None:
         row = TradeSignal(

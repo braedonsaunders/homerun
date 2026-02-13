@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +19,7 @@ from services.trader_orchestrator_state import (
     delete_trader,
     get_trader,
     get_trader_decision_detail,
+    get_open_order_summary_for_trader,
     list_serialized_trader_decisions,
     list_serialized_trader_events,
     list_serialized_trader_orders,
@@ -65,6 +67,12 @@ class TraderTemplateCreateRequest(BaseModel):
     template_id: str
     overrides: dict[str, Any] = Field(default_factory=dict)
     requested_by: Optional[str] = None
+
+
+class TraderDeleteAction(str, Enum):
+    block = "block"
+    disable = "disable"
+    force_delete = "force_delete"
 
 
 def _assert_not_globally_paused() -> None:
@@ -190,7 +198,82 @@ async def update_trader_route(
 
 
 @router.delete("/{trader_id}")
-async def delete_trader_route(trader_id: str, session: AsyncSession = Depends(get_db_session)):
+async def delete_trader_route(
+    trader_id: str,
+    action: TraderDeleteAction = Query(default=TraderDeleteAction.block),
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    open_summary = await get_open_order_summary_for_trader(session, trader_id)
+    open_live_orders = int(open_summary.get("live", 0))
+    open_paper_orders = int(open_summary.get("paper", 0))
+    open_other_orders = int(open_summary.get("other", 0))
+    open_total_orders = int(open_summary.get("total", 0))
+
+    if action == TraderDeleteAction.disable:
+        updated = await update_trader(
+            session,
+            trader_id,
+            {
+                "is_enabled": False,
+                "is_paused": True,
+            },
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Trader not found")
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="trader_delete_requested",
+            severity="warn",
+            source="operator",
+            message="Trader disabled instead of deleted",
+            payload={
+                "open_live_orders": open_live_orders,
+                "open_paper_orders": open_paper_orders,
+                "open_other_orders": open_other_orders,
+            },
+        )
+        return {
+            "status": "disabled",
+            "trader_id": trader_id,
+            "open_live_orders": open_live_orders,
+            "open_paper_orders": open_paper_orders,
+            "open_other_orders": open_other_orders,
+            "message": "Trader disabled and paused. Resolve open positions before permanent deletion.",
+        }
+
+    if open_live_orders > 0 and action != TraderDeleteAction.force_delete:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "open_live_positions",
+                "message": "Trader has open live positions. Disable trader and flatten positions before deletion.",
+                "trader_id": trader_id,
+                "open_live_orders": open_live_orders,
+                "open_paper_orders": open_paper_orders,
+                "open_other_orders": open_other_orders,
+                "suggested_action": TraderDeleteAction.disable.value,
+            },
+        )
+
+    if open_total_orders > 0 and action != TraderDeleteAction.force_delete:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "open_positions",
+                "message": "Trader has open positions. Close/resolve open orders before deletion.",
+                "trader_id": trader_id,
+                "open_live_orders": open_live_orders,
+                "open_paper_orders": open_paper_orders,
+                "open_other_orders": open_other_orders,
+                "suggested_action": TraderDeleteAction.disable.value,
+            },
+        )
+
     ok = await delete_trader(session, trader_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Trader not found")
@@ -198,10 +281,24 @@ async def delete_trader_route(trader_id: str, session: AsyncSession = Depends(ge
         session,
         trader_id=trader_id,
         event_type="trader_deleted",
+        severity="warn" if action == TraderDeleteAction.force_delete else "info",
         source="operator",
         message="Trader deleted",
+        payload={
+            "action": action.value,
+            "open_live_orders_at_delete": open_live_orders,
+            "open_paper_orders_at_delete": open_paper_orders,
+            "open_other_orders_at_delete": open_other_orders,
+        },
     )
-    return {"status": "deleted", "trader_id": trader_id}
+    return {
+        "status": "deleted",
+        "trader_id": trader_id,
+        "action": action.value,
+        "open_live_orders": open_live_orders,
+        "open_paper_orders": open_paper_orders,
+        "open_other_orders": open_other_orders,
+    }
 
 
 @router.post("/{trader_id}/start")

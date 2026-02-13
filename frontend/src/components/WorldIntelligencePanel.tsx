@@ -10,7 +10,6 @@ import {
   MapPin,
   Radio,
   ChevronRight,
-  Flame,
   Swords,
   Wifi,
   Map as MapIcon,
@@ -19,6 +18,7 @@ import { cn } from '../lib/utils'
 import { formatCountry, formatCountryPair, normalizeCountryCode, parseCountryPair } from '../lib/worldCountries'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import ErrorBoundary from './ErrorBoundary'
 import WorldIntelligenceOpportunitiesView from './WorldIntelligenceOpportunitiesPanel'
 
@@ -76,9 +76,49 @@ function displayPair(pairText: string): string {
   return pairText
 }
 
+function classifySourceTone(details: any): 'ok' | 'degraded' | 'error' {
+  if (details?.degraded) return 'degraded'
+  const hardError = details?.ok === false
+  if (!hardError) return 'ok'
+  const rawError = String(details?.error || details?.last_error || '').toLowerCase()
+  const degradedMarkers = [
+    'credentials_missing',
+    'missing_api_key',
+    'missing_api_token',
+    'disabled',
+    'rate-limited',
+    'rate limited',
+    'http 429',
+    "client error '429",
+    'status code 429',
+    'soft rate-limit',
+    'soft rate-limited',
+    'nodename nor servname provided',
+    'name or service not known',
+    'temporary failure in name resolution',
+  ]
+  if (degradedMarkers.some((marker) => rawError.includes(marker))) {
+    return 'degraded'
+  }
+  return 'error'
+}
+
+function sourceToneClasses(tone: 'ok' | 'degraded' | 'error'): string {
+  if (tone === 'ok') return 'text-emerald-400'
+  if (tone === 'degraded') return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+function sourceToneLabel(tone: 'ok' | 'degraded' | 'error', count: number): string {
+  if (tone === 'ok') return `ok (${count})`
+  if (tone === 'degraded') return `degraded (${count})`
+  return 'error'
+}
+
 // ==================== OVERVIEW SUB-VIEW ====================
 
 function OverviewView({ isConnected }: { isConnected: boolean }) {
+  const [showReferenceSources, setShowReferenceSources] = useState(false)
   const { data: summary, isLoading, isError } = useQuery({
     queryKey: ['world-intelligence-summary'],
     queryFn: getWorldIntelligenceSummary,
@@ -120,6 +160,14 @@ function OverviewView({ isConnected }: { isConnected: boolean }) {
   const sourceStatus = sourceData?.sources || {}
   const sourceErrors = sourceData?.errors || []
   const criticalSignalCount = Number(summary?.signal_summary?.by_severity?.critical || 0)
+  const coreSourceNames = ['acled', 'gdelt_tensions', 'military', 'infrastructure', 'gdelt_news', 'usgs', 'chokepoints']
+  const referenceSourceNames = ['country_reference', 'ucdp_conflicts', 'mid_reference', 'trade_dependencies']
+  const coreSourceEntries: Array<[string, any]> = coreSourceNames
+    .filter((name) => Object.prototype.hasOwnProperty.call(sourceStatus, name))
+    .map((name) => [name, sourceStatus[name]] as [string, any])
+  const referenceSourceEntries: Array<[string, any]> = referenceSourceNames
+    .filter((name) => Object.prototype.hasOwnProperty.call(sourceStatus, name))
+    .map((name) => [name, sourceStatus[name]] as [string, any])
 
   return (
     <div className="space-y-4">
@@ -134,15 +182,49 @@ function OverviewView({ isConnected }: { isConnected: boolean }) {
       <div className="p-3 rounded-lg bg-card border border-border">
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Source Health</h3>
         {Object.keys(sourceStatus).length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {Object.entries(sourceStatus).map(([name, details]: [string, any]) => (
-              <div key={name} className="flex items-center justify-between rounded bg-background/50 px-2 py-1.5 text-[11px]">
-                <span className="font-mono text-muted-foreground">{name}</span>
-                <span className={cn('font-mono', details?.ok === false ? 'text-red-400' : 'text-emerald-400')}>
-                  {details?.ok === false ? 'error' : `ok (${details?.count ?? 0})`}
-                </span>
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {(coreSourceEntries.length > 0 ? coreSourceEntries : (Object.entries(sourceStatus) as Array<[string, any]>)).map(([name, details]) => {
+                const tone = classifySourceTone(details)
+                const count = Number(details?.count ?? 0)
+                return (
+                  <div key={name} className="flex items-center justify-between rounded bg-background/50 px-2 py-1.5 text-[11px]">
+                    <span className="font-mono text-muted-foreground">{name}</span>
+                    <span className={cn('font-mono', sourceToneClasses(tone))}>
+                      {sourceToneLabel(tone, count)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            {referenceSourceEntries.length > 0 && (
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowReferenceSources((prev) => !prev)}
+                  className="h-6 px-1 text-[10px] text-muted-foreground"
+                >
+                  {showReferenceSources ? 'Hide reference sources' : 'Show reference sources'}
+                </Button>
+                {showReferenceSources && (
+                  <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {referenceSourceEntries.map(([name, details]) => {
+                      const tone = classifySourceTone(details)
+                      const count = Number(details?.count ?? 0)
+                      return (
+                        <div key={name} className="flex items-center justify-between rounded bg-background/50 px-2 py-1.5 text-[11px]">
+                          <span className="font-mono text-muted-foreground">{name}</span>
+                          <span className={cn('font-mono', sourceToneClasses(tone))}>
+                            {sourceToneLabel(tone, count)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            ))}
+            )}
           </div>
         ) : (
           <div className="text-[11px] text-muted-foreground">
@@ -273,22 +355,42 @@ function SignalRow({ signal }: { signal: WorldSignal }) {
 
 function SignalsView({ isConnected }: { isConnected: boolean }) {
   const [typeFilter, setTypeFilter] = useState<string>('')
+  const [limit, setLimit] = useState<number>(250)
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['world-signals', { signal_type: typeFilter || undefined, limit: 100 }],
-    queryFn: () => getWorldSignals({ signal_type: typeFilter || undefined, limit: 100 }),
+    queryKey: ['world-signals', { signal_type: typeFilter || undefined, limit }],
+    queryFn: () => getWorldSignals({ signal_type: typeFilter || undefined, limit }),
     refetchInterval: isConnected ? false : 120000,
   })
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Button variant={!typeFilter ? 'default' : 'outline'} size="sm" onClick={() => setTypeFilter('')} className="h-7 text-xs">All</Button>
-        {Object.entries(SIGNAL_TYPE_CONFIG).map(([type, config]) => (
-          <Button key={type} variant={typeFilter === type ? 'default' : 'outline'} size="sm" onClick={() => setTypeFilter(type)} className="h-7 text-xs gap-1">
-            <config.icon className="w-3 h-3" />
-            {config.label}
-          </Button>
-        ))}
+      <div className="flex items-center gap-2">
+        <Select value={typeFilter || 'all'} onValueChange={(value) => setTypeFilter(value === 'all' ? '' : value)}>
+          <SelectTrigger className="h-8 w-[180px] text-xs">
+            <SelectValue placeholder="Signal type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All signal types</SelectItem>
+            {Object.entries(SIGNAL_TYPE_CONFIG).map(([type, config]) => (
+              <SelectItem key={type} value={type}>
+                {config.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={String(limit)} onValueChange={(value) => setLimit(Number(value) || 250)}>
+          <SelectTrigger className="h-8 w-[120px] text-xs">
+            <SelectValue placeholder="Rows" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="25">25 rows</SelectItem>
+            <SelectItem value="50">50 rows</SelectItem>
+            <SelectItem value="100">100 rows</SelectItem>
+            <SelectItem value="250">250 rows</SelectItem>
+            <SelectItem value="500">500 rows</SelectItem>
+            <SelectItem value="1000">1000 rows</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {isLoading ? (
@@ -498,10 +600,6 @@ const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = 
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'overview', label: 'Overview', icon: Globe },
   { id: 'signals', label: 'Signals', icon: Radio },
-  { id: 'countries', label: 'Country Risk', icon: MapPin },
-  { id: 'tensions', label: 'Tensions', icon: Swords },
-  { id: 'convergences', label: 'Convergence', icon: Flame },
-  { id: 'anomalies', label: 'Anomalies', icon: Zap },
 ]
 
 export default function WorldIntelligencePanel({ isConnected = true }: { isConnected?: boolean }) {

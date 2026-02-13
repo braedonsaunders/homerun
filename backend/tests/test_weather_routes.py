@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -162,6 +162,67 @@ async def test_get_weather_opportunities_enforces_tradability_filters(monkeypatc
         min_edge_percent=12.0,
         direction="buy_no",
         max_entry_price=0.2,
+        location_query="Wellington",
+        target_date=None,
+        require_tradable_markets=True,
+        exclude_near_resolution=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_weather_opportunities_passes_target_date(monkeypatch):
+    fake_session = object()
+    get_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "get_weather_opportunities_from_db",
+        get_mock,
+    )
+
+    target = date(2026, 2, 13)
+    out = await routes_weather_workflow.get_weather_opportunities(
+        session=fake_session,
+        target_date=target,
+        limit=20,
+        offset=0,
+    )
+
+    assert out["total"] == 0
+    await_args = get_mock.await_args
+    assert await_args is not None
+    assert await_args.kwargs.get("target_date") == target
+
+
+@pytest.mark.asyncio
+async def test_get_weather_opportunity_dates_uses_shared_date_counts(monkeypatch):
+    fake_session = object()
+    date_mock = AsyncMock(
+        return_value=[
+            {"date": "2026-02-13", "count": 3},
+            {"date": "2026-02-14", "count": 1},
+        ]
+    )
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "get_weather_target_date_counts_from_db",
+        date_mock,
+    )
+
+    out = await routes_weather_workflow.get_weather_opportunity_dates(
+        session=fake_session,
+        min_edge=8.0,
+        direction="buy_yes",
+        max_entry=0.25,
+        location="Wellington",
+    )
+
+    assert out["total_dates"] == 2
+    assert out["dates"][0]["date"] == "2026-02-13"
+    date_mock.assert_awaited_once_with(
+        fake_session,
+        min_edge_percent=8.0,
+        direction="buy_yes",
+        max_entry_price=0.25,
         location_query="Wellington",
         require_tradable_markets=True,
         exclude_near_resolution=True,

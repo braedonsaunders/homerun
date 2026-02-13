@@ -882,9 +882,9 @@ class AppSettings(Base):
     # Independent News Workflow (Option B/C/D pipeline)
     news_workflow_enabled = Column(Boolean, default=True)
     news_workflow_auto_run = Column(Boolean, default=True)
-    news_workflow_top_k = Column(Integer, default=8)
-    news_workflow_rerank_top_n = Column(Integer, default=5)
-    news_workflow_similarity_threshold = Column(Float, default=0.42)
+    news_workflow_top_k = Column(Integer, default=20)
+    news_workflow_rerank_top_n = Column(Integer, default=8)
+    news_workflow_similarity_threshold = Column(Float, default=0.20)
     news_workflow_keyword_weight = Column(Float, default=0.25)
     news_workflow_semantic_weight = Column(Float, default=0.45)
     news_workflow_event_weight = Column(Float, default=0.30)
@@ -892,7 +892,7 @@ class AppSettings(Base):
     news_workflow_market_min_liquidity = Column(Float, default=500.0)
     news_workflow_market_max_days_to_resolution = Column(Integer, default=365)
     news_workflow_min_keyword_signal = Column(Float, default=0.04)
-    news_workflow_min_semantic_signal = Column(Float, default=0.22)
+    news_workflow_min_semantic_signal = Column(Float, default=0.05)
     news_workflow_min_edge_percent = Column(Float, default=8.0)
     news_workflow_min_confidence = Column(Float, default=0.6)
     news_workflow_require_second_source = Column(Boolean, default=False)
@@ -905,7 +905,7 @@ class AppSettings(Base):
     news_workflow_hourly_spend_cap_usd = Column(Float, default=2.0)
     news_workflow_cycle_llm_call_cap = Column(Integer, default=30)
     news_workflow_cache_ttl_minutes = Column(Integer, default=30)
-    news_workflow_max_edge_evals_per_article = Column(Integer, default=3)
+    news_workflow_max_edge_evals_per_article = Column(Integer, default=6)
     news_rss_feeds_json = Column(JSON, default=list)
     news_gov_rss_enabled = Column(Boolean, default=True)
     news_gov_rss_feeds_json = Column(JSON, default=list)
@@ -917,6 +917,22 @@ class AppSettings(Base):
     world_intel_ucdp_source = Column(String, nullable=True)
     world_intel_ucdp_year = Column(Integer, nullable=True)
     world_intel_ucdp_synced_at = Column(DateTime, nullable=True)
+    world_intel_mid_iso3_json = Column(JSON, default=dict)
+    world_intel_mid_source = Column(String, nullable=True)
+    world_intel_mid_synced_at = Column(DateTime, nullable=True)
+    world_intel_trade_dependencies_json = Column(JSON, default=dict)
+    world_intel_trade_dependency_source = Column(String, nullable=True)
+    world_intel_trade_dependency_year = Column(Integer, nullable=True)
+    world_intel_trade_dependency_synced_at = Column(DateTime, nullable=True)
+    world_intel_chokepoints_json = Column(JSON, default=list)
+    world_intel_chokepoints_source = Column(String, nullable=True)
+    world_intel_chokepoints_synced_at = Column(DateTime, nullable=True)
+    world_intel_gdelt_news_enabled = Column(Boolean, default=True)
+    world_intel_gdelt_news_queries_json = Column(JSON, default=list)
+    world_intel_gdelt_news_timespan_hours = Column(Integer, default=6)
+    world_intel_gdelt_news_max_records = Column(Integer, default=40)
+    world_intel_gdelt_news_source = Column(String, nullable=True)
+    world_intel_gdelt_news_synced_at = Column(DateTime, nullable=True)
 
     # Independent Weather Workflow (forecast consensus -> opportunities/intents)
     weather_workflow_enabled = Column(Boolean, default=True)
@@ -2571,6 +2587,44 @@ def _migrate_schema(connection):
                 default_ucdp_minor_payload = json.dumps(minor_rows)
         except Exception as e:
             logger.debug("default UCDP seed fallback to empty lists: %s", e)
+        default_mid_map_payload = "{}"
+        try:
+            from services.world_intelligence.military_catalog import military_catalog
+
+            default_mid_map_payload = json.dumps(military_catalog.vessel_mid_iso3())
+        except Exception as e:
+            logger.debug("default MID map seed fallback to empty map: %s", e)
+        default_trade_dependencies_payload = "{}"
+        try:
+            from services.world_intelligence.infrastructure_catalog import infrastructure_catalog
+
+            payload = infrastructure_catalog.payload()
+            default_trade_dependencies_payload = json.dumps(
+                payload.get("trade_dependencies") or {}
+            )
+        except Exception as e:
+            logger.debug("default trade dependency seed fallback to empty map: %s", e)
+        default_chokepoints_payload = "[]"
+        try:
+            from services.world_intelligence.region_catalog import region_catalog
+
+            payload = region_catalog.payload()
+            rows = payload.get("chokepoints") or []
+            if isinstance(rows, list):
+                default_chokepoints_payload = json.dumps(rows)
+        except Exception as e:
+            logger.debug("default chokepoint seed fallback to empty list: %s", e)
+        default_gdelt_queries_payload = "[]"
+        try:
+            from services.world_intelligence.gdelt_news_source import (
+                default_world_intel_gdelt_queries,
+            )
+
+            default_gdelt_queries_payload = json.dumps(
+                default_world_intel_gdelt_queries()
+            )
+        except Exception as e:
+            logger.debug("default world GDELT query seed fallback to empty list: %s", e)
 
         try:
             connection.execute(
@@ -2578,16 +2632,35 @@ def _migrate_schema(connection):
                     """
                     UPDATE app_settings
                     SET
+                        news_workflow_top_k = CASE
+                            WHEN news_workflow_top_k IS NULL THEN 20
+                            WHEN news_workflow_top_k = 8 THEN 20
+                            ELSE news_workflow_top_k
+                        END,
+                        news_workflow_rerank_top_n = CASE
+                            WHEN news_workflow_rerank_top_n IS NULL THEN 8
+                            WHEN news_workflow_rerank_top_n = 5 THEN 8
+                            ELSE news_workflow_rerank_top_n
+                        END,
                         news_workflow_similarity_threshold = CASE
-                            WHEN news_workflow_similarity_threshold IS NULL THEN 0.42
-                            WHEN news_workflow_similarity_threshold = 0.35 THEN 0.42
+                            WHEN news_workflow_similarity_threshold IS NULL THEN 0.20
+                            WHEN news_workflow_similarity_threshold IN (0.35, 0.42) THEN 0.20
                             ELSE news_workflow_similarity_threshold
                         END,
                         news_workflow_require_verifier = COALESCE(news_workflow_require_verifier, 1),
                         news_workflow_market_min_liquidity = COALESCE(news_workflow_market_min_liquidity, 500.0),
                         news_workflow_market_max_days_to_resolution = COALESCE(news_workflow_market_max_days_to_resolution, 365),
                         news_workflow_min_keyword_signal = COALESCE(news_workflow_min_keyword_signal, 0.04),
-                        news_workflow_min_semantic_signal = COALESCE(news_workflow_min_semantic_signal, 0.22),
+                        news_workflow_min_semantic_signal = CASE
+                            WHEN news_workflow_min_semantic_signal IS NULL THEN 0.05
+                            WHEN news_workflow_min_semantic_signal = 0.22 THEN 0.05
+                            ELSE news_workflow_min_semantic_signal
+                        END,
+                        news_workflow_max_edge_evals_per_article = CASE
+                            WHEN news_workflow_max_edge_evals_per_article IS NULL THEN 6
+                            WHEN news_workflow_max_edge_evals_per_article = 3 THEN 6
+                            ELSE news_workflow_max_edge_evals_per_article
+                        END,
                         news_gov_rss_enabled = COALESCE(news_gov_rss_enabled, 1),
                         news_rss_feeds_json = COALESCE(news_rss_feeds_json, '[]'),
                         news_gov_rss_feeds_json = CASE
@@ -2609,6 +2682,39 @@ def _migrate_schema(connection):
                             WHEN world_intel_ucdp_minor_conflicts_json IS NULL THEN :default_ucdp_minor_conflicts
                             WHEN TRIM(CAST(world_intel_ucdp_minor_conflicts_json AS TEXT)) IN ('', '[]', 'null') THEN :default_ucdp_minor_conflicts
                             ELSE world_intel_ucdp_minor_conflicts_json
+                        END,
+                        world_intel_mid_iso3_json = CASE
+                            WHEN world_intel_mid_iso3_json IS NULL THEN :default_mid_map
+                            WHEN TRIM(CAST(world_intel_mid_iso3_json AS TEXT)) IN ('', '{}', 'null') THEN :default_mid_map
+                            ELSE world_intel_mid_iso3_json
+                        END,
+                        world_intel_trade_dependencies_json = CASE
+                            WHEN world_intel_trade_dependencies_json IS NULL THEN :default_trade_dependencies
+                            WHEN TRIM(CAST(world_intel_trade_dependencies_json AS TEXT)) IN ('', '{}', 'null') THEN :default_trade_dependencies
+                            ELSE world_intel_trade_dependencies_json
+                        END,
+                        world_intel_chokepoints_json = CASE
+                            WHEN world_intel_chokepoints_json IS NULL THEN :default_chokepoints
+                            WHEN TRIM(CAST(world_intel_chokepoints_json AS TEXT)) IN ('', '[]', 'null') THEN :default_chokepoints
+                            ELSE world_intel_chokepoints_json
+                        END,
+                        world_intel_chokepoints_source = CASE
+                            WHEN world_intel_chokepoints_source IS NULL THEN 'static_seed'
+                            WHEN TRIM(world_intel_chokepoints_source) = '' THEN 'static_seed'
+                            ELSE world_intel_chokepoints_source
+                        END,
+                        world_intel_gdelt_news_enabled = COALESCE(world_intel_gdelt_news_enabled, 1),
+                        world_intel_gdelt_news_queries_json = CASE
+                            WHEN world_intel_gdelt_news_queries_json IS NULL THEN :default_gdelt_queries
+                            WHEN TRIM(CAST(world_intel_gdelt_news_queries_json AS TEXT)) IN ('', '[]', 'null') THEN :default_gdelt_queries
+                            ELSE world_intel_gdelt_news_queries_json
+                        END,
+                        world_intel_gdelt_news_timespan_hours = COALESCE(world_intel_gdelt_news_timespan_hours, 6),
+                        world_intel_gdelt_news_max_records = COALESCE(world_intel_gdelt_news_max_records, 40),
+                        world_intel_gdelt_news_source = CASE
+                            WHEN world_intel_gdelt_news_source IS NULL THEN 'gdelt_doc_seed'
+                            WHEN TRIM(world_intel_gdelt_news_source) = '' THEN 'gdelt_doc_seed'
+                            ELSE world_intel_gdelt_news_source
                         END
                     """
                 ),
@@ -2617,10 +2723,29 @@ def _migrate_schema(connection):
                     "default_country_reference": default_country_payload,
                     "default_ucdp_active_wars": default_ucdp_active_payload,
                     "default_ucdp_minor_conflicts": default_ucdp_minor_payload,
+                    "default_mid_map": default_mid_map_payload,
+                    "default_trade_dependencies": default_trade_dependencies_payload,
+                    "default_chokepoints": default_chokepoints_payload,
+                    "default_gdelt_queries": default_gdelt_queries_payload,
                 },
             )
         except Exception as e:
             logger.debug("app_settings news precision backfill skipped: %s", e)
+
+    # Rebrand historical feed source labels to the unified RSS name.
+    if "news_article_cache" in existing_tables:
+        try:
+            connection.execute(
+                text(
+                    """
+                    UPDATE news_article_cache
+                    SET feed_source = 'rss'
+                    WHERE feed_source = 'gov_rss'
+                    """
+                )
+            )
+        except Exception as e:
+            logger.debug("news_article_cache feed_source rebrand skipped: %s", e)
 
     # Ensure composite index for usage stats (requested_at, success)
     if "llm_usage_log" in existing_tables:

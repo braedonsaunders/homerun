@@ -59,6 +59,8 @@ export interface Opportunity {
   risk_score: number
   risk_factors: string[]
   markets: Market[]
+  polymarket_url?: string | null
+  kalshi_url?: string | null
   event_id?: string
   event_slug?: string
   event_title?: string
@@ -74,8 +76,14 @@ export interface Opportunity {
 
 export interface Market {
   id: string
+  condition_id?: string
+  conditionId?: string
   slug?: string
   event_slug?: string
+  event_ticker?: string
+  eventTicker?: string
+  url?: string
+  market_url?: string
   question: string
   yes_price: number
   no_price: number
@@ -512,8 +520,8 @@ export interface CryptoMarket {
   oracle_history: { t: number; p: number }[]
 }
 
-export const getCryptoMarkets = async (): Promise<CryptoMarket[]> => {
-  const { data } = await api.get('/crypto/markets')
+export const getCryptoMarkets = async (params?: { viewer_active?: boolean }): Promise<CryptoMarket[]> => {
+  const { data } = await api.get('/crypto/markets', { params })
   return data
 }
 
@@ -1684,8 +1692,21 @@ export const updateTrader = async (traderId: string, payload: Record<string, any
   return data
 }
 
-export const deleteTrader = async (traderId: string): Promise<{ status: string; trader_id: string }> => {
-  const { data } = await api.delete(`/traders/${traderId}`)
+export type TraderDeleteAction = 'block' | 'disable' | 'force_delete'
+
+export const deleteTrader = async (
+  traderId: string,
+  options?: { action?: TraderDeleteAction }
+): Promise<{
+  status: string
+  trader_id: string
+  action?: TraderDeleteAction
+  open_live_orders?: number
+  open_paper_orders?: number
+  open_other_orders?: number
+  message?: string
+}> => {
+  const { data } = await api.delete(`/traders/${traderId}`, { params: options })
   return data
 }
 
@@ -2656,6 +2677,15 @@ export interface NewsWorkflowFinding {
   reasoning: string
   actionable: boolean
   consumed_by_orchestrator: boolean
+  price_history?: Array<{
+    t?: number
+    yes?: number
+    no?: number
+  }>
+  yes_price?: number | null
+  no_price?: number | null
+  current_yes_price?: number | null
+  current_no_price?: number | null
   supporting_articles?: NewsSupportingArticle[]
   supporting_article_count?: number
   created_at: string
@@ -2730,7 +2760,7 @@ export interface NewsRssFeedConfig {
   category: string
 }
 
-export interface NewsGovRssFeedConfig {
+export interface NewsRssSourceConfig {
   id: string
   agency: string
   name: string
@@ -2767,8 +2797,11 @@ export interface NewsWorkflowSettings {
   cache_ttl_minutes: number
   max_edge_evals_per_article: number
   rss_feeds: NewsRssFeedConfig[]
-  gov_rss_enabled: boolean
-  gov_rss_feeds: NewsGovRssFeedConfig[]
+  rss_enabled: boolean
+  rss_sources: NewsRssSourceConfig[]
+  // Backward-compatible payload keys from older backends.
+  gov_rss_enabled?: boolean
+  gov_rss_feeds?: NewsRssSourceConfig[]
   model: string | null
 }
 
@@ -2903,6 +2936,11 @@ export interface WeatherWorkflowPerformance {
   executed_intents: number
 }
 
+export interface WeatherOpportunityDateBucket {
+  date: string
+  count: number
+}
+
 export const getWeatherWorkflowStatus = async (): Promise<WeatherWorkflowStatus> => {
   const { data } = await api.get('/weather-workflow/status')
   return data
@@ -2937,10 +2975,21 @@ export const getWeatherWorkflowOpportunities = async (params?: {
   direction?: string
   max_entry?: number
   location?: string
+  target_date?: string
   limit?: number
   offset?: number
 }): Promise<{ total: number; offset: number; limit: number; opportunities: Opportunity[] }> => {
   const { data } = await api.get('/weather-workflow/opportunities', { params })
+  return data
+}
+
+export const getWeatherWorkflowOpportunityDates = async (params?: {
+  min_edge?: number
+  direction?: string
+  max_entry?: number
+  location?: string
+}): Promise<{ total_dates: number; dates: WeatherOpportunityDateBucket[] }> => {
+  const { data } = await api.get('/weather-workflow/opportunity-dates', { params })
   return data
 }
 

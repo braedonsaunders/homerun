@@ -21,6 +21,7 @@ from services.plugin_loader import plugin_loader
 from services import shared_state
 from services.pause_state import global_pause_state
 from utils.logger import get_logger
+from utils.market_urls import attach_market_links_to_opportunity_dict, serialize_opportunity_with_links
 
 router = APIRouter()
 logger = get_logger("routes")
@@ -221,7 +222,7 @@ async def get_opportunities(
     # Using Response injection (not JSONResponse) lets FastAPI handle
     # content-negotiation and CORS headers correctly.
     response.headers["X-Total-Count"] = str(total)
-    return [o.model_dump(mode="json") for o in paginated]
+    return [serialize_opportunity_with_links(o) for o in paginated]
 
 
 @router.get("/opportunities/search-polymarket")
@@ -311,46 +312,57 @@ async def search_polymarket_opportunities(
             volume = float(market.volume or 0)
             liquidity = float(getattr(market, "liquidity", 0) or market.volume or 0)
 
-            results.append({
-                "id": f"search-{mid}",
-                "stable_id": f"search-{mid}",
-                "title": market.question,
-                "description": f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}",
-                "event_title": market.question,
-                "event_slug": event_slug,
-                "strategy": "search",
-                "total_cost": 0.0,
-                "expected_payout": 0.0,
-                "gross_profit": 0.0,
-                "fee": 0.0,
-                "net_profit": 0.0,
-                "roi_percent": 0.0,
-                "risk_score": 0.0,
-                "risk_factors": [],
-                "min_liquidity": liquidity,
-                "volume": volume,
-                "max_position_size": 0.0,
-                "category": category,
-                "detected_at": datetime.now(timezone.utc).isoformat(),
-                "expires_at": market.end_date.isoformat() if market.end_date else None,
-                "resolution_date": market.end_date.isoformat() if market.end_date else None,
-                "platform": platform,
-                "positions_to_take": [],
-                "markets": [
+            results.append(
+                attach_market_links_to_opportunity_dict(
                     {
-                        "id": market.condition_id or "",
-                        "question": market.question,
-                        "slug": slug,
+                        "id": f"search-{mid}",
+                        "stable_id": f"search-{mid}",
+                        "title": market.question,
+                        "description": (
+                            f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}"
+                        ),
+                        "event_title": market.question,
                         "event_slug": event_slug,
-                        "platform": platform,
-                        "yes_price": yes_price,
-                        "no_price": no_price,
+                        "strategy": "search",
+                        "total_cost": 0.0,
+                        "expected_payout": 0.0,
+                        "gross_profit": 0.0,
+                        "fee": 0.0,
+                        "net_profit": 0.0,
+                        "roi_percent": 0.0,
+                        "risk_score": 0.0,
+                        "risk_factors": [],
+                        "min_liquidity": liquidity,
                         "volume": volume,
-                        "liquidity": liquidity,
+                        "max_position_size": 0.0,
+                        "category": category,
+                        "detected_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": (
+                            market.end_date.isoformat() if market.end_date else None
+                        ),
+                        "resolution_date": (
+                            market.end_date.isoformat() if market.end_date else None
+                        ),
+                        "platform": platform,
+                        "positions_to_take": [],
+                        "markets": [
+                            {
+                                "id": market.condition_id or "",
+                                "condition_id": market.condition_id or "",
+                                "question": market.question,
+                                "slug": slug,
+                                "event_slug": event_slug,
+                                "platform": platform,
+                                "yes_price": yes_price,
+                                "no_price": no_price,
+                                "volume": volume,
+                                "liquidity": liquidity,
+                            }
+                        ],
+                        "ai_analysis": None,
                     }
-                ],
-                "ai_analysis": None,
-            })
+                )
+            )
 
         results = results[:limit]
 
@@ -439,7 +451,7 @@ async def get_opportunity(
     opportunities = await shared_state.get_opportunities_from_db(session, None)
     for opp in opportunities:
         if opp.id == opportunity_id:
-            return opp
+            return serialize_opportunity_with_links(opp)
     raise HTTPException(status_code=404, detail="Opportunity not found")
 
 

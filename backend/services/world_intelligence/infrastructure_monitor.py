@@ -125,6 +125,14 @@ class InfrastructureMonitor:
 
         Results are cached for 10 minutes to avoid excessive API calls.
         """
+        if not self._cf_api_token:
+            # Free Radar web endpoint is bot-challenged for server-side clients.
+            # Without a token we treat this provider as not configured.
+            self._last_error = "missing_api_token"
+            self._cached_outages = []
+            self._cache_timestamp = time.monotonic()
+            return []
+
         now = time.monotonic()
         if (
             self._cached_outages
@@ -134,11 +142,8 @@ class InfrastructureMonitor:
 
         events: list[InfrastructureEvent] = []
 
-        # Try authenticated endpoint first, fall back to free
-        if self._cf_api_token:
-            events = await self._fetch_cf_authenticated()
-        if not events:
-            events = await self._fetch_cf_free()
+        # Authenticated endpoint is the primary supported path.
+        events = await self._fetch_cf_authenticated()
 
         self._cached_outages = events
         self._cache_timestamp = time.monotonic()

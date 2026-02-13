@@ -139,6 +139,10 @@ function toTier(value: string | null | undefined): TierFilter {
   return 'WATCH'
 }
 
+function isQualifiedTraderSignal(signal: UnifiedTraderSignal): boolean {
+  return signal.is_tradeable && signal.is_valid && signal.source_coverage_score > 0
+}
+
 export default function RecentTradesPanel({
   onNavigateToWallet,
   onOpenCopilot,
@@ -345,28 +349,8 @@ export default function RecentTradesPanel({
     return sortedSignals.filter((signal) => getSignalSide(signal) === sideFilter)
   }, [sortedSignals, sideFilter])
 
-  const uniqueSignalMarkets = useMemo(() => {
-    const keys = new Set<string>()
-    for (const signal of filteredSignals) {
-      keys.add(`${signal.market_id}:${signal.outcome || ''}`)
-    }
-    return keys.size
-  }, [filteredSignals])
-
-  const highSignals = filteredSignals.filter(
-    (signal) => tierRank(signal.tier) >= tierRank('HIGH'),
-  ).length
-  const extremeSignals = filteredSignals.filter(
-    (signal) => toTier(signal.tier) === 'EXTREME',
-  ).length
-
-  const avgConviction = filteredSignals.length
-    ? filteredSignals.reduce((sum, signal) => sum + (signal.conviction_score || 0), 0) /
-      filteredSignals.length
-    : 0
-
-  // Unified merged signal list (confluence + insider)
-  const unifiedSignals = useMemo<UnifiedTraderSignal[]>(() => {
+  // Unified merged signal list (confluence + insider) with quality gating.
+  const signalView = useMemo(() => {
     const confluenceNormalized = filteredSignals.map(normalizeConfluenceSignal)
     const insiderNormalized = insiderOpportunities.map(normalizeInsiderSignal)
 
@@ -379,8 +363,13 @@ export default function RecentTradesPanel({
       merged = merged.filter((s) => s.source === 'insider')
     }
 
-    // Sort by confidence descending, then by recency
-    merged.sort((a, b) => {
+    const totalBeforeValidation = merged.length
+    const qualified = merged.filter(isQualifiedTraderSignal)
+
+    // Prioritize richer source coverage, then confidence, then recency.
+    qualified.sort((a, b) => {
+      const sourceDiff = b.source_coverage_score - a.source_coverage_score
+      if (sourceDiff !== 0) return sourceDiff
       const confDiff = b.confidence - a.confidence
       if (confDiff !== 0) return confDiff
       const bTime = new Date(b.detected_at).getTime() || 0
@@ -388,8 +377,15 @@ export default function RecentTradesPanel({
       return bTime - aTime
     })
 
-    return merged
+    return {
+      unifiedSignals: qualified,
+      totalBeforeValidation,
+      filteredOut: Math.max(0, totalBeforeValidation - qualified.length),
+    }
   }, [filteredSignals, insiderOpportunities, sourceFilter])
+
+  const unifiedSignals = signalView.unifiedSignals
+  const filteredOutSignals = signalView.filteredOut
 
   const handleOpenSignalCopilot = (signal: UnifiedTraderSignal) => {
     const contextId = `${signal.source}:${signal.id}`
@@ -397,9 +393,29 @@ export default function RecentTradesPanel({
     onOpenCopilot?.('trader_signal', contextId, label)
   }
 
-  const insiderCount = insiderOpportunities.length
-  const confluenceCount = filteredSignals.length
-  const totalSignalCount = insiderCount + confluenceCount
+  const rawInsiderCount = insiderOpportunities.length
+  const rawConfluenceCount = filteredSignals.length
+  const rawSignalCount = rawInsiderCount + rawConfluenceCount
+  const displayedInsiderCount = unifiedSignals.filter((s) => s.source === 'insider').length
+  const displayedConfluenceCount = unifiedSignals.filter((s) => s.source === 'confluence').length
+  const displayedSignalCount = unifiedSignals.length
+  const uniqueSignalMarkets = useMemo(() => {
+    const keys = new Set<string>()
+    for (const signal of unifiedSignals) {
+      keys.add(`${signal.market_id}:${signal.direction || ''}`)
+    }
+    return keys.size
+  }, [unifiedSignals])
+  const highSignals = unifiedSignals.filter(
+    (signal) => signal.source === 'confluence' && tierRank(signal.tier) >= tierRank('HIGH'),
+  ).length
+  const extremeSignals = unifiedSignals.filter(
+    (signal) => signal.source === 'confluence' && toTier(signal.tier) === 'EXTREME',
+  ).length
+  const avgConviction = unifiedSignals.length
+    ? unifiedSignals.reduce((sum, signal) => sum + signal.confidence, 0) /
+      unifiedSignals.length
+    : 0
 
   const trackedWalletActivity = useMemo(() => {
     const map = new Map<
@@ -827,9 +843,9 @@ export default function RecentTradesPanel({
                 onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
                 className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
               >
-                <option value="all">All ({totalSignalCount})</option>
-                <option value="confluence">Confluence ({confluenceCount})</option>
-                <option value="insider">Insider ({insiderCount})</option>
+                <option value="all">All ({displayedSignalCount}/{rawSignalCount})</option>
+                <option value="confluence">Confluence ({displayedConfluenceCount}/{rawConfluenceCount})</option>
+                <option value="insider">Insider ({displayedInsiderCount}/{rawInsiderCount})</option>
               </select>
 
               <select
@@ -874,6 +890,11 @@ export default function RecentTradesPanel({
               <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
                 Markets/Wallets {uniqueSignalMarkets}/{trackedWallets}
               </span>
+              {filteredOutSignals > 0 && (
+                <span className="inline-flex items-center rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-200/90">
+                  Filtered {filteredOutSignals}
+                </span>
+              )}
 
               <button
                 onClick={handleRefresh}
@@ -901,9 +922,9 @@ export default function RecentTradesPanel({
                     onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
                     className="bg-muted border border-border rounded px-2 py-1 text-sm"
                   >
-                    <option value="all">All ({totalSignalCount})</option>
-                    <option value="confluence">Confluence ({confluenceCount})</option>
-                    <option value="insider">Insider ({insiderCount})</option>
+                    <option value="all">All ({displayedSignalCount}/{rawSignalCount})</option>
+                    <option value="confluence">Confluence ({displayedConfluenceCount}/{rawConfluenceCount})</option>
+                    <option value="insider">Insider ({displayedInsiderCount}/{rawInsiderCount})</option>
                   </select>
                 </div>
 
@@ -948,13 +969,13 @@ export default function RecentTradesPanel({
               </div>
 
               {/* Stats Summary */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Total Signals</p>
                   <p className="text-lg font-semibold text-foreground">
                     {unifiedSignals.length}
                     <span className="text-muted-foreground/50 text-sm ml-1">
-                      ({confluenceCount}c + {insiderCount}i)
+                      ({displayedConfluenceCount}c + {displayedInsiderCount}i)
                     </span>
                   </p>
                 </div>
@@ -979,7 +1000,11 @@ export default function RecentTradesPanel({
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Insider Signals</p>
-                  <p className="text-lg font-semibold text-purple-400">{insiderCount}</p>
+                  <p className="text-lg font-semibold text-purple-400">{displayedInsiderCount}</p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-card/40 p-3">
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Filtered Out</p>
+                  <p className="text-lg font-semibold text-red-300">{filteredOutSignals}</p>
                 </div>
               </div>
             </>
@@ -995,7 +1020,9 @@ export default function RecentTradesPanel({
               <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
               <p className="text-muted-foreground">No trader signals found</p>
               <p className="text-sm text-muted-foreground/50 mt-1">
-                Try lowering tier/side/source filters or wait for new signals
+                {filteredOutSignals > 0
+                  ? `${filteredOutSignals} signals were filtered out by source/validity checks`
+                  : 'Try lowering tier/side/source filters or wait for new signals'}
               </p>
             </div>
           ) : viewMode === 'terminal' ? (

@@ -193,6 +193,35 @@ def test_get_market_by_condition_id_rejects_cache_without_tradability(monkeypatc
     assert any(params.get("condition_ids") == requested for params in seen_params)
 
 
+def test_get_market_by_token_id_skips_invalid_ids(monkeypatch):
+    client = PolymarketClient()
+
+    async def _unexpected_rate_call(*_args, **_kwargs):
+        raise AssertionError("should not call Gamma for non-token IDs")
+
+    monkeypatch.setattr(client, "_rate_limited_get", _unexpected_rate_call)
+
+    result = asyncio.run(client.get_market_by_token_id("kasimpasa vs karagumruk winner?"))
+    assert result is None
+
+
+def test_token_id_shape_classifier():
+    assert (
+        PolymarketClient._looks_like_condition_id(
+            "0x168b010a13936e827d9f1407afbfcfd915120f31246e95e9e20441e31011c3b0"
+        )
+        is True
+    )
+    assert (
+        PolymarketClient._looks_like_token_id(
+            "2104009334376064720665425320836536669709149939945916240432665923815485331158"
+        )
+        is True
+    )
+    assert PolymarketClient._looks_like_token_id("kxmvesportsmultigameextended") is False
+    assert PolymarketClient._looks_like_token_id("KXINXSPXW-26FEB11-B5910_yes") is False
+
+
 def test_is_market_tradable_false_for_closed_or_resolved():
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     assert (

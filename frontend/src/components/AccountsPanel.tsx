@@ -314,9 +314,16 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     setWorkspaceTab('live')
   }
 
+  const isOverview = workspaceTab === 'overview'
+
   return (
-    <div className="space-y-4">
-      <Card className="rounded-xl border border-border bg-card/60 shadow-none">
+    <div
+      className={cn(
+        'h-full flex min-h-0 flex-col',
+        isOverview ? 'gap-3' : 'gap-4 overflow-y-auto pr-1'
+      )}
+    >
+      <Card className="shrink-0 rounded-xl border border-border bg-card/60 shadow-none">
         <CardContent className="p-0">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/80 px-3 py-2.5">
             <div className="min-w-0">
@@ -360,7 +367,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 p-3 md:grid-cols-4 xl:grid-cols-8">
+          <div className="grid grid-cols-2 gap-2 p-2.5 md:grid-cols-4 xl:grid-cols-8">
             <DenseMetric
               label="Simulation Equity"
               value={formatUsd(sandboxMetrics.totalCapital)}
@@ -416,7 +423,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         </CardContent>
       </Card>
 
-      <div className="rounded-xl border border-border bg-card/40 px-3 py-2.5">
+      <div className="shrink-0 rounded-xl border border-border bg-card/40 px-3 py-2.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">Accounts Workspace</p>
@@ -449,11 +456,11 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
       </div>
 
       {workspaceTab === 'overview' && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-            <Card className="xl:col-span-8 border-border bg-card/40 shadow-none">
-              <CardContent className="p-0">
-                <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
+        <div className="flex-1 min-h-0 grid grid-rows-[minmax(0,1fr)_minmax(0,0.8fr)] gap-3">
+          <div className="grid min-h-0 grid-cols-1 gap-3 xl:grid-cols-12">
+            <Card className="xl:col-span-8 min-h-0 border-border bg-card/40 shadow-none">
+              <CardContent className="flex h-full min-h-0 flex-col p-0">
+                <div className="flex shrink-0 items-center justify-between border-b border-border/70 px-3 py-2.5">
                   <div>
                     <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Sandbox Fleet</p>
                     <p className="text-xs text-muted-foreground">All paper accounts with real-time P&L context</p>
@@ -462,19 +469,19 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                     variant="outline"
                     size="sm"
                     onClick={() => openSandboxDesk()}
-                    className="h-7 text-xs"
+                    className="h-6 text-[11px]"
                   >
                     Open Sandbox Desk
                   </Button>
                 </div>
 
                 {sandboxAccounts.length === 0 ? (
-                  <div className="px-4 py-10 text-center">
+                  <div className="px-4 py-8 text-center">
                     <Shield className="mx-auto mb-2 h-6 w-6 text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">No sandbox accounts yet. Create one in Sandbox Desk.</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="min-h-0 flex-1 overflow-auto">
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="border-b border-border/70 text-muted-foreground">
@@ -499,7 +506,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                 isSelected && 'bg-blue-500/10'
                               )}
                             >
-                              <td className="px-4 py-2.5">
+                              <td className="px-3 py-2">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -514,20 +521,20 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                   </p>
                                 </button>
                               </td>
-                              <td className="px-3 py-2.5 text-right font-mono">{formatUsd(account.current_capital || 0)}</td>
-                              <td className="px-3 py-2.5 text-right font-mono">
+                              <td className="px-3 py-2 text-right font-mono">{formatUsd(account.current_capital || 0)}</td>
+                              <td className="px-3 py-2 text-right font-mono">
                                 <span className={cn(totalPnl >= 0 ? 'text-green-400' : 'text-red-400')}>
                                   {formatSignedUsd(totalPnl)}
                                 </span>
                               </td>
-                              <td className="px-3 py-2.5 text-right font-mono">
+                              <td className="px-3 py-2 text-right font-mono">
                                 <span className={cn((account.roi_percent || 0) >= 0 ? 'text-green-400' : 'text-red-400')}>
                                   {formatSignedPct(account.roi_percent || 0)}
                                 </span>
                               </td>
-                              <td className="px-3 py-2.5 text-right font-mono">{account.total_trades || 0}</td>
-                              <td className="px-3 py-2.5 text-right font-mono">{account.open_positions || 0}</td>
-                              <td className="px-4 py-2.5 text-right">
+                              <td className="px-3 py-2 text-right font-mono">{account.total_trades || 0}</td>
+                              <td className="px-3 py-2 text-right font-mono">{account.open_positions || 0}</td>
+                              <td className="px-3 py-2 text-right">
                                 <Button
                                   variant="ghost"
                                   size="sm"
@@ -547,15 +554,15 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               </CardContent>
             </Card>
 
-            <Card className="xl:col-span-4 border-border bg-card/40 shadow-none">
-              <CardContent className="space-y-3 p-4">
+            <Card className="xl:col-span-4 min-h-0 border-border bg-card/40 shadow-none">
+              <CardContent className="space-y-2.5 p-3">
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Live Venues</p>
                   <p className="text-xs text-muted-foreground">Connection status, balances, and deployment footprint</p>
                 </div>
                 {venueSnapshots.map((venue) => (
-                  <div key={venue.id} className="rounded-lg border border-border/70 bg-background/40 p-3">
-                    <div className="mb-2 flex items-start justify-between gap-2">
+                  <div key={venue.id} className="rounded-lg border border-border/70 bg-background/40 p-2.5">
+                    <div className="mb-1.5 flex items-start justify-between gap-2">
                       <div>
                         <div className="flex items-center gap-2">
                           <span className={cn('h-2 w-2 rounded-full', venue.connected ? 'bg-green-400' : 'bg-amber-400')} />
@@ -583,7 +590,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                         valueClass={venue.unrealizedPnl >= 0 ? 'text-green-300' : 'text-red-300'}
                       />
                     </div>
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                    <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
                       <span>{venue.openPositions} open positions</span>
                       <Button
                         variant="ghost"
@@ -600,20 +607,20 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             </Card>
           </div>
 
-          <Card className="border-border bg-card/40 shadow-none">
-            <CardContent className="space-y-4 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+          <Card className="min-h-0 border-border bg-card/40 shadow-none">
+            <CardContent className="space-y-3 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Allocation & Risk Radar</p>
                   <p className="text-xs text-muted-foreground">Capital concentration by account and high-level operating posture</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {riskSignals.map((signal) => (
                     <Badge
                       key={signal.label}
                       variant="outline"
                       className={cn(
-                        'h-6 border-transparent px-2 text-[10px]',
+                        'h-5 border-transparent px-1.5 text-[10px]',
                         signal.tone === 'green' && 'bg-green-500/20 text-green-300',
                         signal.tone === 'amber' && 'bg-amber-500/20 text-amber-300',
                         signal.tone === 'red' && 'bg-red-500/20 text-red-300'
@@ -625,13 +632,13 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 lg:grid-cols-4">
                 {allocationRows.length === 0 ? (
                   <p className="text-xs text-muted-foreground">No account balances available yet.</p>
                 ) : (
                   allocationRows.map((row) => (
-                    <div key={row.id} className="rounded-lg border border-border/60 bg-background/40 p-2.5">
-                      <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
+                    <div key={row.id} className="rounded-lg border border-border/60 bg-background/40 p-2">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs">
                         <span className="truncate text-muted-foreground">{row.label}</span>
                         <span className="font-mono text-foreground">{formatUsd(row.value)}</span>
                       </div>
@@ -641,7 +648,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                           style={{ width: `${Math.max(row.share, 3)}%` }}
                         />
                       </div>
-                      <p className="mt-1 text-right text-[11px] text-muted-foreground">{row.share.toFixed(1)}%</p>
+                      <p className="mt-0.5 text-right text-[11px] text-muted-foreground">{row.share.toFixed(1)}%</p>
                     </div>
                   ))
                 )}
@@ -651,8 +658,16 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         </div>
       )}
 
-      {workspaceTab === 'sandbox' && <SimulationPanel />}
-      {workspaceTab === 'live' && <LiveAccountPanel />}
+      {workspaceTab === 'sandbox' && (
+        <div className="min-h-0 flex-1">
+          <SimulationPanel />
+        </div>
+      )}
+      {workspaceTab === 'live' && (
+        <div className="min-h-0 flex-1">
+          <LiveAccountPanel />
+        </div>
+      )}
     </div>
   )
 }

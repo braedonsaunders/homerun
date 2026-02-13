@@ -164,6 +164,36 @@ export interface TrackedTraderOpportunity extends ConfluenceSignal {
     quality_score: number
     activity_score: number
   }>
+  outcome_labels?: string[]
+  yes_label?: string | null
+  no_label?: string | null
+  current_yes_price?: number | null
+  current_no_price?: number | null
+  source_flags?: {
+    from_pool?: boolean
+    from_tracked_traders?: boolean
+    from_trader_groups?: boolean
+    qualified?: boolean
+  }
+  source_breakdown?: {
+    wallets_considered?: number
+    pool_wallets?: number
+    tracked_wallets?: number
+    group_wallets?: number
+    group_count?: number
+    group_ids?: string[]
+  }
+  validation?: {
+    is_valid?: boolean
+    is_actionable?: boolean
+    is_tradeable?: boolean
+    checks?: Record<string, boolean>
+    reasons?: string[]
+  }
+  is_valid?: boolean
+  is_actionable?: boolean
+  is_tradeable?: boolean
+  validation_reasons?: string[]
 }
 
 export interface InsiderOpportunity {
@@ -206,6 +236,36 @@ export interface InsiderOpportunity {
     insider_confidence?: number
   }>
   created_at?: string | null
+  outcome_labels?: string[]
+  yes_label?: string | null
+  no_label?: string | null
+  current_yes_price?: number | null
+  current_no_price?: number | null
+  source_flags?: {
+    from_pool?: boolean
+    from_tracked_traders?: boolean
+    from_trader_groups?: boolean
+    qualified?: boolean
+  }
+  source_breakdown?: {
+    wallets_considered?: number
+    pool_wallets?: number
+    tracked_wallets?: number
+    group_wallets?: number
+    group_count?: number
+    group_ids?: string[]
+  }
+  validation?: {
+    is_valid?: boolean
+    is_actionable?: boolean
+    is_tradeable?: boolean
+    checks?: Record<string, boolean>
+    reasons?: string[]
+  }
+  is_valid?: boolean
+  is_actionable?: boolean
+  is_tradeable?: boolean
+  validation_reasons?: string[]
 }
 
 export interface InsiderIntent {

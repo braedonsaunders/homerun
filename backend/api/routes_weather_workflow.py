@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +19,7 @@ from models.database import (
 from services.pause_state import global_pause_state
 from services.signal_bus import emit_weather_intent_signals
 from services.weather import shared_state
+from utils.market_urls import serialize_opportunity_with_links
 from services.weather.workflow_orchestrator import weather_workflow_orchestrator
 
 router = APIRouter()
@@ -152,6 +153,7 @@ async def get_weather_opportunities(
     direction: Optional[str] = Query(None),
     max_entry: Optional[float] = Query(None, ge=0.01, le=0.99),
     location: Optional[str] = Query(None),
+    target_date: Optional[date] = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -161,6 +163,7 @@ async def get_weather_opportunities(
         direction=direction,
         max_entry_price=max_entry,
         location_query=location,
+        target_date=target_date,
         require_tradable_markets=True,
         exclude_near_resolution=True,
     )
@@ -171,8 +174,28 @@ async def get_weather_opportunities(
         "total": total,
         "offset": offset,
         "limit": limit,
-        "opportunities": [o.model_dump(mode="json") for o in opps],
+        "opportunities": [serialize_opportunity_with_links(o) for o in opps],
     }
+
+
+@router.get("/weather-workflow/opportunity-dates")
+async def get_weather_opportunity_dates(
+    session: AsyncSession = Depends(get_db_session),
+    min_edge: Optional[float] = Query(None, ge=0),
+    direction: Optional[str] = Query(None),
+    max_entry: Optional[float] = Query(None, ge=0.01, le=0.99),
+    location: Optional[str] = Query(None),
+):
+    date_counts = await shared_state.get_weather_target_date_counts_from_db(
+        session,
+        min_edge_percent=min_edge,
+        direction=direction,
+        max_entry_price=max_entry,
+        location_query=location,
+        require_tradable_markets=True,
+        exclude_near_resolution=True,
+    )
+    return {"total_dates": len(date_counts), "dates": date_counts}
 
 
 @router.get("/weather-workflow/intents")

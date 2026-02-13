@@ -33,9 +33,43 @@ from services.world_intelligence.ucdp_conflict_source import (
     get_ucdp_conflict_source_status,
     sync_ucdp_conflict_lists,
 )
+from services.world_intelligence.mid_reference_source import (
+    get_mid_reference_source_status,
+    sync_mid_reference_from_itu,
+)
+from services.world_intelligence.trade_dependency_source import (
+    get_trade_dependency_source_status,
+    sync_trade_dependencies_from_world_bank,
+)
+from services.world_intelligence.gdelt_news_source import (
+    get_gdelt_news_source_status,
+    sync_gdelt_news_from_source,
+)
+from services.world_intelligence.chokepoint_reference_source import (
+    get_chokepoint_reference_source_status,
+    sync_chokepoint_reference_from_portwatch,
+)
 
 router = APIRouter(tags=["world-intelligence"])
 logger = logging.getLogger(__name__)
+
+_BENIGN_SOURCE_ERROR_MARKERS = (
+    "credentials_missing",
+    "missing_api_key",
+    "missing_api_token",
+    "disabled",
+    "rate-limited",
+    "rate limited",
+    "http 429",
+    "client error '429",
+    "status code 429",
+    "soft rate-limit",
+    "soft rate-limited",
+    "please limit requests to one every 5 seconds",
+    "nodename nor servname provided",
+    "name or service not known",
+    "temporary failure in name resolution",
+)
 
 
 def _to_iso(value: Optional[datetime]) -> Optional[str]:
@@ -61,6 +95,25 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def _is_benign_source_error(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _BENIGN_SOURCE_ERROR_MARKERS)
+
+
+def _normalize_source_health_entry(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    payload = dict(value)
+    if bool(payload.get("ok", True)):
+        return payload
+    raw_error = str(payload.get("error") or payload.get("last_error") or "").strip()
+    if raw_error and _is_benign_source_error(raw_error):
+        payload["degraded"] = True
+    return payload
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -665,7 +718,7 @@ async def get_world_signals(
     signal_type: Optional[str] = Query(None, description="Filter by signal type"),
     country: Optional[str] = Query(None, description="Filter by country/ISO3"),
     min_severity: float = Query(0.0, ge=0.0, le=1.0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(250, ge=1, le=5000),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get current world intelligence signals from persisted DB state."""
@@ -677,9 +730,9 @@ async def get_world_signals(
     except Exception:
         min_severity_value = 0.0
     try:
-        limit_value = max(1, min(1000, int(limit)))
+        limit_value = max(1, min(5000, int(limit)))
     except Exception:
-        limit_value = 100
+        limit_value = 250
 
     if signal_type_value:
         query = query.where(WorldIntelligenceSignal.signal_type == signal_type_value)
@@ -1199,12 +1252,24 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     sources = stats.get("source_status") or worker_stats.get("source_status") or {}
     errors = stats.get("source_errors") or worker_stats.get("source_errors") or []
     merged_sources = dict(sources) if isinstance(sources, dict) else {}
-    merged_sources["chokepoints"] = chokepoint_feed.get_health()
+    merged_sources["chokepoints"] = await get_chokepoint_reference_source_status(session)
     merged_sources["country_reference"] = await get_country_reference_source_status(session)
     merged_sources["ucdp_conflicts"] = await get_ucdp_conflict_source_status(session)
+    merged_sources["mid_reference"] = await get_mid_reference_source_status(session)
+    merged_sources["trade_dependencies"] = await get_trade_dependency_source_status(session)
+    merged_sources["gdelt_news"] = await get_gdelt_news_source_status(session)
+    normalized_sources = {
+        str(name): _normalize_source_health_entry(details)
+        for name, details in merged_sources.items()
+    }
+    normalized_errors = [
+        str(error)
+        for error in (errors or [])
+        if str(error).strip() and not _is_benign_source_error(error)
+    ]
     return {
-        "sources": merged_sources,
-        "errors": errors,
+        "sources": normalized_sources,
+        "errors": normalized_errors,
         "updated_at": _to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
     }
 
@@ -1241,6 +1306,66 @@ async def sync_world_ucdp_conflicts(
     session: AsyncSession = Depends(get_db_session),
 ):
     return await sync_ucdp_conflict_lists(session, force=bool(force))
+
+
+@router.get("/world-intelligence/reference/mid/status")
+async def get_world_mid_reference_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await get_mid_reference_source_status(session)
+
+
+@router.post("/world-intelligence/reference/mid/sync")
+async def sync_world_mid_reference(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await sync_mid_reference_from_itu(session, force=bool(force))
+
+
+@router.get("/world-intelligence/reference/trade-dependencies/status")
+async def get_world_trade_dependency_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await get_trade_dependency_source_status(session)
+
+
+@router.post("/world-intelligence/reference/trade-dependencies/sync")
+async def sync_world_trade_dependencies(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await sync_trade_dependencies_from_world_bank(session, force=bool(force))
+
+
+@router.get("/world-intelligence/reference/chokepoints/status")
+async def get_world_chokepoint_reference_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await get_chokepoint_reference_source_status(session)
+
+
+@router.post("/world-intelligence/reference/chokepoints/sync")
+async def sync_world_chokepoint_reference(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await sync_chokepoint_reference_from_portwatch(session, force=bool(force))
+
+
+@router.get("/world-intelligence/reference/gdelt-news/status")
+async def get_world_gdelt_news_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await get_gdelt_news_source_status(session)
+
+
+@router.post("/world-intelligence/reference/gdelt-news/sync")
+async def sync_world_gdelt_news(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await sync_gdelt_news_from_source(session, force=bool(force))
 
 
 @router.get("/world-intelligence/summary")

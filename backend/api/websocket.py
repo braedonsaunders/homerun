@@ -12,6 +12,7 @@ from services.trader_orchestrator_state import (
 )
 from services.worker_state import list_worker_snapshots
 from services.weather import shared_state as weather_shared_state
+from utils.market_urls import serialize_opportunity_with_links
 
 
 class ConnectionManager:
@@ -86,8 +87,13 @@ async def handle_websocket(websocket: WebSocket):
         {
             "type": "init",
             "data": {
-                "opportunities": [o.model_dump() for o in opportunities[:20]],
-                "weather_opportunities": [o.model_dump() for o in weather_opportunities[:20]],
+                "opportunities": [
+                    serialize_opportunity_with_links(o) for o in opportunities[:20]
+                ],
+                "weather_opportunities": [
+                    serialize_opportunity_with_links(o)
+                    for o in weather_opportunities[:20]
+                ],
                 "scanner_status": {
                     "running": status.get("running", False),
                     "last_scan": status.get("last_scan"),
@@ -157,7 +163,9 @@ async def broadcast_opportunities(opportunities):
             "type": "opportunities_update",
             "data": {
                 "count": len(opportunities),
-                "opportunities": [o.model_dump() for o in opportunities[:20]],
+                "opportunities": [
+                    serialize_opportunity_with_links(o) for o in opportunities[:20]
+                ],
             },
         }
     )

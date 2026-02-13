@@ -34,11 +34,13 @@ import {
   NewsWorkflowFinding,
   NewsTradeIntent,
 } from '../services/api'
+import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import NewsWorkflowSettingsFlyout from './NewsWorkflowSettingsFlyout'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Card } from './ui/card'
 import { Input } from './ui/input'
+import Sparkline from './Sparkline'
 
 type SubView = 'workflow' | 'feed'
 
@@ -88,6 +90,8 @@ const SOURCE_COLORS: Record<string, string> = {
   google_news: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
   gdelt: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   custom_rss: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  rss: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  // Backward-compatible key for older cached rows.
   gov_rss: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
 }
 
@@ -100,6 +104,222 @@ const CATEGORY_ICONS: Record<string, string> = {
   world: '🌍',
   cryptocurrency: '₿',
   entertainment: '🎬',
+}
+
+function toFiniteProbability(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(1, n))
+}
+
+function formatCents(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${Math.round(value * 100)}c`
+}
+
+function dedupeSupportingArticles(
+  articles: NewsSupportingArticle[],
+  maxItems = 24,
+): NewsSupportingArticle[] {
+  const deduped: NewsSupportingArticle[] = []
+  const seen = new Set<string>()
+
+  for (const article of articles) {
+    const articleId = String(article.article_id || '').trim()
+    const url = String(article.url || '').trim()
+    const title = String(article.title || '').trim()
+    const key = articleId || url || title.toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    deduped.push({
+      article_id: articleId,
+      title,
+      url,
+      source: String(article.source || '').trim(),
+      published: article.published ?? null,
+      fetched_at: article.fetched_at ?? null,
+    })
+    if (deduped.length >= maxItems) break
+  }
+
+  return deduped
+}
+
+function collectSupportingArticlesFromFinding(
+  finding: NewsWorkflowFinding,
+  maxItems = 24,
+): NewsSupportingArticle[] {
+  const evidence = finding.evidence as Record<string, unknown> | null
+  const cluster = (evidence?.cluster && typeof evidence.cluster === 'object')
+    ? (evidence.cluster as Record<string, unknown>)
+    : null
+  const supportingArticles: NewsSupportingArticle[] = []
+
+  const payloadArticles = Array.isArray(finding.supporting_articles)
+    ? finding.supporting_articles
+    : []
+  for (const article of payloadArticles) {
+    const title = String(article?.title || '').trim()
+    if (!title) continue
+    supportingArticles.push({
+      article_id: String(article?.article_id || '').trim(),
+      title,
+      url: String(article?.url || '').trim(),
+      source: String(article?.source || '').trim(),
+      published: article?.published ?? null,
+      fetched_at: article?.fetched_at ?? null,
+    })
+  }
+
+  const clusterRefs = Array.isArray(cluster?.article_refs)
+    ? cluster.article_refs
+    : []
+  for (const raw of clusterRefs) {
+    if (!raw || typeof raw !== 'object') continue
+    const ref = raw as Record<string, unknown>
+    const title = String(ref.title || '').trim()
+    if (!title) continue
+    supportingArticles.push({
+      article_id: String(ref.article_id || '').trim(),
+      title,
+      url: String(ref.url || '').trim(),
+      source: String(ref.source || '').trim(),
+      published: typeof ref.published === 'string' ? ref.published : null,
+      fetched_at: typeof ref.fetched_at === 'string' ? ref.fetched_at : null,
+    })
+  }
+
+  if (!supportingArticles.length) {
+    const fallbackTitle = String(finding.article_title || '').trim()
+    if (fallbackTitle) {
+      supportingArticles.push({
+        article_id: String(finding.article_id || '').trim(),
+        title: fallbackTitle,
+        url: String(finding.article_url || '').trim(),
+        source: String(finding.article_source || '').trim(),
+        published: null,
+        fetched_at: finding.created_at,
+      })
+    }
+  }
+
+  return dedupeSupportingArticles(supportingArticles, maxItems)
+}
+
+function resolveCurrentOddsForFinding(
+  finding: NewsWorkflowFinding,
+): { yes: number | null; no: number | null; signal: number | null } {
+  const isBuyYes = finding.direction === 'buy_yes'
+
+  let yes = (
+    toFiniteProbability(finding.current_yes_price)
+    ?? toFiniteProbability(finding.yes_price)
+    ?? toFiniteProbability(finding.market_price)
+  )
+  let no = (
+    toFiniteProbability(finding.current_no_price)
+    ?? toFiniteProbability(finding.no_price)
+  )
+
+  if (no == null && yes != null) no = Math.max(0, Math.min(1, 1 - yes))
+  if (yes == null && no != null) yes = Math.max(0, Math.min(1, 1 - no))
+
+  return {
+    yes,
+    no,
+    signal: isBuyYes ? yes : no,
+  }
+}
+
+function findingCreatedAtMs(finding: NewsWorkflowFinding): number {
+  return parseUtcDate(finding.created_at)?.getTime() ?? 0
+}
+
+function mergeFindingsByMarket(findings: NewsWorkflowFinding[]): NewsWorkflowFinding[] {
+  const grouped = new Map<string, NewsWorkflowFinding>()
+
+  for (const finding of findings) {
+    const key = `${finding.market_id}::${finding.direction || 'buy_yes'}`
+    const normalizedSupporting = collectSupportingArticlesFromFinding(finding)
+    const candidate: NewsWorkflowFinding = {
+      ...finding,
+      supporting_articles: normalizedSupporting,
+      supporting_article_count: Math.max(
+        Number(finding.supporting_article_count ?? 0),
+        normalizedSupporting.length,
+      ),
+    }
+
+    const existing = grouped.get(key)
+    if (!existing) {
+      grouped.set(key, candidate)
+      continue
+    }
+
+    const primary = candidate.edge_percent > existing.edge_percent ? candidate : existing
+    const secondary = primary === candidate ? existing : candidate
+    const mergedArticles = dedupeSupportingArticles(
+      [...(existing.supporting_articles ?? []), ...(candidate.supporting_articles ?? [])],
+      24,
+    )
+
+    const primaryHistoryLen = Array.isArray(primary.price_history) ? primary.price_history.length : 0
+    const secondaryHistoryLen = Array.isArray(secondary.price_history) ? secondary.price_history.length : 0
+    const snapshotSource = primaryHistoryLen >= secondaryHistoryLen ? primary : secondary
+    const fallbackSnapshot = snapshotSource === primary ? secondary : primary
+
+    const merged: NewsWorkflowFinding = {
+      ...primary,
+      actionable: existing.actionable || candidate.actionable,
+      confidence: Math.max(existing.confidence, candidate.confidence),
+      retrieval_score: Math.max(existing.retrieval_score, candidate.retrieval_score),
+      semantic_score: Math.max(existing.semantic_score, candidate.semantic_score),
+      keyword_score: Math.max(existing.keyword_score, candidate.keyword_score),
+      event_score: Math.max(existing.event_score, candidate.event_score),
+      rerank_score: Math.max(existing.rerank_score, candidate.rerank_score),
+      created_at: findingCreatedAtMs(candidate) >= findingCreatedAtMs(existing)
+        ? candidate.created_at
+        : existing.created_at,
+      supporting_articles: mergedArticles,
+      supporting_article_count: Math.max(
+        Number(existing.supporting_article_count ?? 0),
+        Number(candidate.supporting_article_count ?? 0),
+        mergedArticles.length,
+      ),
+      price_history: (
+        Array.isArray(snapshotSource.price_history) && snapshotSource.price_history.length >= 2
+      ) ? snapshotSource.price_history : fallbackSnapshot.price_history,
+      yes_price: (
+        snapshotSource.yes_price
+        ?? fallbackSnapshot.yes_price
+        ?? primary.yes_price
+        ?? secondary.yes_price
+      ),
+      no_price: (
+        snapshotSource.no_price
+        ?? fallbackSnapshot.no_price
+        ?? primary.no_price
+        ?? secondary.no_price
+      ),
+      current_yes_price: (
+        snapshotSource.current_yes_price
+        ?? fallbackSnapshot.current_yes_price
+        ?? primary.current_yes_price
+        ?? secondary.current_yes_price
+      ),
+      current_no_price: (
+        snapshotSource.current_no_price
+        ?? fallbackSnapshot.current_no_price
+        ?? primary.current_no_price
+        ?? secondary.current_no_price
+      ),
+    }
+
+    grouped.set(key, merged)
+  }
+
+  return Array.from(grouped.values())
 }
 
 function ArticleRow({ article }: { article: NewsArticle }) {
@@ -145,65 +365,16 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
   const clusterSize = typeof cluster?.article_count === 'number'
     ? cluster.article_count
     : 0
-  const supportingArticles: NewsSupportingArticle[] = []
-
-  const payloadArticles = Array.isArray(finding.supporting_articles)
-    ? finding.supporting_articles
-    : []
-  for (const article of payloadArticles) {
-    const title = String(article?.title || '').trim()
-    if (!title) continue
-    supportingArticles.push({
-      article_id: String(article?.article_id || ''),
-      title,
-      url: String(article?.url || ''),
-      source: String(article?.source || ''),
-      published: article?.published ?? null,
-      fetched_at: article?.fetched_at ?? null,
-    })
-  }
-
-  const clusterRefs = Array.isArray(cluster?.article_refs)
-    ? cluster.article_refs
-    : []
-  for (const raw of clusterRefs) {
-    if (!raw || typeof raw !== 'object') continue
-    const ref = raw as Record<string, unknown>
-    const title = String(ref.title || '').trim()
-    if (!title) continue
-    supportingArticles.push({
-      article_id: String(ref.article_id || ''),
-      title,
-      url: String(ref.url || ''),
-      source: String(ref.source || ''),
-      published: typeof ref.published === 'string' ? ref.published : null,
-      fetched_at: typeof ref.fetched_at === 'string' ? ref.fetched_at : null,
-    })
-  }
-
-  if (!supportingArticles.length) {
-    const fallbackTitle = String(finding.article_title || '').trim()
-    if (fallbackTitle) {
-      supportingArticles.push({
-        article_id: String(finding.article_id || ''),
-        title: fallbackTitle,
-        url: String(finding.article_url || ''),
-        source: String(finding.article_source || ''),
-        published: null,
-        fetched_at: finding.created_at,
-      })
-    }
-  }
-
-  const dedupedSupportingArticles: NewsSupportingArticle[] = []
-  const seenSupporting = new Set<string>()
-  for (const article of supportingArticles) {
-    const key = article.article_id.trim() || article.url.trim() || article.title.trim().toLowerCase()
-    if (!key || seenSupporting.has(key)) continue
-    seenSupporting.add(key)
-    dedupedSupportingArticles.push(article)
-    if (dedupedSupportingArticles.length >= 8) break
-  }
+  const dedupedSupportingArticles = useMemo(
+    () => collectSupportingArticlesFromFinding(finding, 24),
+    [finding],
+  )
+  const odds = useMemo(() => resolveCurrentOddsForFinding(finding), [finding])
+  const sparkData = useMemo(
+    () => buildYesNoSparklineSeries(finding.price_history, odds.yes, odds.no),
+    [finding.price_history, odds.yes, odds.no],
+  )
+  const hasSparkline = sparkData.yes.length >= 2
 
   const articleCount = Math.max(
     Number(finding.supporting_article_count ?? 0),
@@ -243,6 +414,11 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
               {finding.edge_percent.toFixed(1)}%
             </span>
             <span className="text-[10px] text-muted-foreground block">edge</span>
+            <div className="text-[10px] font-data mt-0.5">
+              <span className="text-green-400">Y {formatCents(odds.yes)}</span>
+              <span className="text-muted-foreground mx-1">/</span>
+              <span className="text-red-400">N {formatCents(odds.no)}</span>
+            </div>
           </div>
         </div>
 
@@ -262,7 +438,7 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
                 onClick={() => setExpandedArticles((v) => !v)}
                 className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
               >
-                {expandedArticles ? 'Hide' : `Show all (${dedupedSupportingArticles.length})`}
+                {expandedArticles ? 'Hide' : `Show all (${articleCount})`}
               </button>
             )}
           </div>
@@ -291,22 +467,44 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-1.5 mb-3">
-          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Mkt</div>
-            <div className="text-xs font-data font-semibold">{(finding.market_price * 100).toFixed(0)}c</div>
-          </div>
-          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Model</div>
-            <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>{(finding.model_probability * 100).toFixed(0)}c</div>
-          </div>
-          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Conf</div>
-            <div className={cn("text-xs font-data font-semibold", confidenceColor(finding.confidence))}>{(finding.confidence * 100).toFixed(0)}%</div>
-          </div>
-          <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-            <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Rerank</div>
-            <div className="text-xs font-data font-semibold text-blue-400">{(finding.rerank_score * 100).toFixed(0)}%</div>
+        <div className="flex items-stretch gap-2.5 mb-3">
+          {hasSparkline && (
+            <div className="shrink-0">
+              <Sparkline
+                data={sparkData.yes}
+                data2={sparkData.no}
+                width={96}
+                height={40}
+                color="#22c55e"
+                color2="#ef4444"
+                lineWidth={1.5}
+                showDots
+              />
+              <div className="flex justify-between text-[9px] text-muted-foreground font-data mt-0.5 px-0.5">
+                <span className="text-green-400/80">Y {odds.yes?.toFixed(2) ?? '—'}</span>
+                <span className="text-red-400/80">N {odds.no?.toFixed(2) ?? '—'}</span>
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-1.5 flex-1">
+            <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Current</div>
+              <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>
+                {formatCents(odds.signal)}
+              </div>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Model</div>
+              <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>{formatCents(finding.model_probability)}</div>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Conf</div>
+              <div className={cn("text-xs font-data font-semibold", confidenceColor(finding.confidence))}>{(finding.confidence * 100).toFixed(0)}%</div>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-1.5 text-center">
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Rerank</div>
+              <div className="text-xs font-data font-semibold text-blue-400">{(finding.rerank_score * 100).toFixed(0)}%</div>
+            </div>
           </div>
         </div>
 
@@ -544,7 +742,8 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
 
   const workflowFindings = useMemo(() => {
     const findings = workflowFindingsData?.findings || []
-    return [...findings].sort((a, b) => {
+    const groupedFindings = mergeFindingsByMarket(findings)
+    return groupedFindings.sort((a, b) => {
       if (a.actionable !== b.actionable) return a.actionable ? -1 : 1
       if (b.edge_percent !== a.edge_percent) return b.edge_percent - a.edge_percent
       return (parseUtcDate(b.created_at)?.getTime() || 0) - (parseUtcDate(a.created_at)?.getTime() || 0)
@@ -573,6 +772,10 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
       f.market_question.toLowerCase().includes(q)
       || f.article_title.toLowerCase().includes(q)
       || f.article_source.toLowerCase().includes(q)
+      || collectSupportingArticlesFromFinding(f).some((article) =>
+        article.title.toLowerCase().includes(q)
+        || article.source.toLowerCase().includes(q)
+      )
     )
   }, [workflowFindings, searchFilter])
 
@@ -795,7 +998,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
             <>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <Zap className="w-3 h-3 text-green-400" />
-                Findings ({workflowFindingsData?.total ?? 0})
+                Findings ({workflowFindings.length})
                 {actionableFindingsCount ? ` / ${actionableFindingsCount} actionable` : ''}
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">

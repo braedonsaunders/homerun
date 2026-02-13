@@ -247,6 +247,9 @@ class InstabilityScorer:
         all_countries.update(country_protests.keys())
         all_countries.update(country_military.keys())
         all_countries.update(news_velocity.keys())
+        # Always include structural baseline countries so the overlay remains
+        # informative even when live feeds are sparse/offline.
+        all_countries.update(baseline_risk.keys())
 
         results: dict[str, CountryInstabilityScore] = {}
 

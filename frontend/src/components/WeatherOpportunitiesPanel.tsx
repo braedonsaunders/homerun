@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CloudRain,
@@ -8,6 +8,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  CalendarDays,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
@@ -22,13 +23,17 @@ import {
   runWeatherWorkflow,
   startWeatherWorkflow,
   pauseWeatherWorkflow,
+  getWeatherWorkflowOpportunityDates,
   getWeatherWorkflowOpportunities,
+  type WeatherOpportunityDateBucket,
   type Opportunity,
 } from '../services/api'
 import WeatherWorkflowSettingsFlyout from './WeatherWorkflowSettingsFlyout'
 
 type DirectionFilter = 'all' | 'buy_yes' | 'buy_no'
+type TargetDateFilter = 'all' | string
 const ITEMS_PER_PAGE = 20
+const DATE_PAGE_SIZE = 8
 
 function timeAgo(value: string | null | undefined): string {
   if (!value) return 'Never'
@@ -39,6 +44,43 @@ function timeAgo(value: string | null | undefined): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
   return `${Math.floor(diff / 86400)}d ago`
+}
+
+function parseDateKey(value: string): Date {
+  return new Date(`${value}T12:00:00`)
+}
+
+function toUtcDateKey(value: string | null | undefined): string | null {
+  if (!value) return null
+  const raw = String(value).trim()
+  if (!raw) return null
+  const isoPrefix = raw.match(/^\d{4}-\d{2}-\d{2}/)
+  if (isoPrefix) return isoPrefix[0]
+  const dt = new Date(raw)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt.toISOString().slice(0, 10)
+}
+
+function opportunityDateKey(opportunity: Opportunity): string | null {
+  for (const market of opportunity.markets ?? []) {
+    const key = toUtcDateKey(market?.weather?.target_time ?? null)
+    if (key) return key
+  }
+  return toUtcDateKey(opportunity.resolution_date ?? null)
+}
+
+function formatDateButtonTop(value: string): string {
+  const dt = parseDateKey(value)
+  return dt.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase()
+}
+
+function formatDateButtonBottom(value: string): string {
+  const dt = parseDateKey(value)
+  return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function formatDateButtonLabel(value: string): string {
+  return `${formatDateButtonTop(value)} ${formatDateButtonBottom(value)}`
 }
 
 export default function WeatherOpportunitiesPanel({
@@ -54,10 +96,20 @@ export default function WeatherOpportunitiesPanel({
   const [city, setCity] = useState('')
   const [minEdge, setMinEdge] = useState(0)
   const [maxEntry, setMaxEntry] = useState('')
+  const [targetDate, setTargetDate] = useState<TargetDateFilter>('all')
+  const [datePage, setDatePage] = useState(0)
   const [currentPage, setCurrentPage] = useState(0)
+  const parsedMaxEntry = Number.parseFloat(maxEntry)
+  const maxEntryFilter = Number.isFinite(parsedMaxEntry) && parsedMaxEntry > 0
+    ? parsedMaxEntry
+    : undefined
 
   useEffect(() => {
     setCurrentPage(0)
+  }, [direction, city, minEdge, maxEntry, targetDate])
+
+  useEffect(() => {
+    setDatePage(0)
   }, [direction, city, minEdge, maxEntry])
 
   const { data: status } = useQuery({
@@ -67,21 +119,44 @@ export default function WeatherOpportunitiesPanel({
   })
 
   const { data: oppData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['weather-workflow-opportunities', direction, city, minEdge, maxEntry, currentPage],
+    queryKey: ['weather-workflow-opportunities', direction, city, minEdge, maxEntry, targetDate, currentPage],
     queryFn: () => {
-      const parsedMaxEntry = Number.parseFloat(maxEntry)
       return getWeatherWorkflowOpportunities({
         direction: direction === 'all' ? undefined : direction,
         location: city.trim() || undefined,
+        target_date: targetDate === 'all' ? undefined : targetDate,
         min_edge: minEdge > 0 ? minEdge : undefined,
-        max_entry:
-          Number.isFinite(parsedMaxEntry) && parsedMaxEntry > 0
-            ? parsedMaxEntry
-            : undefined,
+        max_entry: maxEntryFilter,
         limit: ITEMS_PER_PAGE,
         offset: currentPage * ITEMS_PER_PAGE,
       })
     },
+    refetchInterval: 30000,
+  })
+
+  const { data: dateSourceOppData } = useQuery({
+    queryKey: ['weather-workflow-opportunity-date-source', direction, city, minEdge, maxEntry],
+    queryFn: () =>
+      getWeatherWorkflowOpportunities({
+        direction: direction === 'all' ? undefined : direction,
+        location: city.trim() || undefined,
+        min_edge: minEdge > 0 ? minEdge : undefined,
+        max_entry: maxEntryFilter,
+        limit: 500,
+        offset: 0,
+      }),
+    refetchInterval: 30000,
+  })
+
+  const { data: dateData } = useQuery({
+    queryKey: ['weather-workflow-opportunity-dates', direction, city, minEdge, maxEntry],
+    queryFn: () =>
+      getWeatherWorkflowOpportunityDates({
+        direction: direction === 'all' ? undefined : direction,
+        location: city.trim() || undefined,
+        min_edge: minEdge > 0 ? minEdge : undefined,
+        max_entry: maxEntryFilter,
+      }),
     refetchInterval: 30000,
   })
 
@@ -116,6 +191,57 @@ export default function WeatherOpportunitiesPanel({
   const opportunities = oppData?.opportunities ?? []
   const totalOpportunities = oppData?.total ?? opportunities.length
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
+  const derivedDateBuckets = useMemo((): WeatherOpportunityDateBucket[] => {
+    const counts = new Map<string, number>()
+    const sourceOpportunities = dateSourceOppData?.opportunities ?? []
+    for (const opportunity of sourceOpportunities) {
+      const key = opportunityDateKey(opportunity)
+      if (!key) continue
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, count }))
+  }, [dateSourceOppData?.opportunities])
+  const serverDateBuckets: WeatherOpportunityDateBucket[] = dateData?.dates ?? []
+  const availableDateBuckets: WeatherOpportunityDateBucket[] = (
+    serverDateBuckets.length > 0 ? serverDateBuckets : derivedDateBuckets
+  )
+  const totalDatePages = Math.max(1, Math.ceil(availableDateBuckets.length / DATE_PAGE_SIZE))
+  const visibleDateBuckets = useMemo(() => {
+    const start = datePage * DATE_PAGE_SIZE
+    return availableDateBuckets.slice(start, start + DATE_PAGE_SIZE)
+  }, [availableDateBuckets, datePage])
+  const activeDateBucket = useMemo(
+    () => (
+      targetDate === 'all'
+        ? null
+        : (availableDateBuckets.find((bucket) => bucket.date === targetDate) ?? { date: targetDate, count: 0 })
+    ),
+    [availableDateBuckets, targetDate]
+  )
+  const renderDateBuckets = useMemo(() => {
+    if (!activeDateBucket) return visibleDateBuckets
+    if (visibleDateBuckets.some((bucket) => bucket.date === activeDateBucket.date)) {
+      return visibleDateBuckets
+    }
+    return [activeDateBucket, ...visibleDateBuckets]
+  }, [activeDateBucket, visibleDateBuckets])
+
+  useEffect(() => {
+    const maxPage = Math.max(totalDatePages - 1, 0)
+    if (datePage > maxPage) {
+      setDatePage(maxPage)
+    }
+  }, [datePage, totalDatePages])
+
+  useEffect(() => {
+    if (targetDate === 'all') return
+    if (availableDateBuckets.length === 0) return
+    if (!availableDateBuckets.some((b) => b.date === targetDate)) {
+      setTargetDate('all')
+    }
+  }, [targetDate, availableDateBuckets])
 
   useEffect(() => {
     if (!oppData) return
@@ -230,6 +356,79 @@ export default function WeatherOpportunitiesPanel({
               Settings
             </Button>
           </div>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0">
+            <CalendarDays className="w-3 h-3 text-cyan-400/80" />
+            Date
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 shrink-0"
+            onClick={() => setDatePage((p) => p - 1)}
+            title="Show earlier dates"
+            disabled={datePage === 0}
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </Button>
+          <div className="flex-1 overflow-x-auto">
+            <div className="flex min-w-max items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setTargetDate('all')}
+                className={cn(
+                  'h-7 px-2.5 rounded-md border text-[10px] font-medium whitespace-nowrap transition-colors',
+                  targetDate === 'all'
+                    ? 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-500/40 dark:bg-cyan-500/20 dark:text-cyan-100'
+                    : 'border-border bg-card text-muted-foreground hover:text-foreground hover:bg-cyan-50 dark:hover:bg-cyan-900/20'
+                )}
+              >
+                All Dates
+              </button>
+              {renderDateBuckets.map((bucket) => {
+                const key = bucket.date
+                const isActive = targetDate === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTargetDate(key)}
+                    className={cn(
+                      'h-7 min-w-[104px] px-2 rounded-md border text-[10px] leading-none transition-colors',
+                      isActive
+                        ? 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-500/40 dark:bg-cyan-500/20 dark:text-cyan-100'
+                        : 'border-border bg-card text-muted-foreground hover:text-foreground hover:bg-cyan-50 dark:hover:bg-cyan-900/20'
+                    )}
+                    title={`Filter to ${key}`}
+                  >
+                    <span className="font-data">{formatDateButtonLabel(key)}</span>
+                    <span className={cn(
+                      'ml-1 text-[9px]',
+                      isActive ? 'text-cyan-800/90 dark:text-cyan-100/90' : 'text-muted-foreground/80'
+                    )}>
+                      · {bucket.count}
+                    </span>
+                  </button>
+                )
+              })}
+              {availableDateBuckets.length === 0 && (
+                <span className="h-7 px-2.5 rounded-md border border-border text-[10px] text-muted-foreground inline-flex items-center">
+                  No dated opportunities
+                </span>
+              )}
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 shrink-0"
+            onClick={() => setDatePage((p) => p + 1)}
+            title="Show later dates"
+            disabled={datePage >= totalDatePages - 1 || availableDateBuckets.length === 0}
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </div>
 

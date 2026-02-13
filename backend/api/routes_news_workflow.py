@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     NewsArticleCache,
+    ScannerSnapshot,
     NewsTradeIntent,
     NewsWorkflowFinding,
     get_db_session,
@@ -141,6 +142,115 @@ def _build_supporting_articles_from_finding(
     return deduped[:8]
 
 
+def _normalize_market_id(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except Exception:
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def _extract_yes_no_from_history(
+    history: list[dict[str, float]],
+) -> tuple[Optional[float], Optional[float]]:
+    if not history:
+        return None, None
+    last = history[-1]
+    yes_price = _safe_float(last.get("yes"))
+    no_price = _safe_float(last.get("no"))
+    return yes_price, no_price
+
+
+def _normalize_history_points(raw_points: object) -> list[dict[str, float]]:
+    if not isinstance(raw_points, list):
+        return []
+
+    normalized: list[dict[str, float]] = []
+    for raw in raw_points:
+        if not isinstance(raw, dict):
+            continue
+
+        yes_price = _safe_float(raw.get("yes"))
+        no_price = _safe_float(raw.get("no"))
+
+        if yes_price is None and no_price is not None and 0.0 <= no_price <= 1.0:
+            yes_price = 1.0 - no_price
+        if no_price is None and yes_price is not None and 0.0 <= yes_price <= 1.0:
+            no_price = 1.0 - yes_price
+        if yes_price is None or no_price is None:
+            continue
+
+        yes_price = float(max(0.0, min(1.0, yes_price)))
+        no_price = float(max(0.0, min(1.0, no_price)))
+        point: dict[str, float] = {"yes": yes_price, "no": no_price}
+
+        ts = _safe_float(raw.get("t"))
+        if ts is not None:
+            point["t"] = ts
+
+        normalized.append(point)
+
+    return normalized
+
+
+async def _load_scanner_market_history(
+    session: AsyncSession,
+) -> dict[str, list[dict[str, float]]]:
+    result = await session.execute(
+        select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
+    )
+    row = result.scalar_one_or_none()
+    if row is None or not isinstance(row.market_history_json, dict):
+        return {}
+
+    history_map: dict[str, list[dict[str, float]]] = {}
+    for raw_market_id, raw_points in row.market_history_json.items():
+        market_id = _normalize_market_id(raw_market_id)
+        if not market_id:
+            continue
+        points = _normalize_history_points(raw_points)
+        if len(points) >= 2:
+            history_map[market_id] = points[-20:]
+    return history_map
+
+
+def _build_finding_market_snapshot(
+    finding: NewsWorkflowFinding,
+    market_history: dict[str, list[dict[str, float]]],
+) -> dict[str, Any]:
+    market_id = _normalize_market_id(finding.market_id)
+    history = market_history.get(market_id, [])
+    yes_from_history, no_from_history = _extract_yes_no_from_history(history)
+
+    fallback_yes = _safe_float(finding.market_price)
+    fallback_no = (
+        float(1.0 - fallback_yes)
+        if fallback_yes is not None and 0.0 <= fallback_yes <= 1.0
+        else None
+    )
+
+    current_yes = yes_from_history if yes_from_history is not None else fallback_yes
+    current_no = no_from_history if no_from_history is not None else fallback_no
+    if current_yes is None and current_no is not None and 0.0 <= current_no <= 1.0:
+        current_yes = float(1.0 - current_no)
+    if current_no is None and current_yes is not None and 0.0 <= current_yes <= 1.0:
+        current_no = float(1.0 - current_yes)
+
+    return {
+        "price_history": history,
+        "yes_price": current_yes,
+        "no_price": current_no,
+        "current_yes_price": current_yes,
+        "current_no_price": current_no,
+    }
+
+
 class CustomRssFeedRequest(BaseModel):
     id: Optional[str] = None
     name: str = ""
@@ -189,6 +299,9 @@ class WorkflowSettingsRequest(BaseModel):
     max_edge_evals_per_article: Optional[int] = Field(None, ge=1, le=20)
     model: Optional[str] = None
     rss_feeds: Optional[list[CustomRssFeedRequest]] = None
+    rss_enabled: Optional[bool] = None
+    rss_sources: Optional[list[GovRssFeedRequest]] = None
+    # Backward-compatible request aliases.
     gov_rss_enabled: Optional[bool] = None
     gov_rss_feeds: Optional[list[GovRssFeedRequest]] = None
 
@@ -328,12 +441,14 @@ async def get_findings(
         article_cache_by_id = {
             row.article_id: row for row in cached_rows if row.article_id
         }
+    market_history = await _load_scanner_market_history(session)
 
     findings = []
     for r in rows:
         supporting_articles = _build_supporting_articles_from_finding(
             r, article_cache_by_id=article_cache_by_id
         )
+        market_snapshot = _build_finding_market_snapshot(r, market_history)
         findings.append(
             {
                 "id": r.id,
@@ -362,6 +477,7 @@ async def get_findings(
                 "consumed_by_orchestrator": r.consumed_by_orchestrator,
                 "supporting_articles": supporting_articles,
                 "supporting_article_count": int(len(supporting_articles)),
+                **market_snapshot,
                 "created_at": _to_iso_utc_z(r.created_at),
             }
         )
@@ -484,6 +600,11 @@ async def update_workflow_settings(
     """Update workflow settings."""
     try:
         updates = request.model_dump(exclude_unset=True)
+        # Normalize legacy payload keys to the rebranded RSS keys.
+        if "gov_rss_enabled" in updates and "rss_enabled" not in updates:
+            updates["rss_enabled"] = updates.get("gov_rss_enabled")
+        if "gov_rss_feeds" in updates and "rss_sources" not in updates:
+            updates["rss_sources"] = updates.get("gov_rss_feeds")
         settings_payload = await shared_state.update_news_settings(session, updates)
 
         if "scan_interval_seconds" in updates:

@@ -16,12 +16,13 @@ Provides:
 """
 
 from services.news.feed_service import news_feed_service, NewsFeedService
-from services.news.gov_rss_feeds import gov_rss_service, GovRSSFeedService
+from services.news.gov_rss_feeds import GovRSSFeedService, gov_rss_service, rss_service
 from services.news.semantic_matcher import semantic_matcher, SemanticMatcher
 
 __all__ = [
     "news_feed_service",
     "NewsFeedService",
+    "rss_service",
     "gov_rss_service",
     "GovRSSFeedService",
     "semantic_matcher",

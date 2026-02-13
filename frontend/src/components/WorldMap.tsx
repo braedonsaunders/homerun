@@ -121,6 +121,7 @@ type CountryMetric = {
   tension_score: number
   tension_intensity: number
   combined_intensity: number
+  display_intensity: number
   signal_count: number
 }
 
@@ -185,6 +186,7 @@ const LAYER_GROUPS: Record<keyof LayerToggles, readonly string[]> = {
 }
 
 const COUNTRY_BOUNDARY_URL = `${import.meta.env.BASE_URL}data/world_countries.geojson`
+const MAP_SIGNAL_LIMIT = 2500
 const EMPTY_COUNTRY_BOUNDARY_COLLECTION: CountryBoundaryFeatureCollection = {
   type: 'FeatureCollection',
   features: [],
@@ -428,6 +430,7 @@ function withCountryMetrics(
           tension_score: Number(metrics?.tension_score || 0),
           tension_intensity: Number(metrics?.tension_intensity || 0),
           combined_intensity: Number(metrics?.combined_intensity || 0),
+          display_intensity: Number(metrics?.display_intensity || metrics?.combined_intensity || 0),
           signal_count: Number(metrics?.signal_count || 0),
         },
       }
@@ -691,7 +694,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
       'fill-color': [
         'interpolate',
         ['linear'],
-        ['coalesce', ['get', 'combined_intensity'], 0],
+        ['coalesce', ['get', 'display_intensity'], 0],
         0, theme === 'light' ? '#f8fafc' : '#0f172a',
         0.2, theme === 'light' ? '#fde68a' : '#854d0e',
         0.45, theme === 'light' ? '#fb923c' : '#c2410c',
@@ -701,11 +704,11 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
       'fill-opacity': [
         'interpolate',
         ['linear'],
-        ['coalesce', ['get', 'combined_intensity'], 0],
-        0, 0.02,
-        0.2, 0.12,
-        0.5, 0.2,
-        1, 0.3,
+        ['coalesce', ['get', 'display_intensity'], 0],
+        0, 0.045,
+        0.2, 0.135,
+        0.5, 0.215,
+        1, 0.325,
       ],
     },
   })
@@ -715,8 +718,8 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     source: 'countries',
     paint: {
       'line-color': countryBorderColor,
-      'line-width': 0.8,
-      'line-opacity': theme === 'light' ? 0.4 : 0.55,
+      'line-width': 1.0,
+      'line-opacity': theme === 'light' ? 0.5 : 0.68,
     },
   })
   map.addLayer({
@@ -773,7 +776,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
         [
           'any',
           ['>=', ['coalesce', ['get', 'combined_intensity'], 0], 0.2],
-          ['>=', ['coalesce', ['get', 'signal_count'], 0], 6],
+          ['>=', ['coalesce', ['get', 'signal_count'], 0], 1],
         ],
         [
           'interpolate',
@@ -805,7 +808,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
         [
           'any',
           ['>=', ['coalesce', ['get', 'combined_intensity'], 0], 0.2],
-          ['>=', ['coalesce', ['get', 'signal_count'], 0], 6],
+          ['>=', ['coalesce', ['get', 'signal_count'], 0], 1],
         ],
         [
           'interpolate',
@@ -822,7 +825,7 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
         [
           'any',
           ['>=', ['coalesce', ['get', 'combined_intensity'], 0], 0.2],
-          ['>=', ['coalesce', ['get', 'signal_count'], 0], 6],
+          ['>=', ['coalesce', ['get', 'signal_count'], 0], 1],
         ],
         0.9,
         0,
@@ -1326,8 +1329,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   const pollingInterval = isConnected ? false : 180000
 
   const { data: signalsData, isLoading: signalsLoading } = useQuery({
-    queryKey: ['world-signals', { limit: 500 }],
-    queryFn: () => getWorldSignals({ limit: 500 }),
+    queryKey: ['world-signals', { limit: MAP_SIGNAL_LIMIT }],
+    queryFn: () => getWorldSignals({ limit: MAP_SIGNAL_LIMIT }),
     refetchInterval: pollingInterval,
     retry: 2,
     retryDelay: (attempt) => Math.min(10000, attempt * 1500),
@@ -1488,24 +1491,36 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       ...Object.keys(tensionScoreByIso3),
       ...Object.keys(instabilityScoreByIso3),
     ])
+    for (const feature of stableCountryGeoData.features || []) {
+      const iso3 = normalizeCountryCode(String(feature.id || feature.properties?.id || ''))
+      if (iso3) {
+        allIso3.add(iso3)
+      }
+    }
 
     for (const iso3 of allIso3) {
       const instabilityScore = Number(instabilityScoreByIso3[iso3] || 0)
       const tensionScore = Number(tensionScoreByIso3[iso3] || 0)
+      const signalCount = Number(signalCountByIso3[iso3] || 0)
       const instabilityIntensity = clamp01(instabilityScore / 100)
       const tensionIntensity = clamp01(tensionScore / 100)
+      const combinedIntensity = Math.max(instabilityIntensity, tensionIntensity)
+      // Keep active countries lightly shaded even when source scores are near-zero.
+      const displayFloor = signalCount > 0 ? 0.2 : 0.06
+      const displayIntensity = Math.max(combinedIntensity, displayFloor)
       out[iso3] = {
         country_name: getCountryName(iso3) || iso3,
         instability_score: Number(instabilityScore.toFixed(2)),
         instability_intensity: Number(instabilityIntensity.toFixed(4)),
         tension_score: Number(tensionScore.toFixed(2)),
         tension_intensity: Number(tensionIntensity.toFixed(4)),
-        combined_intensity: Number(Math.max(instabilityIntensity, tensionIntensity).toFixed(4)),
-        signal_count: signalCountByIso3[iso3] || 0,
+        combined_intensity: Number(combinedIntensity.toFixed(4)),
+        display_intensity: Number(displayIntensity.toFixed(4)),
+        signal_count: signalCount,
       }
     }
     return out
-  }, [signalCountByIso3, tensionScoreByIso3, instabilityScoreByIso3])
+  }, [signalCountByIso3, tensionScoreByIso3, instabilityScoreByIso3, stableCountryGeoData.features])
 
   const countriesStyledGeoJSON = useMemo(
     () => withCountryMetrics(stableCountryGeoData, countryMetricsByIso3),
@@ -1798,6 +1813,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         tension_score: 0,
         tension_intensity: 0,
         combined_intensity: 0,
+        display_intensity: 0.06,
         signal_count: 0,
       }
       const center = countryCentroids[iso3]

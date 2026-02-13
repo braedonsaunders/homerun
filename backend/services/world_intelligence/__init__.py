@@ -19,7 +19,7 @@ from .resolver import (
     map_signal_to_strategy,
     resolve_world_signal_opportunities,
 )
-from .gov_rss_feeds import gov_rss_service, GovRSSFeedService
+from .gov_rss_feeds import GovRSSFeedService, gov_rss_service, rss_service
 from .usgs_client import usgs_client, USGSClient, Earthquake
 from .gdelt_events import gdelt_event_service, GDELTEventService
 from .chokepoint_feed import chokepoint_feed, ChokepointFeed
@@ -45,7 +45,7 @@ __all__ = [
     "infer_direction",
     "map_signal_to_strategy",
     "resolve_world_signal_opportunities",
-    "gov_rss_service", "GovRSSFeedService",
+    "rss_service", "gov_rss_service", "GovRSSFeedService",
     "usgs_client", "USGSClient", "Earthquake",
     "gdelt_event_service", "GDELTEventService",
     "chokepoint_feed", "ChokepointFeed",

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 import {
@@ -9,7 +9,6 @@ import {
   Target,
   Activity,
   RefreshCw,
-  Play,
   Trash2,
   BarChart3,
   Briefcase,
@@ -21,7 +20,6 @@ import {
   ChevronUp,
   BookOpen,
   PieChart,
-  ArrowLeft,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { selectedAccountIdAtom } from '../store/atoms'
@@ -30,6 +28,7 @@ import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Input } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet'
 import {
   getSimulationAccounts,
   createSimulationAccount,
@@ -37,24 +36,15 @@ import {
   getAccountTrades,
   getAccountPositions,
   getAccountEquityHistory,
-  getOpportunities,
 } from '../services/api'
-import type { SimulationAccount, SimulationPosition, Opportunity } from '../services/api'
-import TradeExecutionModal from './TradeExecutionModal'
+import type { SimulationAccount, SimulationPosition } from '../services/api'
 
-type DetailTab = 'overview' | 'holdings' | 'trades' | 'execute'
+type DetailTab = 'overview' | 'holdings' | 'trades'
 
 export default function SimulationPanel() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [globalSelectedId, setGlobalSelectedId] = useAtom(selectedAccountIdAtom)
   const [selectedAccount, setSelectedAccountLocal] = useState<string | null>(null)
-
-  // Sync local view with global selection (only for sandbox accounts)
-  useEffect(() => {
-    if (globalSelectedId && !globalSelectedId.startsWith('live:')) {
-      setSelectedAccountLocal(globalSelectedId)
-    }
-  }, [globalSelectedId])
 
   // When user selects an account locally, also update the global selection
   const setSelectedAccount = (id: string | null) => {
@@ -66,7 +56,6 @@ export default function SimulationPanel() {
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
   const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)
-  const [executingOpportunity, setExecutingOpportunity] = useState<Opportunity | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>('overview')
   const [tradeSort, setTradeSort] = useState<'date' | 'pnl' | 'cost'>('date')
   const [tradeSortDir, setTradeSortDir] = useState<'asc' | 'desc'>('desc')
@@ -77,12 +66,6 @@ export default function SimulationPanel() {
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
   })
-
-  const { data: opportunitiesData } = useQuery({
-    queryKey: ['opportunities'],
-    queryFn: () => getOpportunities({ limit: 20 }),
-  })
-  const opportunities = opportunitiesData?.opportunities ?? []
 
   const { data: trades = [] } = useQuery({
     queryKey: ['account-trades', selectedAccount],
@@ -228,7 +211,7 @@ export default function SimulationPanel() {
             <AccountCard
               key={account.id}
               account={account}
-              isSelected={selectedAccount === account.id}
+              isSelected={globalSelectedId === account.id}
               onSelect={() => {
                 setSelectedAccount(account.id)
                 setDetailTab('overview')
@@ -239,479 +222,440 @@ export default function SimulationPanel() {
         </div>
       )}
 
-      {/* Selected Account Dashboard */}
-      {selectedAccountData && (
-        <div className="space-y-4">
-          {/* Dashboard Header */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Button
-                variant="ghost"
-                onClick={() => setSelectedAccount(null)}
-                className="p-1.5 h-auto"
-              >
-                <ArrowLeft className="w-5 h-5 text-muted-foreground" />
-              </Button>
-              <div>
-                <h3 className="text-lg font-bold">{selectedAccountData.name}</h3>
-                <p className="text-xs text-muted-foreground">
-                  Created {selectedAccountData.created_at ? new Date(selectedAccountData.created_at).toLocaleDateString() : 'N/A'}
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                queryClient.invalidateQueries({ queryKey: ['account-equity', selectedAccount] })
-                queryClient.invalidateQueries({ queryKey: ['account-trades', selectedAccount] })
-                queryClient.invalidateQueries({ queryKey: ['account-positions', selectedAccount] })
-              }}
-              className="gap-2 bg-muted hover:bg-muted/80 rounded-lg h-auto px-3 py-1.5 text-xs"
-            >
-              <RefreshCw className="w-3 h-3" />
-              Refresh
-            </Button>
-          </div>
-
-          {/* Key Metrics Row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            <MiniStat
-              label="Initial Capital"
-              value={`$${selectedAccountData.initial_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              icon={<DollarSign className="w-4 h-4 text-muted-foreground" />}
-            />
-            <MiniStat
-              label="Current Capital"
-              value={`$${selectedAccountData.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              icon={<Briefcase className="w-4 h-4 text-blue-400" />}
-            />
-            <MiniStat
-              label="Realized P&L"
-              value={`${selectedAccountData.total_pnl >= 0 ? '+' : ''}$${selectedAccountData.total_pnl.toFixed(2)}`}
-              icon={selectedAccountData.total_pnl >= 0 ? <TrendingUp className="w-4 h-4 text-green-400" /> : <TrendingDown className="w-4 h-4 text-red-400" />}
-              valueColor={selectedAccountData.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}
-            />
-            <MiniStat
-              label="Unrealized P&L"
-              value={`${(selectedAccountData.unrealized_pnl || 0) >= 0 ? '+' : ''}$${(selectedAccountData.unrealized_pnl || 0).toFixed(2)}`}
-              icon={<Activity className="w-4 h-4 text-yellow-400" />}
-              valueColor={(selectedAccountData.unrealized_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
-            />
-            <MiniStat
-              label="ROI"
-              value={`${selectedAccountData.roi_percent >= 0 ? '+' : ''}${selectedAccountData.roi_percent.toFixed(2)}%`}
-              icon={<Target className="w-4 h-4 text-purple-400" />}
-              valueColor={selectedAccountData.roi_percent >= 0 ? 'text-green-400' : 'text-red-400'}
-            />
-            <MiniStat
-              label="Win Rate"
-              value={`${selectedAccountData.win_rate.toFixed(1)}%`}
-              icon={<Award className="w-4 h-4 text-yellow-400" />}
-              subtitle={`${selectedAccountData.winning_trades}W / ${selectedAccountData.losing_trades}L`}
-            />
-          </div>
-
-          {/* Advanced Metrics */}
-          {summary && (
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              <MiniStat
-                label="Book Value"
-                value={`$${summary.book_value.toFixed(2)}`}
-                icon={<BookOpen className="w-4 h-4 text-cyan-400" />}
-              />
-              <MiniStat
-                label="Market Value"
-                value={`$${summary.market_value.toFixed(2)}`}
-                icon={<BarChart3 className="w-4 h-4 text-blue-400" />}
-              />
-              <MiniStat
-                label="Total P&L"
-                value={`${summary.total_pnl >= 0 ? '+' : ''}$${summary.total_pnl.toFixed(2)}`}
-                icon={summary.total_pnl >= 0 ? <ArrowUpRight className="w-4 h-4 text-green-400" /> : <ArrowDownRight className="w-4 h-4 text-red-400" />}
-                valueColor={summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}
-              />
-              <MiniStat
-                label="Profit Factor"
-                value={summary.profit_factor > 0 ? summary.profit_factor.toFixed(2) : 'N/A'}
-                icon={<PieChart className="w-4 h-4 text-indigo-400" />}
-              />
-              <MiniStat
-                label="Max Drawdown"
-                value={`$${summary.max_drawdown.toFixed(2)}`}
-                icon={<AlertTriangle className="w-4 h-4 text-orange-400" />}
-                subtitle={`${summary.max_drawdown_pct.toFixed(1)}%`}
-                valueColor="text-orange-400"
-              />
-              <MiniStat
-                label="Avg Win / Loss"
-                value={`$${summary.avg_win.toFixed(2)}`}
-                subtitle={`/ -$${summary.avg_loss.toFixed(2)}`}
-                icon={<Activity className="w-4 h-4 text-muted-foreground" />}
-              />
-            </div>
-          )}
-
-          {/* Tab Navigation */}
-          <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as DetailTab)} className="w-fit">
-            <TabsList className="bg-card rounded-lg p-1 border border-border h-auto">
-              {([
-                { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
-                { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
-                { key: 'trades', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
-                { key: 'execute', label: 'Execute', icon: <Play className="w-3.5 h-3.5" /> },
-              ] as { key: DetailTab; label: string; icon: React.ReactNode }[]).map(tab => (
-                <TabsTrigger
-                  key={tab.key}
-                  value={tab.key}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium data-[state=active]:bg-blue-500 data-[state=active]:text-foreground text-muted-foreground"
-                >
-                  {tab.icon}
-                  {tab.label}
-                  {tab.key === 'holdings' && positions.length > 0 && (
-                    <Badge className="ml-1 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs border-0">
-                      {positions.length}
+      {/* Selected Account Flyout */}
+      <Sheet
+        open={Boolean(selectedAccountData)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedAccount(null)
+            setDetailTab('overview')
+          }
+        }}
+      >
+        {selectedAccountData && (
+          <SheetContent
+            side="right"
+            className="w-[min(96vw,1100px)] sm:max-w-none border-l border-border bg-background/95 p-0 backdrop-blur-xl"
+          >
+            <div className="relative flex h-full flex-col">
+              <div className="border-b border-border/70 bg-gradient-to-r from-blue-500/10 via-blue-500/5 to-transparent px-6 pb-5 pt-6">
+                <SheetHeader className="space-y-0.5 pr-10 text-left">
+                  <div className="flex items-center gap-2">
+                    <SheetTitle className="text-xl font-bold">{selectedAccountData.name}</SheetTitle>
+                    <Badge className="h-5 rounded border border-blue-500/30 bg-blue-500/15 px-2 text-[10px] uppercase tracking-[0.08em] text-blue-300">
+                      Sandbox Desk
                     </Badge>
-                  )}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+                  </div>
+                  <SheetDescription className="text-xs text-muted-foreground/90">
+                    Created {selectedAccountData.created_at ? new Date(selectedAccountData.created_at).toLocaleDateString() : 'N/A'} ·
+                    {' '}
+                    {selectedAccountData.total_trades} trades ·
+                    {' '}
+                    {selectedAccountData.open_positions} open positions
+                  </SheetDescription>
+                </SheetHeader>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    queryClient.invalidateQueries({ queryKey: ['account-equity', selectedAccount] })
+                    queryClient.invalidateQueries({ queryKey: ['account-trades', selectedAccount] })
+                    queryClient.invalidateQueries({ queryKey: ['account-positions', selectedAccount] })
+                  }}
+                  className="absolute bottom-4 right-6 gap-2 rounded-lg bg-background/70 px-3 py-1.5 text-xs hover:bg-background"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Refresh
+                </Button>
+              </div>
 
-          {/* Tab Content */}
-          {detailTab === 'overview' && (
-            <div className="space-y-4">
-              {/* Equity Curve */}
-              <Card className="bg-card border-border shadow-none p-6">
-                <h4 className="font-semibold mb-4 flex items-center gap-2">
-                  <BarChart3 className="w-5 h-5 text-blue-500" />
-                  Account Equity Over Time
-                </h4>
-                {equityHistory && equityHistory.equity_points.length > 1 ? (
-                  <div className="h-64">
-                    <EquityChart
-                      points={equityHistory.equity_points}
-                      initialCapital={equityHistory.initial_capital}
+              <div className="flex-1 overflow-y-auto px-6 pb-6 pt-4">
+                {/* Key Metrics Row */}
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+                  <MiniStat
+                    label="Initial Capital"
+                    value={`$${selectedAccountData.initial_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    icon={<DollarSign className="w-4 h-4 text-muted-foreground" />}
+                  />
+                  <MiniStat
+                    label="Current Capital"
+                    value={`$${selectedAccountData.current_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    icon={<Briefcase className="w-4 h-4 text-blue-400" />}
+                  />
+                  <MiniStat
+                    label="Realized P&L"
+                    value={`${selectedAccountData.total_pnl >= 0 ? '+' : ''}$${selectedAccountData.total_pnl.toFixed(2)}`}
+                    icon={selectedAccountData.total_pnl >= 0 ? <TrendingUp className="w-4 h-4 text-green-400" /> : <TrendingDown className="w-4 h-4 text-red-400" />}
+                    valueColor={selectedAccountData.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}
+                  />
+                  <MiniStat
+                    label="Unrealized P&L"
+                    value={`${(selectedAccountData.unrealized_pnl || 0) >= 0 ? '+' : ''}$${(selectedAccountData.unrealized_pnl || 0).toFixed(2)}`}
+                    icon={<Activity className="w-4 h-4 text-yellow-400" />}
+                    valueColor={(selectedAccountData.unrealized_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}
+                  />
+                  <MiniStat
+                    label="ROI"
+                    value={`${selectedAccountData.roi_percent >= 0 ? '+' : ''}${selectedAccountData.roi_percent.toFixed(2)}%`}
+                    icon={<Target className="w-4 h-4 text-purple-400" />}
+                    valueColor={selectedAccountData.roi_percent >= 0 ? 'text-green-400' : 'text-red-400'}
+                  />
+                  <MiniStat
+                    label="Win Rate"
+                    value={`${selectedAccountData.win_rate.toFixed(1)}%`}
+                    icon={<Award className="w-4 h-4 text-yellow-400" />}
+                    subtitle={`${selectedAccountData.winning_trades}W / ${selectedAccountData.losing_trades}L`}
+                  />
+                </div>
+
+                {/* Advanced Metrics */}
+                {summary && (
+                  <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-6">
+                    <MiniStat
+                      label="Book Value"
+                      value={`$${summary.book_value.toFixed(2)}`}
+                      icon={<BookOpen className="w-4 h-4 text-cyan-400" />}
+                    />
+                    <MiniStat
+                      label="Market Value"
+                      value={`$${summary.market_value.toFixed(2)}`}
+                      icon={<BarChart3 className="w-4 h-4 text-blue-400" />}
+                    />
+                    <MiniStat
+                      label="Total P&L"
+                      value={`${summary.total_pnl >= 0 ? '+' : ''}$${summary.total_pnl.toFixed(2)}`}
+                      icon={summary.total_pnl >= 0 ? <ArrowUpRight className="w-4 h-4 text-green-400" /> : <ArrowDownRight className="w-4 h-4 text-red-400" />}
+                      valueColor={summary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}
+                    />
+                    <MiniStat
+                      label="Profit Factor"
+                      value={summary.profit_factor > 0 ? summary.profit_factor.toFixed(2) : 'N/A'}
+                      icon={<PieChart className="w-4 h-4 text-indigo-400" />}
+                    />
+                    <MiniStat
+                      label="Max Drawdown"
+                      value={`$${summary.max_drawdown.toFixed(2)}`}
+                      icon={<AlertTriangle className="w-4 h-4 text-orange-400" />}
+                      subtitle={`${summary.max_drawdown_pct.toFixed(1)}%`}
+                      valueColor="text-orange-400"
+                    />
+                    <MiniStat
+                      label="Avg Win / Loss"
+                      value={`$${summary.avg_win.toFixed(2)}`}
+                      subtitle={`/ -$${summary.avg_loss.toFixed(2)}`}
+                      icon={<Activity className="w-4 h-4 text-muted-foreground" />}
                     />
                   </div>
-                ) : (
-                  <div className="text-center py-8 text-muted-foreground">
-                    Execute some trades to see your equity curve
-                  </div>
                 )}
-              </Card>
 
-              {/* Strategy Breakdown */}
-              {Object.keys(strategyBreakdown).length > 0 && (
-                <Card className="bg-card border-border shadow-none p-6">
-                  <h4 className="font-semibold mb-4 flex items-center gap-2">
-                    <PieChart className="w-5 h-5 text-indigo-500" />
-                    Performance by Strategy
-                  </h4>
-                  <div className="space-y-2">
-                    {Object.entries(strategyBreakdown)
-                      .sort((a, b) => b[1].pnl - a[1].pnl)
-                      .map(([strategy, stats]) => {
-                        const winRate = (stats.wins + stats.losses) > 0 ? (stats.wins / (stats.wins + stats.losses)) * 100 : 0
-                        return (
-                          <div key={strategy} className="flex items-center justify-between bg-muted rounded-lg p-3">
-                            <div className="flex items-center gap-3">
-                              <div className={cn("w-2 h-2 rounded-full", stats.pnl >= 0 ? "bg-green-500" : "bg-red-500")} />
-                              <div>
-                                <p className="font-medium text-sm">{strategy}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {stats.trades} trades | {winRate.toFixed(0)}% win rate | Cost: ${stats.cost.toFixed(2)}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <p className={cn("font-mono font-medium", stats.pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                {stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}
-                              </p>
-                              <p className="text-xs text-muted-foreground">{stats.wins}W / {stats.losses}L</p>
-                            </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                </Card>
-              )}
-
-              {/* Best/Worst Trades */}
-              {summary && (summary.best_trade !== 0 || summary.worst_trade !== 0) && (
-                <div className="grid grid-cols-2 gap-4">
-                  <Card className="bg-card border-border shadow-none p-4">
-                    <p className="text-xs text-muted-foreground mb-1">Best Trade</p>
-                    <p className="text-xl font-mono font-bold text-green-400">
-                      +${summary.best_trade.toFixed(2)}
-                    </p>
-                  </Card>
-                  <Card className="bg-card border-border shadow-none p-4">
-                    <p className="text-xs text-muted-foreground mb-1">Worst Trade</p>
-                    <p className="text-xl font-mono font-bold text-red-400">
-                      ${summary.worst_trade.toFixed(2)}
-                    </p>
-                  </Card>
-                </div>
-              )}
-            </div>
-          )}
-
-          {detailTab === 'holdings' && (
-            <div className="space-y-4">
-              {/* Holdings Summary */}
-              <div className="grid grid-cols-3 gap-4">
-                <Card className="bg-card border-border shadow-none p-4">
-                  <p className="text-xs text-muted-foreground mb-1">Open Positions</p>
-                  <p className="text-2xl font-mono font-bold">{positions.length}</p>
-                </Card>
-                <Card className="bg-card border-border shadow-none p-4">
-                  <p className="text-xs text-muted-foreground mb-1">Book Value (Cost Basis)</p>
-                  <p className="text-2xl font-mono font-bold">
-                    ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
-                  </p>
-                </Card>
-                <Card className="bg-card border-border shadow-none p-4">
-                  <p className="text-xs text-muted-foreground mb-1">Market Value</p>
-                  <p className="text-2xl font-mono font-bold">
-                    ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
-                  </p>
-                </Card>
-              </div>
-
-              {/* Positions Table */}
-              {positions.length === 0 ? (
-                <Card className="text-center py-8 bg-card border-border shadow-none">
-                  <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
-                  <p className="text-muted-foreground">No open positions</p>
-                  <p className="text-sm text-muted-foreground">Execute opportunities to open positions</p>
-                </Card>
-              ) : (
-                <Card className="bg-card border-border shadow-none overflow-hidden">
-                  <CardContent className="p-0">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border text-muted-foreground text-xs">
-                          <th className="text-left px-4 py-3">Market</th>
-                          <th className="text-center px-3 py-3">Side</th>
-                          <th className="text-right px-3 py-3">Qty</th>
-                          <th className="text-right px-3 py-3">Entry Price</th>
-                          <th className="text-right px-3 py-3">Curr Price</th>
-                          <th className="text-right px-3 py-3">Cost Basis</th>
-                          <th className="text-right px-3 py-3">Mkt Value</th>
-                          <th className="text-right px-4 py-3">Unrealized P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {positions.map((pos: SimulationPosition) => {
-                          const currPrice = pos.current_price || pos.entry_price
-                          const mktValue = pos.quantity * currPrice
-                          const pnlPct = pos.entry_cost > 0 ? (pos.unrealized_pnl / pos.entry_cost) * 100 : 0
-                          return (
-                            <tr key={pos.id} className="border-b border-border/50 hover:bg-muted transition-colors">
-                              <td className="px-4 py-3">
-                                <p className="font-medium text-sm line-clamp-1">{pos.market_question}</p>
-                                <p className="text-xs text-muted-foreground">{pos.opened_at ? new Date(pos.opened_at).toLocaleDateString() : ''}</p>
-                              </td>
-                              <td className="text-center px-3 py-3">
-                                <Badge className={cn(
-                                  "rounded text-xs font-medium border-0",
-                                  pos.side === 'yes' ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-                                )}>
-                                  {pos.side.toUpperCase()}
-                                </Badge>
-                              </td>
-                              <td className="text-right px-3 py-3 font-mono">{pos.quantity.toFixed(2)}</td>
-                              <td className="text-right px-3 py-3 font-mono">${pos.entry_price.toFixed(4)}</td>
-                              <td className="text-right px-3 py-3 font-mono">${currPrice.toFixed(4)}</td>
-                              <td className="text-right px-3 py-3 font-mono">${pos.entry_cost.toFixed(2)}</td>
-                              <td className="text-right px-3 py-3 font-mono">${mktValue.toFixed(2)}</td>
-                              <td className="text-right px-4 py-3">
-                                <span className={cn("font-mono font-medium", pos.unrealized_pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                  {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
-                                </span>
-                                <span className={cn("text-xs ml-1", pnlPct >= 0 ? "text-green-400/70" : "text-red-400/70")}>
-                                  ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
-                                </span>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-border font-medium">
-                          <td className="px-4 py-3 text-muted-foreground" colSpan={5}>Totals</td>
-                          <td className="text-right px-3 py-3 font-mono">
-                            ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
-                          </td>
-                          <td className="text-right px-3 py-3 font-mono">
-                            ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
-                          </td>
-                          <td className="text-right px-4 py-3">
-                            <span className={cn(
-                              "font-mono font-medium",
-                              positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? "text-green-400" : "text-red-400"
-                            )}>
-                              {positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? '+' : ''}
-                              ${positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0).toFixed(2)}
-                            </span>
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          )}
-
-          {detailTab === 'trades' && (
-            <div className="space-y-4">
-              {/* Trade Filters */}
-              <div className="flex items-center gap-3">
-                <select
-                  value={tradeFilter}
-                  onChange={(e) => setTradeFilter(e.target.value)}
-                  className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
-                >
-                  <option value="all">All Trades</option>
-                  <option value="open">Open</option>
-                  <option value="resolved_win">Wins</option>
-                  <option value="resolved_loss">Losses</option>
-                  <option value="pending">Pending</option>
-                </select>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  Sort:
-                  {(['date', 'pnl', 'cost'] as const).map(s => (
-                    <Button
-                      key={s}
-                      variant="ghost"
-                      onClick={() => {
-                        if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
-                        else { setTradeSort(s); setTradeSortDir('desc') }
-                      }}
-                      className={cn(
-                        "px-2 py-1 h-auto rounded text-xs",
-                        tradeSort === s ? "bg-blue-500/20 text-blue-400" : "hover:bg-muted"
-                      )}
-                    >
-                      {s.charAt(0).toUpperCase() + s.slice(1)}
-                      {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-3 h-3 inline ml-0.5" /> : <ChevronUp className="w-3 h-3 inline ml-0.5" />)}
-                    </Button>
-                  ))}
-                </div>
-                <span className="text-xs text-muted-foreground ml-auto">{processedTrades.length} trades</span>
-              </div>
-
-              {/* Trades Table */}
-              {processedTrades.length === 0 ? (
-                <Card className="text-center py-8 bg-card border-border shadow-none">
-                  <p className="text-muted-foreground">No trades found</p>
-                </Card>
-              ) : (
-                <Card className="bg-card border-border shadow-none overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="max-h-[600px] overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-card">
-                          <tr className="border-b border-border text-muted-foreground text-xs">
-                            <th className="text-left px-4 py-3">Date</th>
-                            <th className="text-left px-3 py-3">Strategy</th>
-                            <th className="text-right px-3 py-3">Cost</th>
-                            <th className="text-right px-3 py-3">Expected</th>
-                            <th className="text-right px-3 py-3">Slippage</th>
-                            <th className="text-center px-3 py-3">Status</th>
-                            <th className="text-right px-3 py-3">Payout</th>
-                            <th className="text-right px-4 py-3">P&L</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {processedTrades.map((trade) => (
-                            <tr key={trade.id} className="border-b border-border/50 hover:bg-muted transition-colors">
-                              <td className="px-4 py-3">
-                                <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
-                                <p className="font-mono text-xs text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
-                              </td>
-                              <td className="px-3 py-3">
-                                <p className="font-medium">{trade.strategy_type}</p>
-                                {trade.copied_from && <p className="text-xs text-muted-foreground">Copied</p>}
-                              </td>
-                              <td className="text-right px-3 py-3 font-mono">${trade.total_cost.toFixed(2)}</td>
-                              <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.expected_profit.toFixed(2)}</td>
-                              <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.slippage.toFixed(4)}</td>
-                              <td className="text-center px-3 py-3">
-                                <StatusBadge status={trade.status} />
-                              </td>
-                              <td className="text-right px-3 py-3 font-mono">
-                                {trade.actual_payout != null ? `$${trade.actual_payout.toFixed(2)}` : '-'}
-                              </td>
-                              <td className="text-right px-4 py-3">
-                                {trade.actual_pnl != null ? (
-                                  <span className={cn("font-mono font-medium", trade.actual_pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                                    {trade.actual_pnl >= 0 ? '+' : ''}${trade.actual_pnl.toFixed(2)}
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground font-mono">-</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          )}
-
-          {detailTab === 'execute' && (
-            <Card className="bg-card border-border shadow-none p-4">
-              <h4 className="font-medium mb-4">Execute Opportunity</h4>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {opportunities.length === 0 ? (
-                  <p className="text-muted-foreground text-center py-4">No opportunities available. Run a scan first.</p>
-                ) : (
-                  opportunities.slice(0, 10).map((opp) => (
-                    <div
-                      key={opp.id}
-                      className="flex items-center justify-between bg-muted rounded-lg p-3 hover:bg-accent transition-colors"
-                    >
-                      <div className="flex-1">
-                        <p className="text-sm font-medium line-clamp-1">{opp.title}</p>
-                        <p className="text-xs text-muted-foreground">
-                          ROI: <span className="text-green-400">{opp.roi_percent.toFixed(2)}%</span> | Cost: ${opp.total_cost.toFixed(4)} | Risk: {opp.risk_score.toFixed(2)}
-                        </p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        onClick={() => setExecutingOpportunity(opp)}
-                        className="gap-1 bg-green-500/20 text-green-400 hover:bg-green-500/30 ml-3 h-auto px-3 py-1.5 text-sm rounded-lg"
+                {/* Tab Navigation */}
+                <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as DetailTab)} className="mt-4 w-fit">
+                  <TabsList className="h-auto rounded-lg border border-border bg-card p-1">
+                    {([
+                      { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+                      { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
+                      { key: 'trades', label: 'Trade History', icon: <Activity className="w-3.5 h-3.5" /> },
+                    ] as { key: DetailTab; label: string; icon: React.ReactNode }[]).map(tab => (
+                      <TabsTrigger
+                        key={tab.key}
+                        value={tab.key}
+                        className="flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium text-muted-foreground data-[state=active]:bg-blue-500 data-[state=active]:text-foreground"
                       >
-                        <Play className="w-3 h-3" />
-                        Execute
-                      </Button>
+                        {tab.icon}
+                        {tab.label}
+                        {tab.key === 'holdings' && positions.length > 0 && (
+                          <Badge className="ml-1 rounded border-0 bg-blue-500/20 px-1.5 py-0.5 text-xs text-blue-400">
+                            {positions.length}
+                          </Badge>
+                        )}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+
+                {/* Tab Content */}
+                {detailTab === 'overview' && (
+                  <div className="mt-4 space-y-4">
+                    <Card className="bg-card border-border shadow-none p-6">
+                      <h4 className="font-semibold mb-4 flex items-center gap-2">
+                        <BarChart3 className="w-5 h-5 text-blue-500" />
+                        Account Equity Over Time
+                      </h4>
+                      {equityHistory && equityHistory.equity_points.length > 1 ? (
+                        <div className="h-64">
+                          <EquityChart
+                            points={equityHistory.equity_points}
+                            initialCapital={equityHistory.initial_capital}
+                          />
+                        </div>
+                      ) : (
+                        <div className="py-8 text-center text-muted-foreground">
+                          No equity history yet. Open and resolve trades to build this chart.
+                        </div>
+                      )}
+                    </Card>
+
+                    {Object.keys(strategyBreakdown).length > 0 && (
+                      <Card className="bg-card border-border shadow-none p-6">
+                        <h4 className="font-semibold mb-4 flex items-center gap-2">
+                          <PieChart className="w-5 h-5 text-indigo-500" />
+                          Performance by Strategy
+                        </h4>
+                        <div className="space-y-2">
+                          {Object.entries(strategyBreakdown)
+                            .sort((a, b) => b[1].pnl - a[1].pnl)
+                            .map(([strategy, stats]) => {
+                              const winRate = (stats.wins + stats.losses) > 0 ? (stats.wins / (stats.wins + stats.losses)) * 100 : 0
+                              return (
+                                <div key={strategy} className="flex items-center justify-between bg-muted rounded-lg p-3">
+                                  <div className="flex items-center gap-3">
+                                    <div className={cn('w-2 h-2 rounded-full', stats.pnl >= 0 ? 'bg-green-500' : 'bg-red-500')} />
+                                    <div>
+                                      <p className="font-medium text-sm">{strategy}</p>
+                                      <p className="text-xs text-muted-foreground">
+                                        {stats.trades} trades | {winRate.toFixed(0)}% win rate | Cost: ${stats.cost.toFixed(2)}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className={cn('font-mono font-medium', stats.pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                                      {stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">{stats.wins}W / {stats.losses}L</p>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                        </div>
+                      </Card>
+                    )}
+
+                    {summary && (summary.best_trade !== 0 || summary.worst_trade !== 0) && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <Card className="bg-card border-border shadow-none p-4">
+                          <p className="text-xs text-muted-foreground mb-1">Best Trade</p>
+                          <p className="text-xl font-mono font-bold text-green-400">
+                            +${summary.best_trade.toFixed(2)}
+                          </p>
+                        </Card>
+                        <Card className="bg-card border-border shadow-none p-4">
+                          <p className="text-xs text-muted-foreground mb-1">Worst Trade</p>
+                          <p className="text-xl font-mono font-bold text-red-400">
+                            ${summary.worst_trade.toFixed(2)}
+                          </p>
+                        </Card>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {detailTab === 'holdings' && (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid grid-cols-3 gap-4">
+                      <Card className="bg-card border-border shadow-none p-4">
+                        <p className="text-xs text-muted-foreground mb-1">Open Positions</p>
+                        <p className="text-2xl font-mono font-bold">{positions.length}</p>
+                      </Card>
+                      <Card className="bg-card border-border shadow-none p-4">
+                        <p className="text-xs text-muted-foreground mb-1">Book Value (Cost Basis)</p>
+                        <p className="text-2xl font-mono font-bold">
+                          ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
+                        </p>
+                      </Card>
+                      <Card className="bg-card border-border shadow-none p-4">
+                        <p className="text-xs text-muted-foreground mb-1">Market Value</p>
+                        <p className="text-2xl font-mono font-bold">
+                          ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
+                        </p>
+                      </Card>
                     </div>
-                  ))
+
+                    {positions.length === 0 ? (
+                      <Card className="text-center py-8 bg-card border-border shadow-none">
+                        <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                        <p className="text-muted-foreground">No open positions</p>
+                        <p className="text-sm text-muted-foreground">This account has no open holdings yet.</p>
+                      </Card>
+                    ) : (
+                      <Card className="bg-card border-border shadow-none overflow-hidden">
+                        <CardContent className="p-0">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-border text-muted-foreground text-xs">
+                                <th className="text-left px-4 py-3">Market</th>
+                                <th className="text-center px-3 py-3">Side</th>
+                                <th className="text-right px-3 py-3">Qty</th>
+                                <th className="text-right px-3 py-3">Entry Price</th>
+                                <th className="text-right px-3 py-3">Curr Price</th>
+                                <th className="text-right px-3 py-3">Cost Basis</th>
+                                <th className="text-right px-3 py-3">Mkt Value</th>
+                                <th className="text-right px-4 py-3">Unrealized P&L</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {positions.map((pos: SimulationPosition) => {
+                                const currPrice = pos.current_price || pos.entry_price
+                                const mktValue = pos.quantity * currPrice
+                                const pnlPct = pos.entry_cost > 0 ? (pos.unrealized_pnl / pos.entry_cost) * 100 : 0
+                                return (
+                                  <tr key={pos.id} className="border-b border-border/50 hover:bg-muted transition-colors">
+                                    <td className="px-4 py-3">
+                                      <p className="font-medium text-sm line-clamp-1">{pos.market_question}</p>
+                                      <p className="text-xs text-muted-foreground">{pos.opened_at ? new Date(pos.opened_at).toLocaleDateString() : ''}</p>
+                                    </td>
+                                    <td className="text-center px-3 py-3">
+                                      <Badge className={cn(
+                                        'rounded text-xs font-medium border-0',
+                                        pos.side === 'yes' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                                      )}>
+                                        {pos.side.toUpperCase()}
+                                      </Badge>
+                                    </td>
+                                    <td className="text-right px-3 py-3 font-mono">{pos.quantity.toFixed(2)}</td>
+                                    <td className="text-right px-3 py-3 font-mono">${pos.entry_price.toFixed(4)}</td>
+                                    <td className="text-right px-3 py-3 font-mono">${currPrice.toFixed(4)}</td>
+                                    <td className="text-right px-3 py-3 font-mono">${pos.entry_cost.toFixed(2)}</td>
+                                    <td className="text-right px-3 py-3 font-mono">${mktValue.toFixed(2)}</td>
+                                    <td className="text-right px-4 py-3">
+                                      <span className={cn('font-mono font-medium', pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                                        {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
+                                      </span>
+                                      <span className={cn('text-xs ml-1', pnlPct >= 0 ? 'text-green-400/70' : 'text-red-400/70')}>
+                                        ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
+                                      </span>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                            <tfoot>
+                              <tr className="border-t border-border font-medium">
+                                <td className="px-4 py-3 text-muted-foreground" colSpan={5}>Totals</td>
+                                <td className="text-right px-3 py-3 font-mono">
+                                  ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
+                                </td>
+                                <td className="text-right px-3 py-3 font-mono">
+                                  ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
+                                </td>
+                                <td className="text-right px-4 py-3">
+                                  <span className={cn(
+                                    'font-mono font-medium',
+                                    positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                                  )}>
+                                    {positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0) >= 0 ? '+' : ''}
+                                    ${positions.reduce((s: number, p: SimulationPosition) => s + p.unrealized_pnl, 0).toFixed(2)}
+                                  </span>
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </div>
+                )}
+
+                {detailTab === 'trades' && (
+                  <div className="mt-4 space-y-4">
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={tradeFilter}
+                        onChange={(e) => setTradeFilter(e.target.value)}
+                        className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
+                      >
+                        <option value="all">All Trades</option>
+                        <option value="open">Open</option>
+                        <option value="resolved_win">Wins</option>
+                        <option value="resolved_loss">Losses</option>
+                        <option value="pending">Pending</option>
+                      </select>
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        Sort:
+                        {(['date', 'pnl', 'cost'] as const).map(s => (
+                          <Button
+                            key={s}
+                            variant="ghost"
+                            onClick={() => {
+                              if (tradeSort === s) setTradeSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                              else { setTradeSort(s); setTradeSortDir('desc') }
+                            }}
+                            className={cn(
+                              'px-2 py-1 h-auto rounded text-xs',
+                              tradeSort === s ? 'bg-blue-500/20 text-blue-400' : 'hover:bg-muted'
+                            )}
+                          >
+                            {s.charAt(0).toUpperCase() + s.slice(1)}
+                            {tradeSort === s && (tradeSortDir === 'desc' ? <ChevronDown className="w-3 h-3 inline ml-0.5" /> : <ChevronUp className="w-3 h-3 inline ml-0.5" />)}
+                          </Button>
+                        ))}
+                      </div>
+                      <span className="text-xs text-muted-foreground ml-auto">{processedTrades.length} trades</span>
+                    </div>
+
+                    {processedTrades.length === 0 ? (
+                      <Card className="text-center py-8 bg-card border-border shadow-none">
+                        <p className="text-muted-foreground">No trades found</p>
+                      </Card>
+                    ) : (
+                      <Card className="bg-card border-border shadow-none overflow-hidden">
+                        <CardContent className="p-0">
+                          <div className="max-h-[600px] overflow-y-auto">
+                            <table className="w-full text-sm">
+                              <thead className="sticky top-0 bg-card">
+                                <tr className="border-b border-border text-muted-foreground text-xs">
+                                  <th className="text-left px-4 py-3">Date</th>
+                                  <th className="text-left px-3 py-3">Strategy</th>
+                                  <th className="text-right px-3 py-3">Cost</th>
+                                  <th className="text-right px-3 py-3">Expected</th>
+                                  <th className="text-right px-3 py-3">Slippage</th>
+                                  <th className="text-center px-3 py-3">Status</th>
+                                  <th className="text-right px-3 py-3">Payout</th>
+                                  <th className="text-right px-4 py-3">P&L</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {processedTrades.map((trade) => (
+                                  <tr key={trade.id} className="border-b border-border/50 hover:bg-muted transition-colors">
+                                    <td className="px-4 py-3">
+                                      <p className="font-mono text-xs">{new Date(trade.executed_at).toLocaleDateString()}</p>
+                                      <p className="font-mono text-xs text-muted-foreground">{new Date(trade.executed_at).toLocaleTimeString()}</p>
+                                    </td>
+                                    <td className="px-3 py-3">
+                                      <p className="font-medium">{trade.strategy_type}</p>
+                                      {trade.copied_from && <p className="text-xs text-muted-foreground">Copied</p>}
+                                    </td>
+                                    <td className="text-right px-3 py-3 font-mono">${trade.total_cost.toFixed(2)}</td>
+                                    <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.expected_profit.toFixed(2)}</td>
+                                    <td className="text-right px-3 py-3 font-mono text-muted-foreground">${trade.slippage.toFixed(4)}</td>
+                                    <td className="text-center px-3 py-3">
+                                      <StatusBadge status={trade.status} />
+                                    </td>
+                                    <td className="text-right px-3 py-3 font-mono">
+                                      {trade.actual_payout != null ? `$${trade.actual_payout.toFixed(2)}` : '-'}
+                                    </td>
+                                    <td className="text-right px-4 py-3">
+                                      {trade.actual_pnl != null ? (
+                                        <span className={cn('font-mono font-medium', trade.actual_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                                          {trade.actual_pnl >= 0 ? '+' : ''}${trade.actual_pnl.toFixed(2)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground font-mono">-</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </div>
                 )}
               </div>
-            </Card>
-          )}
-        </div>
-      )}
-
-      {/* Trade Execution Modal */}
-      {executingOpportunity && (
-        <TradeExecutionModal
-          opportunity={executingOpportunity}
-          onClose={() => {
-            setExecutingOpportunity(null)
-            queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
-            queryClient.invalidateQueries({ queryKey: ['account-trades'] })
-            queryClient.invalidateQueries({ queryKey: ['account-positions'] })
-            queryClient.invalidateQueries({ queryKey: ['account-equity'] })
-          }}
-        />
-      )}
+            </div>
+          </SheetContent>
+        )}
+      </Sheet>
 
       {/* Delete Confirmation Modal */}
       {accountToDelete && (

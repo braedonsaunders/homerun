@@ -326,6 +326,22 @@ async def _run_loop() -> None:
         load_ucdp_conflict_lists_from_db,
         sync_ucdp_conflict_lists,
     )
+    from services.world_intelligence.mid_reference_source import (
+        load_mid_reference_from_db,
+        sync_mid_reference_from_itu,
+    )
+    from services.world_intelligence.trade_dependency_source import (
+        load_trade_dependencies_from_db,
+        sync_trade_dependencies_from_world_bank,
+    )
+    from services.world_intelligence.chokepoint_reference_source import (
+        load_chokepoint_reference_from_db,
+        sync_chokepoint_reference_from_portwatch,
+    )
+    from services.world_intelligence.gdelt_news_source import (
+        load_gdelt_news_config_from_db,
+        sync_gdelt_news_from_source,
+    )
 
     try:
         async with AsyncSessionLocal() as session:
@@ -359,6 +375,47 @@ async def _run_loop() -> None:
         )
     except Exception as exc:
         logger.warning("Failed loading UCDP conflict lists: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            mid_status = await load_mid_reference_from_db(session)
+        logger.info(
+            "Loaded MID reference mapping from DB (count=%s)",
+            mid_status.get("count"),
+        )
+    except Exception as exc:
+        logger.warning("Failed loading MID reference mapping: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            trade_status = await load_trade_dependencies_from_db(session)
+        logger.info(
+            "Loaded trade dependency overlay from DB (countries=%s)",
+            trade_status.get("countries"),
+        )
+    except Exception as exc:
+        logger.warning("Failed loading trade dependency overlay: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            chokepoint_status = await load_chokepoint_reference_from_db(session)
+        logger.info(
+            "Loaded chokepoint reference rows from DB (count=%s)",
+            chokepoint_status.get("count"),
+        )
+    except Exception as exc:
+        logger.warning("Failed loading chokepoint reference rows: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            gdelt_news_status = await load_gdelt_news_config_from_db(session)
+        logger.info(
+            "Loaded GDELT world-news config from DB (queries=%s, enabled=%s)",
+            gdelt_news_status.get("queries"),
+            gdelt_news_status.get("enabled"),
+        )
+    except Exception as exc:
+        logger.warning("Failed loading GDELT world-news config: %s", exc)
 
     next_scheduled_run_at: datetime | None = None
 
@@ -467,6 +524,46 @@ async def _run_loop() -> None:
             except Exception as exc:
                 logger.debug("UCDP conflict sync check failed: %s", exc)
 
+            mid_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    mid_sync = await sync_mid_reference_from_itu(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("MID reference sync check failed: %s", exc)
+
+            trade_dependency_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    trade_dependency_sync = await sync_trade_dependencies_from_world_bank(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("Trade dependency sync check failed: %s", exc)
+
+            chokepoint_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    chokepoint_sync = await sync_chokepoint_reference_from_portwatch(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("Chokepoint reference sync check failed: %s", exc)
+
+            gdelt_news_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    gdelt_news_sync = await sync_gdelt_news_from_source(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("GDELT world-news sync check failed: %s", exc)
+
             # Run collection cycle
             cycle_start = datetime.now(timezone.utc)
             signals = await signal_aggregator.run_collection_cycle()
@@ -530,6 +627,10 @@ async def _run_loop() -> None:
                 "source_errors": source_errors,
                 "country_reference": country_reference_sync or {},
                 "ucdp_conflicts": ucdp_sync or {},
+                "mid_reference": mid_sync or {},
+                "trade_dependencies": trade_dependency_sync or {},
+                "chokepoint_reference": chokepoint_sync or {},
+                "gdelt_news": gdelt_news_sync or {},
                 "runtime_state": signal_aggregator.export_runtime_state(),
             }
 

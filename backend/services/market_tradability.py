@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
@@ -12,10 +13,26 @@ from utils.utcnow import utcnow
 _CACHE_TTL = timedelta(minutes=3)
 _CACHE_MAX_SIZE = 5000
 _cache: dict[str, tuple[datetime, bool]] = {}
+_POLYMARKET_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
+_POLYMARKET_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
+_POLYMARKET_HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
 
 
 def _normalize_market_id(value: object) -> str:
     return str(value or "").strip().lower()
+
+
+def _is_polymarket_condition_id(value: str) -> bool:
+    return bool(_POLYMARKET_CONDITION_ID_RE.fullmatch(value))
+
+
+def _is_polymarket_token_id(value: str) -> bool:
+    if _is_polymarket_condition_id(value):
+        return False
+    return bool(
+        _POLYMARKET_NUMERIC_TOKEN_ID_RE.fullmatch(value)
+        or _POLYMARKET_HEX_TOKEN_ID_RE.fullmatch(value)
+    )
 
 
 def _trim_cache(now: datetime) -> None:
@@ -55,9 +72,15 @@ async def is_market_tradable(
     if cached and (ref_now - cached[0]) <= _CACHE_TTL:
         return bool(cached[1])
 
+    is_condition_id = _is_polymarket_condition_id(key)
+    is_token_id = _is_polymarket_token_id(key)
+    if not is_condition_id and not is_token_id:
+        _cache[key] = (ref_now, True)
+        return True
+
     info = None
     try:
-        if key.startswith("0x"):
+        if is_condition_id:
             info = await polymarket_client.get_market_by_condition_id(key)
         else:
             info = await polymarket_client.get_market_by_token_id(key)
@@ -100,4 +123,3 @@ async def get_market_tradability_map(
 
     await asyncio.gather(*[_resolve(mid) for mid in keys])
     return result
-

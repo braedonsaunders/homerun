@@ -2,6 +2,7 @@ import httpx
 import asyncio
 import random
 import json
+import re
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow, utcfromtimestamp
@@ -17,6 +18,9 @@ _logger = get_logger("polymarket")
 _MAX_RETRIES = 4
 _BASE_DELAY = 1.0
 _MAX_DELAY = 30.0
+_CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
+_NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
+_HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
 
 
 class PolymarketClient:
@@ -416,7 +420,13 @@ class PolymarketClient:
                 or str(cached.get("slug") or "").strip()
             )
             has_tradability = self._has_tradability_metadata(cached)
-            if cached_cid == requested and has_payload and has_tradability:
+            has_outcome_context = self._has_outcome_context(cached)
+            if (
+                cached_cid == requested
+                and has_payload
+                and has_tradability
+                and has_outcome_context
+            ):
                 return cached
             # Drop stale/mismatched cache entries to prevent poisoning.
             await self._evict_market_cache_entry(condition_id, requested)
@@ -501,11 +511,14 @@ class PolymarketClient:
 
     async def get_market_by_token_id(self, token_id: str) -> Optional[dict]:
         """Look up a market by CLOB token ID (asset_id), using cache when available."""
-        # Check if already cached under this token_id
-        cache_key = f"token:{token_id}"
         requested = self._normalize_identifier(token_id)
-        if cache_key in self._market_cache:
-            cached = self._market_cache[cache_key]
+        if not self._looks_like_token_id(requested):
+            return None
+
+        cache_key = f"token:{requested}"
+        legacy_cache_key = f"token:{token_id}"
+        cached = self._market_cache.get(cache_key) or self._market_cache.get(legacy_cache_key)
+        if cached:
             token_ids = {
                 self._normalize_identifier(t)
                 for t in (cached.get("token_ids") or [])
@@ -516,15 +529,23 @@ class PolymarketClient:
                 or str(cached.get("slug") or "").strip()
             )
             has_tradability = self._has_tradability_metadata(cached)
-            if requested in token_ids and has_payload and has_tradability:
+            has_outcome_context = self._has_outcome_context(cached)
+            if (
+                requested in token_ids
+                and has_payload
+                and has_tradability
+                and has_outcome_context
+            ):
                 return cached
             cached_cid = self._normalize_identifier(cached.get("condition_id"))
-            await self._evict_market_cache_entry(cache_key, token_id, cached_cid)
+            await self._evict_market_cache_entry(
+                cache_key, legacy_cache_key, token_id, cached_cid
+            )
 
         try:
             for params in (
-                {"clob_token_ids": token_id, "limit": 80},
-                {"clobTokenIds": token_id, "limit": 80},
+                {"clob_token_ids": requested, "limit": 80},
+                {"clobTokenIds": requested, "limit": 80},
             ):
                 response = await self._rate_limited_get(
                     f"{self.gamma_url}/markets",
@@ -573,6 +594,54 @@ class PolymarketClient:
     def _extract_market_info(market_data: dict) -> dict:
         """Extract standardized market info from a Gamma API market response."""
         token_ids = PolymarketClient._extract_token_ids_from_market(market_data)
+        outcomes_raw = market_data.get("outcomes")
+        if isinstance(outcomes_raw, str):
+            text = outcomes_raw.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = None
+                outcomes_raw = parsed if isinstance(parsed, list) else []
+            elif text:
+                outcomes_raw = [part.strip() for part in text.split(",") if part.strip()]
+            else:
+                outcomes_raw = []
+        outcomes: list[str] = []
+        if isinstance(outcomes_raw, list):
+            for item in outcomes_raw:
+                label = str(item or "").strip()
+                if label:
+                    outcomes.append(label)
+
+        outcome_prices_raw = (
+            market_data.get("outcomePrices")
+            if market_data.get("outcomePrices") is not None
+            else market_data.get("outcome_prices")
+        )
+        if isinstance(outcome_prices_raw, str):
+            text = outcome_prices_raw.strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = None
+                outcome_prices_raw = parsed if isinstance(parsed, list) else []
+            elif text:
+                outcome_prices_raw = [part.strip() for part in text.split(",") if part.strip()]
+            else:
+                outcome_prices_raw = []
+        outcome_prices: list[float] = []
+        if isinstance(outcome_prices_raw, list):
+            for item in outcome_prices_raw:
+                try:
+                    outcome_prices.append(float(item))
+                except Exception:
+                    continue
+
+        yes_price = outcome_prices[0] if len(outcome_prices) > 0 else None
+        no_price = outcome_prices[1] if len(outcome_prices) > 1 else None
+
         events = market_data.get("events")
         event_slug = ""
         if isinstance(events, list) and events:
@@ -593,6 +662,10 @@ class PolymarketClient:
             "groupItemTitle": market_data.get("groupItemTitle", ""),
             "event_slug": event_slug,
             "token_ids": token_ids,
+            "outcomes": outcomes,
+            "outcome_prices": outcome_prices,
+            "yes_price": yes_price,
+            "no_price": no_price,
             "active": market_data.get("active"),
             "closed": market_data.get("closed"),
             "archived": market_data.get("archived"),
@@ -707,6 +780,21 @@ class PolymarketClient:
         return str(value or "").strip().lower()
 
     @staticmethod
+    def _looks_like_condition_id(value: object) -> bool:
+        normalized = PolymarketClient._normalize_identifier(value)
+        return bool(_CONDITION_ID_RE.fullmatch(normalized))
+
+    @staticmethod
+    def _looks_like_token_id(value: object) -> bool:
+        normalized = PolymarketClient._normalize_identifier(value)
+        if not normalized or PolymarketClient._looks_like_condition_id(normalized):
+            return False
+        return bool(
+            _NUMERIC_TOKEN_ID_RE.fullmatch(normalized)
+            or _HEX_TOKEN_ID_RE.fullmatch(normalized)
+        )
+
+    @staticmethod
     def _has_tradability_metadata(market_info: Optional[dict]) -> bool:
         if not isinstance(market_info, dict):
             return False
@@ -725,6 +813,20 @@ class PolymarketClient:
                 "status",
             )
         )
+
+    @staticmethod
+    def _has_outcome_context(market_info: Optional[dict]) -> bool:
+        if not isinstance(market_info, dict):
+            return False
+        outcomes = market_info.get("outcomes")
+        if isinstance(outcomes, list) and len(outcomes) >= 2:
+            return True
+        outcome_prices = market_info.get("outcome_prices")
+        if isinstance(outcome_prices, list) and len(outcome_prices) >= 2:
+            return True
+        yes_price = market_info.get("yes_price")
+        no_price = market_info.get("no_price")
+        return yes_price is not None and no_price is not None
 
     @staticmethod
     def _coerce_bool(value: object) -> Optional[bool]:

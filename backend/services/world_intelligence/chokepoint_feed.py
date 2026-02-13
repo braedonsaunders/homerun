@@ -123,6 +123,57 @@ class ChokepointFeed:
             return False
         return (time.monotonic() - self._cache_refreshed_at) < _CHOKEPOINTS_REFRESH_SECONDS
 
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return _to_iso(value)
+        return str(value)
+
+    def seed_cache(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        source: str = "db_seed",
+        synced_at: Optional[datetime] = None,
+    ) -> int:
+        """Seed runtime cache from externally persisted rows (DB snapshot)."""
+        if not isinstance(rows, list):
+            return 0
+        cleaned: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            lat = _coerce_float(row.get("latitude"))
+            lon = _coerce_float(row.get("longitude"))
+            if lat is None or lon is None:
+                continue
+            row_id = str(row.get("id") or row.get("portid") or "").strip()
+            if not row_id:
+                continue
+            item: dict[str, Any] = {}
+            for key, value in row.items():
+                item[str(key)] = self._json_safe(value)
+            item["id"] = row_id
+            item["latitude"] = float(lat)
+            item["longitude"] = float(lon)
+            if not str(item.get("name") or "").strip():
+                item["name"] = row_id
+            item["source"] = str(item.get("source") or source).strip() or source
+            cleaned.append(item)
+
+        if not cleaned:
+            return 0
+
+        self._cache = cleaned
+        self._cache_refreshed_at = time.monotonic()
+        self._last_updated_at = synced_at or datetime.now(timezone.utc)
+        self._last_error = None
+        self._last_source = str(source or "db_seed")
+        self._last_duration_seconds = 0.0
+        return len(cleaned)
+
     def _load_static_fallback(self) -> list[dict[str, Any]]:
         if self._static_fallback_cache:
             return list(self._static_fallback_cache)

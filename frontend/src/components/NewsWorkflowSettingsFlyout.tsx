@@ -96,9 +96,9 @@ const DEFAULTS: NewsWorkflowSettings = {
   enabled: true,
   auto_run: true,
   scan_interval_seconds: 120,
-  top_k: 8,
-  rerank_top_n: 5,
-  similarity_threshold: 0.42,
+  top_k: 20,
+  rerank_top_n: 8,
+  similarity_threshold: 0.20,
   keyword_weight: 0.25,
   semantic_weight: 0.45,
   event_weight: 0.30,
@@ -106,7 +106,7 @@ const DEFAULTS: NewsWorkflowSettings = {
   market_min_liquidity: 500,
   market_max_days_to_resolution: 365,
   min_keyword_signal: 0.04,
-  min_semantic_signal: 0.22,
+  min_semantic_signal: 0.05,
   min_edge_percent: 8.0,
   min_confidence: 0.6,
   require_second_source: false,
@@ -117,10 +117,10 @@ const DEFAULTS: NewsWorkflowSettings = {
   hourly_spend_cap_usd: 2.0,
   cycle_llm_call_cap: 30,
   cache_ttl_minutes: 30,
-  max_edge_evals_per_article: 3,
+  max_edge_evals_per_article: 6,
   rss_feeds: [],
-  gov_rss_enabled: true,
-  gov_rss_feeds: [],
+  rss_enabled: true,
+  rss_sources: [],
   model: null,
 }
 
@@ -146,7 +146,13 @@ export default function NewsWorkflowSettingsFlyout({
 
   useEffect(() => {
     if (settings) {
-      setForm({ ...DEFAULTS, ...settings })
+      const normalized: NewsWorkflowSettings = {
+        ...DEFAULTS,
+        ...settings,
+        rss_enabled: settings.rss_enabled ?? settings.gov_rss_enabled ?? DEFAULTS.rss_enabled,
+        rss_sources: settings.rss_sources ?? settings.gov_rss_feeds ?? DEFAULTS.rss_sources,
+      }
+      setForm(normalized)
     }
   }, [settings])
 
@@ -198,10 +204,10 @@ export default function NewsWorkflowSettingsFlyout({
   }
 
   const addGovFeed = () => {
-    set('gov_rss_feeds', [
-      ...(form.gov_rss_feeds || []),
+    set('rss_sources', [
+      ...(form.rss_sources || []),
       {
-        id: `gov_${Date.now()}`,
+        id: `rss_${Date.now()}`,
         agency: 'government',
         name: '',
         url: '',
@@ -212,16 +218,16 @@ export default function NewsWorkflowSettingsFlyout({
     ])
   }
 
-  const updateGovFeed = (index: number, updates: Partial<NewsWorkflowSettings['gov_rss_feeds'][number]>) => {
-    const next = [...(form.gov_rss_feeds || [])]
+  const updateGovFeed = (index: number, updates: Partial<NewsWorkflowSettings['rss_sources'][number]>) => {
+    const next = [...(form.rss_sources || [])]
     const row = next[index]
     if (!row) return
     next[index] = { ...row, ...updates }
-    set('gov_rss_feeds', next)
+    set('rss_sources', next)
   }
 
   const removeGovFeed = (index: number) => {
-    set('gov_rss_feeds', (form.gov_rss_feeds || []).filter((_, i) => i !== index))
+    set('rss_sources', (form.rss_sources || []).filter((_, i) => i !== index))
   }
 
   if (!isOpen) return null
@@ -298,7 +304,7 @@ export default function NewsWorkflowSettingsFlyout({
           {/* RSS Feed Configuration */}
           <Section title="RSS Feeds" icon={Newspaper} color="text-emerald-500">
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              Configure custom and government RSS sources used by the news ingest pipeline.
+              Configure custom and official RSS sources used by the news ingest pipeline.
             </p>
 
             <div className="space-y-2">
@@ -380,18 +386,18 @@ export default function NewsWorkflowSettingsFlyout({
             <div className="space-y-2 pt-1">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium">Government RSS Feeds</p>
+                  <p className="text-xs font-medium">Official RSS Sources</p>
                   <p className="text-[10px] text-muted-foreground/70">Official policy and agency feeds</p>
                 </div>
                 <Switch
-                  checked={Boolean(form.gov_rss_enabled)}
-                  onCheckedChange={(v) => set('gov_rss_enabled', v)}
+                  checked={Boolean(form.rss_enabled)}
+                  onCheckedChange={(v) => set('rss_enabled', v)}
                   className="scale-75"
                 />
               </div>
 
               <div className="flex items-center justify-between">
-                <p className="text-[10px] text-muted-foreground">Configured feeds: {(form.gov_rss_feeds || []).length}</p>
+                <p className="text-[10px] text-muted-foreground">Configured feeds: {(form.rss_sources || []).length}</p>
                 <Button
                   type="button"
                   variant="outline"
@@ -404,12 +410,12 @@ export default function NewsWorkflowSettingsFlyout({
                 </Button>
               </div>
 
-              {(form.gov_rss_feeds || []).length === 0 ? (
-                <p className="text-[10px] text-muted-foreground/70">No government feeds configured.</p>
+              {(form.rss_sources || []).length === 0 ? (
+                <p className="text-[10px] text-muted-foreground/70">No official RSS sources configured.</p>
               ) : (
                 <div className="space-y-2">
-                  {(form.gov_rss_feeds || []).map((feed, idx) => (
-                    <div key={feed.id || `gov-${idx}`} className="rounded-lg border border-border/40 p-2 space-y-2">
+                  {(form.rss_sources || []).map((feed, idx) => (
+                    <div key={feed.id || `rss-${idx}`} className="rounded-lg border border-border/40 p-2 space-y-2">
                       <div className="grid grid-cols-12 gap-2">
                         <div className="col-span-3">
                           <Label className="text-[10px] text-muted-foreground">Agency</Label>
@@ -679,4 +685,3 @@ export default function NewsWorkflowSettingsFlyout({
     </>
   )
 }
-

@@ -98,7 +98,7 @@ class NewsFeedService:
         new_articles: list[NewsArticle] = []
         rss_config = await self._load_rss_configuration()
         custom_rss_feeds = list(rss_config.get("custom_rss_feeds") or [])
-        gov_rss_enabled = bool(rss_config.get("gov_rss_enabled", True))
+        rss_enabled = bool(rss_config.get("rss_enabled", True))
 
         tasks = [self._fetch_google_news_topics()]
 
@@ -108,8 +108,8 @@ class NewsFeedService:
         if custom_rss_feeds:
             tasks.append(self._fetch_custom_rss_feeds(custom_rss_feeds))
 
-        if gov_rss_enabled:
-            tasks.append(self._fetch_gov_rss())
+        if rss_enabled:
+            tasks.append(self._fetch_rss())
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -386,9 +386,8 @@ class NewsFeedService:
     # ------------------------------------------------------------------
 
     async def _load_rss_configuration(self) -> dict[str, Any]:
-        """Read RSS feed config from DB app settings with env fallbacks."""
+        """Read RSS feed config from DB app settings."""
         default_custom = default_custom_rss_feeds()
-        default_gov_enabled = bool(getattr(settings, "NEWS_GOV_RSS_ENABLED", True))
 
         try:
             async with AsyncSessionLocal() as session:
@@ -400,22 +399,22 @@ class NewsFeedService:
             logger.debug("RSS config DB read failed, using defaults: %s", exc)
             return {
                 "custom_rss_feeds": default_custom,
-                "gov_rss_enabled": default_gov_enabled,
+                "rss_enabled": True,
             }
 
         if row is None:
             return {
                 "custom_rss_feeds": default_custom,
-                "gov_rss_enabled": default_gov_enabled,
+                "rss_enabled": True,
             }
 
         raw_custom = getattr(row, "news_rss_feeds_json", None)
         custom_rows = normalize_custom_rss_feeds(raw_custom) if raw_custom else default_custom
         raw_gov_enabled = getattr(row, "news_gov_rss_enabled", None)
-        gov_enabled = default_gov_enabled if raw_gov_enabled is None else bool(raw_gov_enabled)
+        rss_enabled = True if raw_gov_enabled is None else bool(raw_gov_enabled)
         return {
             "custom_rss_feeds": custom_rows,
-            "gov_rss_enabled": gov_enabled,
+            "rss_enabled": rss_enabled,
         }
 
     async def _fetch_custom_rss_feeds(self, feed_rows: list[dict[str, Any]]) -> list[NewsArticle]:
@@ -509,8 +508,8 @@ class NewsFeedService:
     # Government RSS feeds
     # ------------------------------------------------------------------
 
-    async def _fetch_gov_rss(self) -> list[NewsArticle]:
-        """Fetch from government RSS feeds owned by the news domain."""
+    async def _fetch_rss(self) -> list[NewsArticle]:
+        """Fetch from official RSS feeds owned by the news domain."""
         try:
             from services.news.gov_rss_feeds import gov_rss_service
 
@@ -525,13 +524,13 @@ class NewsFeedService:
                         source=ga.source,
                         published=ga.published,
                         summary=ga.summary,
-                        feed_source="gov_rss",
+                        feed_source="rss",
                         category=ga.agency,
                     )
                 )
             return articles
         except Exception as e:
-            logger.debug("Gov RSS integration failed: %s", e)
+            logger.debug("RSS integration failed: %s", e)
             return []
 
     # ------------------------------------------------------------------

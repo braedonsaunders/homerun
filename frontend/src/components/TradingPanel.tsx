@@ -14,7 +14,8 @@ import {
 } from 'lucide-react'
 import {
   armTraderOrchestratorLiveStart,
-  createTraderFromTemplate,
+  createTrader,
+  deleteTrader,
   getAllTraderOrders,
   getTraderDecisionDetail,
   getTraderDecisions,
@@ -41,9 +42,12 @@ import { selectedAccountIdAtom } from '../store/atoms'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet'
 import { Switch } from './ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
@@ -76,6 +80,42 @@ type PositionBookRow = {
   orderCount: number
   lastUpdated: string | null
   statusSummary: string
+}
+
+type TraderAdvancedConfig = {
+  cadenceProfile: string
+  minSignalScore: number
+  minEdgePercent: number
+  minConfidence: number
+  lookbackMinutes: number
+  scanBatchSize: number
+  maxSignalsPerCycle: number
+  requireSecondSource: boolean
+  sourcePriorityCsv: string
+  blockedKeywordsCsv: string
+  maxOrdersPerCycle: number
+  maxOpenOrders: number
+  maxOpenPositions: number
+  maxPositionNotionalUsd: number
+  maxGrossExposureUsd: number
+  maxTradeNotionalUsd: number
+  maxDailyLossUsd: number
+  maxDailySpendUsd: number
+  cooldownSeconds: number
+  orderTtlSeconds: number
+  slippageBps: number
+  maxSpreadBps: number
+  retryLimit: number
+  retryBackoffMs: number
+  allowAveraging: boolean
+  useDynamicSizing: boolean
+  haltOnConsecutiveLosses: boolean
+  maxConsecutiveLosses: number
+  circuitBreakerDrawdownPct: number
+  tradingWindowStartUtc: string
+  tradingWindowEndUtc: string
+  tagsCsv: string
+  notes: string
 }
 
 const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
@@ -161,12 +201,193 @@ function parseJsonObject(text: string): { value: Record<string, unknown> | null;
   }
 }
 
-function humanizeKey(raw: string): string {
-  return raw
-    .replace(/_/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/\s+/g, ' ')
-    .trim()
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message || fallback
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const maybeResponse = (error as { response?: { data?: unknown } }).response
+    const data = maybeResponse?.data
+    if (typeof data === 'string') return data
+    if (typeof data === 'object' && data !== null) {
+      const detail = (data as { detail?: unknown }).detail
+      if (typeof detail === 'string') return detail
+      if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+        const message = (detail as { message?: unknown }).message
+        if (typeof message === 'string') return message
+      }
+    }
+  }
+  return fallback
+}
+
+function toBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase()
+    if (lowered === 'true' || lowered === '1' || lowered === 'yes') return true
+    if (lowered === 'false' || lowered === '0' || lowered === 'no') return false
+  }
+  return fallback
+}
+
+function toCsv(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean).join(', ')
+  }
+  if (typeof value === 'string') return value
+  return ''
+}
+
+function csvToList(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function defaultAdvancedConfig(): TraderAdvancedConfig {
+  return {
+    cadenceProfile: 'custom',
+    minSignalScore: 0.1,
+    minEdgePercent: 8,
+    minConfidence: 60,
+    lookbackMinutes: 240,
+    scanBatchSize: 240,
+    maxSignalsPerCycle: 24,
+    requireSecondSource: false,
+    sourcePriorityCsv: '',
+    blockedKeywordsCsv: '',
+    maxOrdersPerCycle: 6,
+    maxOpenOrders: 20,
+    maxOpenPositions: 12,
+    maxPositionNotionalUsd: 350,
+    maxGrossExposureUsd: 2000,
+    maxTradeNotionalUsd: 350,
+    maxDailyLossUsd: 300,
+    maxDailySpendUsd: 2000,
+    cooldownSeconds: 0,
+    orderTtlSeconds: 1200,
+    slippageBps: 35,
+    maxSpreadBps: 75,
+    retryLimit: 2,
+    retryBackoffMs: 250,
+    allowAveraging: false,
+    useDynamicSizing: true,
+    haltOnConsecutiveLosses: true,
+    maxConsecutiveLosses: 4,
+    circuitBreakerDrawdownPct: 12,
+    tradingWindowStartUtc: '00:00',
+    tradingWindowEndUtc: '23:59',
+    tagsCsv: '',
+    notes: '',
+  }
+}
+
+function computeAdvancedConfig(
+  params: Record<string, unknown>,
+  risk: Record<string, unknown>,
+  metadata: Record<string, unknown>
+): TraderAdvancedConfig {
+  const defaults = defaultAdvancedConfig()
+  const tradingWindow = isRecord(metadata.trading_window_utc) ? metadata.trading_window_utc : {}
+
+  return {
+    cadenceProfile: String(metadata.cadence_profile || defaults.cadenceProfile),
+    minSignalScore: toNumber(params.min_signal_score ?? defaults.minSignalScore),
+    minEdgePercent: toNumber(params.min_edge_percent ?? defaults.minEdgePercent),
+    minConfidence: normalizeConfidencePercent(toNumber(params.min_confidence ?? defaults.minConfidence)),
+    lookbackMinutes: toNumber(params.lookback_minutes ?? defaults.lookbackMinutes),
+    scanBatchSize: toNumber(params.scan_batch_size ?? defaults.scanBatchSize),
+    maxSignalsPerCycle: toNumber(params.max_signals_per_cycle ?? defaults.maxSignalsPerCycle),
+    requireSecondSource: toBoolean(params.require_second_source, defaults.requireSecondSource),
+    sourcePriorityCsv: toCsv(params.source_priority ?? defaults.sourcePriorityCsv),
+    blockedKeywordsCsv: toCsv(params.blocked_market_keywords ?? defaults.blockedKeywordsCsv),
+    maxOrdersPerCycle: toNumber(risk.max_orders_per_cycle ?? defaults.maxOrdersPerCycle),
+    maxOpenOrders: toNumber(risk.max_open_orders ?? defaults.maxOpenOrders),
+    maxOpenPositions: toNumber(risk.max_open_positions ?? defaults.maxOpenPositions),
+    maxPositionNotionalUsd: toNumber(risk.max_position_notional_usd ?? defaults.maxPositionNotionalUsd),
+    maxGrossExposureUsd: toNumber(risk.max_gross_exposure_usd ?? defaults.maxGrossExposureUsd),
+    maxTradeNotionalUsd: toNumber(risk.max_trade_notional_usd ?? defaults.maxTradeNotionalUsd),
+    maxDailyLossUsd: toNumber(risk.max_daily_loss_usd ?? defaults.maxDailyLossUsd),
+    maxDailySpendUsd: toNumber(risk.max_daily_spend_usd ?? defaults.maxDailySpendUsd),
+    cooldownSeconds: toNumber(risk.cooldown_seconds ?? defaults.cooldownSeconds),
+    orderTtlSeconds: toNumber(risk.order_ttl_seconds ?? defaults.orderTtlSeconds),
+    slippageBps: toNumber(risk.slippage_bps ?? defaults.slippageBps),
+    maxSpreadBps: toNumber(risk.max_spread_bps ?? defaults.maxSpreadBps),
+    retryLimit: toNumber(risk.retry_limit ?? defaults.retryLimit),
+    retryBackoffMs: toNumber(risk.retry_backoff_ms ?? defaults.retryBackoffMs),
+    allowAveraging: toBoolean(risk.allow_averaging, defaults.allowAveraging),
+    useDynamicSizing: toBoolean(risk.use_dynamic_sizing, defaults.useDynamicSizing),
+    haltOnConsecutiveLosses: toBoolean(risk.halt_on_consecutive_losses, defaults.haltOnConsecutiveLosses),
+    maxConsecutiveLosses: toNumber(risk.max_consecutive_losses ?? defaults.maxConsecutiveLosses),
+    circuitBreakerDrawdownPct: toNumber(risk.circuit_breaker_drawdown_pct ?? defaults.circuitBreakerDrawdownPct),
+    tradingWindowStartUtc: String(tradingWindow.start || defaults.tradingWindowStartUtc),
+    tradingWindowEndUtc: String(tradingWindow.end || defaults.tradingWindowEndUtc),
+    tagsCsv: toCsv(metadata.tags ?? defaults.tagsCsv),
+    notes: String(metadata.notes || defaults.notes),
+  }
+}
+
+function withConfiguredParams(
+  raw: Record<string, unknown>,
+  config: TraderAdvancedConfig
+): Record<string, unknown> {
+  return {
+    ...raw,
+    min_signal_score: config.minSignalScore,
+    min_edge_percent: config.minEdgePercent,
+    min_confidence: config.minConfidence,
+    lookback_minutes: config.lookbackMinutes,
+    scan_batch_size: config.scanBatchSize,
+    max_signals_per_cycle: config.maxSignalsPerCycle,
+    require_second_source: config.requireSecondSource,
+    source_priority: csvToList(config.sourcePriorityCsv),
+    blocked_market_keywords: csvToList(config.blockedKeywordsCsv),
+  }
+}
+
+function withConfiguredRiskLimits(
+  raw: Record<string, unknown>,
+  config: TraderAdvancedConfig
+): Record<string, unknown> {
+  return {
+    ...raw,
+    max_orders_per_cycle: config.maxOrdersPerCycle,
+    max_open_orders: config.maxOpenOrders,
+    max_open_positions: config.maxOpenPositions,
+    max_position_notional_usd: config.maxPositionNotionalUsd,
+    max_gross_exposure_usd: config.maxGrossExposureUsd,
+    max_trade_notional_usd: config.maxTradeNotionalUsd,
+    max_daily_loss_usd: config.maxDailyLossUsd,
+    max_daily_spend_usd: config.maxDailySpendUsd,
+    cooldown_seconds: config.cooldownSeconds,
+    order_ttl_seconds: config.orderTtlSeconds,
+    slippage_bps: config.slippageBps,
+    max_spread_bps: config.maxSpreadBps,
+    retry_limit: config.retryLimit,
+    retry_backoff_ms: config.retryBackoffMs,
+    allow_averaging: config.allowAveraging,
+    use_dynamic_sizing: config.useDynamicSizing,
+    halt_on_consecutive_losses: config.haltOnConsecutiveLosses,
+    max_consecutive_losses: config.maxConsecutiveLosses,
+    circuit_breaker_drawdown_pct: config.circuitBreakerDrawdownPct,
+  }
+}
+
+function withConfiguredMetadata(
+  raw: Record<string, unknown>,
+  config: TraderAdvancedConfig
+): Record<string, unknown> {
+  return {
+    ...raw,
+    cadence_profile: config.cadenceProfile,
+    trading_window_utc: {
+      start: config.tradingWindowStartUtc,
+      end: config.tradingWindowEndUtc,
+    },
+    tags: csvToList(config.tagsCsv),
+    notes: config.notes,
+  }
 }
 
 function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<string, string>): PositionBookRow[] {
@@ -266,13 +487,25 @@ export default function TradingPanel() {
   const [tradeStatusFilter, setTradeStatusFilter] = useState<TradeStatusFilter>('all')
   const [tradeSearch, setTradeSearch] = useState('')
   const [decisionSearch, setDecisionSearch] = useState('')
+  const [confirmLiveStartOpen, setConfirmLiveStartOpen] = useState(false)
 
+  const [traderFlyoutOpen, setTraderFlyoutOpen] = useState(false)
+  const [traderFlyoutMode, setTraderFlyoutMode] = useState<'create' | 'edit'>('create')
+  const [templateSelection, setTemplateSelection] = useState<string>('none')
   const [draftName, setDraftName] = useState('')
+  const [draftDescription, setDraftDescription] = useState('')
+  const [draftStrategyKey, setDraftStrategyKey] = useState('')
   const [draftInterval, setDraftInterval] = useState('60')
   const [draftSources, setDraftSources] = useState('')
+  const [draftEnabled, setDraftEnabled] = useState(true)
+  const [draftPaused, setDraftPaused] = useState(false)
   const [draftParams, setDraftParams] = useState('{}')
   const [draftRisk, setDraftRisk] = useState('{}')
+  const [draftMetadata, setDraftMetadata] = useState('{}')
+  const [advancedConfig, setAdvancedConfig] = useState<TraderAdvancedConfig>(defaultAdvancedConfig())
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [deleteAction, setDeleteAction] = useState<'block' | 'disable' | 'force_delete'>('disable')
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
 
   const overviewQuery = useQuery({
     queryKey: ['trader-orchestrator-overview'],
@@ -299,6 +532,7 @@ export default function TradingPanel() {
   })
 
   const traders = tradersQuery.data || []
+  const templates = templatesQuery.data || []
 
   const traderIds = useMemo(() => traders.map((trader) => trader.id), [traders])
   const traderIdsKey = useMemo(() => traderIds.join('|'), [traderIds])
@@ -371,10 +605,19 @@ export default function TradingPanel() {
   useEffect(() => {
     if (!selectedTrader) return
     setDraftName(selectedTrader.name)
+    setDraftDescription(selectedTrader.description || '')
+    setDraftStrategyKey(selectedTrader.strategy_key)
     setDraftInterval(String(selectedTrader.interval_seconds || 60))
     setDraftSources((selectedTrader.sources || []).join(', '))
-    setDraftParams(JSON.stringify(selectedTrader.params || {}, null, 2))
-    setDraftRisk(JSON.stringify(selectedTrader.risk_limits || {}, null, 2))
+    setDraftEnabled(Boolean(selectedTrader.is_enabled))
+    setDraftPaused(Boolean(selectedTrader.is_paused))
+    const params = selectedTrader.params || {}
+    const risk = selectedTrader.risk_limits || {}
+    const metadata = selectedTrader.metadata || {}
+    setDraftParams(JSON.stringify(params, null, 2))
+    setDraftRisk(JSON.stringify(risk, null, 2))
+    setDraftMetadata(JSON.stringify(metadata, null, 2))
+    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
     setSaveError(null)
   }, [selectedTrader])
 
@@ -406,6 +649,76 @@ export default function TradingPanel() {
     queryClient.invalidateQueries({ queryKey: ['trader-decisions-all'] })
     queryClient.invalidateQueries({ queryKey: ['trader-events-all'] })
     queryClient.invalidateQueries({ queryKey: ['trader-decision-detail'] })
+  }
+
+  const hydrateDraftFromTemplate = (templateId: string) => {
+    const template = templates.find((row) => row.id === templateId)
+    if (!template) return
+    const suggestedInterval = template.strategy_key.toLowerCase().includes('crypto') && toNumber(template.interval_seconds) >= 60
+      ? 5
+      : toNumber(template.interval_seconds || 60)
+    const params = template.params || {}
+    const risk = template.risk_limits || {}
+    const metadata: Record<string, unknown> = { template_id: template.id }
+    setDraftName(template.name)
+    setDraftDescription(template.description || '')
+    setDraftStrategyKey(template.strategy_key)
+    setDraftInterval(String(suggestedInterval))
+    setDraftSources((template.sources || []).join(', '))
+    setDraftEnabled(true)
+    setDraftPaused(false)
+    setDraftParams(JSON.stringify(params, null, 2))
+    setDraftRisk(JSON.stringify(risk, null, 2))
+    setDraftMetadata(JSON.stringify(metadata, null, 2))
+    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
+  }
+
+  const openCreateTraderFlyout = () => {
+    setTraderFlyoutMode('create')
+    setTemplateSelection('none')
+    setDraftName('')
+    setDraftDescription('')
+    setDraftStrategyKey('strategy.default')
+    setDraftInterval('5')
+    setDraftSources('')
+    setDraftEnabled(true)
+    setDraftPaused(false)
+    setDraftParams('{}')
+    setDraftRisk('{}')
+    setDraftMetadata('{}')
+    setAdvancedConfig(defaultAdvancedConfig())
+    setDeleteAction('disable')
+    setDeleteConfirmName('')
+    setSaveError(null)
+    setTraderFlyoutOpen(true)
+  }
+
+  const openEditTraderFlyout = (trader: Trader) => {
+    setSelectedTraderId(trader.id)
+    setTraderFlyoutMode('edit')
+    setTemplateSelection('none')
+    setDraftName(trader.name)
+    setDraftDescription(trader.description || '')
+    setDraftStrategyKey(trader.strategy_key)
+    setDraftInterval(String(trader.interval_seconds || 60))
+    setDraftSources((trader.sources || []).join(', '))
+    setDraftEnabled(Boolean(trader.is_enabled))
+    setDraftPaused(Boolean(trader.is_paused))
+    const params = trader.params || {}
+    const risk = trader.risk_limits || {}
+    const metadata = trader.metadata || {}
+    setDraftParams(JSON.stringify(params, null, 2))
+    setDraftRisk(JSON.stringify(risk, null, 2))
+    setDraftMetadata(JSON.stringify(metadata, null, 2))
+    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
+    setDeleteAction('disable')
+    setDeleteConfirmName('')
+    setSaveError(null)
+    setTraderFlyoutOpen(true)
+  }
+
+  const setAdvancedValue = <K extends keyof TraderAdvancedConfig>(key: K, value: TraderAdvancedConfig[K]) => {
+    setAdvancedConfig((current) => ({ ...current, [key]: value }))
   }
 
   const startBySelectedAccountMutation = useMutation({
@@ -460,8 +773,8 @@ export default function TradingPanel() {
     onSuccess: refreshAll,
   })
 
-  const saveTraderMutation = useMutation({
-    mutationFn: async (trader: Trader) => {
+  const createTraderMutation = useMutation({
+    mutationFn: async () => {
       const parsedParams = parseJsonObject(draftParams || '{}')
       if (!parsedParams.value) {
         throw new Error(`Strategy params JSON error: ${parsedParams.error || 'invalid object'}`)
@@ -472,51 +785,123 @@ export default function TradingPanel() {
         throw new Error(`Risk limits JSON error: ${parsedRisk.error || 'invalid object'}`)
       }
 
-      return updateTrader(trader.id, {
+      const parsedMetadata = parseJsonObject(draftMetadata || '{}')
+      if (!parsedMetadata.value) {
+        throw new Error(`Metadata JSON error: ${parsedMetadata.error || 'invalid object'}`)
+      }
+
+      return createTrader({
         name: draftName.trim(),
+        description: draftDescription.trim() || null,
+        strategy_key: draftStrategyKey.trim(),
         interval_seconds: Math.max(1, Number(draftInterval || 60)),
         sources: draftSources.split(',').map((item) => item.trim()).filter(Boolean),
-        params: parsedParams.value,
-        risk_limits: parsedRisk.value,
+        params: withConfiguredParams(parsedParams.value, advancedConfig),
+        risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
+        metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
+        is_enabled: draftEnabled,
+        is_paused: draftPaused,
+      })
+    },
+    onSuccess: (trader) => {
+      setSaveError(null)
+      setTraderFlyoutOpen(false)
+      setSelectedTraderId(trader.id)
+      refreshAll()
+    },
+    onError: (error: unknown) => {
+      setSaveError(errorMessage(error, 'Failed to create trader'))
+    },
+  })
+
+  const saveTraderMutation = useMutation({
+    mutationFn: async (traderId: string) => {
+      const parsedParams = parseJsonObject(draftParams || '{}')
+      if (!parsedParams.value) {
+        throw new Error(`Strategy params JSON error: ${parsedParams.error || 'invalid object'}`)
+      }
+
+      const parsedRisk = parseJsonObject(draftRisk || '{}')
+      if (!parsedRisk.value) {
+        throw new Error(`Risk limits JSON error: ${parsedRisk.error || 'invalid object'}`)
+      }
+
+      const parsedMetadata = parseJsonObject(draftMetadata || '{}')
+      if (!parsedMetadata.value) {
+        throw new Error(`Metadata JSON error: ${parsedMetadata.error || 'invalid object'}`)
+      }
+
+      return updateTrader(traderId, {
+        name: draftName.trim(),
+        description: draftDescription.trim() || null,
+        strategy_key: draftStrategyKey.trim(),
+        interval_seconds: Math.max(1, Number(draftInterval || 60)),
+        sources: draftSources.split(',').map((item) => item.trim()).filter(Boolean),
+        params: withConfiguredParams(parsedParams.value, advancedConfig),
+        risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
+        metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
+        is_enabled: draftEnabled,
+        is_paused: draftPaused,
       })
     },
     onSuccess: () => {
       setSaveError(null)
+      setTraderFlyoutOpen(false)
       refreshAll()
     },
     onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Failed to save trader'
-      setSaveError(message)
+      setSaveError(errorMessage(error, 'Failed to save trader'))
     },
   })
 
-  const deployTemplatesMutation = useMutation({
-    mutationFn: async () => {
-      const templates = templatesQuery.data || []
-      for (const template of templates) {
-        await createTraderFromTemplate({ template_id: template.id })
+  const deleteTraderMutation = useMutation({
+    mutationFn: async ({ traderId, action }: { traderId: string; action: 'block' | 'disable' | 'force_delete' }) => {
+      return deleteTrader(traderId, { action })
+    },
+    onSuccess: (result, variables) => {
+      setSaveError(null)
+      if (result.status === 'deleted') {
+        if (selectedTraderId === variables.traderId) {
+          const fallback = traders.find((row) => row.id !== variables.traderId)
+          setSelectedTraderId(fallback?.id || null)
+        }
+        setTraderFlyoutOpen(false)
       }
+      if (result.status === 'disabled') {
+        setDeleteAction('block')
+      }
+      refreshAll()
     },
-    onSuccess: refreshAll,
+    onError: (error: unknown) => {
+      setSaveError(errorMessage(error, 'Failed to delete or disable trader'))
+    },
   })
 
-  const killSwitchOn = Boolean(overviewQuery.data?.control?.kill_switch)
-  const globalMode = String(overviewQuery.data?.control?.mode || 'paper').toLowerCase()
-  const orchestratorRunning = Boolean(overviewQuery.data?.control?.is_enabled) && !Boolean(overviewQuery.data?.control?.is_paused)
   const worker = overviewQuery.data?.worker
   const metrics = overviewQuery.data?.metrics
+  const killSwitchOn = Boolean(overviewQuery.data?.control?.kill_switch)
+  const globalMode = String(overviewQuery.data?.control?.mode || 'paper').toLowerCase()
+  const orchestratorEnabled = Boolean(overviewQuery.data?.control?.is_enabled) && !Boolean(overviewQuery.data?.control?.is_paused)
+  const orchestratorRunning = Boolean(worker?.running)
+  const workerActivity = String(worker?.current_activity || '').toLowerCase()
+  const orchestratorBlocked = orchestratorEnabled && !orchestratorRunning && workerActivity.startsWith('blocked')
+  const orchestratorStatusLabel = orchestratorBlocked ? 'BLOCKED' : orchestratorRunning ? 'RUNNING' : 'STOPPED'
 
   const simulationAccounts = simulationAccountsQuery.data || []
   const selectedSandboxAccount = simulationAccounts.find((account) => account.id === selectedAccountId)
   const selectedAccountIsLive = Boolean(selectedAccountId?.startsWith('live:'))
   const selectedAccountValid = selectedAccountIsLive || Boolean(selectedSandboxAccount)
   const selectedAccountMode = selectedAccountIsLive ? 'live' : 'paper'
-  const modeMismatch = selectedAccountValid && orchestratorRunning && globalMode !== selectedAccountMode
+  const modeMismatch = selectedAccountValid && orchestratorEnabled && globalMode !== selectedAccountMode
 
   const controlBusy =
     startBySelectedAccountMutation.isPending ||
     stopByModeMutation.isPending ||
     killSwitchMutation.isPending
+  const traderFlyoutBusy =
+    createTraderMutation.isPending ||
+    saveTraderMutation.isPending ||
+    deleteTraderMutation.isPending
 
   const traderNameById = useMemo(
     () => Object.fromEntries(traders.map((trader) => [trader.id, trader.name])) as Record<string, string>,
@@ -860,28 +1245,66 @@ export default function TradingPanel() {
     [selectedPositionBook]
   )
 
+  const selectedTraderOpenLiveOrders = useMemo(
+    () => selectedOrders.filter((order) => OPEN_ORDER_STATUSES.has(normalizeStatus(order.status)) && String(order.mode || '').toLowerCase() === 'live').length,
+    [selectedOrders]
+  )
+
+  const selectedTraderOpenPaperOrders = useMemo(
+    () => selectedOrders.filter((order) => OPEN_ORDER_STATUSES.has(normalizeStatus(order.status)) && String(order.mode || '').toLowerCase() === 'paper').length,
+    [selectedOrders]
+  )
+
+  const failedOrders = useMemo(
+    () => allOrders.filter((order) => FAILED_ORDER_STATUSES.has(normalizeStatus(order.status))).slice(0, 80),
+    [allOrders]
+  )
+
   const selectedDecision = useMemo(
     () => selectedDecisions.find((decision) => decision.id === selectedDecisionId) || null,
     [selectedDecisions, selectedDecisionId]
   )
 
-  const paramsPreview = useMemo(() => {
-    const parsed = parseJsonObject(draftParams || '{}')
-    if (!parsed.value) return []
-    return Object.entries(parsed.value).slice(0, 10)
-  }, [draftParams])
-
-  const riskPreview = useMemo(() => {
-    const parsed = parseJsonObject(draftRisk || '{}')
-    if (!parsed.value) return []
-    return Object.entries(parsed.value).slice(0, 10)
-  }, [draftRisk])
-
   const runRate = toNumber(metrics?.decisions_count) > 0
     ? (toNumber(metrics?.orders_count) / toNumber(metrics?.decisions_count)) * 100
     : 0
+  const tradersRunningDisplay = orchestratorRunning ? toNumber(metrics?.traders_running) : 0
   const displayAvgEdge = normalizeEdgePercent(globalSummary.avgEdge)
   const displayAvgConfidence = normalizeConfidencePercent(globalSummary.avgConfidence)
+
+  const requestOrchestratorStart = () => {
+    if (selectedAccountIsLive) {
+      setConfirmLiveStartOpen(true)
+      return
+    }
+    startBySelectedAccountMutation.mutate()
+  }
+
+  const confirmLiveStart = () => {
+    setConfirmLiveStartOpen(false)
+    startBySelectedAccountMutation.mutate()
+  }
+
+  const canStartOrchestrator =
+    !controlBusy &&
+    !orchestratorEnabled &&
+    Boolean(selectedAccountId) &&
+    selectedAccountValid &&
+    !(selectedAccountIsLive && killSwitchOn)
+  const canStopOrchestrator = !controlBusy && orchestratorEnabled
+  const startStopIsRunning = orchestratorEnabled
+  const startStopDisabled = startStopIsRunning ? !canStopOrchestrator : !canStartOrchestrator
+  const startStopPending = startStopIsRunning ? stopByModeMutation.isPending : startBySelectedAccountMutation.isPending
+
+  const runStartStopCommand = () => {
+    if (startStopIsRunning) {
+      if (!canStopOrchestrator) return
+      stopByModeMutation.mutate()
+      return
+    }
+    if (!canStartOrchestrator) return
+    requestOrchestratorStart()
+  }
 
   const shellLoading = overviewQuery.isLoading || tradersQuery.isLoading
 
@@ -901,14 +1324,17 @@ export default function TradingPanel() {
           <div className="flex flex-wrap items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
             <span className="text-sm font-semibold leading-none">Autotrading Orchestration Hub</span>
-            <Badge className="h-5 px-1.5 text-[10px]" variant={orchestratorRunning ? 'default' : 'secondary'}>
-              {orchestratorRunning ? 'RUNNING' : 'STOPPED'}
+            <Badge
+              className="h-5 px-1.5 text-[10px]"
+              variant={orchestratorBlocked ? 'destructive' : orchestratorRunning ? 'default' : 'secondary'}
+            >
+              {orchestratorStatusLabel}
             </Badge>
             <Badge className="h-5 px-1.5 text-[10px]" variant={globalMode === 'live' ? 'destructive' : 'outline'}>
               {globalMode.toUpperCase()}
             </Badge>
             <Badge className="h-5 px-1.5 text-[10px]" variant={killSwitchOn ? 'destructive' : 'outline'}>
-              {killSwitchOn ? 'KILL ON' : 'KILL OFF'}
+              {killSwitchOn ? 'ORDERS BLOCKED' : 'ORDERS OPEN'}
             </Badge>
             <div className="ml-auto text-[11px] text-muted-foreground flex items-center gap-1">
               <Clock3 className="w-3 h-3" />
@@ -916,60 +1342,40 @@ export default function TradingPanel() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1.5 flex flex-wrap items-center gap-1.5">
             <Button
-              onClick={() => startBySelectedAccountMutation.mutate()}
-              disabled={controlBusy || !selectedAccountId || !selectedAccountValid || (selectedAccountIsLive && killSwitchOn)}
-              className="h-7 min-w-[152px] text-[11px]"
+              onClick={runStartStopCommand}
+              disabled={startStopDisabled}
+              className="h-7 min-w-[164px] text-[11px]"
+              variant={startStopIsRunning ? 'secondary' : 'default'}
             >
-              {startBySelectedAccountMutation.isPending ? (
+              {startStopPending ? (
                 <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+              ) : startStopIsRunning ? (
+                <Square className="w-3.5 h-3.5 mr-1.5" />
               ) : selectedAccountIsLive ? (
                 <Zap className="w-3.5 h-3.5 mr-1.5" />
               ) : (
                 <Play className="w-3.5 h-3.5 mr-1.5" />
               )}
-              Start ({selectedAccountMode.toUpperCase()})
+              {startStopIsRunning ? 'Stop Engine' : `Start (${selectedAccountMode.toUpperCase()})`}
             </Button>
-            <Button
-              variant="secondary"
-              onClick={() => stopByModeMutation.mutate()}
-              disabled={controlBusy}
-              className="h-7 min-w-[112px] text-[11px]"
-            >
-              {stopByModeMutation.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Square className="w-3.5 h-3.5 mr-1.5" />}
-              Stop Engine
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => deployTemplatesMutation.mutate()}
-              disabled={deployTemplatesMutation.isPending}
-              className="h-7 min-w-[126px] text-[11px]"
-            >
-              {deployTemplatesMutation.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
-              Seed Templates
-            </Button>
-            <div className="ml-auto flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1">
-              <ShieldAlert className="w-3.5 h-3.5 text-red-400" />
-              <span className="text-[11px] text-red-300">Kill Switch</span>
+            <div className="flex items-center gap-2 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-1">
+              <ShieldAlert className="w-3.5 h-3.5 text-red-700 dark:text-red-200" />
+              <span className="text-[11px] text-red-700 dark:text-red-200">Block New Orders</span>
               <Switch
                 checked={killSwitchOn}
                 onCheckedChange={(enabled) => killSwitchMutation.mutate(enabled)}
-                disabled={killSwitchMutation.isPending}
+                disabled={controlBusy}
               />
             </div>
-            <div className={cn(
-              'rounded-md border px-2 py-1 text-[11px]',
-              !selectedAccountValid || modeMismatch
-                ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-                : 'border-border/70 bg-background/70 text-muted-foreground'
-            )}>
+            <span className="ml-auto text-[11px] text-muted-foreground hidden xl:block">
               {!selectedAccountValid
-                ? 'Select global account'
+                ? 'Select a global account in the top control panel to start.'
                 : modeMismatch
-                  ? `Mode mismatch (${globalMode.toUpperCase()} vs ${selectedAccountMode.toUpperCase()})`
-                  : `Mode synced (${selectedAccountMode.toUpperCase()})`}
-            </div>
+                  ? 'Account mode and orchestrator mode are not aligned.'
+                  : 'Stop turns engine off. Block New Orders keeps engine running but blocks new order creation.'}
+            </span>
           </div>
 
           <div className="grid gap-1.5 grid-cols-2 sm:grid-cols-4 xl:grid-cols-8">
@@ -988,7 +1394,7 @@ export default function TradingPanel() {
             </div>
             <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
               <p className="text-[9px] uppercase tracking-widest text-muted-foreground">Traders</p>
-              <p className="text-[11px]">{toNumber(metrics?.traders_running)} / {toNumber(metrics?.traders_total)} active</p>
+              <p className="text-[11px]">{tradersRunningDisplay} / {toNumber(metrics?.traders_total)} active</p>
             </div>
             <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
               <p className="text-[9px] uppercase tracking-widest text-muted-foreground">Capture</p>
@@ -1022,21 +1428,21 @@ export default function TradingPanel() {
       <Tabs defaultValue="command" className="flex-1 min-h-0 flex flex-col gap-2">
         <TabsList className="w-full justify-start overflow-auto shrink-0 h-9">
           <TabsTrigger value="command">Command Center</TabsTrigger>
-          <TabsTrigger value="traders">Trader Intelligence</TabsTrigger>
+          <TabsTrigger value="traders">Auto Traders</TabsTrigger>
           <TabsTrigger value="governance">Governance</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="command" className="mt-0 flex-1 min-h-0">
+        <TabsContent value="command" className="mt-0 flex-1 min-h-0 overflow-hidden">
           <div className="h-full min-h-0 grid gap-3 grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] min-h-0">
-              <Card className="h-full flex flex-col min-h-0">
+              <Card className="h-full flex flex-col min-h-0 overflow-hidden">
                 <CardHeader className="py-2">
                   <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
                     <span>Live Global Terminal</span>
                     <Badge variant="outline">{filteredActivityRows.length} rows</Badge>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 min-h-0">
+                <CardContent className="flex-1 min-h-0 overflow-hidden">
                   <div className="flex flex-wrap items-center gap-1 mb-2">
                     {(['all', 'decision', 'order', 'event'] as FeedFilter[]).map((kind) => (
                       <Button
@@ -1073,16 +1479,16 @@ export default function TradingPanel() {
                   {filteredActivityRows.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No events matching filters.</div>
                   ) : (
-                    <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-black/20">
+                    <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-muted/20">
                       <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed">
                         {filteredActivityRows.map((row) => (
                           <div
                             key={`${row.kind}:${row.id}`}
                             className={cn(
                               'rounded border px-2 py-1',
-                              row.tone === 'positive' && 'border-emerald-500/30 text-emerald-100',
-                              row.tone === 'negative' && 'border-red-500/35 text-red-100',
-                              row.tone === 'warning' && 'border-amber-500/35 text-amber-100',
+                              row.tone === 'positive' && 'border-emerald-500/30 text-emerald-700 dark:text-emerald-100',
+                              row.tone === 'negative' && 'border-red-500/35 text-red-700 dark:text-red-100',
+                              row.tone === 'warning' && 'border-amber-500/35 text-amber-700 dark:text-amber-100',
                               row.tone === 'neutral' && 'border-border text-foreground'
                             )}
                           >
@@ -1099,11 +1505,11 @@ export default function TradingPanel() {
                 </CardContent>
               </Card>
 
-              <Card className="h-full flex flex-col min-h-0">
+              <Card className="h-full flex flex-col min-h-0 overflow-hidden">
                 <CardHeader className="py-2">
                   <CardTitle className="text-sm">Execution Radar</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 min-h-0 space-y-2">
+                <CardContent className="flex-1 min-h-0 overflow-hidden space-y-2">
                   <div className="grid gap-2 grid-cols-2">
                     <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Decisions</p>
@@ -1170,11 +1576,11 @@ export default function TradingPanel() {
             </div>
 
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] min-h-0">
-              <Card className="h-full flex flex-col min-h-0">
+              <Card className="h-full flex flex-col min-h-0 overflow-hidden">
                 <CardHeader className="py-2">
                   <CardTitle className="text-sm">Open Position Book</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 min-h-0">
+                <CardContent className="flex-1 min-h-0 overflow-hidden">
                   {globalPositionBook.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No live positions are currently held by orchestrator traders.</div>
                   ) : (
@@ -1213,11 +1619,11 @@ export default function TradingPanel() {
                 </CardContent>
               </Card>
 
-              <Card className="h-full flex flex-col min-h-0">
+              <Card className="h-full flex flex-col min-h-0 overflow-hidden">
                 <CardHeader className="py-2">
                   <CardTitle className="text-sm">Decision Funnel + Selection Queue</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 min-h-0 space-y-2">
+                <CardContent className="flex-1 min-h-0 overflow-hidden space-y-2">
                   <div className="grid gap-2 grid-cols-2">
                     <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1.5">
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Observed</p>
@@ -1239,12 +1645,12 @@ export default function TradingPanel() {
 
                   <div className={cn(
                     'rounded-md border px-2 py-1.5 text-xs',
-                    worker?.last_error ? 'border-amber-500/40 bg-amber-500/10 text-amber-100' : 'border-border/70 bg-background/70 text-muted-foreground'
+                    worker?.last_error ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-100' : 'border-border/70 bg-background/70 text-muted-foreground'
                   )}>
                     {worker?.last_error ? `Worker alert: ${worker.last_error}` : 'No worker alerts. Decision and order pipeline healthy.'}
                   </div>
 
-                  <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-black/20">
+                  <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-muted/20">
                     <div className="space-y-1 p-2">
                       {recentSelectedDecisions.length === 0 ? (
                         <p className="text-sm text-muted-foreground">No selected decisions yet.</p>
@@ -1272,43 +1678,81 @@ export default function TradingPanel() {
           </div>
         </TabsContent>
 
-        <TabsContent value="traders" className="mt-0 flex-1 min-h-0">
-          <div className="h-full min-h-0 grid gap-3 xl:grid-cols-[250px_minmax(0,1fr)]">
-            <Card className="h-full flex flex-col min-h-0">
+        <TabsContent value="traders" className="mt-0 flex-1 min-h-0 overflow-hidden">
+          <div className="h-full min-h-0 grid gap-3 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <Card className="h-full flex flex-col min-h-0 overflow-hidden">
               <CardHeader className="py-2">
-                <CardTitle className="text-sm">Trader Roster</CardTitle>
+                <CardTitle className="text-sm flex items-center justify-between gap-2">
+                  <span>Trader Roster</span>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{traders.length}</Badge>
+                    <Button size="sm" className="h-7 px-2 text-[11px]" onClick={openCreateTraderFlyout}>
+                      Add Trader
+                    </Button>
+                  </div>
+                </CardTitle>
               </CardHeader>
-              <CardContent className="flex-1 min-h-0">
+              <CardContent className="flex-1 min-h-0 overflow-hidden">
                 <ScrollArea className="h-full min-h-0">
                   <div className="space-y-2 pr-2">
                     {traders.map((trader) => {
                       const isSelected = selectedTraderId === trader.id
-                      const traderPnl = globalSummary.topTraderRows.find((row) => row.traderId === trader.id)?.pnl || 0
+                      const traderSummary = globalSummary.topTraderRows.find((row) => row.traderId === trader.id)
+                      const traderPnl = traderSummary?.pnl || 0
+                      const traderStatus = !orchestratorRunning
+                        ? 'Engine Off'
+                        : !trader.is_enabled
+                          ? 'Disabled'
+                          : trader.is_paused
+                            ? 'Paused'
+                            : 'Running'
 
                       return (
                         <div
                           key={trader.id}
                           className={cn(
-                            'rounded-md border p-2',
-                            isSelected ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-border'
+                            'rounded-md border p-2 transition-colors',
+                            isSelected ? 'border-cyan-500/50 bg-cyan-500/10' : 'border-border hover:bg-muted/40'
                           )}
                         >
                           <button className="w-full text-left" onClick={() => setSelectedTraderId(trader.id)}>
                             <div className="flex items-center justify-between gap-2">
-                              <p className="font-medium text-sm truncate">{trader.name}</p>
-                              <Badge variant={trader.is_paused || !trader.is_enabled ? 'secondary' : 'default'}>
-                                {trader.is_paused || !trader.is_enabled ? 'Paused' : 'Active'}
+                              <p className="font-medium text-sm truncate" title={trader.name}>{trader.name}</p>
+                              <Badge variant={traderStatus === 'Running' ? 'default' : 'secondary'}>
+                                {traderStatus}
                               </Badge>
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1">{trader.strategy_key} • {trader.interval_seconds}s</p>
-                            <p className={cn('text-xs mt-1 font-mono', traderPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                              {formatCurrency(traderPnl)} realized
+                            <p className="text-xs text-muted-foreground mt-1 truncate" title={trader.strategy_key}>
+                              {trader.strategy_key} • {trader.interval_seconds}s
                             </p>
+                            <div className="mt-1 flex items-center justify-between text-[11px]">
+                              <span className="text-muted-foreground">{(trader.sources || []).join(', ') || 'No sources'}</span>
+                              <span className={cn('font-mono', traderPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                {formatCurrency(traderPnl)}
+                              </span>
+                            </div>
                           </button>
-                          <div className="mt-2 flex gap-1">
-                            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => traderStartMutation.mutate(trader.id)} disabled={traderStartMutation.isPending}>Start</Button>
-                            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => traderPauseMutation.mutate(trader.id)} disabled={traderPauseMutation.isPending}>Pause</Button>
-                            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => traderRunOnceMutation.mutate(trader.id)} disabled={traderRunOnceMutation.isPending}>Run</Button>
+
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => openEditTraderFlyout(trader)}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => {
+                                setSelectedTraderId(trader.id)
+                                openEditTraderFlyout(trader)
+                              }}
+                            >
+                              Delete
+                            </Button>
                           </div>
                         </div>
                       )
@@ -1318,402 +1762,504 @@ export default function TradingPanel() {
               </CardContent>
             </Card>
 
-            <div className="h-full min-h-0 grid gap-3 grid-rows-[minmax(0,0.7fr)_minmax(0,1fr)] min-w-0">
-              <Card className="h-full flex flex-col min-h-0">
+            <div className="h-full min-h-0 flex flex-col gap-3 min-w-0">
+              <Card className="shrink-0">
                 <CardHeader className="py-2">
                   <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
-                    <span>{selectedTrader?.name || 'Trader'} Performance + Positioning</span>
+                    <span>{selectedTrader?.name || 'Trader Console'}</span>
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <Badge variant={selectedTrader?.is_paused || !selectedTrader?.is_enabled ? 'secondary' : 'default'}>
-                        {selectedTrader?.is_paused || !selectedTrader?.is_enabled ? 'Paused' : 'Running'}
+                      <Badge variant={!orchestratorRunning || selectedTrader?.is_paused || !selectedTrader?.is_enabled ? 'secondary' : 'default'}>
+                        {!orchestratorRunning
+                          ? 'Engine Off'
+                          : selectedTrader?.is_paused || !selectedTrader?.is_enabled
+                            ? 'Paused'
+                            : 'Running'}
                       </Badge>
                       <span>{formatTimestamp(selectedTrader?.last_run_at)}</span>
                     </div>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 min-h-0 grid gap-2 grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
-                  <div className="rounded-md border border-border p-2 h-full min-h-0">
-                    {selectedPnlSeries.length > 1 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={selectedPnlSeries}>
-                          <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.25} />
-                          <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                          <YAxis tick={{ fontSize: 11 }} width={64} />
-                          <Tooltip />
-                          <Area type="monotone" dataKey="cumulativePnl" name="Cumulative PnL" stroke="#22d3ee" fill="#22d3ee22" strokeWidth={2} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Need more order history for chart.</div>
-                    )}
+                <CardContent className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => selectedTrader && traderStartMutation.mutate(selectedTrader.id)}
+                      disabled={!selectedTrader || traderStartMutation.isPending}
+                    >
+                      Start Trader
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => selectedTrader && traderPauseMutation.mutate(selectedTrader.id)}
+                      disabled={!selectedTrader || traderPauseMutation.isPending}
+                    >
+                      Pause Trader
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => selectedTrader && traderRunOnceMutation.mutate(selectedTrader.id)}
+                      disabled={!selectedTrader || traderRunOnceMutation.isPending}
+                    >
+                      Run Once
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => selectedTrader && openEditTraderFlyout(selectedTrader)}
+                      disabled={!selectedTrader}
+                    >
+                      Configure
+                    </Button>
                   </div>
-                  <div className="space-y-2 min-h-0">
-                    <div className="grid gap-2 grid-cols-2">
-                      <div className="rounded-md border border-border px-2 py-1.5">
-                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Open</p>
-                        <p className="text-base font-mono font-semibold">{selectedTraderSummary.open}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-2 py-1.5">
-                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Win Rate</p>
-                        <p className="text-base font-mono font-semibold">{formatPercent(selectedTraderSummary.winRate)}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-2 py-1.5">
-                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Decisions</p>
-                        <p className="text-base font-mono font-semibold">{selectedTraderSummary.decisions}</p>
-                      </div>
-                      <div className="rounded-md border border-border px-2 py-1.5">
-                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Realized PnL</p>
-                        <p className={cn('text-base font-mono font-semibold', selectedTraderSummary.pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                          {formatCurrency(selectedTraderSummary.pnl)}
-                        </p>
-                      </div>
+
+                  <div className="grid gap-1.5 grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Open</p>
+                      <p className="text-[11px] font-mono">{selectedTraderSummary.open}</p>
                     </div>
-                    <div className="rounded-md border border-border p-2 min-h-0">
-                      <p className="text-[11px] font-medium mb-2">Decision Mix</p>
-                      {decisionMix.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No decision history yet.</p>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {decisionMix.map((row) => {
-                            const percent = selectedDecisions.length > 0 ? (row.count / selectedDecisions.length) * 100 : 0
-                            return (
-                              <div key={row.decision}>
-                                <div className="flex items-center justify-between text-[11px] mb-1">
-                                  <span>{row.decision}</span>
-                                  <span className="font-mono">{row.count}</span>
-                                </div>
-                                <Progress value={percent} className="h-1.5" />
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Exposure</p>
+                      <p className="text-[11px] font-mono">{formatCurrency(selectedTraderExposure, true)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Decisions</p>
+                      <p className="text-[11px] font-mono">{selectedTraderSummary.decisions}</p>
+                    </div>
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Selected</p>
+                      <p className="text-[11px] font-mono">{selectedTraderSummary.selectedDecisions}</p>
+                    </div>
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Conversion</p>
+                      <p className="text-[11px] font-mono">{formatPercent(selectedTraderSummary.conversion)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Win Rate</p>
+                      <p className="text-[11px] font-mono">{formatPercent(selectedTraderSummary.winRate)}</p>
+                    </div>
+                    <div className={cn(
+                      'rounded-md border px-2 py-1',
+                      selectedTraderSummary.pnl >= 0 ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'
+                    )}>
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Realized PnL</p>
+                      <p className="text-[11px] font-mono">{formatCurrency(selectedTraderSummary.pnl)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wider text-muted-foreground">Edge / Conf</p>
+                      <p className="text-[11px] font-mono">
+                        {formatPercent(normalizeEdgePercent(selectedTraderSummary.avgEdge))} / {formatPercent(normalizeConfidencePercent(selectedTraderSummary.avgConfidence))}
+                      </p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              <div className="grid gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] min-h-0">
-                <Card className="h-full flex flex-col min-h-0">
-                  <CardHeader className="py-2">
-                    <CardTitle className="text-sm">Decision Logic Inspector</CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex-1 min-h-0 grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                    <div className="space-y-2 min-h-0">
-                      <Input
-                        value={decisionSearch}
-                        onChange={(event) => setDecisionSearch(event.target.value)}
-                        placeholder="Filter decisions..."
-                      />
-                      <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
-                        <div className="space-y-2 pr-2">
-                          {filteredDecisions.map((decision) => (
-                            <button
-                              key={decision.id}
-                              onClick={() => setSelectedDecisionId(decision.id)}
-                              className={cn(
-                                'w-full text-left rounded-md border p-2 transition-colors',
-                                selectedDecisionId === decision.id ? 'border-cyan-500/40 bg-cyan-500/10' : 'border-border hover:bg-muted/30'
-                              )}
+              <Tabs defaultValue="terminal" className="flex-1 min-h-0 flex flex-col gap-2">
+                <TabsList className="w-full justify-start overflow-auto shrink-0 h-8">
+                  <TabsTrigger value="terminal">Live Terminal</TabsTrigger>
+                  <TabsTrigger value="positions">Positions</TabsTrigger>
+                  <TabsTrigger value="decisions">Decisions</TabsTrigger>
+                  <TabsTrigger value="trades">Trades</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="terminal" className="mt-0 flex-1 min-h-0">
+                  <Card className="h-full flex flex-col min-h-0 overflow-hidden">
+                    <CardHeader className="py-2">
+                      <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
+                        <span>Trader Activity Terminal</span>
+                        <div className="flex items-center gap-1">
+                          {(['all', 'decision', 'order', 'event'] as FeedFilter[]).map((kind) => (
+                            <Button
+                              key={kind}
+                              size="sm"
+                              variant={traderFeedFilter === kind ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => setTraderFeedFilter(kind)}
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <Badge variant={String(decision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
-                                  {String(decision.decision).toUpperCase()}
-                                </Badge>
-                                <span className="text-[11px] text-muted-foreground">{formatShortDate(decision.created_at)}</span>
-                              </div>
-                              <p className="text-xs mt-1 font-medium">{decision.source} • {decision.strategy_key}</p>
-                              <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{decision.reason || 'No reason captured'}</p>
-                            </button>
+                              {kind}
+                            </Button>
                           ))}
-                          {filteredDecisions.length === 0 ? <p className="text-sm text-muted-foreground">No decisions matching filter.</p> : null}
                         </div>
-                      </ScrollArea>
-                    </div>
-
-                    <div className="space-y-2 min-h-0">
-                      {!selectedDecision ? (
-                        <p className="text-sm text-muted-foreground">Select a decision to inspect checks and risk logic.</p>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0 overflow-hidden">
+                      {!selectedTrader ? (
+                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a trader from the roster.</div>
+                      ) : filteredTraderActivityRows.length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No terminal rows for this trader yet.</div>
                       ) : (
-                        <>
-                          <div className="rounded-md border border-border p-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="font-medium text-sm">{selectedDecision.strategy_key}</p>
-                              <Badge variant={String(selectedDecision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
-                                {String(selectedDecision.decision).toUpperCase()}
-                              </Badge>
-                            </div>
-                            <p className="text-[11px] text-muted-foreground mt-1">{selectedDecision.reason || 'No reason text'}</p>
-                            <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-muted-foreground">
-                              <span>Score: {selectedDecision.score !== null ? selectedDecision.score.toFixed(2) : 'n/a'}</span>
-                              <span>{formatTimestamp(selectedDecision.created_at)}</span>
-                            </div>
-                          </div>
-
-                          <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
-                            {(decisionDetailQuery.data?.checks || []).length === 0 ? (
-                              <p className="text-sm text-muted-foreground">No check records for this decision.</p>
-                            ) : (
-                              <div className="space-y-2 pr-2">
-                                {(decisionDetailQuery.data?.checks || []).map((check) => (
-                                  <div key={check.id} className={cn(
-                                    'rounded-md border p-2',
-                                    check.passed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'
-                                  )}>
-                                    <div className="flex items-center justify-between gap-2">
-                                      <p className="text-xs font-medium">{check.check_label}</p>
-                                      <Badge variant={check.passed ? 'default' : 'destructive'}>{check.passed ? 'PASS' : 'FAIL'}</Badge>
-                                    </div>
-                                    <p className="text-[11px] text-muted-foreground mt-1">{check.detail || 'No detail provided'}</p>
-                                  </div>
-                                ))}
+                        <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-muted/20">
+                          <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed">
+                            {filteredTraderActivityRows.map((row) => (
+                              <div
+                                key={`${row.kind}:${row.id}`}
+                                className={cn(
+                                  'rounded border px-2 py-1',
+                                  row.tone === 'positive' && 'border-emerald-500/30 text-emerald-700 dark:text-emerald-100',
+                                  row.tone === 'negative' && 'border-red-500/35 text-red-700 dark:text-red-100',
+                                  row.tone === 'warning' && 'border-amber-500/35 text-amber-700 dark:text-amber-100',
+                                  row.tone === 'neutral' && 'border-border text-foreground'
+                                )}
+                              >
+                                <span className="text-muted-foreground">[{formatTimestamp(row.ts)}]</span>{' '}
+                                <span className="uppercase">{row.kind}</span>{' '}
+                                <span>{row.title}</span>
+                                <span className="text-muted-foreground"> :: {row.detail}</span>
                               </div>
-                            )}
-                          </ScrollArea>
-                        </>
+                            ))}
+                          </div>
+                        </ScrollArea>
                       )}
-                    </div>
-                  </CardContent>
-                </Card>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-                <Card className="h-full flex flex-col min-h-0">
-                  <CardHeader className="py-2">
-                    <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
-                      <span>Trade History + Financial Outcomes</span>
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {(['all', 'open', 'resolved', 'failed'] as TradeStatusFilter[]).map((filter) => (
-                          <Button
-                            key={filter}
-                            size="sm"
-                            variant={tradeStatusFilter === filter ? 'default' : 'outline'}
-                            className="h-6 px-2 text-[11px]"
-                            onClick={() => setTradeStatusFilter(filter)}
-                          >
-                            {filter}
-                          </Button>
-                        ))}
+                <TabsContent value="positions" className="mt-0 flex-1 min-h-0">
+                  <Card className="h-full flex flex-col min-h-0 overflow-hidden">
+                    <CardHeader className="py-2">
+                      <CardTitle className="text-sm">Positions Held by Trader</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0 overflow-hidden">
+                      {selectedPositionBook.length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No open positions held by this trader.</div>
+                      ) : (
+                        <ScrollArea className="h-full min-h-0 rounded-md border border-border/80">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Market</TableHead>
+                                <TableHead>Dir</TableHead>
+                                <TableHead className="text-right">Exposure</TableHead>
+                                <TableHead className="text-right">Avg Px</TableHead>
+                                <TableHead className="text-right">Edge</TableHead>
+                                <TableHead className="text-right">Conf</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedPositionBook.map((row) => (
+                                <TableRow key={row.key}>
+                                  <TableCell>
+                                    <div className="max-w-[380px] truncate" title={row.marketQuestion}>{row.marketQuestion}</div>
+                                    <div className="text-[11px] text-muted-foreground">{shortId(row.marketId)}</div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant={row.direction === 'BUY' ? 'default' : row.direction === 'SELL' ? 'secondary' : 'outline'}>{row.direction}</Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono">{formatCurrency(row.exposureUsd)}</TableCell>
+                                  <TableCell className="text-right font-mono">{row.averagePrice !== null ? row.averagePrice.toFixed(3) : 'n/a'}</TableCell>
+                                  <TableCell className="text-right font-mono">{row.weightedEdge !== null ? formatPercent(normalizeEdgePercent(row.weightedEdge)) : 'n/a'}</TableCell>
+                                  <TableCell className="text-right font-mono">{row.weightedConfidence !== null ? formatPercent(normalizeConfidencePercent(row.weightedConfidence)) : 'n/a'}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </ScrollArea>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="decisions" className="mt-0 flex-1 min-h-0">
+                  <Card className="h-full flex flex-col min-h-0 overflow-hidden">
+                    <CardHeader className="py-2">
+                      <CardTitle className="text-sm">Decision Logic Inspector</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0 overflow-hidden grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <div className="space-y-2 min-h-0">
+                        <Input
+                          value={decisionSearch}
+                          onChange={(event) => setDecisionSearch(event.target.value)}
+                          placeholder="Filter decisions..."
+                        />
+                        <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
+                          <div className="space-y-2 pr-2">
+                            {filteredDecisions.map((decision) => (
+                              <button
+                                key={decision.id}
+                                onClick={() => setSelectedDecisionId(decision.id)}
+                                className={cn(
+                                  'w-full text-left rounded-md border p-2 transition-colors',
+                                  selectedDecisionId === decision.id ? 'border-cyan-500/40 bg-cyan-500/10' : 'border-border hover:bg-muted/30'
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <Badge variant={String(decision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
+                                    {String(decision.decision).toUpperCase()}
+                                  </Badge>
+                                  <span className="text-[11px] text-muted-foreground">{formatShortDate(decision.created_at)}</span>
+                                </div>
+                                <p className="text-xs mt-1 font-medium">{decision.source} • {decision.strategy_key}</p>
+                                <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{decision.reason || 'No reason captured'}</p>
+                              </button>
+                            ))}
+                            {filteredDecisions.length === 0 ? <p className="text-sm text-muted-foreground">No decisions matching filter.</p> : null}
+                          </div>
+                        </ScrollArea>
                       </div>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex-1 min-h-0 space-y-2">
-                    <Input
-                      value={tradeSearch}
-                      onChange={(event) => setTradeSearch(event.target.value)}
-                      placeholder="Search market, source, direction..."
-                    />
 
-                    {selectedPositionBook.length > 0 ? (
-                      <div className="rounded-md border border-border px-2 py-1.5">
-                        <p className="text-[11px] text-muted-foreground mb-1">Positions held by selected trader</p>
-                        <div className="flex flex-wrap gap-x-3 gap-y-1">
-                          {selectedPositionBook.slice(0, 6).map((row) => (
-                            <div key={row.key} className="text-[11px]">
-                              <span className="text-muted-foreground">{row.direction}</span>{' '}
-                              <span className="font-mono">{formatCurrency(row.exposureUsd)}</span>
+                      <div className="space-y-2 min-h-0">
+                        {!selectedDecision ? (
+                          <p className="text-sm text-muted-foreground">Select a decision to inspect checks and risk logic.</p>
+                        ) : (
+                          <>
+                            <div className="rounded-md border border-border p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-medium text-sm">{selectedDecision.strategy_key}</p>
+                                <Badge variant={String(selectedDecision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
+                                  {String(selectedDecision.decision).toUpperCase()}
+                                </Badge>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground mt-1">{selectedDecision.reason || 'No reason text'}</p>
+                              <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-muted-foreground">
+                                <span>Score: {selectedDecision.score !== null ? selectedDecision.score.toFixed(2) : 'n/a'}</span>
+                                <span>{formatTimestamp(selectedDecision.created_at)}</span>
+                              </div>
                             </div>
+
+                            <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
+                              {(decisionDetailQuery.data?.checks || []).length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No check records for this decision.</p>
+                              ) : (
+                                <div className="space-y-2 pr-2">
+                                  {(decisionDetailQuery.data?.checks || []).map((check) => (
+                                    <div key={check.id} className={cn(
+                                      'rounded-md border p-2',
+                                      check.passed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'
+                                    )}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <p className="text-xs font-medium">{check.check_label}</p>
+                                        <Badge variant={check.passed ? 'default' : 'destructive'}>{check.passed ? 'PASS' : 'FAIL'}</Badge>
+                                      </div>
+                                      <p className="text-[11px] text-muted-foreground mt-1">{check.detail || 'No detail provided'}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </ScrollArea>
+                          </>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="trades" className="mt-0 flex-1 min-h-0">
+                  <Card className="h-full flex flex-col min-h-0 overflow-hidden">
+                    <CardHeader className="py-2">
+                      <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
+                        <span>Trade History + Outcomes</span>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {(['all', 'open', 'resolved', 'failed'] as TradeStatusFilter[]).map((filter) => (
+                            <Button
+                              key={filter}
+                              size="sm"
+                              variant={tradeStatusFilter === filter ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => setTradeStatusFilter(filter)}
+                            >
+                              {filter}
+                            </Button>
                           ))}
                         </div>
-                      </div>
-                    ) : null}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0 overflow-hidden space-y-2">
+                      <Input
+                        value={tradeSearch}
+                        onChange={(event) => setTradeSearch(event.target.value)}
+                        placeholder="Search market, source, direction..."
+                      />
 
-                    <ScrollArea className="h-full min-h-0 rounded-md border border-border/80">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Market</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Dir</TableHead>
-                            <TableHead className="text-right">Notional</TableHead>
-                            <TableHead className="text-right">Edge</TableHead>
-                            <TableHead className="text-right">P/L</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {filteredTradeHistory.map((order) => {
-                            const status = normalizeStatus(order.status)
-                            const pnl = toNumber(order.actual_profit)
-                            return (
-                              <TableRow key={order.id}>
-                                <TableCell>
-                                  <div className="max-w-[320px] truncate" title={order.market_question || order.market_id}>{order.market_question || order.market_id}</div>
-                                  <div className="text-[11px] text-muted-foreground">{formatShortDate(order.executed_at || order.created_at)}</div>
-                                </TableCell>
-                                <TableCell>
-                                  <Badge
-                                    variant={
-                                      FAILED_ORDER_STATUSES.has(status) ? 'destructive' :
-                                        RESOLVED_ORDER_STATUSES.has(status) ? 'default' :
-                                          'outline'
-                                    }
-                                  >
-                                    {status}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell>{String(order.direction || 'n/a').toUpperCase()}</TableCell>
-                                <TableCell className="text-right font-mono">{formatCurrency(toNumber(order.notional_usd))}</TableCell>
-                                <TableCell className="text-right font-mono">{order.edge_percent !== null ? formatPercent(normalizeEdgePercent(toNumber(order.edge_percent))) : 'n/a'}</TableCell>
-                                <TableCell className={cn('text-right font-mono', pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                                  {order.actual_profit !== null ? formatCurrency(pnl) : 'n/a'}
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                          {filteredTradeHistory.length === 0 ? (
+                      <ScrollArea className="h-full min-h-0 rounded-md border border-border/80">
+                        <Table>
+                          <TableHeader>
                             <TableRow>
-                              <TableCell colSpan={6} className="text-center text-muted-foreground">No trades match the selected filters.</TableCell>
+                              <TableHead>Market</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Dir</TableHead>
+                              <TableHead className="text-right">Notional</TableHead>
+                              <TableHead className="text-right">Edge</TableHead>
+                              <TableHead className="text-right">P/L</TableHead>
                             </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                    </ScrollArea>
-                  </CardContent>
-                </Card>
-              </div>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredTradeHistory.map((order) => {
+                              const status = normalizeStatus(order.status)
+                              const pnl = toNumber(order.actual_profit)
+                              return (
+                                <TableRow key={order.id}>
+                                  <TableCell>
+                                    <div className="max-w-[380px] truncate" title={order.market_question || order.market_id}>{order.market_question || order.market_id}</div>
+                                    <div className="text-[11px] text-muted-foreground">{formatShortDate(order.executed_at || order.created_at)}</div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant={
+                                        FAILED_ORDER_STATUSES.has(status) ? 'destructive' :
+                                          RESOLVED_ORDER_STATUSES.has(status) ? 'default' :
+                                            'outline'
+                                      }
+                                    >
+                                      {status}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>{String(order.direction || 'n/a').toUpperCase()}</TableCell>
+                                  <TableCell className="text-right font-mono">{formatCurrency(toNumber(order.notional_usd))}</TableCell>
+                                  <TableCell className="text-right font-mono">{order.edge_percent !== null ? formatPercent(normalizeEdgePercent(toNumber(order.edge_percent))) : 'n/a'}</TableCell>
+                                  <TableCell className={cn('text-right font-mono', pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                    {order.actual_profit !== null ? formatCurrency(pnl) : 'n/a'}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                            {filteredTradeHistory.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-center text-muted-foreground">No trades match the selected filters.</TableCell>
+                              </TableRow>
+                            ) : null}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+              </Tabs>
             </div>
           </div>
         </TabsContent>
 
-        <TabsContent value="governance" className="mt-0 flex-1 min-h-0">
-          <div className="h-full min-h-0 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <Card className="h-full flex flex-col min-h-0">
+        <TabsContent value="governance" className="mt-0 flex-1 min-h-0 overflow-hidden">
+          <div className="h-full min-h-0 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+            <Card className="h-full flex flex-col min-h-0 overflow-hidden">
               <CardHeader className="py-2">
-                <CardTitle className="text-sm">Trader Configuration Workbench</CardTitle>
+                <CardTitle className="text-sm">Governance Controls + Guardrails</CardTitle>
               </CardHeader>
-              <CardContent className="flex-1 min-h-0">
-                {!selectedTrader ? (
-                  <p className="text-sm text-muted-foreground">Select a trader from the intelligence tab to edit its runtime profile.</p>
-                ) : (
-                  <ScrollArea className="h-full min-h-0 pr-2">
-                    <div className="space-y-3 pb-2">
-                    <div>
-                      <Label>Name</Label>
-                      <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} />
-                    </div>
-                    <div>
-                      <Label>Interval Seconds</Label>
-                      <Input type="number" min={1} value={draftInterval} onChange={(event) => setDraftInterval(event.target.value)} />
-                    </div>
-                    <div>
-                      <Label>Sources (comma separated)</Label>
-                      <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} />
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="rounded-md border border-border p-2">
-                        <p className="text-xs font-medium mb-2">Strategy parameter highlights</p>
-                        {paramsPreview.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">No top-level parameters.</p>
-                        ) : (
-                          <div className="space-y-1">
-                            {paramsPreview.map(([key, value]) => (
-                              <div key={key} className="text-xs flex items-center justify-between gap-2">
-                                <span className="text-muted-foreground">{humanizeKey(key)}</span>
-                                <span className="font-mono truncate" title={String(value)}>{String(value)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="rounded-md border border-border p-2">
-                        <p className="text-xs font-medium mb-2">Risk limit highlights</p>
-                        {riskPreview.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">No top-level limits.</p>
-                        ) : (
-                          <div className="space-y-1">
-                            {riskPreview.map(([key, value]) => (
-                              <div key={key} className="text-xs flex items-center justify-between gap-2">
-                                <span className="text-muted-foreground">{humanizeKey(key)}</span>
-                                <span className="font-mono truncate" title={String(value)}>{String(value)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+              <CardContent className="flex-1 min-h-0 overflow-hidden">
+                <ScrollArea className="h-full min-h-0 pr-2">
+                  <div className="space-y-3 pb-2">
+                    <div className="rounded-md border border-border p-3">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Control state</p>
+                      <div className="mt-2 space-y-2 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Mode</span>
+                          <Badge variant={globalMode === 'live' ? 'destructive' : 'outline'}>{globalMode.toUpperCase()}</Badge>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Engine</span>
+                          <span className={cn('font-medium', orchestratorBlocked ? 'text-amber-600 dark:text-amber-200' : '')}>
+                            {orchestratorStatusLabel}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Block new orders</span>
+                          <span className={cn('font-medium', killSwitchOn ? 'text-red-400' : 'text-emerald-400')}>{killSwitchOn ? 'Active' : 'Inactive'}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Run interval</span>
+                          <span className="font-medium font-mono">{toNumber(overviewQuery.data?.control?.run_interval_seconds)}s</span>
+                        </div>
                       </div>
                     </div>
 
-                    <details className="rounded-md border border-border p-2">
-                      <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: strategy params</summary>
-                      <textarea
-                        className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
-                        value={draftParams}
-                        onChange={(event) => setDraftParams(event.target.value)}
-                      />
-                    </details>
-
-                    <details className="rounded-md border border-border p-2">
-                      <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: risk limits</summary>
-                      <textarea
-                        className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
-                        value={draftRisk}
-                        onChange={(event) => setDraftRisk(event.target.value)}
-                      />
-                    </details>
-
-                    {saveError ? <div className="text-xs text-red-500">{saveError}</div> : null}
-
-                    <Button
-                      onClick={() => selectedTrader && saveTraderMutation.mutate(selectedTrader)}
-                      disabled={saveTraderMutation.isPending}
-                    >
-                      {saveTraderMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                      Save Trader Profile
-                    </Button>
+                    <div className={cn(
+                      'rounded-md border p-3',
+                      !selectedAccountValid || modeMismatch ? 'border-amber-500/40 bg-amber-500/10' : 'border-border'
+                    )}>
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Account + Mode Governance</p>
+                      <div className="mt-2 text-sm space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Global account selected</span>
+                          <span className="font-medium">{selectedAccountValid ? 'Yes' : 'No'}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Mode synchronized</span>
+                          <span className="font-medium">{modeMismatch ? 'No' : 'Yes'}</span>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Start commands are blocked until a valid global account is selected and mode alignment is satisfied.
+                        </div>
+                      </div>
                     </div>
-                  </ScrollArea>
-                )}
+
+                    <div className="rounded-md border border-border p-3">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Live guardrails</p>
+                      <div className="mt-2 space-y-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Live requires preflight pass + arm token</span>
+                          <Badge variant="outline">Enforced</Badge>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Block New Orders guard blocks order creation</span>
+                          <Badge variant="outline">Enforced</Badge>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Worker pause overrides start</span>
+                          <Badge variant="outline">Enforced</Badge>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-md border border-border p-3">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Emergency controls</p>
+                      <div className="mt-2 rounded-md border border-border/70 bg-muted/20 px-2 py-1.5 text-xs text-muted-foreground">
+                        Header controls are intentionally split by function:
+                        <span className="font-medium text-foreground"> Start/Stop </span>
+                        changes engine state,
+                        <span className="font-medium text-foreground"> Block New Orders </span>
+                        keeps engine running but blocks new selected orders.
+                      </div>
+                    </div>
+                  </div>
+                </ScrollArea>
               </CardContent>
             </Card>
 
-            <Card className="h-full flex flex-col min-h-0">
+            <Card className="h-full flex flex-col min-h-0 overflow-hidden">
               <CardHeader className="py-2">
-                <CardTitle className="text-sm">Governance Snapshot</CardTitle>
+                <CardTitle className="text-sm">Risk + Failure Terminal</CardTitle>
               </CardHeader>
-              <CardContent className="flex-1 min-h-0">
-                <ScrollArea className="h-full min-h-0 pr-2">
-                  <div className="space-y-3 pb-2">
-                <div className="rounded-md border border-border p-3">
-                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Control state</p>
-                  <div className="mt-2 space-y-2 text-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Mode</span>
-                      <Badge variant={globalMode === 'live' ? 'destructive' : 'outline'}>{globalMode.toUpperCase()}</Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Engine</span>
-                      <span className="font-medium">{orchestratorRunning ? 'Running' : 'Stopped'}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Kill switch</span>
-                      <span className={cn('font-medium', killSwitchOn ? 'text-red-400' : 'text-emerald-400')}>{killSwitchOn ? 'Enabled' : 'Disabled'}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Run interval</span>
-                      <span className="font-medium font-mono">{toNumber(overviewQuery.data?.control?.run_interval_seconds)}s</span>
-                    </div>
+              <CardContent className="flex-1 min-h-0 overflow-hidden space-y-2">
+                <div className="grid gap-2 grid-cols-2">
+                  <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Risk rows</p>
+                    <p className="text-sm font-mono">{riskActivityRows.length}</p>
+                  </div>
+                  <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Failed orders</p>
+                    <p className="text-sm font-mono">{failedOrders.length}</p>
                   </div>
                 </div>
 
-                <div className="rounded-md border border-border p-3">
-                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Live guardrails</p>
-                  <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-muted-foreground">
-                    <p>Live start requires preflight pass and arm token handoff.</p>
-                    <p>Kill switch blocks any future decision state of <span className="font-mono">selected</span>.</p>
-                    <p>Global pause state in workers still overrides orchestrator start calls.</p>
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-border p-3">
-                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Last decision checks sync</p>
-                  <div className="mt-2 flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Selected decision</span>
-                    <span className="font-mono">{shortId(selectedDecisionId)}</span>
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Checks loaded</span>
-                    <span className="font-mono">{decisionDetailQuery.data?.checks?.length || 0}</span>
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">Updated {formatTimestamp(decisionDetailQuery.data?.decision?.created_at || null)}</div>
-                </div>
+                <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-muted/20">
+                  <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed">
+                    {riskActivityRows.length === 0 ? (
+                      <div className="rounded border border-emerald-500/30 px-2 py-1 text-emerald-700 dark:text-emerald-100">
+                        [HEALTHY] no warning or failure events captured.
+                      </div>
+                    ) : (
+                      riskActivityRows.map((row) => (
+                        <div
+                          key={`${row.kind}:${row.id}`}
+                          className={cn(
+                            'rounded border px-2 py-1',
+                            row.tone === 'negative' ? 'border-red-500/35 text-red-700 dark:text-red-100' : 'border-amber-500/35 text-amber-700 dark:text-amber-100'
+                          )}
+                        >
+                          <span className="text-muted-foreground">[{formatTimestamp(row.ts)}]</span>{' '}
+                          <span className="uppercase">{row.kind}</span>{' '}
+                          <span>{row.title}</span>
+                          <span className="text-muted-foreground"> :: {row.detail}</span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </ScrollArea>
               </CardContent>
@@ -1721,6 +2267,454 @@ export default function TradingPanel() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={confirmLiveStartOpen} onOpenChange={setConfirmLiveStartOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Live Trading Start</DialogTitle>
+            <DialogDescription>
+              This will start the orchestrator in LIVE mode against your globally selected live account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-100">
+            Live trading can place real orders. Confirm only if preflight checks and risk controls are intentionally set.
+          </div>
+          <div className="grid gap-1 rounded-md border border-border p-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Account mode</span>
+              <span className="font-mono">LIVE</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Block new orders</span>
+              <span className={cn('font-mono', killSwitchOn ? 'text-red-500' : 'text-emerald-600')}>
+                {killSwitchOn ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmLiveStartOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmLiveStart}
+              disabled={startBySelectedAccountMutation.isPending || killSwitchOn || !selectedAccountIsLive}
+            >
+              {startBySelectedAccountMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Confirm Start Live
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Sheet
+        open={traderFlyoutOpen}
+        onOpenChange={(open) => {
+          setTraderFlyoutOpen(open)
+          if (!open) {
+            setSaveError(null)
+            setDeleteConfirmName('')
+          }
+        }}
+      >
+        <SheetContent side="right" className="w-full sm:max-w-3xl p-0">
+          <div className="h-full min-h-0 flex flex-col">
+            <div className="border-b border-border px-4 py-3">
+              <SheetHeader className="space-y-1 text-left">
+                <SheetTitle className="text-base">
+                  {traderFlyoutMode === 'create' ? 'Create Auto Trader' : 'Edit Auto Trader'}
+                </SheetTitle>
+                <SheetDescription>
+                  {traderFlyoutMode === 'create'
+                    ? 'Configure a new trader profile. Templates can preload strategy and risk defaults.'
+                    : 'Update runtime configuration and lifecycle state for this trader.'}
+                </SheetDescription>
+              </SheetHeader>
+            </div>
+
+            <ScrollArea className="flex-1 min-h-0 px-4 py-3">
+              <div className="space-y-3 pb-2">
+                {traderFlyoutMode === 'create' ? (
+                  <div>
+                    <Label>Template</Label>
+                    <Select
+                      value={templateSelection}
+                      onValueChange={(value) => {
+                        setTemplateSelection(value)
+                        if (value !== 'none') {
+                          hydrateDraftFromTemplate(value)
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="mt-1 h-9">
+                        <SelectValue placeholder="Start from blank trader" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Blank Trader</SelectItem>
+                        {templates.map((template) => (
+                          <SelectItem key={template.id} value={template.id}>
+                            {template.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label>Name</Label>
+                    <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
+                  </div>
+                  <div>
+                    <Label>Strategy Key</Label>
+                    <Input value={draftStrategyKey} onChange={(event) => setDraftStrategyKey(event.target.value)} className="mt-1 font-mono" />
+                  </div>
+                </div>
+
+                <div>
+                  <Label>Description</Label>
+                  <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} className="mt-1" />
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label>Interval Seconds</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={draftInterval}
+                      onChange={(event) => setDraftInterval(event.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label>Sources (comma separated)</Label>
+                    <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} className="mt-1" />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Execution Cadence</p>
+                    <Select
+                      value={advancedConfig.cadenceProfile}
+                      onValueChange={(value) => {
+                        setAdvancedValue('cadenceProfile', value)
+                        if (value === 'ultra_fast') setDraftInterval('2')
+                        if (value === 'fast') setDraftInterval('5')
+                        if (value === 'balanced') setDraftInterval('10')
+                        if (value === 'slow') setDraftInterval('30')
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-[180px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ultra_fast">Ultra Fast (2s)</SelectItem>
+                        <SelectItem value="fast">Fast (5s)</SelectItem>
+                        <SelectItem value="balanced">Balanced (10s)</SelectItem>
+                        <SelectItem value="slow">Slow (30s)</SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[2, 5, 10, 30, 60].map((sec) => (
+                      <Button
+                        key={sec}
+                        type="button"
+                        size="sm"
+                        variant={Number(draftInterval || 0) === sec ? 'default' : 'outline'}
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => setDraftInterval(String(sec))}
+                      >
+                        {sec}s
+                      </Button>
+                    ))}
+                  </div>
+                  {(draftStrategyKey.toLowerCase().includes('crypto') || draftStrategyKey.toLowerCase().includes('btc')) && Number(draftInterval || 0) >= 60 ? (
+                    <p className="text-xs text-amber-700 dark:text-amber-100">
+                      60s is too slow for most BTC 15m execution loops. Recommended cadence is 2s to 10s.
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm">Enabled</span>
+                      <Switch checked={draftEnabled} onCheckedChange={(checked) => setDraftEnabled(checked)} />
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">Disabled traders are excluded from orchestrator cycles.</p>
+                  </div>
+                  <div className="rounded-md border border-border p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm">Paused</span>
+                      <Switch checked={draftPaused} onCheckedChange={(checked) => setDraftPaused(checked)} />
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">Paused traders stay loaded but do not execute decisions.</p>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Signal Gating + Selection</p>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <Label>Min Signal Score</Label>
+                      <Input type="number" value={advancedConfig.minSignalScore} onChange={(event) => setAdvancedValue('minSignalScore', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Min Edge (%)</Label>
+                      <Input type="number" value={advancedConfig.minEdgePercent} onChange={(event) => setAdvancedValue('minEdgePercent', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Min Confidence (%)</Label>
+                      <Input type="number" value={advancedConfig.minConfidence} onChange={(event) => setAdvancedValue('minConfidence', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Lookback (minutes)</Label>
+                      <Input type="number" value={advancedConfig.lookbackMinutes} onChange={(event) => setAdvancedValue('lookbackMinutes', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Scan Batch Size</Label>
+                      <Input type="number" value={advancedConfig.scanBatchSize} onChange={(event) => setAdvancedValue('scanBatchSize', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Signals / Cycle</Label>
+                      <Input type="number" value={advancedConfig.maxSignalsPerCycle} onChange={(event) => setAdvancedValue('maxSignalsPerCycle', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <Label>Source Priority (comma separated)</Label>
+                      <Input value={advancedConfig.sourcePriorityCsv} onChange={(event) => setAdvancedValue('sourcePriorityCsv', event.target.value)} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Blocked Market Keywords</Label>
+                      <Input value={advancedConfig.blockedKeywordsCsv} onChange={(event) => setAdvancedValue('blockedKeywordsCsv', event.target.value)} className="mt-1" />
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border p-2 flex items-center justify-between">
+                    <span className="text-sm">Require Second Source Confirmation</span>
+                    <Switch checked={advancedConfig.requireSecondSource} onCheckedChange={(checked) => setAdvancedValue('requireSecondSource', checked)} />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Risk Envelope</p>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <Label>Max Orders / Cycle</Label>
+                      <Input type="number" value={advancedConfig.maxOrdersPerCycle} onChange={(event) => setAdvancedValue('maxOrdersPerCycle', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Open Orders</Label>
+                      <Input type="number" value={advancedConfig.maxOpenOrders} onChange={(event) => setAdvancedValue('maxOpenOrders', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Open Positions</Label>
+                      <Input type="number" value={advancedConfig.maxOpenPositions} onChange={(event) => setAdvancedValue('maxOpenPositions', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Position Notional (USD)</Label>
+                      <Input type="number" value={advancedConfig.maxPositionNotionalUsd} onChange={(event) => setAdvancedValue('maxPositionNotionalUsd', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Gross Exposure (USD)</Label>
+                      <Input type="number" value={advancedConfig.maxGrossExposureUsd} onChange={(event) => setAdvancedValue('maxGrossExposureUsd', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Trade Notional (USD)</Label>
+                      <Input type="number" value={advancedConfig.maxTradeNotionalUsd} onChange={(event) => setAdvancedValue('maxTradeNotionalUsd', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Daily Loss (USD)</Label>
+                      <Input type="number" value={advancedConfig.maxDailyLossUsd} onChange={(event) => setAdvancedValue('maxDailyLossUsd', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Daily Spend (USD)</Label>
+                      <Input type="number" value={advancedConfig.maxDailySpendUsd} onChange={(event) => setAdvancedValue('maxDailySpendUsd', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Cooldown (seconds)</Label>
+                      <Input type="number" value={advancedConfig.cooldownSeconds} onChange={(event) => setAdvancedValue('cooldownSeconds', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Execution Quality + Circuit Breakers</p>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <Label>Order TTL (seconds)</Label>
+                      <Input type="number" value={advancedConfig.orderTtlSeconds} onChange={(event) => setAdvancedValue('orderTtlSeconds', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Slippage Guard (bps)</Label>
+                      <Input type="number" value={advancedConfig.slippageBps} onChange={(event) => setAdvancedValue('slippageBps', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Spread (bps)</Label>
+                      <Input type="number" value={advancedConfig.maxSpreadBps} onChange={(event) => setAdvancedValue('maxSpreadBps', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Retry Limit</Label>
+                      <Input type="number" value={advancedConfig.retryLimit} onChange={(event) => setAdvancedValue('retryLimit', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Retry Backoff (ms)</Label>
+                      <Input type="number" value={advancedConfig.retryBackoffMs} onChange={(event) => setAdvancedValue('retryBackoffMs', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Max Consecutive Losses</Label>
+                      <Input type="number" value={advancedConfig.maxConsecutiveLosses} onChange={(event) => setAdvancedValue('maxConsecutiveLosses', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Circuit Breaker Drawdown (%)</Label>
+                      <Input type="number" value={advancedConfig.circuitBreakerDrawdownPct} onChange={(event) => setAdvancedValue('circuitBreakerDrawdownPct', toNumber(event.target.value))} className="mt-1" />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-md border border-border p-2 flex items-center justify-between">
+                      <span className="text-xs">Allow Averaging</span>
+                      <Switch checked={advancedConfig.allowAveraging} onCheckedChange={(checked) => setAdvancedValue('allowAveraging', checked)} />
+                    </div>
+                    <div className="rounded-md border border-border p-2 flex items-center justify-between">
+                      <span className="text-xs">Dynamic Position Sizing</span>
+                      <Switch checked={advancedConfig.useDynamicSizing} onCheckedChange={(checked) => setAdvancedValue('useDynamicSizing', checked)} />
+                    </div>
+                    <div className="rounded-md border border-border p-2 flex items-center justify-between">
+                      <span className="text-xs">Halt on Loss Streak</span>
+                      <Switch checked={advancedConfig.haltOnConsecutiveLosses} onCheckedChange={(checked) => setAdvancedValue('haltOnConsecutiveLosses', checked)} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border p-3 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Session Window + Metadata</p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <Label>Trading Window Start (UTC HH:MM)</Label>
+                      <Input value={advancedConfig.tradingWindowStartUtc} onChange={(event) => setAdvancedValue('tradingWindowStartUtc', event.target.value)} className="mt-1 font-mono" />
+                    </div>
+                    <div>
+                      <Label>Trading Window End (UTC HH:MM)</Label>
+                      <Input value={advancedConfig.tradingWindowEndUtc} onChange={(event) => setAdvancedValue('tradingWindowEndUtc', event.target.value)} className="mt-1 font-mono" />
+                    </div>
+                    <div>
+                      <Label>Tags (comma separated)</Label>
+                      <Input value={advancedConfig.tagsCsv} onChange={(event) => setAdvancedValue('tagsCsv', event.target.value)} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Operator Notes</Label>
+                      <Input value={advancedConfig.notes} onChange={(event) => setAdvancedValue('notes', event.target.value)} className="mt-1" />
+                    </div>
+                  </div>
+                </div>
+
+                <details className="rounded-md border border-border p-2">
+                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: strategy params</summary>
+                  <textarea
+                    className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
+                    value={draftParams}
+                    onChange={(event) => setDraftParams(event.target.value)}
+                  />
+                </details>
+
+                <details className="rounded-md border border-border p-2">
+                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: risk limits</summary>
+                  <textarea
+                    className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
+                    value={draftRisk}
+                    onChange={(event) => setDraftRisk(event.target.value)}
+                  />
+                </details>
+
+                <details className="rounded-md border border-border p-2">
+                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: metadata</summary>
+                  <textarea
+                    className="mt-2 w-full min-h-[160px] rounded-md border bg-background p-2 text-xs font-mono"
+                    value={draftMetadata}
+                    onChange={(event) => setDraftMetadata(event.target.value)}
+                  />
+                </details>
+
+                {traderFlyoutMode === 'edit' && selectedTrader ? (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 space-y-2">
+                    <p className="text-sm font-medium text-red-600 dark:text-red-300">Delete / Disable Trader</p>
+                    <p className="text-xs text-muted-foreground">
+                      Open live orders: {selectedTraderOpenLiveOrders} • Open paper orders: {selectedTraderOpenPaperOrders}
+                    </p>
+                    <Select
+                      value={deleteAction}
+                      onValueChange={(value) => setDeleteAction(value as 'block' | 'disable' | 'force_delete')}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="disable">Disable + Pause (Recommended)</SelectItem>
+                        <SelectItem value="block">Delete (No Open Positions)</SelectItem>
+                        <SelectItem value="force_delete">Force Delete (Danger)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {deleteAction === 'force_delete' ? (
+                      <div>
+                        <Label className="text-xs">
+                          Type trader name to confirm force delete: <span className="font-mono">{selectedTrader.name}</span>
+                        </Label>
+                        <Input
+                          value={deleteConfirmName}
+                          onChange={(event) => setDeleteConfirmName(event.target.value)}
+                          className="mt-1"
+                        />
+                      </div>
+                    ) : null}
+                    <Button
+                      variant="destructive"
+                      className="h-8 text-xs"
+                      disabled={
+                        deleteTraderMutation.isPending ||
+                        (deleteAction === 'force_delete' && deleteConfirmName !== selectedTrader.name)
+                      }
+                      onClick={() => deleteTraderMutation.mutate({ traderId: selectedTrader.id, action: deleteAction })}
+                    >
+                      {deleteAction === 'disable' ? 'Disable Trader' : 'Delete Trader'}
+                    </Button>
+                  </div>
+                ) : null}
+
+                {saveError ? <div className="text-xs text-red-500">{saveError}</div> : null}
+              </div>
+            </ScrollArea>
+
+            <div className="border-t border-border px-4 py-3 flex flex-wrap items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => setTraderFlyoutOpen(false)} disabled={traderFlyoutBusy}>
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  if (traderFlyoutMode === 'create') {
+                    createTraderMutation.mutate()
+                    return
+                  }
+                  if (selectedTrader) {
+                    saveTraderMutation.mutate(selectedTrader.id)
+                  }
+                }}
+                disabled={
+                  traderFlyoutBusy ||
+                  !draftName.trim() ||
+                  !draftStrategyKey.trim()
+                }
+              >
+                {traderFlyoutMode === 'create' ? 'Create Trader' : 'Save Trader'}
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

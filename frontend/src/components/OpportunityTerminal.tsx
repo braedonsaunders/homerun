@@ -4,7 +4,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { buildKalshiMarketUrl, buildPolymarketMarketUrl, inferMarketPlatform } from '../lib/marketUrls'
+import { getOpportunityPlatformLinks } from '../lib/marketUrls'
 import { Opportunity, judgeOpportunity } from '../services/api'
 import {
   STRATEGY_ABBREV,
@@ -140,40 +140,7 @@ function TerminalEntry({
       ? 'text-yellow-400'
       : 'text-red-400'
 
-  // Platform URLs
-  const polyMarket = opportunity.markets.find(
-    (m: any) =>
-      inferMarketPlatform({
-        platform: m.platform,
-        marketId: m.id,
-        marketSlug: m.slug,
-        conditionId: (m as any).condition_id ?? (m as any).conditionId,
-      }) === 'polymarket'
-  )
-  const polyUrl = polyMarket
-    ? buildPolymarketMarketUrl({
-        eventSlug: opportunity.event_slug || (polyMarket as any).event_slug,
-        marketSlug: (polyMarket as any).slug,
-        marketId: (polyMarket as any).id,
-        conditionId: (polyMarket as any).condition_id ?? (polyMarket as any).conditionId,
-      })
-    : null
-  const kalshiMarket = opportunity.markets.find(
-    (m: any) =>
-      inferMarketPlatform({
-        platform: m.platform,
-        marketId: m.id,
-        marketSlug: m.slug,
-        conditionId: (m as any).condition_id ?? (m as any).conditionId,
-      }) === 'kalshi'
-  )
-  const kalshiUrl = kalshiMarket
-    ? buildKalshiMarketUrl({
-        marketTicker: kalshiMarket.id,
-        eventTicker: (kalshiMarket as any).event_slug,
-        eventSlug: (kalshiMarket as any).slug,
-      })
-    : null
+  const { polymarketUrl: polyUrl, kalshiUrl } = getOpportunityPlatformLinks(opportunity as any)
 
   return (
     <div

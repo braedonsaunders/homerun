@@ -3,7 +3,11 @@
 RSS ownership now lives under services.news.
 """
 
-from services.news.gov_rss_feeds import GovArticle, GovRSSFeedService, gov_rss_service
+from services.news.gov_rss_feeds import (
+    GovArticle,
+    GovRSSFeedService,
+    gov_rss_service,
+    rss_service,
+)
 
-__all__ = ["GovArticle", "GovRSSFeedService", "gov_rss_service"]
-
+__all__ = ["GovArticle", "GovRSSFeedService", "gov_rss_service", "rss_service"]

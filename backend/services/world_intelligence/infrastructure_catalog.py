@@ -21,9 +21,37 @@ _DEFAULT = {
 class InfrastructureCatalog:
     def __init__(self) -> None:
         self._catalog = WorldIntelJsonCatalog("infrastructure_graph.json", _DEFAULT)
+        self._runtime_trade_dependencies: dict[str, dict[str, float]] | None = None
+        self._runtime_trade_source: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return self._catalog.payload()
+
+    def set_runtime_trade_dependencies(
+        self,
+        values: dict[str, Any] | None,
+        *,
+        source: str | None = None,
+    ) -> None:
+        if not isinstance(values, dict) or not values:
+            self._runtime_trade_dependencies = None
+            self._runtime_trade_source = None
+            return
+        cleaned: dict[str, dict[str, float]] = {}
+        for iso3, deps in values.items():
+            code = str(iso3).upper().strip()
+            if len(code) != 3 or not isinstance(deps, dict):
+                continue
+            dep_map: dict[str, float] = {}
+            for node, value in deps.items():
+                try:
+                    dep_map[str(node)] = max(0.0, min(1.0, float(value)))
+                except Exception:
+                    continue
+            if dep_map:
+                cleaned[code] = dep_map
+        self._runtime_trade_dependencies = cleaned or None
+        self._runtime_trade_source = str(source or "").strip() or None
 
     def nodes(self) -> set[str]:
         rows = self.payload().get("nodes") or []
@@ -68,21 +96,26 @@ class InfrastructureCatalog:
     def trade_dependencies(self) -> dict[str, dict[str, float]]:
         raw = self.payload().get("trade_dependencies") or {}
         if not isinstance(raw, dict):
-            return {}
-        out: dict[str, dict[str, float]] = {}
-        for iso3, deps in raw.items():
-            if not isinstance(deps, dict):
-                continue
-            dep_map: dict[str, float] = {}
-            for node, value in deps.items():
-                try:
-                    dep_map[str(node)] = max(0.0, min(1.0, float(value)))
-                except Exception:
+            base = {}
+        else:
+            base: dict[str, dict[str, float]] = {}
+            for iso3, deps in raw.items():
+                if not isinstance(deps, dict):
                     continue
-            code = str(iso3).upper().strip()
-            if code and dep_map:
-                out[code] = dep_map
-        return out
+                dep_map: dict[str, float] = {}
+                for node, value in deps.items():
+                    try:
+                        dep_map[str(node)] = max(0.0, min(1.0, float(value)))
+                    except Exception:
+                        continue
+                code = str(iso3).upper().strip()
+                if code and dep_map:
+                    base[code] = dep_map
+        if self._runtime_trade_dependencies:
+            merged = dict(base)
+            merged.update(self._runtime_trade_dependencies)
+            return merged
+        return base
 
     def country_to_nodes(self) -> dict[str, list[str]]:
         raw = self.payload().get("country_to_nodes") or {}
@@ -108,6 +141,9 @@ class InfrastructureCatalog:
                 if node not in existing:
                     existing.append(node)
         return out
+
+    def runtime_trade_source(self) -> str | None:
+        return self._runtime_trade_source
 
 
 infrastructure_catalog = InfrastructureCatalog()

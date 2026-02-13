@@ -108,6 +108,8 @@ class ArbitrageOpportunity(BaseModel):
 
     # Market details
     markets: list[dict] = []  # List of markets involved
+    polymarket_url: Optional[str] = None
+    kalshi_url: Optional[str] = None
     event_id: Optional[str] = None
     event_slug: Optional[str] = None
     event_title: Optional[str] = None

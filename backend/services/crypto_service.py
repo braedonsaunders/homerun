@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,6 +26,10 @@ from config import settings as _cfg
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_GAMMA_FETCH_TIMEOUT_SECONDS = 4.0
+_CLOB_FETCH_TIMEOUT_SECONDS = 2.0
+_CRYPTO_FETCH_MAX_WORKERS = 4
 
 # ---------------------------------------------------------------------------
 # Types
@@ -308,7 +313,11 @@ class CryptoService:
         if not token:
             return None
         try:
-            resp = client.get(f"{_cfg.CLOB_API_URL}/midpoint", params={"token_id": token})
+            resp = client.get(
+                f"{_cfg.CLOB_API_URL}/midpoint",
+                params={"token_id": token},
+                timeout=_CLOB_FETCH_TIMEOUT_SECONDS,
+            )
             if resp.status_code != 200:
                 return None
             payload = resp.json()
@@ -330,6 +339,7 @@ class CryptoService:
             resp = client.get(
                 f"{_cfg.CLOB_API_URL}/price",
                 params={"token_id": token, "side": side_norm},
+                timeout=_CLOB_FETCH_TIMEOUT_SECONDS,
             )
             if resp.status_code != 200:
                 return None
@@ -340,15 +350,180 @@ class CryptoService:
         except Exception:
             return None
 
+    def _fetch_series_market(
+        self,
+        series_id: str,
+        asset: str,
+        timeframe: str,
+        now_iso: str,
+    ) -> Optional[CryptoMarket]:
+        """Fetch one series row (live market + upcoming) with live CLOB overlays."""
+        if not str(series_id or "").strip():
+            return None
+
+        try:
+            with httpx.Client(timeout=_GAMMA_FETCH_TIMEOUT_SECONDS) as client:
+                resp = client.get(
+                    f"{self._gamma_url}/events",
+                    params={
+                        "series_id": series_id,
+                        "active": "true",
+                        "closed": "false",
+                        # Exclude stale unresolved history and walk forward from now
+                        # so the first row is live/nearest-upcoming.
+                        "end_date_min": now_iso,
+                        "order": "endDate",
+                        "ascending": "true",
+                        "limit": 8,
+                    },
+                    timeout=_GAMMA_FETCH_TIMEOUT_SECONDS,
+                )
+                if resp.status_code != 200:
+                    logger.debug(
+                        "CryptoService: series_id=%s returned %s",
+                        series_id,
+                        resp.status_code,
+                    )
+                    return None
+
+                events = resp.json()
+                if not isinstance(events, list):
+                    return None
+
+                # Extract series-level stats (24h volume, liquidity)
+                series_vol_24h = 0.0
+                series_liq = 0.0
+                if events:
+                    series_data = (events[0].get("series") or [{}])
+                    if series_data and isinstance(series_data, list):
+                        s = series_data[0] if series_data else {}
+                        series_vol_24h = _parse_float(s.get("volume24hr")) or 0.0
+                        series_liq = _parse_float(s.get("liquidity")) or 0.0
+
+                # Sort events by end time, pick live + upcoming
+                sorted_events = self._sort_events_by_time(events)
+                if not sorted_events:
+                    return None
+
+                # First event = currently live (or soonest upcoming)
+                current_event = sorted_events[0]
+                upcoming_events = sorted_events[1:4]  # Next 3 upcoming
+
+                # Build the primary (current) market
+                mkt_list = current_event.get("markets", [])
+                if not mkt_list:
+                    return None
+                mkt = mkt_list[0]
+                up_price, down_price = _parse_outcome_prices(mkt)
+                outcomes = _parse_json_list(mkt.get("outcomes"))
+                up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
+                clob_ids = [
+                    str(token).strip()
+                    for token in _parse_json_list(mkt.get("clobTokenIds"))
+                    if str(token).strip()
+                ]
+
+                best_bid = _coerce_probability(mkt.get("bestBid"))
+                best_ask = _coerce_probability(mkt.get("bestAsk"))
+
+                # Gamma outcomePrices can lag on short windows. Overlay with
+                # direct live CLOB token pricing whenever token IDs are present.
+                up_token = clob_ids[up_idx] if up_idx < len(clob_ids) else None
+                down_token = clob_ids[down_idx] if down_idx < len(clob_ids) else None
+                if up_token:
+                    live_up = self._fetch_clob_midpoint(client, up_token)
+                    if live_up is not None:
+                        up_price = live_up
+                    live_bid = self._fetch_clob_price(client, up_token, "sell")
+                    live_ask = self._fetch_clob_price(client, up_token, "buy")
+                    if live_bid is not None:
+                        best_bid = live_bid
+                    if live_ask is not None:
+                        best_ask = live_ask
+                if down_token:
+                    live_down = self._fetch_clob_midpoint(client, down_token)
+                    if live_down is not None:
+                        down_price = live_down
+
+                # Build upcoming market summaries
+                upcoming = []
+                for evt in upcoming_events:
+                    emkts = evt.get("markets", [])
+                    if not emkts:
+                        continue
+                    em = emkts[0]
+                    e_up, e_down = _parse_outcome_prices(em)
+                    upcoming.append({
+                        "id": str(em.get("id", "")),
+                        "slug": em.get("slug", ""),
+                        "event_title": evt.get("title", ""),
+                        "start_time": evt.get("startTime") or em.get("eventStartTime"),
+                        "end_time": em.get("endDate"),
+                        "up_price": e_up,
+                        "down_price": e_down,
+                        "best_bid": _parse_float(em.get("bestBid")),
+                        "best_ask": _parse_float(em.get("bestAsk")),
+                        "liquidity": _parse_float(em.get("liquidityNum"))
+                        or _parse_float(em.get("liquidity"))
+                        or 0.0,
+                        "volume": _parse_float(em.get("volumeNum"))
+                        or _parse_float(em.get("volume"))
+                        or 0.0,
+                    })
+
+                return CryptoMarket(
+                    id=str(mkt.get("id", "")),
+                    condition_id=mkt.get("conditionId", mkt.get("condition_id", "")),
+                    slug=mkt.get("slug", ""),
+                    question=mkt.get("question", ""),
+                    asset=asset,
+                    timeframe=timeframe,
+                    start_time=current_event.get("startTime")
+                    or mkt.get("eventStartTime"),
+                    end_time=mkt.get("endDate"),
+                    up_price=up_price,
+                    down_price=down_price,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    spread=_parse_float(mkt.get("spread")),
+                    liquidity=_parse_float(mkt.get("liquidityNum"))
+                    or _parse_float(mkt.get("liquidity"))
+                    or 0.0,
+                    volume=_parse_float(mkt.get("volumeNum"))
+                    or _parse_float(mkt.get("volume"))
+                    or 0.0,
+                    volume_24h=_parse_float(mkt.get("volume24hr")) or 0.0,
+                    series_volume_24h=series_vol_24h,
+                    series_liquidity=series_liq,
+                    last_trade_price=_parse_float(mkt.get("lastTradePrice")),
+                    clob_token_ids=clob_ids,
+                    up_token_index=up_idx,
+                    down_token_index=down_idx,
+                    fees_enabled=mkt.get("feesEnabled", False),
+                    event_slug=current_event.get("slug", ""),
+                    event_title=current_event.get("title", ""),
+                    is_current=True,
+                    upcoming_markets=upcoming,
+                )
+        except Exception as e:
+            logger.debug("CryptoService: series_id=%s failed: %s", series_id, e)
+            return None
+
     def _fetch_all(self) -> list[CryptoMarket]:
         """Fetch live + upcoming markets for all configured series.
 
-        Returns one CryptoMarket per asset for the currently-live market,
-        with upcoming markets attached as nested data.  Series-level 24h
-        volume and liquidity are included from the series metadata.
+        Fetches each configured series in parallel so worker cycles stay close
+        to the configured interval even when individual upstream calls are slow.
         """
         series = _get_series_configs()
-        all_markets: list[CryptoMarket] = []
+        configured_series = [
+            (idx, str(series_id), asset, timeframe)
+            for idx, (series_id, asset, timeframe) in enumerate(series)
+            if str(series_id or "").strip()
+        ]
+        if not configured_series:
+            return []
+
         now_iso = (
             datetime.now(timezone.utc)
             .replace(microsecond=0)
@@ -356,160 +531,47 @@ class CryptoService:
             .replace("+00:00", "Z")
         )
 
-        with httpx.Client(timeout=10.0) as client:
-            for series_id, asset, timeframe in series:
-                if not str(series_id or "").strip():
-                    continue
+        max_workers = max(
+            1,
+            min(_CRYPTO_FETCH_MAX_WORKERS, len(configured_series)),
+        )
+
+        fetched_indexed: list[tuple[int, CryptoMarket]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {
+                pool.submit(
+                    self._fetch_series_market,
+                    series_id,
+                    asset,
+                    timeframe,
+                    now_iso,
+                ): idx
+                for idx, series_id, asset, timeframe in configured_series
+            }
+
+            for future in as_completed(future_map):
+                idx = future_map[future]
                 try:
-                    resp = client.get(
-                        f"{self._gamma_url}/events",
-                        params={
-                            "series_id": series_id,
-                            "active": "true",
-                            "closed": "false",
-                            # Exclude stale unresolved history and walk forward from now
-                            # so the first row is live/nearest-upcoming.
-                            "end_date_min": now_iso,
-                            "order": "endDate",
-                            "ascending": "true",
-                            "limit": 8,
-                        },
+                    market = future.result()
+                except Exception as exc:
+                    logger.debug(
+                        "CryptoService: parallel fetch failed for index=%s: %s",
+                        idx,
+                        exc,
                     )
-                    if resp.status_code != 200:
-                        logger.debug(
-                            f"CryptoService: series_id={series_id} returned {resp.status_code}"
-                        )
-                        continue
+                    continue
+                if market is not None:
+                    fetched_indexed.append((idx, market))
 
-                    events = resp.json()
-                    if not isinstance(events, list):
-                        continue
-
-                    # Extract series-level stats (24h volume, liquidity)
-                    series_vol_24h = 0.0
-                    series_liq = 0.0
-                    if events:
-                        series_data = (events[0].get("series") or [{}])
-                        if series_data and isinstance(series_data, list):
-                            s = series_data[0] if series_data else {}
-                            series_vol_24h = _parse_float(s.get("volume24hr")) or 0.0
-                            series_liq = _parse_float(s.get("liquidity")) or 0.0
-
-                    # Sort events by end time, pick live + upcoming
-                    sorted_events = self._sort_events_by_time(events)
-                    if not sorted_events:
-                        continue
-
-                    # First event = currently live (or soonest upcoming)
-                    current_event = sorted_events[0]
-                    upcoming_events = sorted_events[1:4]  # Next 3 upcoming
-
-                    # Build the primary (current) market
-                    mkt_list = current_event.get("markets", [])
-                    if not mkt_list:
-                        continue
-                    mkt = mkt_list[0]
-                    up_price, down_price = _parse_outcome_prices(mkt)
-                    outcomes = _parse_json_list(mkt.get("outcomes"))
-                    up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
-                    clob_ids = [
-                        str(token).strip()
-                        for token in _parse_json_list(mkt.get("clobTokenIds"))
-                        if str(token).strip()
-                    ]
-
-                    best_bid = _coerce_probability(mkt.get("bestBid"))
-                    best_ask = _coerce_probability(mkt.get("bestAsk"))
-
-                    # Gamma outcomePrices can lag on short windows. Overlay with
-                    # direct live CLOB token pricing whenever token IDs are present.
-                    up_token = clob_ids[up_idx] if up_idx < len(clob_ids) else None
-                    down_token = clob_ids[down_idx] if down_idx < len(clob_ids) else None
-                    if up_token:
-                        live_up = self._fetch_clob_midpoint(client, up_token)
-                        if live_up is not None:
-                            up_price = live_up
-                        live_bid = self._fetch_clob_price(client, up_token, "sell")
-                        live_ask = self._fetch_clob_price(client, up_token, "buy")
-                        if live_bid is not None:
-                            best_bid = live_bid
-                        if live_ask is not None:
-                            best_ask = live_ask
-                    if down_token:
-                        live_down = self._fetch_clob_midpoint(client, down_token)
-                        if live_down is not None:
-                            down_price = live_down
-
-                    # Build upcoming market summaries
-                    upcoming = []
-                    for evt in upcoming_events:
-                        emkts = evt.get("markets", [])
-                        if not emkts:
-                            continue
-                        em = emkts[0]
-                        e_up, e_down = _parse_outcome_prices(em)
-                        upcoming.append({
-                            "id": str(em.get("id", "")),
-                            "slug": em.get("slug", ""),
-                            "event_title": evt.get("title", ""),
-                            "start_time": evt.get("startTime") or em.get("eventStartTime"),
-                            "end_time": em.get("endDate"),
-                            "up_price": e_up,
-                            "down_price": e_down,
-                            "best_bid": _parse_float(em.get("bestBid")),
-                            "best_ask": _parse_float(em.get("bestAsk")),
-                            "liquidity": _parse_float(em.get("liquidityNum"))
-                            or _parse_float(em.get("liquidity"))
-                            or 0.0,
-                            "volume": _parse_float(em.get("volumeNum"))
-                            or _parse_float(em.get("volume"))
-                            or 0.0,
-                        })
-
-                    cm = CryptoMarket(
-                        id=str(mkt.get("id", "")),
-                        condition_id=mkt.get("conditionId", mkt.get("condition_id", "")),
-                        slug=mkt.get("slug", ""),
-                        question=mkt.get("question", ""),
-                        asset=asset,
-                        timeframe=timeframe,
-                        start_time=current_event.get("startTime")
-                        or mkt.get("eventStartTime"),
-                        end_time=mkt.get("endDate"),
-                        up_price=up_price,
-                        down_price=down_price,
-                        best_bid=best_bid,
-                        best_ask=best_ask,
-                        spread=_parse_float(mkt.get("spread")),
-                        liquidity=_parse_float(mkt.get("liquidityNum"))
-                        or _parse_float(mkt.get("liquidity"))
-                        or 0.0,
-                        volume=_parse_float(mkt.get("volumeNum"))
-                        or _parse_float(mkt.get("volume"))
-                        or 0.0,
-                        volume_24h=_parse_float(mkt.get("volume24hr")) or 0.0,
-                        series_volume_24h=series_vol_24h,
-                        series_liquidity=series_liq,
-                        last_trade_price=_parse_float(mkt.get("lastTradePrice")),
-                        clob_token_ids=clob_ids,
-                        up_token_index=up_idx,
-                        down_token_index=down_idx,
-                        fees_enabled=mkt.get("feesEnabled", False),
-                        event_slug=current_event.get("slug", ""),
-                        event_title=current_event.get("title", ""),
-                        is_current=True,
-                        upcoming_markets=upcoming,
-                    )
-                    all_markets.append(cm)
-
-                    time.sleep(0.03)  # Rate limit
-                except Exception as e:
-                    logger.debug(f"CryptoService: series_id={series_id} failed: {e}")
+        fetched_indexed.sort(key=lambda item: item[0])
+        all_markets = [market for _, market in fetched_indexed]
 
         if all_markets:
-            assets = ", ".join(m.asset for m in all_markets)
+            assets = ", ".join(f"{m.asset} {m.timeframe}" for m in all_markets)
             logger.debug(
-                f"CryptoService: fetched {len(all_markets)} live markets ({assets})"
+                "CryptoService: fetched %s live markets (%s)",
+                len(all_markets),
+                assets,
             )
         return all_markets
 

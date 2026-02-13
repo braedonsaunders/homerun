@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 
@@ -20,6 +21,7 @@ if os.getcwd() != _BACKEND:
     os.chdir(_BACKEND)
 
 from utils.utcnow import utcnow
+from config import settings
 from models.database import AsyncSessionLocal, init_database
 from services.chainlink_feed import get_chainlink_feed
 from services.crypto_service import get_crypto_service
@@ -41,6 +43,9 @@ logger = logging.getLogger("crypto_worker")
 # Keep short in-memory oracle history per asset for chart sparkline payloads.
 _MAX_ORACLE_HISTORY_POINTS = 180
 _oracle_history_by_asset: dict[str, deque[tuple[int, float]]] = {}
+_IDLE_INTERVAL_SECONDS = 15
+_MIN_LOOP_SLEEP_SECONDS = 0.1
+_VIEWER_HEARTBEAT_SECONDS = 20
 
 
 def _to_float(value: object) -> float | None:
@@ -75,6 +80,118 @@ def _oracle_history_payload(asset: str) -> list[dict]:
     if points and points[-1] != history[-1]:
         points.append(history[-1])
     return [{"t": t, "p": round(p, 2)} for t, p in points]
+
+
+def _collect_ws_prices_for_markets(feed_manager, markets: list) -> dict[str, float]:
+    """Collect fresh midpoint prices from WS cache for market token IDs."""
+    if feed_manager is None or not getattr(feed_manager, "_started", False):
+        return {}
+
+    ws_prices: dict[str, float] = {}
+    price_cache = getattr(feed_manager, "price_cache", None)
+    if price_cache is None:
+        return ws_prices
+
+    for market in markets:
+        for token_id in (getattr(market, "clob_token_ids", None) or []):
+            token = str(token_id or "").strip()
+            if not token or len(token) <= 20:
+                continue
+            try:
+                if not price_cache.is_fresh(token):
+                    continue
+                mid = price_cache.get_mid(token)
+            except Exception:
+                continue
+            if mid is None:
+                continue
+            try:
+                parsed = float(mid)
+            except (TypeError, ValueError):
+                continue
+            if not (0.0 <= parsed <= 1.01):
+                continue
+            ws_prices[token] = min(1.0, max(0.0, parsed))
+    return ws_prices
+
+
+def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, float]) -> None:
+    """Prefer fresh WS prices for up/down legs when available."""
+    if not ws_prices:
+        return
+
+    tokens = list(getattr(market, "clob_token_ids", None) or [])
+    if not tokens:
+        return
+
+    try:
+        up_idx = int(getattr(market, "up_token_index", 0) or 0)
+    except Exception:
+        up_idx = 0
+    try:
+        down_idx = int(getattr(market, "down_token_index", 1) or 1)
+    except Exception:
+        down_idx = 1
+
+    up_token = (
+        str(tokens[up_idx]).strip() if 0 <= up_idx < len(tokens) and str(tokens[up_idx]).strip() else None
+    )
+    down_token = (
+        str(tokens[down_idx]).strip() if 0 <= down_idx < len(tokens) and str(tokens[down_idx]).strip() else None
+    )
+    if not up_token and len(tokens) > 0:
+        candidate = str(tokens[0]).strip()
+        up_token = candidate or None
+    if not down_token and len(tokens) > 1:
+        candidate = str(tokens[1]).strip()
+        down_token = candidate or None
+
+    ws_up = ws_prices.get(up_token) if up_token else None
+    ws_down = ws_prices.get(down_token) if down_token else None
+
+    if ws_up is not None and ws_down is not None:
+        row["up_price"] = ws_up
+        row["down_price"] = ws_down
+        row["combined"] = ws_up + ws_down
+        return
+
+    if ws_up is not None:
+        row["up_price"] = ws_up
+        row["down_price"] = min(1.0, max(0.0, 1.0 - ws_up))
+        row["combined"] = 1.0
+        return
+
+    if ws_down is not None:
+        row["down_price"] = ws_down
+        row["up_price"] = min(1.0, max(0.0, 1.0 - ws_down))
+        row["combined"] = 1.0
+
+
+async def _sync_ws_subscriptions(feed_manager, markets: list, subscribed_tokens: set[str]) -> set[str]:
+    """Keep WS subscriptions aligned with active crypto token IDs."""
+    if feed_manager is None or not getattr(feed_manager, "_started", False):
+        return subscribed_tokens
+
+    active_tokens: set[str] = set()
+    for market in markets:
+        for token_id in (getattr(market, "clob_token_ids", None) or []):
+            token = str(token_id or "").strip()
+            if token and len(token) > 20:
+                active_tokens.add(token)
+
+    added = sorted(active_tokens - subscribed_tokens)
+    removed = sorted(subscribed_tokens - active_tokens)
+
+    try:
+        if added:
+            await feed_manager.polymarket_feed.subscribe(token_ids=added)
+        if removed:
+            await feed_manager.polymarket_feed.unsubscribe(token_ids=removed)
+    except Exception as exc:
+        logger.debug("Crypto WS subscription sync skipped: %s", exc)
+        return subscribed_tokens
+
+    return active_tokens
 
 
 def _restore_price_to_beat_from_snapshot_markets(markets: list[dict]) -> int:
@@ -117,10 +234,60 @@ def _restore_price_to_beat_from_snapshot_markets(markets: list[dict]) -> int:
     return restored
 
 
-def _build_crypto_market_payload() -> list[dict]:
+async def _is_autotrader_active(session) -> bool:
+    """Whether trader orchestrator is actively running strategies."""
+    try:
+        from services.trader_orchestrator_state import read_orchestrator_control
+
+        control = await read_orchestrator_control(session)
+        return bool(control.get("is_enabled", False)) and not bool(
+            control.get("is_paused", True)
+        )
+    except Exception:
+        return False
+
+
+def _is_recent_request(requested_run_at, window_seconds: int = _VIEWER_HEARTBEAT_SECONDS) -> bool:
+    if not isinstance(requested_run_at, datetime):
+        return False
+    ts = requested_run_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+    return age <= float(window_seconds)
+
+
+async def _sleep_with_demand_wake(worker_name: str, sleep_seconds: float) -> None:
+    """Sleep up to ``sleep_seconds`` but wake early if fast-mode demand appears."""
+    deadline = time.monotonic() + max(0.0, sleep_seconds)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+
+        await asyncio.sleep(min(1.0, remaining))
+
+        # Cheap demand probe so active viewers/trader mode don't wait for full idle sleep.
+        try:
+            async with AsyncSessionLocal() as session:
+                control = await read_worker_control(session, worker_name, default_interval=2)
+                if _is_recent_request(control.get("requested_run_at")):
+                    return
+                if await _is_autotrader_active(session):
+                    return
+        except Exception:
+            # Best-effort wake checks only; ignore transient DB issues.
+            continue
+
+
+def _build_crypto_market_payload(
+    markets: list | None = None,
+    *,
+    ws_prices: dict[str, float] | None = None,
+) -> list[dict]:
     svc = get_crypto_service()
     feed = get_chainlink_feed()
-    markets = svc.get_live_markets()
+    markets = markets if markets is not None else svc.get_live_markets()
     svc._update_price_to_beat(markets)
 
     payload: list[dict] = []
@@ -160,6 +327,7 @@ def _build_crypto_market_payload() -> list[dict]:
 
         row["price_to_beat"] = svc._price_to_beat.get(market.slug)
         row["oracle_history"] = _oracle_history_payload(market.asset)
+        _overlay_ws_prices_on_market_row(row, market, ws_prices or {})
         payload.append(row)
 
     return payload
@@ -215,16 +383,56 @@ async def _run_loop() -> None:
     except Exception as exc:
         logger.warning("Chainlink feed start failed (continuing): %s", exc)
 
+    feed_manager = None
+    ws_feeds_running = False
+    subscribed_tokens: set[str] = set()
+
+    async def _ensure_ws_feeds_running() -> None:
+        nonlocal feed_manager, ws_feeds_running
+        if ws_feeds_running or not settings.WS_FEED_ENABLED:
+            return
+        try:
+            from services.ws_feeds import get_feed_manager
+            from services.polymarket import polymarket_client
+
+            if feed_manager is None:
+                feed_manager = get_feed_manager()
+
+                async def _http_book_fallback(token_id: str):
+                    try:
+                        return await polymarket_client.get_order_book(token_id)
+                    except Exception:
+                        return None
+
+                feed_manager.set_http_fallback(_http_book_fallback)
+
+            if not feed_manager._started:
+                await feed_manager.start()
+            ws_feeds_running = True
+            logger.info("Crypto worker WebSocket feeds started")
+        except Exception as exc:
+            logger.warning("Crypto worker WS feeds failed to start (non-critical): %s", exc)
+
+    await _ensure_ws_feeds_running()
+
     while True:
         async with AsyncSessionLocal() as session:
             control = await read_worker_control(session, worker_name, default_interval=2)
+            autotrader_active = await _is_autotrader_active(session)
 
-        interval = max(1, min(60, int(control.get("interval_seconds") or 2)))
+        configured_interval = max(1, min(60, int(control.get("interval_seconds") or 2)))
         paused = bool(control.get("is_paused", False))
         enabled = bool(control.get("is_enabled", True))
-        requested = control.get("requested_run_at") is not None
+        requested_run_at = control.get("requested_run_at")
+        viewer_active = _is_recent_request(requested_run_at)
+        fast_mode = bool(viewer_active or autotrader_active)
+        interval = (
+            configured_interval
+            if fast_mode
+            else max(configured_interval, _IDLE_INTERVAL_SECONDS)
+        )
 
-        if (not enabled or paused) and not requested:
+        if (not enabled or paused) and not viewer_active:
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
                     session,
@@ -239,17 +447,46 @@ async def _run_loop() -> None:
             await asyncio.sleep(min(5, interval))
             continue
 
+        # Garbage-collect stale run requests so one-off triggers do not pin
+        # fast mode forever when the crypto page is no longer active.
+        if requested_run_at is not None and not viewer_active:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await clear_worker_run_request(session, worker_name)
+            except Exception:
+                pass
+
         run_at = utcnow()
         markets_payload: list[dict] = []
         emitted = 0
         err_text = None
+        started_at = time.monotonic()
+        ws_prices: dict[str, float] = {}
 
         try:
-            markets_payload = _build_crypto_market_payload()
+            svc = get_crypto_service()
+            markets = svc.get_live_markets()
+            if ws_feeds_running and feed_manager is not None:
+                subscribed_tokens = await _sync_ws_subscriptions(
+                    feed_manager, markets, subscribed_tokens
+                )
+            ws_prices = _collect_ws_prices_for_markets(feed_manager, markets)
+            markets_payload = _build_crypto_market_payload(
+                markets,
+                ws_prices=ws_prices,
+            )
+            elapsed = round(time.monotonic() - started_at, 3)
             async with AsyncSessionLocal() as session:
-                emitted = await emit_crypto_market_signals(session, markets_payload)
-                if requested:
-                    await clear_worker_run_request(session, worker_name)
+                try:
+                    emitted = await emit_crypto_market_signals(session, markets_payload)
+                except Exception as exc:
+                    # Signal persistence should not stop market-data publishing.
+                    emitted = 0
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
+                    logger.warning("Crypto signal emission failed; continuing cycle: %s", exc)
 
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
@@ -264,23 +501,29 @@ async def _run_loop() -> None:
                     stats={
                         "market_count": len(markets_payload),
                         "signals_emitted_last_run": int(emitted),
+                        "run_duration_seconds": elapsed,
+                        "fast_mode": fast_mode,
+                        "ws_prices_used": int(bool(ws_prices)),
+                        "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
                     },
                 )
 
             logger.info(
-                "Crypto cycle complete: markets=%s signals=%s",
+                "Crypto cycle complete: markets=%s signals=%s duration=%.3fs fast_mode=%s sleep=%ss",
                 len(markets_payload),
                 emitted,
+                elapsed,
+                fast_mode,
+                interval,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             err_text = str(exc)
+            elapsed = round(time.monotonic() - started_at, 3)
             logger.exception("Crypto worker cycle failed: %s", exc)
             async with AsyncSessionLocal() as session:
-                if requested:
-                    await clear_worker_run_request(session, worker_name)
                 await write_worker_snapshot(
                     session,
                     worker_name,
@@ -293,12 +536,28 @@ async def _run_loop() -> None:
                     stats={
                         "market_count": len(markets_payload),
                         "signals_emitted_last_run": int(emitted),
+                        "run_duration_seconds": elapsed,
+                        "fast_mode": fast_mode,
+                        "ws_prices_used": int(bool(ws_prices)),
+                        "ws_token_prices": len(ws_prices),
                         "markets": markets_payload,
                     },
                 )
 
-        sleep_for = 0.5 if err_text else interval
-        await asyncio.sleep(max(0.5, sleep_for))
+        if err_text:
+            sleep_for = 0.5
+        elif fast_mode:
+            # Keep fast mode responsive while avoiding back-to-back cache-only spins.
+            sleep_for = 0.5
+        else:
+            # Keep the cadence close to configured interval between cycle starts,
+            # not interval + run_duration.
+            sleep_for = max(_MIN_LOOP_SLEEP_SECONDS, interval - elapsed)
+
+        if err_text or fast_mode:
+            await asyncio.sleep(sleep_for)
+        else:
+            await _sleep_with_demand_wake(worker_name, sleep_for)
 
 
 async def main() -> None:
@@ -311,6 +570,15 @@ async def main() -> None:
     finally:
         try:
             await get_chainlink_feed().stop()
+        except Exception:
+            pass
+        try:
+            if settings.WS_FEED_ENABLED:
+                from services.ws_feeds import get_feed_manager
+
+                feed_manager = get_feed_manager()
+                if feed_manager._started:
+                    await feed_manager.stop()
         except Exception:
             pass
 

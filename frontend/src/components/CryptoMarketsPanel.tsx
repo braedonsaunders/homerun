@@ -456,7 +456,12 @@ interface Props {
 }
 
 export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCryptoSettings }: Props) {
+  const panelRef = useRef<HTMLDivElement>(null)
   const [timeframeFilter, setTimeframeFilter] = useState<TimeframeFilter>('all')
+  const [isDocumentVisible, setIsDocumentVisible] = useState(
+    () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible')
+  )
+  const [isPanelInViewport, setIsPanelInViewport] = useState(true)
   // Intentionally kept for interface parity with other panels and App wiring.
   void onExecute
   void onOpenCopilot
@@ -495,6 +500,35 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
     return () => clearInterval(iv)
   }, [])
 
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      setIsDocumentVisible(document.visibilityState === 'visible')
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [])
+
+  useEffect(() => {
+    const el = panelRef.current
+    if (!el) return
+    if (typeof window === 'undefined' || !('IntersectionObserver' in window)) {
+      setIsPanelInViewport(true)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        setIsPanelInViewport(Boolean(entry?.isIntersecting))
+      },
+      { threshold: 0.05 }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  const isViewerActive = isDocumentVisible && isPanelInViewport
+
   const hasFreshWsMarkets =
     !!wsMarkets &&
     wsMarketsUpdatedAtMs !== null &&
@@ -503,9 +537,10 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
   // HTTP polling as fallback only
   const { data: httpMarkets, isLoading } = useQuery({
     queryKey: ['crypto-live-markets'],
-    queryFn: getCryptoMarkets,
-    refetchInterval: hasFreshWsMarkets ? 5000 : 2000,
-    refetchIntervalInBackground: true,
+    queryFn: () => getCryptoMarkets({ viewer_active: true }),
+    enabled: isViewerActive,
+    refetchInterval: isViewerActive ? (hasFreshWsMarkets ? 5000 : 2000) : false,
+    refetchIntervalInBackground: false,
     staleTime: 1000,
   })
 
@@ -548,7 +583,7 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
   }, [filteredMarkets])
 
   return (
-    <div className="space-y-4">
+    <div ref={panelRef} className="space-y-4">
       {/* Header */}
       <div className="rounded-xl border border-border/40 bg-card/60 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -593,7 +628,12 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
               </Button>
             )}
             <div className="text-[11px] text-muted-foreground font-data flex items-center gap-1.5">
-              {isConnected ? (
+              {!isViewerActive ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50" />
+                  Updates paused (view hidden)
+                </>
+              ) : isConnected ? (
                 <>
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
                   {hasFreshWsMarkets ? 'Real-time via WebSocket' : 'WebSocket connected'}
