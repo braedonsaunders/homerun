@@ -25,7 +25,6 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -115,7 +114,16 @@ LEVEL_FILTER_LABELS: dict[str, str] = {
     "debug": "Debug+",
 }
 
-WORKER_FILTER_LABELS: dict[str, str] = {name: label for name, label in WORKER_STATUS_ORDER}
+WORKER_FILTER_ORDER: tuple[str, ...] = (
+    "all",
+    "none",
+    *[name for name, _ in WORKER_STATUS_ORDER],
+)
+WORKER_FILTER_LABELS: dict[str, str] = {
+    "all": "All Workers",
+    "none": "No Worker",
+    **{name: label for name, label in WORKER_STATUS_ORDER},
+}
 
 WORKER_MINI_LOG_LINES = 2
 WORKER_MINI_LOG_WIDTH = 84
@@ -337,10 +345,19 @@ Screen {
     margin: 0 1 0 0;
 }
 
-#log-worker-select {
-    width: 24;
-    min-width: 18;
+#log-worker-prev-btn,
+#log-worker-next-btn {
+    width: 5;
+    min-width: 5;
     margin: 0 1 0 0;
+}
+
+#log-worker-filter-label {
+    width: 26;
+    min-width: 18;
+    padding: 1 1 0 1;
+    margin: 0 1 0 0;
+    border: round #2b4961;
 }
 
 #log-search-input {
@@ -764,16 +781,9 @@ class HomerunApp(App):
                     yield Button("Info+", id="lvl-info", variant="default")
                     yield Button("Debug+", id="lvl-debug", variant="default")
                 with Horizontal(classes="log-controls-row"):
-                    yield Select(
-                        [
-                            ("All Workers", "all"),
-                            ("No Worker", "none"),
-                            *[(label, worker_name) for worker_name, label in WORKER_STATUS_ORDER],
-                        ],
-                        value="all",
-                        id="log-worker-select",
-                        allow_blank=False,
-                    )
+                    yield Button("<", id="log-worker-prev-btn", variant="default")
+                    yield Static("Worker: All Workers", id="log-worker-filter-label")
+                    yield Button(">", id="log-worker-next-btn", variant="default")
                     yield Input(
                         placeholder="Search logs (message, symbol, error...)",
                         id="log-search-input",
@@ -798,6 +808,7 @@ class HomerunApp(App):
         for button in self.query(Button):
             button.active_effect_duration = 0.0
         self._sync_filter_button_variants()
+        self._update_worker_filter_display()
         self._update_log_header()
         self._start_services()
         self._poll_health()
@@ -923,12 +934,29 @@ class HomerunApp(App):
         return True
 
     def _worker_filter_text(self) -> str:
-        if self._worker_filter == "all":
-            return "All Workers"
-        if self._worker_filter == "none":
-            return "No Worker"
         label = WORKER_FILTER_LABELS.get(self._worker_filter)
-        return label if label else self._worker_filter.replace("_", " ").upper()
+        if label:
+            return label
+        return self._worker_filter.replace("_", " ").upper()
+
+    def _cycle_worker_filter(self, direction: int) -> None:
+        try:
+            idx = WORKER_FILTER_ORDER.index(self._worker_filter)
+        except ValueError:
+            idx = 0
+        self._worker_filter = WORKER_FILTER_ORDER[
+            (idx + direction) % len(WORKER_FILTER_ORDER)
+        ]
+        self._update_worker_filter_display()
+        self._rebuild_log_view()
+
+    def _update_worker_filter_display(self) -> None:
+        try:
+            self.query_one("#log-worker-filter-label", Static).update(
+                f"Worker: {self._worker_filter_text()}"
+            )
+        except Exception:
+            pass
 
     def _format_filter_summary(self) -> str:
         source = SOURCE_FILTER_LABELS.get(self._source_filter, self._source_filter)
@@ -1167,9 +1195,17 @@ class HomerunApp(App):
             line = line[: WORKER_MINI_LOG_WIDTH - 3].rstrip() + "..."
         return line
 
-    # ---- Button / Select handlers ----
+    # ---- Button handlers ----
     def _handle_button_action(self, btn_id: Optional[str]) -> None:
         if not btn_id:
+            return
+
+        if btn_id == "log-worker-prev-btn":
+            self._cycle_worker_filter(-1)
+            return
+
+        if btn_id == "log-worker-next-btn":
+            self._cycle_worker_filter(1)
             return
 
         # Source filter buttons
@@ -1237,11 +1273,6 @@ class HomerunApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self._handle_button_action(event.button.id)
-
-    @on(Select.Changed, "#log-worker-select")
-    def _on_worker_changed(self, event: Select.Changed) -> None:
-        self._worker_filter = str(event.value)
-        self._rebuild_log_view()
 
     @on(Input.Changed, "#log-search-input")
     def _on_search_changed(self, event: Input.Changed) -> None:
@@ -1455,6 +1486,20 @@ class HomerunApp(App):
             )
             return None
 
+    def _frontend_alive(self) -> bool:
+        return self.frontend_proc is not None and self.frontend_proc.poll() is None
+
+    def _request_frontend_start(self, reason: str) -> None:
+        if self._frontend_starting or self._frontend_alive():
+            return
+        self._frontend_starting = True
+        self._enqueue_log(
+            f">>> Triggering frontend start ({reason})...",
+            source="FRONTEND",
+            level="INFO",
+        )
+        self._start_frontend()
+
     # ---- Start backend & frontend as subprocesses ----
     @work(thread=True)
     def _start_services(self) -> None:
@@ -1586,6 +1631,7 @@ class HomerunApp(App):
                 source="FRONTEND",
                 level="ERROR",
             )
+            self._frontend_starting = False
             return
 
         self._stream_output(self.frontend_proc, "FRONTEND")
@@ -1606,14 +1652,15 @@ class HomerunApp(App):
                 self._enqueue_log(formatted, source=tag, level=level)
 
                 # If backend started, kick off frontend (once only)
-                if tag == "BACKEND" and not self._frontend_starting:
+                if tag == "BACKEND":
                     if "Application startup complete" in line or "Uvicorn running" in line:
-                        self._frontend_starting = True
                         self._log_activity("[bold green]Backend is ready![/]")
-                        self._start_frontend()
+                        self._request_frontend_start("backend startup log")
         except Exception:
             pass
         finally:
+            if tag == "FRONTEND":
+                self._frontend_starting = False
             if not self._shutting_down:
                 self._enqueue_log(f"[{tag}] Process exited", source=tag, level="INFO")
 
@@ -1658,7 +1705,9 @@ class HomerunApp(App):
         ws = services.get("ws_feeds", {})
 
         self._update_platform_item("svc-backend", "BACKEND", True)
-        frontend_alive = self.frontend_proc is not None and self.frontend_proc.poll() is None
+        if not self._frontend_alive():
+            self._request_frontend_start("backend health ready")
+        frontend_alive = self._frontend_alive()
         self._update_platform_item("svc-frontend", "FRONTEND", frontend_alive)
         ws_healthy = ws.get("healthy", False) if isinstance(ws, dict) else False
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", ws_healthy)

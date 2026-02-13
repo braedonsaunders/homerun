@@ -48,6 +48,10 @@ import {
   resumeAllWorkers,
   judgeOpportunitiesBulk,
   getSimulationAccounts,
+  getTrackedTraderOpportunities,
+  getNewsWorkflowFindings,
+  getWeatherWorkflowStatus,
+  getCryptoMarkets,
   Opportunity,
   WorkerStatus,
 } from './services/api'
@@ -135,6 +139,51 @@ const WORKER_HEALTH_LABELS: Record<string, string> = {
   world_intelligence: 'World Intel',
 }
 
+const STRATEGY_SUBTYPE_LABELS: Record<string, Record<string, string>> = {
+  temporal_decay: {
+    certainty_shock: 'Certainty Shock',
+    decay_curve: 'Decay Curve',
+  },
+  btc_eth_highfreq: {
+    pure_arb: 'Pure Arb',
+    dump_hedge: 'Dump Hedge',
+    pre_placed_limits: 'Pre-Placed Limits',
+    directional_edge: 'Directional Edge',
+  },
+  news_edge: {
+    buy_yes: 'Buy YES',
+    buy_no: 'Buy NO',
+  },
+  cross_platform: {
+    poly_yes_kalshi_no: 'Poly YES + Kalshi NO',
+    poly_no_kalshi_yes: 'Poly NO + Kalshi YES',
+  },
+  settlement_lag: {
+    binary_market: 'Binary Market',
+    negrisk_bundle: 'NegRisk Bundle',
+  },
+  negrisk: {
+    binary_long: 'Binary Long',
+    binary_short: 'Binary Short',
+    multi_outcome_long: 'Multi-Outcome Long',
+    multi_outcome_short: 'Multi-Outcome Short',
+  },
+  miracle: {
+    impossibility_scan: 'Impossibility Scan',
+    stale_market: 'Stale Market',
+  },
+}
+
+function formatStrategySubtypeLabel(strategyType: string, subtypeKey: string): string {
+  const map = STRATEGY_SUBTYPE_LABELS[strategyType] || {}
+  if (map[subtypeKey]) return map[subtypeKey]
+  return subtypeKey
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 const WORKER_TONE_CLASS: Record<WorkerHealthTone, string> = {
   green: 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.7)]',
   amber: 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.65)]',
@@ -188,6 +237,7 @@ function App() {
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
+  const [selectedStrategySubtype, setSelectedStrategySubtype] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(0)
   const [maxRisk, setMaxRisk] = useState(1.0)
@@ -296,7 +346,11 @@ function App() {
   // Reset page when filters change
   useEffect(() => {
     setCurrentPage(0)
-  }, [selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted, searchSort])
+  }, [selectedStrategy, selectedStrategySubtype, selectedCategory, minProfit, maxRisk, searchQuery, polymarketSearchSubmitted, searchSort])
+
+  useEffect(() => {
+    setSelectedStrategySubtype('')
+  }, [selectedStrategy])
 
   useEffect(() => {
     if (opportunitiesView !== 'arbitrage') {
@@ -312,10 +366,16 @@ function App() {
 
   // Queries — WS pushes are primary; polling is a degraded fallback.
   // When WS is connected, polls are infrequent. When disconnected, revert to faster polling.
-  const { data: opportunitiesData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['opportunities', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
+  const {
+    data: opportunitiesData,
+    isLoading: oppsLoading,
+    isFetching: isFetchingOpportunities,
+    refetch: refetchOpportunities,
+  } = useQuery({
+    queryKey: ['opportunities', selectedStrategy, selectedStrategySubtype, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
     queryFn: () => getOpportunities({
       strategy: selectedStrategy || undefined,
+      sub_strategy: selectedStrategySubtype || undefined,
       category: selectedCategory || undefined,
       min_profit: minProfit,
       max_risk: maxRisk,
@@ -331,7 +391,11 @@ function App() {
   const opportunities = opportunitiesData?.opportunities || []
   const totalOpportunities = opportunitiesData?.total || 0
 
-  const { data: status } = useQuery({
+  const {
+    data: status,
+    isFetching: isFetchingScannerStatus,
+    refetch: refetchScannerStatus,
+  } = useQuery({
     queryKey: ['scanner-status'],
     queryFn: getScannerStatus,
     refetchInterval: isConnected ? false : 5000,
@@ -401,7 +465,11 @@ function App() {
 
   const selectedAccount = sandboxAccounts.find(a => a.id === selectedAccountId)
 
-  const { data: opportunityCounts } = useQuery({
+  const {
+    data: opportunityCounts,
+    isFetching: isFetchingOpportunityCounts,
+    refetch: refetchOpportunityCounts,
+  } = useQuery({
     queryKey: ['opportunity-counts', minProfit, maxRisk, searchQuery],
     queryFn: () => getOpportunityCounts({
       min_profit: minProfit,
@@ -410,6 +478,61 @@ function App() {
     }),
     refetchInterval: isConnected ? false : 15000,
   })
+
+  const {
+    data: subfilterCounts,
+    isFetching: isFetchingSubfilterCounts,
+    refetch: refetchSubfilterCounts,
+  } = useQuery({
+    queryKey: ['opportunity-subfilters', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery],
+    queryFn: () => getOpportunityCounts({
+      strategy: selectedStrategy || undefined,
+      category: selectedCategory || undefined,
+      min_profit: minProfit,
+      max_risk: maxRisk,
+      search: searchQuery || undefined,
+    }),
+    enabled: opportunitiesView === 'arbitrage' && !!selectedStrategy,
+    refetchInterval: isConnected ? false : 15000,
+  })
+
+  const { data: trackedTraderCounts } = useQuery({
+    queryKey: ['tracked-trader-opportunities-count'],
+    queryFn: () => getTrackedTraderOpportunities({ min_tier: 'WATCH' }),
+    enabled: activeTab === 'opportunities',
+    refetchInterval: 30000,
+  })
+
+  const { data: newsWorkflowFindingsCount } = useQuery({
+    queryKey: ['news-workflow-findings-count'],
+    queryFn: () => getNewsWorkflowFindings({
+      actionable_only: false,
+      include_debug_rejections: false,
+      max_age_hours: 24,
+      limit: 1,
+    }),
+    enabled: activeTab === 'opportunities',
+    refetchInterval: 30000,
+  })
+
+  const { data: weatherWorkflowStatus } = useQuery({
+    queryKey: ['weather-workflow-status'],
+    queryFn: getWeatherWorkflowStatus,
+    enabled: activeTab === 'opportunities',
+    refetchInterval: 30000,
+  })
+
+  const { data: cryptoMarketCounts } = useQuery({
+    queryKey: ['crypto-markets-count'],
+    queryFn: () => getCryptoMarkets({ viewer_active: false }),
+    enabled: activeTab === 'opportunities',
+    refetchInterval: 30000,
+  })
+
+  const tradersCount = trackedTraderCounts?.total || 0
+  const newsCount = newsWorkflowFindingsCount?.total || 0
+  const weatherCount = weatherWorkflowStatus?.opportunities_count || 0
+  const cryptoCount = cryptoMarketCounts?.length || 0
 
   // Polymarket search query (only runs when user submits a search)
   const { data: polymarketSearchData, isLoading: polySearchLoading } = useQuery({
@@ -500,12 +623,52 @@ function App() {
   // Opportunities are always rendered from real scanner data.
   const displayOpportunities = opportunities
 
+  const strategySubtypeOptions = useMemo(() => {
+    const counts = subfilterCounts?.sub_strategies || {}
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, count]) => ({
+        value,
+        count,
+        label: formatStrategySubtypeLabel(selectedStrategy, value),
+      }))
+  }, [subfilterCounts?.sub_strategies, selectedStrategy])
+
+  useEffect(() => {
+    if (!selectedStrategySubtype) return
+    if (!strategySubtypeOptions.some((option) => option.value === selectedStrategySubtype)) {
+      setSelectedStrategySubtype('')
+    }
+  }, [selectedStrategySubtype, strategySubtypeOptions])
+
   const hasActiveOpportunityFilters =
     !!selectedStrategy
+    || !!selectedStrategySubtype
     || !!selectedCategory
     || minProfit > 0
     || maxRisk < 1
     || searchQuery.trim().length > 0
+
+  const isRefreshingMarkets =
+    isFetchingOpportunities
+    || isFetchingScannerStatus
+    || isFetchingOpportunityCounts
+    || (Boolean(selectedStrategy) && isFetchingSubfilterCounts)
+
+  const handleRefreshMarkets = useCallback(() => {
+    refetchOpportunities()
+    refetchScannerStatus()
+    refetchOpportunityCounts()
+    if (selectedStrategy) {
+      refetchSubfilterCounts()
+    }
+  }, [
+    refetchOpportunities,
+    refetchScannerStatus,
+    refetchOpportunityCounts,
+    refetchSubfilterCounts,
+    selectedStrategy,
+  ])
 
   // Keyboard shortcuts
   const shortcuts: Shortcut[] = useMemo(() => [
@@ -868,6 +1031,11 @@ function App() {
                     >
                       <Activity className="w-3.5 h-3.5" />
                       Traders
+                      {tradersCount > 0 && (
+                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                          <AnimatedNumber value={tradersCount} decimals={0} className="" />
+                        </span>
+                      )}
                     </Button>
                     <Button
                       variant="outline"
@@ -882,6 +1050,9 @@ function App() {
                     >
                       <Newspaper className="w-3.5 h-3.5" />
                       News
+                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                        <AnimatedNumber value={newsCount} decimals={0} className="" />
+                      </span>
                     </Button>
                     <Button
                       variant="outline"
@@ -896,6 +1067,11 @@ function App() {
                     >
                       <CloudRain className="w-3.5 h-3.5" />
                       Weather
+                      {weatherCount > 0 && (
+                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                          <AnimatedNumber value={weatherCount} decimals={0} className="" />
+                        </span>
+                      )}
                     </Button>
                     <Button
                       variant="outline"
@@ -910,6 +1086,11 @@ function App() {
                     >
                       <ArrowUpDown className="w-3.5 h-3.5" />
                       Crypto
+                      {cryptoCount > 0 && (
+                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                          <AnimatedNumber value={cryptoCount} decimals={0} className="" />
+                        </span>
+                      )}
                     </Button>
                     <Button
                       variant="outline"
@@ -1281,6 +1462,33 @@ function App() {
                             </SelectContent>
                           </Select>
 
+                          {selectedStrategy && strategySubtypeOptions.length > 0 && (
+                            <Select
+                              value={selectedStrategySubtype || '_all'}
+                              onValueChange={(v) => setSelectedStrategySubtype(v === '_all' ? '' : v)}
+                            >
+                              <SelectTrigger className="w-[200px] shrink-0 bg-card border-border h-8 text-xs">
+                                <SelectValue placeholder="Subfilter" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="_all">All Subfilters</SelectItem>
+                                {strategySubtypeOptions.map((option) => (
+                                  <SelectItem
+                                    key={option.value}
+                                    value={option.value}
+                                    suffix={(
+                                      <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
+                                        {option.count}
+                                      </span>
+                                    )}
+                                  >
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+
                           <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
                             <SelectTrigger className="w-[155px] shrink-0 bg-card border-border h-8 text-xs">
                               <SelectValue placeholder="Category" />
@@ -1365,6 +1573,17 @@ function App() {
                             title={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
                           >
                             {sortDir === 'desc' ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleRefreshMarkets}
+                            disabled={isRefreshingMarkets}
+                            className="text-xs gap-1.5 h-8 px-2.5 shrink-0 whitespace-nowrap"
+                          >
+                            <RefreshCw className={cn("w-3 h-3", isRefreshingMarkets && "animate-spin")} />
+                            Refresh
                           </Button>
 
                           <Button

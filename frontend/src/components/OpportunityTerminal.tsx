@@ -107,13 +107,21 @@ function TerminalEntry({
 }) {
   const queryClient = useQueryClient()
   const inlineAnalysis = opportunity.ai_analysis
+  const forceWeatherLlm = (
+    (opportunity.strategy === 'weather_edge' || Boolean(opportunity.markets?.[0]?.weather))
+    && opportunity.max_position_size > 0
+  )
   const judgeMutation = useMutation({
     mutationFn: async () => {
-      const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
+      const { data } = await judgeOpportunity({
+        opportunity_id: opportunity.id,
+        force_llm: forceWeatherLlm,
+      })
       return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
     },
   })
   const isPending = inlineAnalysis?.recommendation === 'pending'

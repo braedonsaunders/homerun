@@ -69,6 +69,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _normalize_confidence_fraction(value: Any, default: float = 0.0) -> float:
+    parsed = _safe_float(value, default)
+    if parsed > 1.0:
+        parsed = parsed / 100.0
+    return max(0.0, min(1.0, parsed))
+
+
 def _default_control_settings() -> dict[str, Any]:
     return {
         "global_risk": dict(DEFAULT_GLOBAL_RISK),
@@ -316,12 +323,22 @@ def list_trader_templates() -> list[dict[str, Any]]:
 
 
 def _normalize_trader_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    params = payload.get("params") or {}
+    if not isinstance(params, dict):
+        params = {}
+    if "min_confidence" in params:
+        params = dict(params)
+        params["min_confidence"] = _normalize_confidence_fraction(
+            params.get("min_confidence"),
+            0.0,
+        )
+
     return {
         "name": str(payload.get("name") or "").strip(),
         "description": payload.get("description"),
         "strategy_key": str(payload.get("strategy_key") or "").strip().lower(),
         "sources": normalize_sources(payload.get("sources") or []),
-        "params": payload.get("params") or {},
+        "params": params,
         "risk_limits": payload.get("risk_limits") or {},
         "metadata": payload.get("metadata") or {},
         "is_enabled": bool(payload.get("is_enabled", True)),
@@ -978,7 +995,6 @@ async def compose_trader_orchestrator_config(session: AsyncSession) -> dict[str,
 
 
 async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
-    await seed_default_traders(session)
     return {
         "control": await read_orchestrator_control(session),
         "worker": await read_orchestrator_snapshot(session),

@@ -158,6 +158,7 @@ async def get_weather_opportunities(
         target_date=target_date,
         require_tradable_markets=True,
         exclude_near_resolution=True,
+        include_report_only=False,
     )
 
     total = len(opps)
@@ -186,6 +187,7 @@ async def get_weather_opportunity_dates(
         location_query=location,
         require_tradable_markets=True,
         exclude_near_resolution=True,
+        include_report_only=False,
     )
     return {"total_dates": len(date_counts), "dates": date_counts}
 

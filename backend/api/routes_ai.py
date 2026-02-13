@@ -38,7 +38,9 @@ async def _find_opportunity_by_id(session: AsyncSession, opportunity_id: str) ->
     if scanner_hit:
         return scanner_hit, "scanner"
 
-    weather_opps = await weather_shared_state.get_weather_opportunities_from_db(session)
+    weather_opps = await weather_shared_state.get_weather_opportunities_from_db(
+        session, include_report_only=False
+    )
     weather_hit = next((o for o in weather_opps if o.id == opportunity_id), None)
     if weather_hit:
         return weather_hit, "weather"
@@ -107,6 +109,7 @@ async def get_resolution_history(market_id: Optional[str] = None, limit: int = Q
 class JudgeOpportunityRequest(BaseModel):
     opportunity_id: str
     model: Optional[str] = None
+    force_llm: bool = False
 
 
 @router.post("/ai/judge/opportunity")
@@ -121,7 +124,11 @@ async def judge_opportunity(
 
     from services.ai.opportunity_judge import opportunity_judge
 
-    result = await opportunity_judge.judge_opportunity(opp, model=request.model)
+    result = await opportunity_judge.judge_opportunity(
+        opp,
+        model=request.model,
+        force_llm=bool(request.force_llm),
+    )
 
     # Update the in-memory opportunity so subsequent API fetches include the
     # judgment without waiting for the next scan cycle.

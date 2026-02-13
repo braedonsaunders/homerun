@@ -1,4 +1,4 @@
-.PHONY: setup run dev docker docker-down clean help stop kill backend frontend build
+.PHONY: setup run dev clean help stop kill backend frontend build
 
 # Default target
 help:
@@ -10,8 +10,6 @@ help:
 	@echo "  make dev        - Start in development mode"
 	@echo "  make stop       - Stop all running services"
 	@echo "  make restart    - Stop then start in dev mode"
-	@echo "  make docker     - Run with Docker Compose"
-	@echo "  make docker-down- Stop Docker containers"
 	@echo "  make clean      - Remove generated files"
 	@echo ""
 
@@ -47,14 +45,6 @@ kill: stop
 
 # Restart everything
 restart: stop dev
-
-# Docker Compose
-docker:
-	@echo "Starting with Docker Compose..."
-	@docker-compose up --build
-
-docker-down:
-	@docker-compose down
 
 # Backend only
 backend:

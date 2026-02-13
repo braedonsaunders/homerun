@@ -1,8 +1,17 @@
 import { useRef, useEffect } from 'react'
 
+export interface SparklineSeriesInput {
+  data: number[]
+  color?: string
+  lineWidth?: number
+  fill?: boolean
+  showDot?: boolean
+}
+
 interface SparklineProps {
   data: number[]
   data2?: number[]
+  series?: SparklineSeriesInput[]
   width?: number
   height?: number
   minValue?: number
@@ -18,6 +27,7 @@ interface SparklineProps {
 export default function Sparkline({
   data,
   data2,
+  series,
   width = 120,
   height = 32,
   minValue,
@@ -31,9 +41,30 @@ export default function Sparkline({
 }: SparklineProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
+  const resolvedSeries: SparklineSeriesInput[] = (
+    Array.isArray(series) && series.length > 0
+      ? series
+      : [
+          ...(data2 && data2.length >= 2 ? [{
+            data: data2,
+            color: color2,
+            lineWidth: Math.max(1, lineWidth - 0.2),
+            fill: false,
+            showDot: false,
+          }] : []),
+          ...(data.length >= 2 ? [{
+            data,
+            color,
+            lineWidth,
+            fill: true,
+            showDot: showDots,
+          }] : []),
+        ]
+  ).filter((row) => Array.isArray(row.data) && row.data.length >= 2)
+
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas || data.length < 2) return
+    if (!canvas || resolvedSeries.length < 1) return
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
@@ -48,7 +79,7 @@ export default function Sparkline({
     ctx.clearRect(0, 0, width, height)
 
     // Combine all data for consistent scaling
-    const allData = [...data, ...(data2 || [])]
+    const allData = resolvedSeries.flatMap((row) => row.data)
     const hasManualScale =
       Number.isFinite(minValue)
       && Number.isFinite(maxValue)
@@ -134,18 +165,17 @@ export default function Sparkline({
       ctx.fill()
     }
 
-    // Draw secondary first, then primary so YES is never visually hidden.
-    if (data2 && data2.length >= 2) {
-      drawLine(data2, color2, {
-        drawFill: false,
-        drawDot: false,
-        width: Math.max(1, lineWidth - 0.2),
+    const defaultFill = resolvedSeries.length === 1
+    for (const row of resolvedSeries) {
+      drawLine(row.data, row.color || color, {
+        drawFill: row.fill ?? defaultFill,
+        drawDot: row.showDot ?? showDots,
+        width: row.lineWidth ?? lineWidth,
       })
     }
-    drawLine(data, color, { drawFill: true, drawDot: showDots, width: lineWidth })
-  }, [data, data2, width, height, minValue, maxValue, color, color2, lineWidth, showDots, animated])
+  }, [resolvedSeries, width, height, minValue, maxValue, color, lineWidth, showDots, animated])
 
-  if (data.length < 2) {
+  if (resolvedSeries.length < 1) {
     return <div className={className} style={{ width, height }} />
   }
 

@@ -43,6 +43,21 @@ def _trim_cache(now: datetime) -> None:
         _cache.pop(key, None)
 
 
+async def _lookup_market_info(*, market_id: str, is_condition_id: bool) -> Optional[dict]:
+    if is_condition_id:
+        lookup = polymarket_client.get_market_by_condition_id
+    else:
+        lookup = polymarket_client.get_market_by_token_id
+
+    # Prefer fresh Gamma metadata so resolved/disputed flags cannot be
+    # masked by stale in-memory/persistent cache rows.
+    try:
+        return await lookup(market_id, force_refresh=True)
+    except TypeError:
+        # Backward-compatible fallback for tests/mocks that do not accept kwargs.
+        return await lookup(market_id)
+
+
 async def is_market_tradable(
     market_id: str,
     *,
@@ -71,10 +86,10 @@ async def is_market_tradable(
 
     info = None
     try:
-        if is_condition_id:
-            info = await polymarket_client.get_market_by_condition_id(key)
-        else:
-            info = await polymarket_client.get_market_by_token_id(key)
+        info = await _lookup_market_info(
+            market_id=key,
+            is_condition_id=is_condition_id,
+        )
     except Exception:
         info = None
 

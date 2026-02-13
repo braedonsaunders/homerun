@@ -140,39 +140,6 @@ export interface WorldIntelligenceStatus {
   updated_at: string | null
 }
 
-export interface WorldIntelligenceOpportunity {
-  id: string
-  signal_id: string
-  signal_type: string
-  strategy_type: string
-  severity: number
-  country: string | null
-  source: string | null
-  title: string
-  description: string
-  detected_at: string | null
-  market_id: string
-  market_question: string
-  event_id: string | null
-  event_slug: string | null
-  event_title: string | null
-  category: string | null
-  liquidity: number
-  direction: 'buy_yes' | 'buy_no' | null
-  outcome: 'YES' | 'NO' | null
-  token_id: string | null
-  entry_price: number | null
-  confidence: number
-  edge_percent: number
-  market_relevance_score: number
-  related_market_ids: string[]
-  metadata: Record<string, any>
-  resolver_status: 'tradable' | 'incomplete' | string
-  missing_fields: string[]
-  tradable: boolean
-  positions_to_take: Array<Record<string, any>>
-}
-
 export interface WorldSourceStatusResponse {
   sources: Record<string, any>
   errors: string[]
@@ -221,7 +188,16 @@ export async function getWorldSignals(params?: {
   country?: string
   min_severity?: number
   limit?: number
-}): Promise<{ signals: WorldSignal[]; total: number; last_collection: string | null }> {
+  offset?: number
+}): Promise<{
+  signals: WorldSignal[]
+  total: number
+  offset?: number
+  limit?: number
+  has_more?: boolean
+  next_offset?: number | null
+  last_collection: string | null
+}> {
   const { data } = await api.get('/world-intelligence/signals', { params })
   return data
 }
@@ -288,23 +264,5 @@ export async function getMilitaryActivity(): Promise<Record<string, any>> {
 
 export async function getInfrastructureEvents(): Promise<Record<string, any>> {
   const { data } = await api.get('/world-intelligence/infrastructure')
-  return data
-}
-
-export async function getWorldIntelligenceOpportunities(params?: {
-  signal_type?: string
-  country?: string
-  min_severity?: number
-  min_relevance?: number
-  tradable_only?: boolean
-  hours?: number
-  max_markets_per_signal?: number
-  limit?: number
-}): Promise<{
-  opportunities: WorldIntelligenceOpportunity[]
-  total: number
-  summary: Record<string, any>
-}> {
-  const { data } = await api.get('/world-intelligence/opportunities', { params })
   return data
 }

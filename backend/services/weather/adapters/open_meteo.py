@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -68,6 +68,66 @@ def _precip_probability(value_mm: float, operator: str) -> float:
     return base
 
 
+def _select_nws_temperature_c(
+    *,
+    periods: list[dict],
+    target_time: datetime,
+    metric: str,
+) -> Optional[float]:
+    """Select an NWS temperature representative for the contract metric.
+
+    - ``temp_max_*``: max hourly temperature on target UTC day
+    - ``temp_min_*``: min hourly temperature on target UTC day
+    - fallback/default: nearest-hour temperature to target timestamp
+    """
+    if not periods:
+        return None
+
+    tgt = target_time if target_time.tzinfo else target_time.replace(tzinfo=timezone.utc)
+    target_day = tgt.astimezone(timezone.utc).date()
+    target_epoch = int(tgt.timestamp())
+
+    day_values: list[float] = []
+    nearest_temp: Optional[float] = None
+    nearest_diff: Optional[int] = None
+
+    for period in periods:
+        if not isinstance(period, dict):
+            continue
+        raw_start = period.get("startTime")
+        raw_temp = period.get("temperature")
+        raw_unit = str(period.get("temperatureUnit") or "F")
+        if raw_start is None or raw_temp is None:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
+            dt_utc = (
+                dt.astimezone(timezone.utc)
+                if dt.tzinfo is not None
+                else dt.replace(tzinfo=timezone.utc)
+            )
+            temp_c = _to_celsius(float(raw_temp), raw_unit)
+        except Exception:
+            continue
+
+        if dt_utc.date() == target_day:
+            day_values.append(temp_c)
+
+        diff = abs(int(dt_utc.timestamp()) - target_epoch)
+        if nearest_diff is None or diff < nearest_diff:
+            nearest_diff = diff
+            nearest_temp = temp_c
+
+    metric_l = (metric or "").lower()
+    if day_values:
+        if metric_l.startswith("temp_max_"):
+            return max(day_values)
+        if metric_l.startswith("temp_min_"):
+            return min(day_values)
+
+    return nearest_temp
+
+
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     filtered = {k: max(0.0, float(v)) for k, v in weights.items() if v is not None}
     total = sum(filtered.values())
@@ -89,6 +149,11 @@ def _weighted_average(values: dict[str, float], weights: dict[str, float]) -> Op
     return sum(values[k] * weights[k] for k in common) / denom
 
 
+def _looks_rate_limited(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    return "429" in text or "rate limit" in text or "too many requests" in text
+
+
 class OpenMeteoWeatherAdapter(WeatherModelAdapter):
     """Open-Meteo-backed adapter with weighted multi-source consensus."""
 
@@ -98,8 +163,27 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
 
     def __init__(self, timeout_seconds: float = 15.0):
         self._timeout = timeout_seconds
+        self._cache_lock = asyncio.Lock()
+        self._geo_cache: dict[
+            str, tuple[float, float, Optional[str], Optional[str], Optional[str]]
+        ] = {}
+        self._model_value_cache: dict[tuple[Any, ...], float] = {}
+        self._nws_value_cache: dict[tuple[Any, ...], Optional[float]] = {}
+        self._geo_inflight: dict[
+            str, asyncio.Task[tuple[float, float, Optional[str], Optional[str], Optional[str]]]
+        ] = {}
+        self._model_inflight: dict[tuple[Any, ...], asyncio.Task[float]] = {}
+        self._nws_inflight: dict[tuple[Any, ...], asyncio.Task[Optional[float]]] = {}
 
-    async def forecast_probability(self, contract: WeatherForecastInput) -> WeatherForecastResult:
+    def clear_cycle_cache(self) -> None:
+        """Clear request caches so each scan cycle starts fresh."""
+        self._geo_cache.clear()
+        self._model_value_cache.clear()
+        self._nws_value_cache.clear()
+
+    async def forecast_probability(
+        self, contract: WeatherForecastInput
+    ) -> WeatherForecastResult:
         try:
             headers = {"User-Agent": "homerun-weather-workflow/1.0"}
             async with httpx.AsyncClient(
@@ -107,7 +191,9 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                 follow_redirects=True,
                 headers=headers,
             ) as client:
-                lat, lon, resolved_name, country_code, tz_name = await self._resolve_location(client, contract.location)
+                lat, lon, resolved_name, country_code, tz_name = await self._resolve_location(
+                    client, contract.location
+                )
 
                 model_tasks = [
                     self._fetch_model_value(
@@ -123,20 +209,28 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                 model_results = await asyncio.gather(*model_tasks, return_exceptions=True)
 
                 nws_value_c: Optional[float] = None
-                if country_code and country_code.upper() in {"US", "USA", "PR"} and contract.metric.startswith("temp"):
+                if (
+                    country_code
+                    and country_code.upper() in {"US", "USA", "PR"}
+                    and contract.metric.startswith("temp")
+                ):
                     nws_value_c = await self._fetch_nws_temperature_c(
                         client=client,
                         lat=lat,
                         lon=lon,
                         target_time=contract.target_time,
+                        metric=contract.metric,
                     )
 
             value_by_source: dict[str, float] = {}
             probability_by_source: dict[str, float] = {}
+            source_errors: dict[str, str] = {}
             snapshots: list[WeatherSourceSnapshot] = []
 
             for model, result in zip(OPEN_METEO_MODELS, model_results):
                 if isinstance(result, Exception):
+                    source_id = f"open_meteo:{model}"
+                    source_errors[source_id] = str(result)[:220]
                     continue
                 value_c = float(result)
                 source_id = f"open_meteo:{model}"
@@ -149,10 +243,19 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                 probability_by_source[source_id] = self._to_probability(nws_value_c, contract)
 
             if not probability_by_source:
+                fallback_meta: dict[str, object] = {
+                    "provider": "open_meteo",
+                    "fallback": True,
+                }
+                if source_errors:
+                    fallback_meta["source_errors"] = source_errors
+                    fallback_meta["rate_limited"] = any(
+                        _looks_rate_limited(err) for err in source_errors.values()
+                    )
                 return WeatherForecastResult(
                     gfs_probability=0.5,
                     ecmwf_probability=0.5,
-                    metadata={"provider": "open_meteo", "fallback": True},
+                    metadata=fallback_meta,
                 )
 
             weights = self._build_source_weights(
@@ -225,6 +328,10 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                     "consensus_probability": consensus_probability,
                     "consensus_value_c": consensus_value_c,
                     "source_spread_c": spread_c,
+                    "source_errors": source_errors,
+                    "rate_limited": any(
+                        _looks_rate_limited(err) for err in source_errors.values()
+                    ),
                 },
             )
         except Exception:
@@ -236,6 +343,38 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
             )
 
     async def _resolve_location(
+        self, client: httpx.AsyncClient, location: str
+    ) -> tuple[float, float, Optional[str], Optional[str], Optional[str]]:
+        cache_key = " ".join(str(location or "").strip().lower().split())
+        if not cache_key:
+            raise ValueError("Location cannot be empty")
+
+        async with self._cache_lock:
+            cached = self._geo_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            task = self._geo_inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._resolve_location_uncached(client=client, location=location)
+                )
+                self._geo_inflight[cache_key] = task
+
+        try:
+            result = await task
+        except Exception:
+            async with self._cache_lock:
+                if self._geo_inflight.get(cache_key) is task:
+                    self._geo_inflight.pop(cache_key, None)
+            raise
+
+        async with self._cache_lock:
+            self._geo_cache[cache_key] = result
+            if self._geo_inflight.get(cache_key) is task:
+                self._geo_inflight.pop(cache_key, None)
+        return result
+
+    async def _resolve_location_uncached(
         self, client: httpx.AsyncClient, location: str
     ) -> tuple[float, float, Optional[str], Optional[str], Optional[str]]:
         resp = await client.get(self.GEO_URL, params={"name": location, "count": 1})
@@ -262,6 +401,56 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         metric: str,
         model: str,
     ) -> float:
+        hourly_field, daily_field = self._metric_fields(metric)
+        target_utc = (
+            target_time.astimezone(timezone.utc)
+            if target_time.tzinfo is not None
+            else target_time.replace(tzinfo=timezone.utc)
+        )
+        cache_key = self._forecast_request_cache_key(
+            lat=lat,
+            lon=lon,
+            target_time=target_utc,
+            model=model,
+            hourly_field=hourly_field,
+            daily_field=daily_field,
+        )
+
+        async with self._cache_lock:
+            cached = self._model_value_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            task = self._model_inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._fetch_model_value_uncached(
+                        client=client,
+                        lat=lat,
+                        lon=lon,
+                        target_time=target_utc,
+                        model=model,
+                        hourly_field=hourly_field,
+                        daily_field=daily_field,
+                    )
+                )
+                self._model_inflight[cache_key] = task
+
+        try:
+            value = await task
+        except Exception:
+            async with self._cache_lock:
+                if self._model_inflight.get(cache_key) is task:
+                    self._model_inflight.pop(cache_key, None)
+            raise
+
+        async with self._cache_lock:
+            self._model_value_cache[cache_key] = value
+            if self._model_inflight.get(cache_key) is task:
+                self._model_inflight.pop(cache_key, None)
+        return value
+
+    @staticmethod
+    def _metric_fields(metric: str) -> tuple[Optional[str], Optional[str]]:
         metric_l = (metric or "").lower()
         hourly_field: Optional[str] = None
         daily_field: Optional[str] = None
@@ -274,7 +463,39 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         else:
             # Fallback for generic or legacy temperature contracts.
             hourly_field = "temperature_2m"
+        return hourly_field, daily_field
 
+    @staticmethod
+    def _forecast_request_cache_key(
+        *,
+        lat: float,
+        lon: float,
+        target_time: datetime,
+        model: str,
+        hourly_field: Optional[str],
+        daily_field: Optional[str],
+    ) -> tuple[Any, ...]:
+        target_hour = target_time.replace(minute=0, second=0, microsecond=0).isoformat()
+        return (
+            round(lat, 4),
+            round(lon, 4),
+            target_hour,
+            model,
+            hourly_field or "",
+            daily_field or "",
+        )
+
+    async def _fetch_model_value_uncached(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        lat: float,
+        lon: float,
+        target_time: datetime,
+        model: str,
+        hourly_field: Optional[str],
+        daily_field: Optional[str],
+    ) -> float:
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -345,43 +566,88 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
         lat: float,
         lon: float,
         target_time: datetime,
+        metric: str,
     ) -> Optional[float]:
+        target_utc = (
+            target_time.astimezone(timezone.utc)
+            if target_time.tzinfo is not None
+            else target_time.replace(tzinfo=timezone.utc)
+        )
+        metric_key = self._nws_metric_key(metric)
+        target_key = (
+            target_utc.strftime("%Y-%m-%d")
+            if metric_key in {"temp_max", "temp_min"}
+            else target_utc.replace(minute=0, second=0, microsecond=0).isoformat()
+        )
+        cache_key = (round(lat, 4), round(lon, 4), metric_key, target_key)
+
+        async with self._cache_lock:
+            if cache_key in self._nws_value_cache:
+                return self._nws_value_cache[cache_key]
+            task = self._nws_inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._fetch_nws_temperature_c_uncached(
+                        client=client,
+                        lat=lat,
+                        lon=lon,
+                        target_time=target_utc,
+                        metric=metric,
+                    )
+                )
+                self._nws_inflight[cache_key] = task
+
         try:
-            points_resp = await client.get(f"{self.NWS_POINTS_URL}/{lat:.4f},{lon:.4f}")
-            points_resp.raise_for_status()
-            points_payload = points_resp.json() or {}
-            hourly_url = ((points_payload.get("properties") or {}).get("forecastHourly") or "").strip()
-            if not hourly_url:
-                return None
-
-            hourly_resp = await client.get(hourly_url)
-            hourly_resp.raise_for_status()
-            payload = hourly_resp.json() or {}
-            periods = (payload.get("properties") or {}).get("periods") or []
-            if not periods:
-                return None
-
-            target_epoch = int(target_time.replace(tzinfo=timezone.utc).timestamp())
-            best_temp = None
-            best_diff = None
-            for period in periods:
-                raw_start = period.get("startTime")
-                raw_temp = period.get("temperature")
-                raw_unit = str(period.get("temperatureUnit") or "F")
-                if raw_start is None or raw_temp is None:
-                    continue
-                try:
-                    dt = datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
-                    diff = abs(int(dt.timestamp()) - target_epoch)
-                    temp_c = _to_celsius(float(raw_temp), raw_unit)
-                except Exception:
-                    continue
-                if best_diff is None or diff < best_diff:
-                    best_diff = diff
-                    best_temp = temp_c
-            return best_temp
+            value = await task
         except Exception:
+            async with self._cache_lock:
+                if self._nws_inflight.get(cache_key) is task:
+                    self._nws_inflight.pop(cache_key, None)
             return None
+
+        async with self._cache_lock:
+            self._nws_value_cache[cache_key] = value
+            if self._nws_inflight.get(cache_key) is task:
+                self._nws_inflight.pop(cache_key, None)
+        return value
+
+    @staticmethod
+    def _nws_metric_key(metric: str) -> str:
+        metric_l = (metric or "").lower()
+        if metric_l.startswith("temp_max_"):
+            return "temp_max"
+        if metric_l.startswith("temp_min_"):
+            return "temp_min"
+        return metric_l or "temp"
+
+    async def _fetch_nws_temperature_c_uncached(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        lat: float,
+        lon: float,
+        target_time: datetime,
+        metric: str,
+    ) -> Optional[float]:
+        points_resp = await client.get(f"{self.NWS_POINTS_URL}/{lat:.4f},{lon:.4f}")
+        points_resp.raise_for_status()
+        points_payload = points_resp.json() or {}
+        hourly_url = ((points_payload.get("properties") or {}).get("forecastHourly") or "").strip()
+        if not hourly_url:
+            return None
+
+        hourly_resp = await client.get(hourly_url)
+        hourly_resp.raise_for_status()
+        payload = hourly_resp.json() or {}
+        periods = ((payload.get("properties") or {}).get("periods") or [])
+        if not periods:
+            return None
+
+        return _select_nws_temperature_c(
+            periods=periods,
+            target_time=target_time,
+            metric=metric,
+        )
 
     def _build_source_weights(
         self,

@@ -48,6 +48,7 @@ export interface Opportunity {
   id: string
   stable_id: string
   strategy: string
+  strategy_subtype?: string | null
   title: string
   description: string
   total_cost: number
@@ -87,15 +88,21 @@ export interface Market {
   question: string
   yes_price: number
   no_price: number
+  outcome_labels?: string[]
+  outcomes?: unknown[]
+  outcome_prices?: number[]
+  tokens?: Array<{
+    token_id?: string
+    outcome?: string
+    name?: string
+    label?: string
+    price?: number | null
+  }>
   liquidity: number
   volume?: number
   platform?: string  // "polymarket" | "kalshi"
   weather?: WeatherMarketDetails
-  price_history?: Array<{
-    t: number
-    yes: number
-    no: number
-  }>
+  price_history?: Array<Record<string, unknown> | unknown[]>
 }
 
 export interface WeatherForecastSource {
@@ -443,6 +450,7 @@ export const getOpportunities = async (params?: {
   min_profit?: number
   max_risk?: number
   strategy?: string
+  sub_strategy?: string
   min_liquidity?: number
   search?: string
   category?: string
@@ -530,6 +538,7 @@ export const getCryptoMarkets = async (params?: { viewer_active?: boolean }): Pr
 export interface OpportunityCounts {
   strategies: Record<string, number>
   categories: Record<string, number>
+  sub_strategies?: Record<string, number>
 }
 
 export const getOpportunityCounts = async (params?: {
@@ -537,6 +546,8 @@ export const getOpportunityCounts = async (params?: {
   max_risk?: number
   min_liquidity?: number
   search?: string
+  strategy?: string
+  category?: string
 }): Promise<OpportunityCounts> => {
   const { data } = await api.get('/opportunities/counts', { params })
   return data
@@ -1957,6 +1968,13 @@ export interface DiscoverySettings {
   delay_between_wallets: number
   max_markets_per_run: number
   max_wallets_per_market: number
+  trader_opps_source_filter: 'all' | 'confluence' | 'insider'
+  trader_opps_min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
+  trader_opps_side_filter: 'all' | 'buy' | 'sell'
+  trader_opps_confluence_limit: number
+  trader_opps_insider_limit: number
+  trader_opps_insider_min_confidence: number
+  trader_opps_insider_max_age_minutes: number
 }
 
 export interface TradingSettingsConfig {
@@ -1987,6 +2005,75 @@ export interface TradingProxySettings {
   require_vpn: boolean
 }
 
+export interface WorldIntelligenceSettings {
+  enabled: boolean
+  interval_seconds: number
+  emit_trade_signals: boolean
+  acled_api_key?: string | null
+  acled_email?: string | null
+  opensky_username?: string | null
+  opensky_password?: string | null
+  aisstream_api_key?: string | null
+  cloudflare_radar_token?: string | null
+  ais_enabled: boolean
+  ais_sample_seconds: number
+  ais_max_messages: number
+  airplanes_live_enabled: boolean
+  airplanes_live_timeout_seconds: number
+  airplanes_live_max_records: number
+  military_dedupe_radius_km: number
+  military_enabled: boolean
+  country_reference_sync_enabled: boolean
+  country_reference_sync_hours: number
+  country_reference_request_timeout_seconds: number
+  ucdp_sync_enabled: boolean
+  ucdp_sync_hours: number
+  ucdp_lookback_years: number
+  ucdp_max_pages: number
+  ucdp_request_timeout_seconds: number
+  mid_sync_enabled: boolean
+  mid_sync_hours: number
+  mid_request_timeout_seconds: number
+  trade_dependency_sync_enabled: boolean
+  trade_dependency_sync_hours: number
+  trade_dependency_request_timeout_seconds: number
+  trade_dependency_wb_per_page: number
+  trade_dependency_wb_max_pages: number
+  trade_dependency_base_divisor: number
+  trade_dependency_min_factor: number
+  trade_dependency_max_factor: number
+  chokepoints_enabled: boolean
+  chokepoints_refresh_seconds: number
+  chokepoints_request_timeout_seconds: number
+  chokepoints_max_daily_rows: number
+  chokepoints_db_sync_enabled: boolean
+  chokepoints_db_sync_hours: number
+  convergence_min_types: number
+  anomaly_threshold: number
+  anomaly_min_baseline_points: number
+  instability_signal_min: number
+  instability_critical: number
+  tension_critical: number
+  gdelt_query_delay_seconds: number
+  gdelt_max_concurrency: number
+  gdelt_news_enabled: boolean
+  gdelt_news_timespan_hours: number
+  gdelt_news_max_records: number
+  gdelt_news_request_timeout_seconds: number
+  gdelt_news_cache_seconds: number
+  gdelt_news_query_delay_seconds: number
+  gdelt_news_sync_enabled: boolean
+  gdelt_news_sync_hours: number
+  acled_rate_limit_per_min: number
+  acled_auth_rate_limit_per_min: number
+  acled_cb_max_failures: number
+  acled_cb_cooldown_seconds: number
+  opensky_cb_max_failures: number
+  opensky_cb_cooldown_seconds: number
+  usgs_enabled: boolean
+  usgs_min_magnitude: number
+}
+
 export interface SearchFilterSettings {
   // Hard rejection filters
   min_liquidity_hard: number
@@ -1996,6 +2083,7 @@ export interface SearchFilterSettings {
   max_resolution_months: number
   max_plausible_roi: number
   max_trade_legs: number
+  min_liquidity_per_leg: number
   // NegRisk
   negrisk_min_total_yes: number
   negrisk_warn_total_yes: number
@@ -2017,6 +2105,7 @@ export interface SearchFilterSettings {
   risk_multiple_legs: number
   // BTC/ETH high-frequency
   btc_eth_hf_enabled: boolean
+  btc_eth_hf_maker_mode: boolean
   btc_eth_hf_series_btc_15m: string
   btc_eth_hf_series_eth_15m: string
   btc_eth_hf_series_sol_15m: string
@@ -2083,6 +2172,7 @@ export interface AllSettings {
   maintenance: MaintenanceSettings
   discovery: DiscoverySettings
   trading_proxy: TradingProxySettings
+  world_intelligence: WorldIntelligenceSettings
   search_filters: SearchFilterSettings
   updated_at: string | null
 }
@@ -2097,6 +2187,7 @@ export interface UpdateSettingsRequest {
   maintenance?: Partial<MaintenanceSettings>
   discovery?: Partial<DiscoverySettings>
   trading_proxy?: Partial<TradingProxySettings>
+  world_intelligence?: Partial<WorldIntelligenceSettings>
   search_filters?: Partial<SearchFilterSettings>
 }
 
@@ -2677,15 +2768,21 @@ export interface NewsWorkflowFinding {
   reasoning: string
   actionable: boolean
   consumed_by_orchestrator: boolean
-  price_history?: Array<{
-    t?: number
-    yes?: number
-    no?: number
-  }>
+  price_history?: Array<Record<string, unknown> | unknown[]>
+  outcome_labels?: string[]
+  outcome_prices?: number[]
+  market_token_ids?: string[]
   yes_price?: number | null
   no_price?: number | null
   current_yes_price?: number | null
   current_no_price?: number | null
+  market_platform?: string | null
+  market_slug?: string | null
+  market_event_slug?: string | null
+  market_event_ticker?: string | null
+  market_url?: string | null
+  polymarket_url?: string | null
+  kalshi_url?: string | null
   supporting_articles?: NewsSupportingArticle[]
   supporting_article_count?: number
   created_at: string
@@ -2717,10 +2814,18 @@ export interface NewsTradeIntent {
       id?: string
       slug?: string
       event_slug?: string
+      event_ticker?: string
+      platform?: string
+      market_url?: string
+      url?: string
       event_title?: string
       liquidity?: number
       yes_price?: number
       no_price?: number
+      outcome_labels?: string[]
+      outcome_prices?: number[]
+      outcomes?: unknown[]
+      tokens?: unknown[]
       token_ids?: string[]
     }
     finding?: {
@@ -2731,6 +2836,13 @@ export interface NewsTradeIntent {
     supporting_articles?: NewsSupportingArticle[]
     supporting_article_count?: number
   }
+  market_platform?: string | null
+  market_slug?: string | null
+  market_event_slug?: string | null
+  market_event_ticker?: string | null
+  market_url?: string | null
+  polymarket_url?: string | null
+  kalshi_url?: string | null
   status: string
   created_at: string
   consumed_at: string | null

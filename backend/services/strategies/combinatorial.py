@@ -381,6 +381,15 @@ class DependencyAccuracyTracker:
             else:
                 self._threshold_override = None
 
+    def set_base_threshold(self, threshold: float) -> None:
+        """Update the base threshold used by the adaptive confidence gate."""
+        clamped = max(0.0, min(1.0, float(threshold)))
+        if abs(clamped - self._base_threshold) < 1e-9:
+            return
+        self._base_threshold = clamped
+        # Recompute any active override from the new base threshold.
+        self._update_threshold()
+
     def get_stats(self) -> dict:
         """Return tracker statistics."""
         return {
@@ -404,7 +413,7 @@ class DependencyValidator:
     Validation stages:
     1. Known pattern matching (hard-coded, highest confidence)
     2. Heuristic check (rule-based)
-    3. LLM confidence threshold (raised to 0.85)
+    3. LLM confidence threshold (adaptive, settings-driven)
     4. Structural validation (type-specific sanity checks)
     5. Price sanity check (prices should be consistent with dependency)
     6. Contradiction detection (no internal conflicts)
@@ -449,6 +458,16 @@ class DependencyValidator:
         price_consistent = self._price_sanity_check(dependencies, prices_a, prices_b)
 
         # Step 4: LLM confidence gate
+        medium_threshold = float(
+            getattr(settings, "COMBINATORIAL_MIN_CONFIDENCE", MEDIUM_CONFIDENCE)
+        )
+        medium_threshold = max(0.0, min(1.0, medium_threshold))
+        self.accuracy_tracker.set_base_threshold(medium_threshold)
+        high_threshold = float(
+            getattr(settings, "COMBINATORIAL_HIGH_CONFIDENCE", HIGH_CONFIDENCE)
+        )
+        high_threshold = max(medium_threshold, min(1.0, high_threshold))
+
         effective_threshold = self.accuracy_tracker.effective_threshold
         llm_passes = llm_confidence >= effective_threshold
 
@@ -478,6 +497,8 @@ class DependencyValidator:
             llm_confidence=llm_confidence,
             structural_pass=structural_pass,
             price_consistent=price_consistent,
+            medium_confidence_threshold=medium_threshold,
+            high_confidence_threshold=high_threshold,
         )
 
         return validated, confidence, tier
@@ -752,6 +773,8 @@ class DependencyValidator:
         llm_confidence: float,
         structural_pass: bool,
         price_consistent: bool,
+        medium_confidence_threshold: float,
+        high_confidence_threshold: float,
     ) -> tuple[float, str]:
         """
         Assign a confidence score and tier based on validation results.
@@ -764,12 +787,12 @@ class DependencyValidator:
 
         # HIGH: heuristic + LLM agree, structural valid, price consistent
         if heuristic_found and llm_passes and structural_pass and price_consistent:
-            return (max(0.90, llm_confidence), "HIGH")
+            return (max(high_confidence_threshold, llm_confidence), "HIGH")
 
         # MEDIUM: LLM confident + structural valid
         if llm_passes and structural_pass:
             conf = llm_confidence if price_consistent else llm_confidence * 0.9
-            if conf >= MEDIUM_CONFIDENCE:
+            if conf >= medium_confidence_threshold:
                 return (conf, "MEDIUM")
 
         # MEDIUM: heuristic + structural, no LLM

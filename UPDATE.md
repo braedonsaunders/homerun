@@ -19,7 +19,7 @@ git pull origin main
 ./run.sh
 ```
 
-The database will automatically migrate on startup -- any new columns are added to existing tables without losing data.
+The database now runs versioned Alembic migrations on startup (`upgrade head`), including schema/data backfills needed for legacy databases.
 
 ---
 
@@ -35,14 +35,14 @@ This means your database was created with an older schema. Two options:
 
 ### Option A: Update the code (fixes it automatically)
 
-Pull the latest version which includes auto-migration:
+Pull the latest version which includes Alembic migrations:
 
 ```bash
 git pull origin main
 ./run.sh
 ```
 
-The app now detects missing columns and adds them on startup.
+The app now upgrades the database to the latest migration revision on startup.
 
 ### Option B: Reset the database (loses all data)
 
@@ -93,31 +93,11 @@ Remove-Item data\arbitrage.db -ErrorAction SilentlyContinue
 
 ---
 
-## Update with Docker
-
-```bash
-git pull origin main
-docker-compose down
-docker-compose up --build
-```
-
----
-
-## Update with Make
-
-```bash
-git pull origin main
-make setup
-make run
-```
-
----
-
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| `no such column` errors | Pull latest code (has auto-migration) or delete `data/arbitrage.db` |
+| `no such column` errors | Pull latest code (has Alembic migrations) or delete `data/arbitrage.db` |
 | Backend won't start | Check `python3 --version` (need 3.10+) |
 | Frontend won't start | Check `node --version` (need 18+), run `cd frontend && npm install` |
 | Port already in use | Kill existing process: `lsof -ti:8000 \| xargs kill` |

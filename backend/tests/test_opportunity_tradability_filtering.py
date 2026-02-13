@@ -137,6 +137,29 @@ def test_weather_max_entry_keeps_report_only_cards(monkeypatch):
     assert [r.markets[0]["id"] for r in rows] == ["0xreport"]
 
 
+def test_weather_can_hide_report_only_rows(monkeypatch):
+    report_only = _report_only_opp("0xreport")
+    tradable = _opp("0xtradable")
+    tradable.max_position_size = 25.0
+
+    async def _fake_read(_session):
+        return [report_only, tradable], {}
+
+    async def _fake_map(_market_ids, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(weather_shared_state, "read_weather_snapshot", _fake_read)
+    monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
+
+    rows = asyncio.run(
+        weather_shared_state.get_weather_opportunities_from_db(
+            session=None,
+            include_report_only=False,
+        )
+    )
+    assert [r.markets[0]["id"] for r in rows] == ["0xtradable"]
+
+
 def test_weather_opportunities_filtered_by_target_date(monkeypatch):
     feb13 = _opp("0xfeb13")
     feb13.markets[0]["weather"] = {"target_time": "2026-02-13T07:00:00Z"}
@@ -288,3 +311,37 @@ def test_market_tradability_map_routes_condition_and_token_ids(monkeypatch):
     assert result[condition_id] is True
     assert result[token_id] is True
     assert calls == {"condition": 1, "token": 1}
+
+
+def test_market_tradability_map_requests_fresh_market_metadata(monkeypatch):
+    market_tradability._cache.clear()
+    seen_force_refresh = {"condition": None}
+
+    async def _condition_lookup(_market_id, **kwargs):
+        seen_force_refresh["condition"] = bool(kwargs.get("force_refresh", False))
+        return {
+            "active": True,
+            "closed": False,
+            "accepting_orders": True,
+            "uma_resolution_status": "proposed",
+        }
+
+    async def _token_lookup(_market_id, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        market_tradability.polymarket_client,
+        "get_market_by_condition_id",
+        _condition_lookup,
+    )
+    monkeypatch.setattr(
+        market_tradability.polymarket_client,
+        "get_market_by_token_id",
+        _token_lookup,
+    )
+
+    condition_id = "0x" + ("b" * 64)
+    result = asyncio.run(market_tradability.get_market_tradability_map([condition_id]))
+
+    assert seen_force_refresh["condition"] is True
+    assert result[condition_id] is False

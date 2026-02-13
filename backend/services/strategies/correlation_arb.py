@@ -203,6 +203,7 @@ class CorrelationArbStrategy(BaseStrategy):
 
         now = time.time()
         min_corr = settings.CORRELATION_ARB_MIN_CORRELATION
+        min_divergence = max(0.0, float(settings.CORRELATION_ARB_MIN_DIVERGENCE))
 
         # Build event/category mappings
         for event in events:
@@ -285,6 +286,9 @@ class CorrelationArbStrategy(BaseStrategy):
 
             if abs(zscore) < _ZSCORE_THRESHOLD:
                 continue  # Not diverged enough
+            divergence = abs(current_spread - mean_spread)
+            if divergence < min_divergence:
+                continue  # Absolute spread move is too small
 
             # Create convergence opportunity
             opp = self._create_convergence_opportunity(
@@ -292,6 +296,7 @@ class CorrelationArbStrategy(BaseStrategy):
                 id_b,
                 corr,
                 zscore,
+                divergence,
                 current_spread,
                 mean_spread,
                 prices,
@@ -407,6 +412,7 @@ class CorrelationArbStrategy(BaseStrategy):
         id_b: str,
         correlation: float,
         zscore: float,
+        divergence: float,
         current_spread: float,
         mean_spread: float,
         prices: dict[str, dict],
@@ -519,7 +525,8 @@ class CorrelationArbStrategy(BaseStrategy):
             title=f"Correlation Arb: {q_a[:25]} vs {q_b[:25]}",
             description=(
                 f"Correlated pair diverged (r={correlation:.2f}, z={zscore:.2f}). "
-                f"Spread: {current_spread:.3f} vs mean {mean_spread:.3f}. "
+                f"Spread: {current_spread:.3f} vs mean {mean_spread:.3f} "
+                f"(|delta|={divergence:.3f}). "
                 f"A: ${yes_a:.3f}, B: ${yes_b:.3f}. "
                 f"Bet on convergence."
             ),

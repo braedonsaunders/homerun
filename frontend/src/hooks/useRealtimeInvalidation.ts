@@ -58,6 +58,7 @@ export function useRealtimeInvalidation(
       queryClient.invalidateQueries({ queryKey: ['news-edges'] })
       queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
+      queryClient.invalidateQueries({ queryKey: ['news-workflow-findings-count'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
     }
@@ -96,14 +97,20 @@ export function useRealtimeInvalidation(
     if (lastMessage?.type === 'trader_decision') {
       queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
       queryClient.invalidateQueries({ queryKey: ['traders-decisions'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-decisions-all'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-events-all'] })
     }
     if (lastMessage?.type === 'trader_order') {
       queryClient.invalidateQueries({ queryKey: ['trader-orchestrator-overview'] })
       queryClient.invalidateQueries({ queryKey: ['traders-orders'] })
       queryClient.invalidateQueries({ queryKey: ['traders-decisions'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-orders-all'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-decisions-all'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-events-all'] })
     }
     if (lastMessage?.type === 'trader_event') {
       queryClient.invalidateQueries({ queryKey: ['traders-events'] })
+      queryClient.invalidateQueries({ queryKey: ['trader-events-all'] })
     }
   }, [lastMessage, queryClient, setScannerActivity])
 }

@@ -98,3 +98,36 @@ def test_build_supporting_articles_falls_back_to_primary_article():
     assert refs[0]["article_id"] == "cluster:abc123"
     assert refs[0]["title"] == "Primary article"
     assert refs[0]["url"] == "https://example.com/primary"
+
+
+def test_build_market_link_payload_prefers_polymarket_slug():
+    payload = routes_news_workflow._build_market_link_payload(
+        market_id="0xdeadbeef",
+        market_question="Will this resolve yes?",
+        market_context={
+            "slug": "will-trump-deport-less-than-250000",
+            "event_slug": "how-many-people-will-trump-deport-in-2025",
+        },
+    )
+
+    assert payload["market_platform"] == "polymarket"
+    assert payload["market_url"] == (
+        "https://polymarket.com/event/"
+        "how-many-people-will-trump-deport-in-2025/"
+        "will-trump-deport-less-than-250000"
+    )
+    assert payload["polymarket_url"] == payload["market_url"]
+    assert payload["kalshi_url"] is None
+
+
+def test_build_market_link_payload_handles_kalshi_ticker():
+    payload = routes_news_workflow._build_market_link_payload(
+        market_id="KXELONMARS-99",
+        market_question="Will this resolve yes?",
+        market_context={},
+    )
+
+    assert payload["market_platform"] == "kalshi"
+    assert payload["market_url"] == "https://kalshi.com/markets/KXELONMARS-99"
+    assert payload["polymarket_url"] is None
+    assert payload["kalshi_url"] == payload["market_url"]

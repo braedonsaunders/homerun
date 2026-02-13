@@ -310,6 +310,8 @@ class WorkflowOrchestrator:
                     "id": m["market_id"],
                     "slug": m.get("slug"),
                     "event_slug": m.get("event_slug"),
+                    "event_ticker": m.get("event_ticker"),
+                    "platform": m.get("platform"),
                     "event_title": m.get("event_title"),
                     "liquidity": m.get("liquidity", 0.0),
                     "yes_price": m.get("yes_price", 0.5),
@@ -491,6 +493,10 @@ class WorkflowOrchestrator:
                 article_findings = cached_hits + findings
                 for finding in article_findings:
                     self._attach_cluster_metadata(finding, cluster)
+                    self._attach_market_metadata(
+                        finding,
+                        market_metadata_by_id.get(finding.market_id),
+                    )
                     self._assign_finding_keys(finding)
                     market_sources_seen[finding.market_id].update(self._finding_sources(finding))
                 all_findings.extend(article_findings)
@@ -699,6 +705,8 @@ class WorkflowOrchestrator:
                     "question": question,
                     "event_title": str(event_meta.get("event_title") or ""),
                     "event_slug": event_slug or event_meta.get("event_slug"),
+                    "event_ticker": None,
+                    "platform": "polymarket",
                     "category": str(event_meta.get("category") or ""),
                     "yes_price": float(getattr(market, "yes_price", 0.5) or 0.5),
                     "no_price": float(getattr(market, "no_price", 0.5) or 0.5),
@@ -780,6 +788,8 @@ class WorkflowOrchestrator:
                         "question": question,
                         "event_title": str(getattr(opp, "event_title", "") or ""),
                         "event_slug": event_slug,
+                        "event_ticker": m.get("event_ticker") or m.get("eventTicker"),
+                        "platform": str(m.get("platform") or "polymarket"),
                         "category": str(getattr(opp, "category", "") or ""),
                         "yes_price": float(m.get("yes_price", 0.5) or 0.5),
                         "no_price": float(m.get("no_price", 0.5) or 0.5),
@@ -973,6 +983,50 @@ class WorkflowOrchestrator:
         evidence = dict(getattr(finding, "evidence", {}) or {})
         evidence["cluster"] = cluster_meta
         finding.evidence = evidence
+
+    @staticmethod
+    def _attach_market_metadata(finding, market_metadata: Optional[dict[str, Any]]) -> None:
+        """Attach normalized market context to a finding for downstream link rendering."""
+        if finding is None or not isinstance(market_metadata, dict):
+            return
+
+        market_id = str(
+            market_metadata.get("id")
+            or market_metadata.get("market_id")
+            or getattr(finding, "market_id", "")
+            or ""
+        ).strip()
+        if not market_id:
+            return
+
+        market_meta = {
+            "id": market_id,
+            "slug": str(market_metadata.get("slug") or "").strip() or None,
+            "event_slug": str(market_metadata.get("event_slug") or "").strip() or None,
+            "event_ticker": str(market_metadata.get("event_ticker") or "").strip() or None,
+            "platform": str(market_metadata.get("platform") or "").strip().lower() or None,
+            "question": str(
+                market_metadata.get("question")
+                or getattr(finding, "market_question", "")
+                or ""
+            ).strip() or None,
+        }
+        if not any(v for k, v in market_meta.items() if k != "id"):
+            return
+
+        evidence = dict(getattr(finding, "evidence", {}) or {})
+        existing_market_evidence = evidence.get("market")
+        if not isinstance(existing_market_evidence, dict):
+            existing_market_evidence = {}
+        evidence["market"] = {**existing_market_evidence, **market_meta}
+        finding.evidence = evidence
+
+        event_graph = dict(getattr(finding, "event_graph", {}) or {})
+        existing_market_graph = event_graph.get("market")
+        if not isinstance(existing_market_graph, dict):
+            existing_market_graph = {}
+        event_graph["market"] = {**existing_market_graph, **market_meta}
+        finding.event_graph = event_graph
 
     @staticmethod
     def _finding_sources(finding) -> set[str]:

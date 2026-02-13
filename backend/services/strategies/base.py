@@ -178,6 +178,18 @@ class BaseStrategy(ABC):
         if effective_roi < self.min_profit * 100:
             return None
 
+        # --- Hard filter: implausible directional ROI ---
+        # Directional strategies are not guaranteed spreads. Extremely high
+        # ROI readings here are usually payout-model artifacts (e.g. buying a
+        # $0.05 leg and treating it like guaranteed $1 settlement).
+        if not is_guaranteed:
+            # Keep directional ROI guard fixed and conservative. Tying this
+            # directly to configurable arbitrage ROI caps can let clearly
+            # implausible directional opportunities leak through.
+            directional_roi_cap = 120.0
+            if effective_roi > directional_roi_cap:
+                return None
+
         # --- Hard filter: suspiciously high ROI ---
         # In efficient prediction markets, genuine arbitrage is 1-5%.
         # ROI > 30% almost always indicates non-exhaustive outcomes, stale

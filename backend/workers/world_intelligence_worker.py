@@ -743,6 +743,16 @@ async def main() -> None:
     await init_database()
     logger.info("Database initialized")
     try:
+        from config import apply_world_intelligence_settings
+
+        await apply_world_intelligence_settings()
+        logger.info("World intelligence settings loaded from database")
+    except Exception as exc:
+        logger.warning(
+            "Failed to load world intelligence settings from DB (using defaults): %s",
+            exc,
+        )
+    try:
         await _run_loop()
     except asyncio.CancelledError:
         logger.info("World Intelligence worker shutting down")

@@ -154,6 +154,8 @@ const CLICKABLE_LAYERS = [
   'conflicts-dot',
   'signals-dot',
   'signals-glow',
+  'signals-military-flight-icon',
+  'signals-military-vessel-icon',
   'convergences-ring',
   'convergences-fill',
   'hotspots-fill',
@@ -179,14 +181,26 @@ const LAYER_GROUPS: Record<keyof LayerToggles, readonly string[]> = {
   tensionArcs: ['tension-arcs-glow', 'tension-arcs-line'],
   countryBoundaries: ['countries-focus-fill', 'countries-focus-outline'],
   conflictZones: ['conflicts-heat', 'conflicts-dot'],
-  signals: ['signals-dot', 'signals-glow'],
+  signals: [
+    'signals-dot',
+    'signals-glow',
+    'signals-military-flight-icon',
+    'signals-military-vessel-icon',
+  ],
   convergences: ['convergences-fill', 'convergences-ring'],
   hotspots: ['hotspots-fill', 'hotspots-outline'],
   chokepoints: ['chokepoints-icon'],
 }
 
 const COUNTRY_BOUNDARY_URL = `${import.meta.env.BASE_URL}data/world_countries.geojson`
-const MAP_SIGNAL_LIMIT = 2500
+const mapSignalPageSizeEnv = Number(import.meta.env.VITE_WORLD_MAP_SIGNAL_PAGE_SIZE)
+const mapSignalMaxEnv = Number(import.meta.env.VITE_WORLD_MAP_SIGNAL_MAX)
+const MAP_SIGNAL_PAGE_SIZE = Number.isFinite(mapSignalPageSizeEnv)
+  ? Math.max(250, Math.floor(mapSignalPageSizeEnv))
+  : 2000
+const MAP_SIGNAL_MAX = Number.isFinite(mapSignalMaxEnv)
+  ? Math.max(2000, Math.floor(mapSignalMaxEnv))
+  : 30000
 const EMPTY_COUNTRY_BOUNDARY_COLLECTION: CountryBoundaryFeatureCollection = {
   type: 'FeatureCollection',
   features: [],
@@ -457,6 +471,8 @@ function signalsToGeoJSON(
     type: 'FeatureCollection',
     features: signals
       .map((signal) => {
+        const metadata = (signal.metadata || {}) as Record<string, unknown>
+        const activityType = String(metadata.activity_type || '').trim().toLowerCase()
         let coords: LngLatTuple | null = null
         let geocodeMode = 'native'
         let countryText = signal.country || ''
@@ -508,6 +524,7 @@ function signalsToGeoJSON(
             source: signal.source,
             color: palette[signal.signal_type] || '#64748b',
             geocode_mode: geocodeMode,
+            activity_type: activityType,
           },
         } as PointFeature
       })
@@ -678,9 +695,90 @@ function conflictSignalsToGeoJSON(
   }
 }
 
+function createMilitaryIconImage(type: 'plane' | 'vessel', theme: 'dark' | 'light'): ImageData {
+  const size = 48
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    return new ImageData(size, size)
+  }
+
+  const fill = theme === 'light' ? '#0f172a' : '#e2e8f0'
+  const stroke = theme === 'light' ? '#f8fafc' : '#020617'
+
+  ctx.clearRect(0, 0, size, size)
+  ctx.fillStyle = fill
+  ctx.strokeStyle = stroke
+  ctx.lineWidth = 2.2
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+
+  if (type === 'plane') {
+    ctx.beginPath()
+    ctx.moveTo(24, 5)
+    ctx.lineTo(29, 18)
+    ctx.lineTo(42, 21)
+    ctx.lineTo(42, 27)
+    ctx.lineTo(29, 30)
+    ctx.lineTo(24, 43)
+    ctx.lineTo(19, 30)
+    ctx.lineTo(6, 27)
+    ctx.lineTo(6, 21)
+    ctx.lineTo(19, 18)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+  } else {
+    ctx.beginPath()
+    ctx.moveTo(7, 29)
+    ctx.lineTo(41, 29)
+    ctx.lineTo(37, 36)
+    ctx.lineTo(11, 36)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.moveTo(17, 29)
+    ctx.lineTo(17, 18)
+    ctx.lineTo(28, 18)
+    ctx.lineTo(32, 29)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.moveTo(22, 18)
+    ctx.lineTo(22, 12)
+    ctx.lineTo(25, 12)
+    ctx.lineTo(25, 18)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+  }
+
+  return ctx.getImageData(0, 0, size, size)
+}
+
+function ensureMilitaryIcons(map: any, theme: 'dark' | 'light') {
+  const planeIconId = 'wi-military-plane'
+  const vesselIconId = 'wi-military-vessel'
+  if (map.hasImage(planeIconId)) {
+    map.removeImage(planeIconId)
+  }
+  if (map.hasImage(vesselIconId)) {
+    map.removeImage(vesselIconId)
+  }
+  map.addImage(planeIconId, createMilitaryIconImage('plane', theme), { pixelRatio: 2 })
+  map.addImage(vesselIconId, createMilitaryIconImage('vessel', theme), { pixelRatio: 2 })
+}
+
 function addDataLayers(map: any, theme: 'dark' | 'light') {
   const hotspotFillColor = theme === 'light' ? '#2563eb' : '#60a5fa'
   const countryBorderColor = theme === 'light' ? '#94a3b8' : '#475569'
+  ensureMilitaryIcons(map, theme)
 
   map.addSource('countries', {
     type: 'geojson',
@@ -1056,6 +1154,10 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     id: 'signals-glow',
     type: 'circle',
     source: 'signals',
+    filter: [
+      'all',
+      ['!=', ['get', 'signal_type'], 'military'],
+    ],
     paint: {
       'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 10, 0.5, 16, 1, 24],
       'circle-color': ['get', 'color'],
@@ -1067,12 +1169,54 @@ function addDataLayers(map: any, theme: 'dark' | 'light') {
     id: 'signals-dot',
     type: 'circle',
     source: 'signals',
+    filter: [
+      'all',
+      ['!=', ['get', 'signal_type'], 'military'],
+    ],
     paint: {
       'circle-radius': ['interpolate', ['linear'], ['get', 'severity'], 0, 4, 0.5, 6, 1, 9],
       'circle-color': ['get', 'color'],
       'circle-opacity': 0.95,
       'circle-stroke-color': theme === 'light' ? '#ffffff' : '#020617',
       'circle-stroke-width': 1,
+    },
+  })
+  map.addLayer({
+    id: 'signals-military-flight-icon',
+    type: 'symbol',
+    source: 'signals',
+    filter: [
+      'all',
+      ['==', ['get', 'signal_type'], 'military'],
+      ['==', ['get', 'activity_type'], 'flight'],
+    ],
+    layout: {
+      'icon-image': 'wi-military-plane',
+      'icon-size': ['interpolate', ['linear'], ['coalesce', ['get', 'severity'], 0], 0, 0.42, 1, 0.66],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+    paint: {
+      'icon-opacity': 0.95,
+    },
+  })
+  map.addLayer({
+    id: 'signals-military-vessel-icon',
+    type: 'symbol',
+    source: 'signals',
+    filter: [
+      'all',
+      ['==', ['get', 'signal_type'], 'military'],
+      ['==', ['get', 'activity_type'], 'vessel'],
+    ],
+    layout: {
+      'icon-image': 'wi-military-vessel',
+      'icon-size': ['interpolate', ['linear'], ['coalesce', ['get', 'severity'], 0], 0, 0.38, 1, 0.62],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+    paint: {
+      'icon-opacity': 0.95,
     },
   })
 
@@ -1173,6 +1317,14 @@ function MapLegend({ colors }: { colors: SignalPalette }) {
               <span className="text-muted-foreground">Live military hotspot</span>
             </div>
             <div className="flex items-center gap-1.5">
+              <span className="text-[10px] leading-none text-muted-foreground">✈</span>
+              <span className="text-muted-foreground">Military aircraft</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] leading-none text-muted-foreground">⛴</span>
+              <span className="text-muted-foreground">Military vessels/carriers</span>
+            </div>
+            <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 shrink-0 rounded-full bg-emerald-500" />
               <span className="text-muted-foreground">Chokepoint risk</span>
             </div>
@@ -1185,11 +1337,13 @@ function MapLegend({ colors }: { colors: SignalPalette }) {
 
 function MapStats({
   signalCount,
+  signalTotal,
   geocodedSignalCount,
   convergenceCount,
   hotspotCount,
 }: {
   signalCount: number
+  signalTotal: number
   geocodedSignalCount: number
   convergenceCount: number
   hotspotCount: number
@@ -1198,7 +1352,9 @@ function MapStats({
     <div className="absolute bottom-3 right-3 bg-background/90 backdrop-blur-sm border border-border rounded-lg p-2.5 text-[10px] z-10 space-y-1">
       <div className="font-mono">
         <span className="text-muted-foreground">Signals:</span>{' '}
-        <span className="text-foreground font-bold">{signalCount}</span>
+        <span className="text-foreground font-bold">
+          {signalTotal > signalCount ? `${signalCount}/${signalTotal}` : signalCount}
+        </span>
       </div>
       <div className="font-mono">
         <span className="text-muted-foreground">Geocoded:</span>{' '}
@@ -1312,6 +1468,18 @@ function featureLineMidpoint(feature: MapGeoJSONFeature): LngLatTuple | null {
   return [normalizeLongitude(lon), lat]
 }
 
+function militaryEntityKey(signal: WorldSignal): string {
+  if (signal.signal_type !== 'military') return ''
+  const meta = (signal.metadata || {}) as Record<string, unknown>
+  const activityType = String(meta.activity_type || '').trim().toLowerCase() || 'flight'
+  const transponder = String(meta.transponder || '').trim().toLowerCase()
+  if (transponder) return `${activityType}:${transponder}`
+  const callsign = String(meta.callsign || '').trim().toUpperCase().replace(/\s+/g, '')
+  const iso3 = normalizeCountryCode(signal.country) || ''
+  if (callsign) return `${activityType}:${callsign}:${iso3}`
+  return ''
+}
+
 export default function WorldMap({ isConnected = true }: { isConnected?: boolean }) {
   const theme = useAtomValue(themeAtom)
   const colors = useMemo(
@@ -1329,8 +1497,59 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   const pollingInterval = isConnected ? false : 180000
 
   const { data: signalsData, isLoading: signalsLoading } = useQuery({
-    queryKey: ['world-signals', { limit: MAP_SIGNAL_LIMIT }],
-    queryFn: () => getWorldSignals({ limit: MAP_SIGNAL_LIMIT }),
+    queryKey: ['world-signals-map', { page_size: MAP_SIGNAL_PAGE_SIZE, max: MAP_SIGNAL_MAX }],
+    queryFn: async () => {
+      const mergedSignals: WorldSignal[] = []
+      const seenMilitaryKeys = new Set<string>()
+      let lastCollection: string | null = null
+      let offset = 0
+      let total = 0
+      while (mergedSignals.length < MAP_SIGNAL_MAX) {
+        const pageLimit = Math.min(MAP_SIGNAL_PAGE_SIZE, MAP_SIGNAL_MAX - mergedSignals.length)
+        const page = await getWorldSignals({ limit: pageLimit, offset })
+        if (!lastCollection) {
+          lastCollection = page.last_collection
+        }
+        const chunk = Array.isArray(page.signals) ? page.signals : []
+        if (!chunk.length) {
+          total = Number(page.total || mergedSignals.length)
+          break
+        }
+        for (const row of chunk) {
+          const key = militaryEntityKey(row)
+          if (key) {
+            if (seenMilitaryKeys.has(key)) {
+              continue
+            }
+            seenMilitaryKeys.add(key)
+          }
+          mergedSignals.push(row)
+          if (mergedSignals.length >= MAP_SIGNAL_MAX) {
+            break
+          }
+        }
+        total = Number(page.total || mergedSignals.length)
+
+        const nextOffset =
+          typeof page.next_offset === 'number'
+            ? page.next_offset
+            : (offset + chunk.length)
+        const hasMore =
+          typeof page.has_more === 'boolean'
+            ? page.has_more
+            : (chunk.length >= pageLimit && nextOffset > offset)
+        if (!hasMore || nextOffset <= offset) {
+          break
+        }
+        offset = nextOffset
+      }
+
+      return {
+        signals: mergedSignals,
+        total,
+        last_collection: lastCollection,
+      }
+    },
     refetchInterval: pollingInterval,
     retry: 2,
     retryDelay: (attempt) => Math.min(10000, attempt * 1500),
@@ -1691,7 +1910,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         <PopupCard
           title={String(props.title || 'Signal')}
           subtitle={`${props.country_name ? `${String(props.country_name)} · ` : ''}${String(props.source || '')}`}
-          body={`Type: ${String(props.signal_type || 'unknown')} · Severity: ${Math.round((Number(props.severity) || 0) * 100)}% · Geocode: ${String(props.geocode_mode || 'native')}`}
+          body={`Type: ${String(props.signal_type || 'unknown')}${props.activity_type ? `/${String(props.activity_type)}` : ''} · Severity: ${Math.round((Number(props.severity) || 0) * 100)}% · Geocode: ${String(props.geocode_mode || 'native')}`}
         />
       )
     },
@@ -1899,6 +2118,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
     map.on('click', 'conflicts-dot', handleConflictClick)
     map.on('click', 'signals-dot', handleSignalClick)
     map.on('click', 'signals-glow', handleSignalClick)
+    map.on('click', 'signals-military-flight-icon', handleSignalClick)
+    map.on('click', 'signals-military-vessel-icon', handleSignalClick)
     map.on('click', 'convergences-ring', handleConvergenceClick)
     map.on('click', 'convergences-fill', handleConvergenceClick)
     map.on('click', 'hotspots-fill', handleHotspotClick)
@@ -1919,6 +2140,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       map.off('click', 'conflicts-dot', handleConflictClick)
       map.off('click', 'signals-dot', handleSignalClick)
       map.off('click', 'signals-glow', handleSignalClick)
+      map.off('click', 'signals-military-flight-icon', handleSignalClick)
+      map.off('click', 'signals-military-vessel-icon', handleSignalClick)
       map.off('click', 'convergences-ring', handleConvergenceClick)
       map.off('click', 'convergences-fill', handleConvergenceClick)
       map.off('click', 'hotspots-fill', handleHotspotClick)
@@ -1962,6 +2185,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       />
       <MapStats
         signalCount={signals.length}
+        signalTotal={Number(stableSignalsData.total || signals.length)}
         geocodedSignalCount={geocodedSignalCount}
         convergenceCount={convergences.length}
         hotspotCount={hotspots.length}

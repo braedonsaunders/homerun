@@ -10,7 +10,12 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Opportunity, judgeOpportunity } from '../services/api'
-import { buildYesNoSparklineSeries } from '../lib/priceHistory'
+import {
+  buildOutcomeFallbacks,
+  buildOutcomeSparklineSeries,
+  extractOutcomeLabels,
+  extractOutcomePrices,
+} from '../lib/priceHistory'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import Sparkline from './Sparkline'
@@ -24,10 +29,50 @@ import {
 } from './OpportunityCard'
 import { getOpportunityPlatformLinks } from '../lib/marketUrls'
 
+const SPARKLINE_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#38bdf8',
+  '#f59e0b',
+  '#a78bfa',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+]
+
 interface Props {
   opportunities: Opportunity[]
   onExecute?: (opportunity: Opportunity) => void
   onOpenCopilot?: (opportunity: Opportunity) => void
+}
+
+function compactOutcomeLabel(value: string, maxChars = 10): string {
+  const text = String(value || '').trim()
+  if (!text) return '—'
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, Math.max(1, maxChars - 1))}…`
+}
+
+function formatOutcomePriceSummary(market: Opportunity['markets'][number]): string {
+  const marketRow = market as unknown as Record<string, unknown>
+  const labels = extractOutcomeLabels(
+    marketRow.outcome_labels
+    ?? marketRow.outcomes
+    ?? marketRow.tokens
+  )
+  const prices = extractOutcomePrices(
+    marketRow.outcome_prices
+    ?? marketRow.prices
+  )
+  if (prices.length < 1) {
+    return `Yes:${market.yes_price.toFixed(3)} No:${market.no_price.toFixed(3)}`
+  }
+  const visible = prices.slice(0, 4).map((price, index) => {
+    const label = compactOutcomeLabel(labels[index] || `Outcome ${index + 1}`)
+    return `${label}:${price.toFixed(3)}`
+  })
+  const suffix = prices.length > 4 ? ` +${prices.length - 4}` : ''
+  return `${visible.join(' ')}${suffix}`
 }
 
 export default function OpportunityTable({ opportunities, onExecute, onOpenCopilot }: Props) {
@@ -76,13 +121,21 @@ function TableRow({
   const queryClient = useQueryClient()
 
   const inlineAnalysis = opportunity.ai_analysis
+  const forceWeatherLlm = (
+    (opportunity.strategy === 'weather_edge' || Boolean(opportunity.markets?.[0]?.weather))
+    && opportunity.max_position_size > 0
+  )
   const judgeMutation = useMutation({
     mutationFn: async () => {
-      const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
+      const { data } = await judgeOpportunity({
+        opportunity_id: opportunity.id,
+        force_llm: forceWeatherLlm,
+      })
       return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
     },
   })
   const isPending = inlineAnalysis?.recommendation === 'pending'
@@ -97,14 +150,46 @@ function TableRow({
       : 'text-red-400'
 
   const market = opportunity.markets[0]
-  const sparkData = useMemo(() => {
-    if (!market) return { yes: [], no: [] }
-    return buildYesNoSparklineSeries(
-      market.price_history,
-      market.yes_price,
-      market.no_price
-    )
-  }, [market?.id, market?.yes_price, market?.no_price, market?.price_history])
+  const marketOutcomes = useMemo(() => {
+    if (!market) return { labels: [], prices: [] }
+    const marketRow = market as unknown as Record<string, unknown>
+    return {
+      labels: extractOutcomeLabels(
+        marketRow.outcome_labels
+        ?? marketRow.outcomes
+        ?? marketRow.tokens
+      ),
+      prices: extractOutcomePrices(
+        marketRow.outcome_prices
+        ?? marketRow.prices
+      ),
+    }
+  }, [market])
+  const sparkSeries = useMemo(
+    () => buildOutcomeSparklineSeries(
+      market?.price_history,
+      buildOutcomeFallbacks({
+        labels: marketOutcomes.labels,
+        prices: marketOutcomes.prices,
+        yesPrice: market?.yes_price,
+        noPrice: market?.no_price,
+        yesLabel: marketOutcomes.labels[0] || 'Yes',
+        noLabel: marketOutcomes.labels[1] || 'No',
+        preferIndexedKeys: marketOutcomes.labels.length > 2 || marketOutcomes.prices.length > 2,
+      }),
+    ),
+    [market, marketOutcomes],
+  )
+  const sparklineSeries = useMemo(
+    () => sparkSeries.map((row, index) => ({
+      data: row.data,
+      color: SPARKLINE_COLORS[index % SPARKLINE_COLORS.length],
+      lineWidth: index === 0 ? 1.1 : 0.95,
+      fill: false,
+      showDot: false,
+    })),
+    [sparkSeries],
+  )
 
   const roiPositive = opportunity.roi_percent >= 0
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || '') : ''
@@ -145,14 +230,12 @@ function TableRow({
 
         {/* Sparkline */}
         <div className="px-1 py-1">
-          {sparkData.yes.length >= 2 && (
+          {sparkSeries.length > 0 && (
             <Sparkline
-              data={sparkData.yes}
-              data2={sparkData.no}
+              data={sparkSeries[0]?.data || []}
+              series={sparklineSeries}
               width={60}
               height={20}
-              color="#22c55e"
-              color2="#ef4444"
               lineWidth={1}
               showDots
             />
@@ -248,7 +331,7 @@ function TableRow({
               <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                 {opportunity.markets.map((mkt, i) => (
                   <span key={i} className="font-data">
-                    Y:{mkt.yes_price.toFixed(3)} N:{mkt.no_price.toFixed(3)} Liq:{formatCompact(mkt.liquidity)}
+                    {formatOutcomePriceSummary(mkt)} Liq:{formatCompact(mkt.liquidity)}
                   </span>
                 ))}
               </div>

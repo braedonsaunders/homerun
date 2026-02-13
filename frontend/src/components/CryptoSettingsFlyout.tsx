@@ -22,6 +22,7 @@ import {
 
 const DEFAULTS = {
   btc_eth_hf_enabled: true,
+  btc_eth_hf_maker_mode: true,
   btc_eth_hf_series_btc_15m: '10192',
   btc_eth_hf_series_eth_15m: '10191',
   btc_eth_hf_series_sol_15m: '10423',
@@ -42,6 +43,7 @@ const DEFAULTS = {
   btc_eth_dump_hedge_drop_pct: 0.05,
   btc_eth_thin_liquidity_usd: 500,
 }
+const CRYPTO_FILTER_KEYS = Object.keys(DEFAULTS) as Array<keyof typeof DEFAULTS>
 
 function NumericField({
   label,
@@ -170,15 +172,21 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
 
   useEffect(() => {
     if (settings?.search_filters) {
-      setForm((prev) => {
-        const merged = { ...prev, ...settings.search_filters } as Record<keyof typeof DEFAULTS, string | number | boolean>
-        (Object.keys(DEFAULTS) as Array<keyof typeof DEFAULTS>).forEach((key) => {
-          const val = merged[key]
-          if (typeof val === 'string' && val === '') {
-            merged[key] = DEFAULTS[key]
+      setForm(() => {
+        const next = { ...DEFAULTS }
+        CRYPTO_FILTER_KEYS.forEach((key) => {
+          const value = settings.search_filters[key]
+          if (value === undefined || value === null) {
+            return
           }
+          if (typeof next[key] === 'string') {
+            const normalized = String(value)
+            ;(next as any)[key] = normalized === '' ? DEFAULTS[key] : normalized
+            return
+          }
+          ;(next as any)[key] = value
         })
-        return merged as typeof DEFAULTS
+        return next
       })
     }
   }, [settings])
@@ -197,7 +205,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
   })
 
   const handleSave = () => {
-    saveMutation.mutate({ search_filters: form })
+    const payload = CRYPTO_FILTER_KEYS.reduce((acc, key) => {
+      ;(acc as any)[key] = form[key]
+      return acc
+    }, {} as Partial<typeof DEFAULTS>)
+    saveMutation.mutate({ search_filters: payload })
   }
 
   const set = <K extends keyof typeof DEFAULTS>(key: K, val: (typeof DEFAULTS)[K]) => {
@@ -259,6 +271,16 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               color="text-yellow-400"
               badge="hf"
             />
+            <div className="mt-2">
+              <StrategyToggle
+                label="Use Maker Orders"
+                enabled={form.btc_eth_hf_maker_mode}
+                onToggle={(v) => set('btc_eth_hf_maker_mode', v)}
+                icon={Clock}
+                color="text-blue-400"
+                badge="autotrader"
+              />
+            </div>
             <p className="text-[10px] text-muted-foreground/60 mt-2">
               Configure 5m/15m/1h/4h BTC, ETH, SOL, and XRP series IDs used by the crypto strategy.
             </p>

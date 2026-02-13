@@ -9,6 +9,7 @@ import {
   FolderPlus,
   Layers,
   RefreshCw,
+  Settings,
   Target,
   Trash2,
   Users,
@@ -25,6 +26,9 @@ import {
 } from '../services/discoveryApi'
 import {
   getRecentTradesFromWallets,
+  getDiscoverySettings,
+  updateDiscoverySettings,
+  type DiscoverySettings,
 } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import {
@@ -35,6 +39,9 @@ import {
   TraderSignalTable,
   TraderSignalTerminal,
 } from './TraderSignalViews'
+import TraderOpportunitiesSettingsFlyout, {
+  type TraderOpportunitiesSettingsForm,
+} from './TraderOpportunitiesSettingsFlyout'
 
 interface Props {
   onNavigateToWallet?: (address: string) => void
@@ -46,6 +53,41 @@ interface Props {
 type TierFilter = 'WATCH' | 'HIGH' | 'EXTREME'
 type SignalSideFilter = 'all' | 'BUY' | 'SELL'
 type SourceFilter = 'all' | 'confluence' | 'insider'
+
+const DEFAULT_TRADER_OPPORTUNITY_SETTINGS: TraderOpportunitiesSettingsForm = {
+  source_filter: 'all',
+  min_tier: 'WATCH',
+  side_filter: 'all',
+  confluence_limit: 50,
+  insider_limit: 40,
+  insider_min_confidence: 0.62,
+  insider_max_age_minutes: 180,
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+function asSourceFilter(value: unknown): SourceFilter {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'confluence') return 'confluence'
+  if (normalized === 'insider') return 'insider'
+  return 'all'
+}
+
+function asTierFilter(value: unknown): TierFilter {
+  const normalized = String(value || '').trim().toUpperCase()
+  if (normalized === 'HIGH') return 'HIGH'
+  if (normalized === 'EXTREME') return 'EXTREME'
+  return 'WATCH'
+}
+
+function asSideFilter(value: unknown): SignalSideFilter {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'buy' || normalized === 'yes') return 'BUY'
+  if (normalized === 'sell' || normalized === 'no') return 'SELL'
+  return 'all'
+}
 
 type LiveSignalAlert = {
   id: string
@@ -153,19 +195,40 @@ export default function RecentTradesPanel({
   const showOpportunities = mode !== 'management'
 
   const [hoursFilter] = useState(24)
-  const [minTier, setMinTier] = useState<TierFilter>('WATCH')
-  const [sideFilter, setSideFilter] = useState<SignalSideFilter>('all')
-  const [signalLimit, setSignalLimit] = useState(50)
+  const [minTier, setMinTier] = useState<TierFilter>(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.min_tier)
+  const [sideFilter, setSideFilter] = useState<SignalSideFilter>(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.side_filter)
+  const [signalLimit, setSignalLimit] = useState(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.confluence_limit)
+  const [insiderLimit, setInsiderLimit] = useState(DEFAULT_TRADER_OPPORTUNITY_SETTINGS.insider_limit)
+  const [insiderMinConfidence, setInsiderMinConfidence] = useState(
+    DEFAULT_TRADER_OPPORTUNITY_SETTINGS.insider_min_confidence,
+  )
+  const [insiderMaxAgeMinutes, setInsiderMaxAgeMinutes] = useState(
+    DEFAULT_TRADER_OPPORTUNITY_SETTINGS.insider_max_age_minutes,
+  )
   const [liveAlerts, setLiveAlerts] = useState<LiveSignalAlert[]>([])
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>(
+    DEFAULT_TRADER_OPPORTUNITY_SETTINGS.source_filter,
+  )
   const [groupName, setGroupName] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
   const [groupWalletInput, setGroupWalletInput] = useState('')
   const [groupStatusMessage, setGroupStatusMessage] = useState<string | null>(null)
   const [showGroupForm, setShowGroupForm] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState<{
+    type: 'success' | 'error'
+    text: string
+  } | null>(null)
 
   const queryClient = useQueryClient()
   const { lastMessage } = useWebSocket('/ws')
+
+  const { data: discoverySettings } = useQuery({
+    queryKey: ['settings-discovery'],
+    queryFn: getDiscoverySettings,
+    enabled: showOpportunities,
+    staleTime: 60_000,
+  })
 
   const invalidateTrackedManagementQueries = () => {
     queryClient.invalidateQueries({ queryKey: ['wallets'] })
@@ -175,6 +238,25 @@ export default function RecentTradesPanel({
     queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
     queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
   }
+
+  const saveTraderSettingsMutation = useMutation({
+    mutationFn: (payload: Partial<DiscoverySettings>) => updateDiscoverySettings(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['settings-discovery'] })
+      setSettingsSaveMessage({ type: 'success', text: 'Trader opportunity settings saved' })
+      setTimeout(() => setSettingsSaveMessage(null), 3000)
+      setSettingsOpen(false)
+    },
+    onError: (error: unknown) => {
+      const message =
+        (error as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail
+        || (error as { message?: string })?.message
+        || 'Failed to save trader opportunity settings'
+      setSettingsSaveMessage({ type: 'error', text: message })
+      setTimeout(() => setSettingsSaveMessage(null), 5000)
+    },
+  })
 
   const {
     data: opportunities = [],
@@ -194,12 +276,18 @@ export default function RecentTradesPanel({
     refetch: refetchInsiderOpps,
     isRefetching: isRefetchingInsiderOpps,
   } = useQuery({
-    queryKey: ['insider-opportunities', sideFilter],
+    queryKey: [
+      'insider-opportunities',
+      sideFilter,
+      insiderLimit,
+      insiderMinConfidence,
+      insiderMaxAgeMinutes,
+    ],
     queryFn: () =>
       discoveryApi.getInsiderOpportunities({
-        limit: 40,
-        min_confidence: 0.62,
-        max_age_minutes: 180,
+        limit: insiderLimit,
+        min_confidence: insiderMinConfidence,
+        max_age_minutes: insiderMaxAgeMinutes,
         direction:
           sideFilter === 'BUY'
             ? 'buy_yes'
@@ -327,6 +415,26 @@ export default function RecentTradesPanel({
 
     return () => clearTimeout(timer)
   }, [lastMessage, showOpportunities])
+
+  useEffect(() => {
+    if (!showOpportunities || !discoverySettings) return
+
+    setSourceFilter(asSourceFilter(discoverySettings.trader_opps_source_filter))
+    setMinTier(asTierFilter(discoverySettings.trader_opps_min_tier))
+    setSideFilter(asSideFilter(discoverySettings.trader_opps_side_filter))
+    setSignalLimit(
+      Math.round(clampNumber(discoverySettings.trader_opps_confluence_limit || 50, 1, 200)),
+    )
+    setInsiderLimit(
+      Math.round(clampNumber(discoverySettings.trader_opps_insider_limit || 40, 1, 500)),
+    )
+    setInsiderMinConfidence(
+      clampNumber(discoverySettings.trader_opps_insider_min_confidence || 0.62, 0, 1),
+    )
+    setInsiderMaxAgeMinutes(
+      Math.round(clampNumber(discoverySettings.trader_opps_insider_max_age_minutes || 180, 1, 1440)),
+    )
+  }, [showOpportunities, discoverySettings])
 
   const rawTrades = rawTradesData?.trades || []
   const trackedWallets = rawTradesData?.tracked_wallets || 0
@@ -482,6 +590,39 @@ export default function RecentTradesPanel({
       refetchGroups()
       refetchSuggestions()
     }
+  }
+
+  const handleSaveTraderOpportunitySettings = (
+    next: TraderOpportunitiesSettingsForm,
+  ) => {
+    if (!discoverySettings) {
+      setSettingsSaveMessage({
+        type: 'error',
+        text: 'Discovery settings are still loading. Please try again.',
+      })
+      setTimeout(() => setSettingsSaveMessage(null), 4000)
+      return
+    }
+
+    setSourceFilter(next.source_filter)
+    setMinTier(next.min_tier)
+    setSideFilter(next.side_filter)
+    setSignalLimit(next.confluence_limit)
+    setInsiderLimit(next.insider_limit)
+    setInsiderMinConfidence(next.insider_min_confidence)
+    setInsiderMaxAgeMinutes(next.insider_max_age_minutes)
+
+    saveTraderSettingsMutation.mutate({
+      ...discoverySettings,
+      trader_opps_source_filter: next.source_filter,
+      trader_opps_min_tier: next.min_tier,
+      trader_opps_side_filter:
+        next.side_filter === 'BUY' ? 'buy' : next.side_filter === 'SELL' ? 'sell' : 'all',
+      trader_opps_confluence_limit: next.confluence_limit,
+      trader_opps_insider_limit: next.insider_limit,
+      trader_opps_insider_min_confidence: next.insider_min_confidence,
+      trader_opps_insider_max_age_minutes: next.insider_max_age_minutes,
+    })
   }
 
   const handleCreateManualGroup = () => {
@@ -837,46 +978,21 @@ export default function RecentTradesPanel({
           {mode === 'opportunities' ? (
             <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl border border-border/40 bg-card/40">
               <Filter className="w-4 h-4 text-muted-foreground/70" />
-
-              <select
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
-                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
-              >
-                <option value="all">All ({displayedSignalCount}/{rawSignalCount})</option>
-                <option value="confluence">Confluence ({displayedConfluenceCount}/{rawConfluenceCount})</option>
-                <option value="insider">Insider ({displayedInsiderCount}/{rawInsiderCount})</option>
-              </select>
-
-              <select
-                value={minTier}
-                onChange={(e) => setMinTier(e.target.value as TierFilter)}
-                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
-              >
-                <option value="WATCH">Watch (5+)</option>
-                <option value="HIGH">High (10+)</option>
-                <option value="EXTREME">Extreme (15+)</option>
-              </select>
-
-              <select
-                value={sideFilter}
-                onChange={(e) => setSideFilter(e.target.value as SignalSideFilter)}
-                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
-              >
-                <option value="all">All sides</option>
-                <option value="BUY">Buy clusters</option>
-                <option value="SELL">Sell clusters</option>
-              </select>
-
-              <select
-                value={signalLimit}
-                onChange={(e) => setSignalLimit(Number(e.target.value))}
-                className="h-8 rounded-md border border-border bg-muted px-2 text-xs"
-              >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Source {sourceFilter === 'all' ? 'All' : sourceFilter === 'confluence' ? 'Confluence' : 'Insider'}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Tier {minTier}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Side {sideFilter}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Limits C:{signalLimit} I:{insiderLimit}
+              </span>
+              <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
+                Insider conf {insiderMinConfidence.toFixed(2)} age {insiderMaxAgeMinutes}m
+              </span>
 
               <span className="inline-flex items-center rounded-md border border-border/60 bg-card px-2 py-1 text-[10px] text-muted-foreground">
                 Signals {unifiedSignals.length}
@@ -896,18 +1012,32 @@ export default function RecentTradesPanel({
                 </span>
               )}
 
-              <button
-                onClick={handleRefresh}
-                disabled={isRefetching}
-                className={cn(
-                  'ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2.5 text-xs text-muted-foreground',
-                  'hover:text-foreground hover:bg-muted/60 transition-colors',
-                  isRefetching && 'opacity-50',
-                )}
-              >
-                <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
-                Refresh
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={handleRefresh}
+                  disabled={isRefetching}
+                  className={cn(
+                    'inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2.5 text-xs text-muted-foreground',
+                    'hover:text-foreground hover:bg-muted/60 transition-colors',
+                    isRefetching && 'opacity-50',
+                  )}
+                >
+                  <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
+                  Refresh
+                </button>
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  disabled={!discoverySettings}
+                  className={cn(
+                    'inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-card px-2.5 text-xs text-muted-foreground',
+                    'hover:text-orange-300 hover:bg-orange-500/10 hover:border-orange-500/40 transition-colors',
+                    !discoverySettings && 'opacity-50 cursor-not-allowed',
+                  )}
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  Settings
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -1046,6 +1176,25 @@ export default function RecentTradesPanel({
             />
           )}
         </>
+      )}
+
+      {showOpportunities && mode === 'opportunities' && (
+        <TraderOpportunitiesSettingsFlyout
+          isOpen={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          initial={{
+            source_filter: sourceFilter,
+            min_tier: minTier,
+            side_filter: sideFilter,
+            confluence_limit: signalLimit,
+            insider_limit: insiderLimit,
+            insider_min_confidence: insiderMinConfidence,
+            insider_max_age_minutes: insiderMaxAgeMinutes,
+          }}
+          onSave={handleSaveTraderOpportunitySettings}
+          savePending={saveTraderSettingsMutation.isPending}
+          saveMessage={settingsSaveMessage}
+        />
       )}
 
       {showOpportunities && liveAlerts.length > 0 && (

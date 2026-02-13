@@ -16,6 +16,7 @@ SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
     "max_resolution_months": 18,
     "max_plausible_roi": 30.0,
     "max_trade_legs": 8,
+    "min_liquidity_per_leg": 500.0,
     "negrisk_min_total_yes": 0.95,
     "negrisk_warn_total_yes": 0.97,
     "negrisk_election_min_total_yes": 0.97,
@@ -55,6 +56,7 @@ SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
     "miracle_max_no_price": 0.995,
     "miracle_min_impossibility_score": 0.70,
     "btc_eth_hf_enabled": True,
+    "btc_eth_hf_maker_mode": True,
     "cross_platform_enabled": True,
     "combinatorial_min_confidence": 0.75,
     "combinatorial_high_confidence": 0.90,
@@ -90,6 +92,76 @@ DISCOVERY_SETTINGS_DEFAULTS: dict[str, Any] = {
     "delay_between_wallets": 0.15,
     "max_markets_per_run": 100,
     "max_wallets_per_market": 50,
+    "trader_opps_source_filter": "all",
+    "trader_opps_min_tier": "WATCH",
+    "trader_opps_side_filter": "all",
+    "trader_opps_confluence_limit": 50,
+    "trader_opps_insider_limit": 40,
+    "trader_opps_insider_min_confidence": 0.62,
+    "trader_opps_insider_max_age_minutes": 180,
+}
+
+WORLD_INTELLIGENCE_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "interval_seconds": 300,
+    "emit_trade_signals": False,
+    "ais_enabled": True,
+    "ais_sample_seconds": 10,
+    "ais_max_messages": 250,
+    "airplanes_live_enabled": True,
+    "airplanes_live_timeout_seconds": 20.0,
+    "airplanes_live_max_records": 1500,
+    "military_dedupe_radius_km": 45.0,
+    "country_reference_sync_enabled": True,
+    "country_reference_sync_hours": 24,
+    "country_reference_request_timeout_seconds": 20.0,
+    "ucdp_sync_enabled": True,
+    "ucdp_sync_hours": 24,
+    "ucdp_lookback_years": 8,
+    "ucdp_max_pages": 100,
+    "ucdp_request_timeout_seconds": 25.0,
+    "mid_sync_enabled": True,
+    "mid_sync_hours": 168,
+    "mid_request_timeout_seconds": 20.0,
+    "trade_dependency_sync_enabled": True,
+    "trade_dependency_sync_hours": 24,
+    "trade_dependency_request_timeout_seconds": 20.0,
+    "trade_dependency_wb_per_page": 5000,
+    "trade_dependency_wb_max_pages": 50,
+    "trade_dependency_base_divisor": 120.0,
+    "trade_dependency_min_factor": 0.5,
+    "trade_dependency_max_factor": 1.5,
+    "chokepoints_enabled": True,
+    "chokepoints_refresh_seconds": 1800,
+    "chokepoints_request_timeout_seconds": 20.0,
+    "chokepoints_max_daily_rows": 500,
+    "chokepoints_db_sync_enabled": True,
+    "chokepoints_db_sync_hours": 6,
+    "convergence_min_types": 2,
+    "anomaly_threshold": 1.8,
+    "anomaly_min_baseline_points": 3,
+    "instability_signal_min": 15.0,
+    "instability_critical": 60.0,
+    "tension_critical": 70.0,
+    "gdelt_query_delay_seconds": 5.0,
+    "gdelt_max_concurrency": 1,
+    "gdelt_news_enabled": True,
+    "gdelt_news_timespan_hours": 6,
+    "gdelt_news_max_records": 40,
+    "gdelt_news_request_timeout_seconds": 20.0,
+    "gdelt_news_cache_seconds": 300,
+    "gdelt_news_query_delay_seconds": 5.0,
+    "gdelt_news_sync_enabled": True,
+    "gdelt_news_sync_hours": 1,
+    "acled_rate_limit_per_min": 5,
+    "acled_auth_rate_limit_per_min": 12,
+    "acled_cb_max_failures": 8,
+    "acled_cb_cooldown_seconds": 180.0,
+    "opensky_cb_max_failures": 6,
+    "opensky_cb_cooldown_seconds": 120.0,
+    "usgs_min_magnitude": 4.5,
+    "usgs_enabled": True,
+    "military_enabled": True,
 }
 
 
@@ -97,6 +169,36 @@ def _with_default(value: Any, default: Any) -> Any:
     if isinstance(value, str) and value == "":
         return default
     return default if value is None else value
+
+
+def _coerce_typed(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(default, bool):
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+        return bool(value)
+    if isinstance(default, int) and not isinstance(default, bool):
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+    if isinstance(default, float):
+        try:
+            return float(value)
+        except Exception:
+            return default
+    if isinstance(default, list):
+        return value if isinstance(value, list) else list(default)
+    if isinstance(default, dict):
+        return value if isinstance(value, dict) else dict(default)
+    if isinstance(default, str):
+        return str(value)
+    return value
 
 
 def mask_secret(value: Optional[str], show_chars: int = 4) -> Optional[str]:
@@ -275,6 +377,34 @@ def discovery_payload(settings: AppSettings) -> dict[str, Any]:
             settings.discovery_max_wallets_per_market,
             DISCOVERY_SETTINGS_DEFAULTS["max_wallets_per_market"],
         ),
+        "trader_opps_source_filter": _with_default(
+            settings.discovery_trader_opps_source_filter,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_source_filter"],
+        ),
+        "trader_opps_min_tier": _with_default(
+            settings.discovery_trader_opps_min_tier,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_min_tier"],
+        ),
+        "trader_opps_side_filter": _with_default(
+            settings.discovery_trader_opps_side_filter,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_side_filter"],
+        ),
+        "trader_opps_confluence_limit": _with_default(
+            settings.discovery_trader_opps_confluence_limit,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_confluence_limit"],
+        ),
+        "trader_opps_insider_limit": _with_default(
+            settings.discovery_trader_opps_insider_limit,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_limit"],
+        ),
+        "trader_opps_insider_min_confidence": _with_default(
+            settings.discovery_trader_opps_insider_min_confidence,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_min_confidence"],
+        ),
+        "trader_opps_insider_max_age_minutes": _with_default(
+            settings.discovery_trader_opps_insider_max_age_minutes,
+            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_max_age_minutes"],
+        ),
     }
 
 
@@ -283,6 +413,45 @@ def search_filters_payload(settings: AppSettings) -> dict[str, Any]:
         field_name: _with_default(getattr(settings, field_name), default)
         for field_name, default in SEARCH_FILTER_DEFAULTS.items()
     }
+
+
+def world_intelligence_payload(settings: AppSettings) -> dict[str, Any]:
+    raw = getattr(settings, "world_intel_settings_json", None)
+    stored = raw if isinstance(raw, dict) else {}
+
+    if "gdelt_news_enabled" not in stored:
+        stored = {
+            **stored,
+            "gdelt_news_enabled": getattr(
+                settings, "world_intel_gdelt_news_enabled", None
+            ),
+            "gdelt_news_timespan_hours": getattr(
+                settings, "world_intel_gdelt_news_timespan_hours", None
+            ),
+            "gdelt_news_max_records": getattr(
+                settings, "world_intel_gdelt_news_max_records", None
+            ),
+        }
+
+    payload = {
+        field_name: _coerce_typed(stored.get(field_name), default)
+        for field_name, default in WORLD_INTELLIGENCE_DEFAULTS.items()
+    }
+    payload.update(
+        {
+            "acled_api_key": mask_stored_secret(settings.world_intel_acled_api_key),
+            "acled_email": getattr(settings, "world_intel_acled_email", None),
+            "opensky_username": getattr(settings, "world_intel_opensky_username", None),
+            "opensky_password": mask_stored_secret(settings.world_intel_opensky_password),
+            "aisstream_api_key": mask_stored_secret(
+                settings.world_intel_aisstream_api_key
+            ),
+            "cloudflare_radar_token": mask_stored_secret(
+                settings.world_intel_cloudflare_radar_token
+            ),
+        }
+    )
+    return payload
 
 
 def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]:
@@ -418,11 +587,32 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.discovery_delay_between_wallets = discovery.delay_between_wallets
         settings.discovery_max_markets_per_run = discovery.max_markets_per_run
         settings.discovery_max_wallets_per_market = discovery.max_wallets_per_market
+        settings.discovery_trader_opps_source_filter = (
+            str(discovery.trader_opps_source_filter or "all").strip().lower() or "all"
+        )
+        settings.discovery_trader_opps_min_tier = (
+            str(discovery.trader_opps_min_tier or "WATCH").strip().upper() or "WATCH"
+        )
+        settings.discovery_trader_opps_side_filter = (
+            str(discovery.trader_opps_side_filter or "all").strip().lower() or "all"
+        )
+        settings.discovery_trader_opps_confluence_limit = (
+            discovery.trader_opps_confluence_limit
+        )
+        settings.discovery_trader_opps_insider_limit = discovery.trader_opps_insider_limit
+        settings.discovery_trader_opps_insider_min_confidence = (
+            discovery.trader_opps_insider_min_confidence
+        )
+        settings.discovery_trader_opps_insider_max_age_minutes = (
+            discovery.trader_opps_insider_max_age_minutes
+        )
 
     if request.search_filters:
         sf = request.search_filters
+        provided_fields = getattr(sf, "model_fields_set", set())
         for field_name in SEARCH_FILTER_DEFAULTS:
-            setattr(settings, field_name, getattr(sf, field_name))
+            if field_name in provided_fields:
+                setattr(settings, field_name, getattr(sf, field_name))
 
     if request.trading_proxy:
         proxy = request.trading_proxy
@@ -433,9 +623,75 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.trading_proxy_timeout = proxy.timeout
         settings.trading_proxy_require_vpn = proxy.require_vpn
 
+    world_intelligence = getattr(request, "world_intelligence", None)
+    if world_intelligence is not None:
+        current_raw = getattr(settings, "world_intel_settings_json", None)
+        current_config = current_raw if isinstance(current_raw, dict) else {}
+        next_config = dict(current_config)
+
+        for field_name, default in WORLD_INTELLIGENCE_DEFAULTS.items():
+            if hasattr(world_intelligence, field_name):
+                incoming = getattr(world_intelligence, field_name)
+                if incoming is not None:
+                    next_config[field_name] = _coerce_typed(incoming, default)
+
+        settings.world_intel_settings_json = next_config
+
+        # Keep existing GDELT DB-backed config columns aligned.
+        settings.world_intel_gdelt_news_enabled = bool(
+            _coerce_typed(
+                next_config.get("gdelt_news_enabled"),
+                WORLD_INTELLIGENCE_DEFAULTS["gdelt_news_enabled"],
+            )
+        )
+        settings.world_intel_gdelt_news_timespan_hours = int(
+            _coerce_typed(
+                next_config.get("gdelt_news_timespan_hours"),
+                WORLD_INTELLIGENCE_DEFAULTS["gdelt_news_timespan_hours"],
+            )
+        )
+        settings.world_intel_gdelt_news_max_records = int(
+            _coerce_typed(
+                next_config.get("gdelt_news_max_records"),
+                WORLD_INTELLIGENCE_DEFAULTS["gdelt_news_max_records"],
+            )
+        )
+
+        if getattr(world_intelligence, "acled_api_key", None) is not None:
+            set_encrypted_secret(
+                settings, "world_intel_acled_api_key", world_intelligence.acled_api_key
+            )
+        if getattr(world_intelligence, "acled_email", None) is not None:
+            settings.world_intel_acled_email = (
+                str(world_intelligence.acled_email or "").strip() or None
+            )
+        if getattr(world_intelligence, "opensky_username", None) is not None:
+            settings.world_intel_opensky_username = (
+                str(world_intelligence.opensky_username or "").strip() or None
+            )
+        if getattr(world_intelligence, "opensky_password", None) is not None:
+            set_encrypted_secret(
+                settings,
+                "world_intel_opensky_password",
+                world_intelligence.opensky_password,
+            )
+        if getattr(world_intelligence, "aisstream_api_key", None) is not None:
+            set_encrypted_secret(
+                settings,
+                "world_intel_aisstream_api_key",
+                world_intelligence.aisstream_api_key,
+            )
+        if getattr(world_intelligence, "cloudflare_radar_token", None) is not None:
+            set_encrypted_secret(
+                settings,
+                "world_intel_cloudflare_radar_token",
+                world_intelligence.cloudflare_radar_token,
+            )
+
     settings.updated_at = utcnow()
     return {
         "needs_llm_reinit": bool(request.llm),
         "needs_proxy_reinit": bool(request.trading_proxy),
         "needs_filter_reload": bool(request.search_filters),
+        "needs_world_intel_reload": world_intelligence is not None,
     }

@@ -44,6 +44,18 @@ class LiquidityVacuumStrategy(BaseStrategy):
         # Track previous prices for velocity calculation
         self._prev_prices: dict[str, dict[str, float]] = {}
 
+    @staticmethod
+    def _is_multileg_market(market: Market) -> bool:
+        market_id = str(getattr(market, "id", "") or "").upper()
+        if market_id.startswith("KXMVESPORTSMULTIGAMEEXTENDED-"):
+            return True
+        question = str(getattr(market, "question", "") or "").lower()
+        if question.count("yes ") + question.count("no ") >= 2:
+            return True
+        if question.count(",") >= 2:
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # detect() -- main entry point
     # ------------------------------------------------------------------
@@ -70,6 +82,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
             if len(market.outcome_prices) != 2:
                 continue
             if market.closed or not market.active:
+                continue
+            if self._is_multileg_market(market):
                 continue
 
             # Resolve live prices
@@ -112,6 +126,13 @@ class LiquidityVacuumStrategy(BaseStrategy):
                 continue
 
             total_cost = buy_price
+            expected_move = min(
+                0.12,
+                max(0.02, (imbalance_ratio - 1.0) * 0.01),
+            )
+            expected_payout = min(0.98, total_cost + expected_move)
+            if expected_payout - total_cost < 0.02:
+                continue
 
             # Build position
             token_id = market.clob_token_ids[token_index] if len(market.clob_token_ids) > token_index else None
@@ -137,9 +158,11 @@ class LiquidityVacuumStrategy(BaseStrategy):
                     f"detected — BUY {buy_outcome} @ ${buy_price:.3f} | {reason}"
                 ),
                 total_cost=total_cost,
+                expected_payout=expected_payout,
                 markets=[market],
                 positions=positions,
                 event=event,
+                is_guaranteed=False,
             )
 
             if opp is not None:

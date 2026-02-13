@@ -12,8 +12,8 @@ Thanks for your interest in contributing. This document covers the process for c
    ```
 3. Set up your development environment:
    ```bash
-   make setup
-   make dev
+   ./setup.sh
+   ./run.sh
    ```
 4. Create a feature branch:
    ```bash
@@ -26,7 +26,6 @@ Thanks for your interest in contributing. This document covers the process for c
 
 - Python 3.10+
 - Node.js 18+
-- Docker (optional, for containerized development)
 
 ### Backend
 

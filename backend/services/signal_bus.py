@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
@@ -263,21 +264,25 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
     """Recompute per-source snapshot rows from ``trade_signals``."""
 
     rows = (
-        await session.execute(
-            select(
-                TradeSignal.source,
-                TradeSignal.status,
-                func.count(TradeSignal.id),
-                func.max(TradeSignal.created_at),
-                func.min(
-                    case(
-                        (TradeSignal.status == "pending", TradeSignal.created_at),
-                        else_=None,
-                    )
-                ),
-            ).group_by(TradeSignal.source, TradeSignal.status)
+        (
+            await session.execute(
+                select(
+                    TradeSignal.source,
+                    TradeSignal.status,
+                    func.count(TradeSignal.id),
+                    func.max(TradeSignal.created_at),
+                    func.min(
+                        case(
+                            (TradeSignal.status == "pending", TradeSignal.created_at),
+                            else_=None,
+                        )
+                    ),
+                )
+                .group_by(TradeSignal.source, TradeSignal.status)
+            )
         )
-    ).all()
+        .all()
+    )
 
     source_stats: dict[str, dict[str, Any]] = {}
     for source, status, count, latest_created, oldest_pending in rows:
@@ -299,13 +304,20 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
         key = f"{status}_count"
         if key in stats:
             stats[key] = int(count or 0)
-        if latest_created and (stats["latest_signal_at"] is None or latest_created > stats["latest_signal_at"]):
+        if latest_created and (
+            stats["latest_signal_at"] is None or latest_created > stats["latest_signal_at"]
+        ):
             stats["latest_signal_at"] = latest_created
-        if oldest_pending and (stats["oldest_pending_at"] is None or oldest_pending < stats["oldest_pending_at"]):
+        if oldest_pending and (
+            stats["oldest_pending_at"] is None
+            or oldest_pending < stats["oldest_pending_at"]
+        ):
             stats["oldest_pending_at"] = oldest_pending
 
     now = _utc_now()
-    existing_rows = (await session.execute(select(TradeSignalSnapshot))).scalars().all()
+    existing_rows = (
+        (await session.execute(select(TradeSignalSnapshot))).scalars().all()
+    )
     existing_by_source = {r.source: r for r in existing_rows}
 
     for source, stats in source_stats.items():
@@ -328,7 +340,9 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
         row.latest_signal_at = stats.get("latest_signal_at")
         row.oldest_pending_at = stats.get("oldest_pending_at")
         row.freshness_seconds = (
-            (now - stats["latest_signal_at"]).total_seconds() if stats.get("latest_signal_at") else None
+            (now - stats["latest_signal_at"]).total_seconds()
+            if stats.get("latest_signal_at")
+            else None
         )
         row.updated_at = now
         row.stats_json = {
@@ -350,7 +364,9 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
 
     out: list[dict[str, Any]] = []
     snapshot_rows = (
-        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc()))).scalars().all()
+        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())))
+        .scalars()
+        .all()
     )
     for row in snapshot_rows:
         out.append(
@@ -638,11 +654,67 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _timeframe_seconds(value: Any) -> int:
+    tf = str(value or "").strip().lower()
+    if tf in {"5m", "5min"}:
+        return 300
+    if tf in {"15m", "15min"}:
+        return 900
+    if tf in {"1h", "1hr", "60m"}:
+        return 3600
+    if tf in {"4h", "4hr", "240m"}:
+        return 14400
+    return 900
+
+
+def _parse_end_time(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return _to_utc_naive(parsed)
+
+
+def _crypto_regime(seconds_left: float, timeframe_seconds: int) -> str:
+    denom = float(max(1, timeframe_seconds))
+    ratio = _clamp(seconds_left / denom, 0.0, 1.0)
+    if ratio > 0.67:
+        return "opening"
+    if ratio < 0.33:
+        return "closing"
+    return "mid"
+
+
+def _regime_weights(regime: str) -> dict[str, float]:
+    if regime == "opening":
+        return {"directional": 0.65, "pure_arb": 0.25, "rebalance": 0.10}
+    if regime == "closing":
+        return {"directional": 0.35, "pure_arb": 0.20, "rebalance": 0.45}
+    return {"directional": 0.50, "pure_arb": 0.25, "rebalance": 0.25}
+
+
+def _regime_weights_without_oracle(regime: str) -> dict[str, float]:
+    if regime == "opening":
+        return {"directional": 0.0, "pure_arb": 0.60, "rebalance": 0.40}
+    if regime == "closing":
+        return {"directional": 0.0, "pure_arb": 0.45, "rebalance": 0.55}
+    return {"directional": 0.0, "pure_arb": 0.55, "rebalance": 0.45}
+
+
 async def emit_crypto_market_signals(
     session: AsyncSession,
     markets: list[dict[str, Any]],
 ) -> int:
-    """Emit high-frequency crypto directional signals from the dedicated crypto worker."""
+    """Emit dedicated crypto-worker 15m-class multi-strategy signals."""
     emitted = 0
     now = _utc_now()
 
@@ -656,68 +728,198 @@ async def emit_crypto_market_signals(
         up_price = market.get("up_price")
         down_price = market.get("down_price")
 
-        if price_to_beat is None or oracle_price is None or up_price is None or down_price is None:
+        if up_price is None or down_price is None:
             continue
 
-        try:
-            ptb = float(price_to_beat)
-            oracle = float(oracle_price)
-            up = float(up_price)
-            down = float(down_price)
-        except Exception:
+        ptb = _to_float(price_to_beat)
+        oracle = _to_float(oracle_price)
+        up = _to_float(up_price)
+        down = _to_float(down_price)
+        if up is None or down is None:
             continue
-        if ptb <= 0:
+        if not (0.0 <= up <= 1.0 and 0.0 <= down <= 1.0):
             continue
+        has_oracle = ptb is not None and ptb > 0 and oracle is not None
 
-        diff_pct = ((oracle - ptb) / ptb) * 100.0
-        # Convert oracle delta to a directional confidence/probability signal.
-        prob_yes = _clamp(0.5 + _clamp(diff_pct / 1.0, -0.45, 0.45), 0.05, 0.95)
-        direction = "buy_yes" if prob_yes >= 0.5 else "buy_no"
-        market_prob = up if direction == "buy_yes" else down
-        model_prob = prob_yes if direction == "buy_yes" else (1.0 - prob_yes)
-        edge_percent = (model_prob - market_prob) * 100.0
+        timeframe_seconds = _timeframe_seconds(market.get("timeframe"))
+        parsed_end_time = _parse_end_time(market.get("end_time"))
+        seconds_left = _to_float(market.get("seconds_left"))
+        if seconds_left is None:
+            if parsed_end_time is not None:
+                seconds_left = max(0.0, (parsed_end_time - now).total_seconds())
+            else:
+                seconds_left = float(timeframe_seconds)
+        regime = _crypto_regime(seconds_left, timeframe_seconds)
 
-        # Filter tiny/noisy edges.
-        if edge_percent < 1.5:
-            continue
+        if has_oracle and ptb is not None and oracle is not None:
+            diff_pct = ((oracle - ptb) / ptb) * 100.0
+            time_ratio = _clamp(seconds_left / float(max(1, timeframe_seconds)), 0.08, 1.0)
+            directional_scale = max(0.08, 0.50 * time_ratio)
+            directional_z = _clamp(diff_pct / directional_scale, -60.0, 60.0)
+            model_prob_yes = _clamp(
+                1.0 / (1.0 + math.exp(-directional_z)),
+                0.03,
+                0.97,
+            )
+            model_prob_no = 1.0 - model_prob_yes
+            directional_yes = max(0.0, (model_prob_yes - up) * 100.0)
+            directional_no = max(0.0, (model_prob_no - down) * 100.0)
+        else:
+            diff_pct = 0.0
+            model_prob_yes = 0.5
+            model_prob_no = 0.5
+            directional_yes = 0.0
+            directional_no = 0.0
 
-        confidence = _clamp(abs(diff_pct) / 1.2, 0.05, 0.99)
+        combined = up + down
+        underround = max(0.0, 1.0 - combined)
+        pure_arb_yes = underround * 100.0
+        pure_arb_no = underround * 100.0
+
+        neutrality = _clamp(1.0 - (abs(diff_pct) / 0.45), 0.0, 1.0)
+        rebalance_yes = max(0.0, (0.5 - up) * 100.0) * neutrality
+        rebalance_no = max(0.0, (0.5 - down) * 100.0) * neutrality
+
+        weights = _regime_weights(regime) if has_oracle else _regime_weights_without_oracle(regime)
+        gross_yes = (
+            (directional_yes * weights["directional"])
+            + (pure_arb_yes * weights["pure_arb"])
+            + (rebalance_yes * weights["rebalance"])
+        )
+        gross_no = (
+            (directional_no * weights["directional"])
+            + (pure_arb_no * weights["pure_arb"])
+            + (rebalance_no * weights["rebalance"])
+        )
+
+        spread = _to_float(market.get("spread"), 0.0) or 0.0
+        spread = _clamp(spread, 0.0, 0.10)
+        liquidity = max(0.0, _to_float(market.get("liquidity"), 0.0) or 0.0)
+        fees_enabled = bool(market.get("fees_enabled", False))
+
+        fee_penalty = 0.45 if fees_enabled else 0.25
+        spread_penalty = spread * 100.0 * 0.35
+        liquidity_scale = _clamp(liquidity / 250000.0, 0.0, 1.0)
+        regime_slippage_factor = 1.1 if regime == "closing" else 1.0
+        slippage_penalty = (1.35 - (0.95 * liquidity_scale)) * regime_slippage_factor
+        execution_penalty = fee_penalty + spread_penalty + slippage_penalty
+
+        net_yes = gross_yes - execution_penalty
+        net_no = gross_no - execution_penalty
+        direction = "buy_yes" if net_yes >= net_no else "buy_no"
         entry_price = up if direction == "buy_yes" else down
+        edge_percent = net_yes if direction == "buy_yes" else net_no
+
+        if edge_percent < 1.0:
+            continue
+
+        selected_components = (
+            {
+                "directional": directional_yes,
+                "pure_arb": pure_arb_yes,
+                "rebalance": rebalance_yes,
+            }
+            if direction == "buy_yes"
+            else {
+                "directional": directional_no,
+                "pure_arb": pure_arb_no,
+                "rebalance": rebalance_no,
+            }
+        )
+        weighted_components = {
+            key: selected_components[key] * weights[key] for key in selected_components
+        }
+        dominant_strategy = max(weighted_components, key=lambda key: weighted_components[key])
+        dominant_weighted_edge = weighted_components[dominant_strategy]
+        edge_gap = abs(net_yes - net_no)
+        confidence = _clamp(
+            0.32
+            + _clamp(edge_percent / 20.0, 0.0, 0.35)
+            + _clamp(edge_gap / 18.0, 0.0, 0.12)
+            + _clamp(dominant_weighted_edge / max(1.0, edge_percent) * 0.08, 0.0, 0.08),
+            0.05,
+            0.97,
+        )
+        if not has_oracle:
+            confidence = _clamp(confidence * 0.75, 0.05, 0.85)
 
         dedupe_key = make_dedupe_key(
             market.get("slug"),
             direction,
+            regime,
+            dominant_strategy,
+            "oracle" if has_oracle else "no_oracle",
             round(entry_price, 4),
-            round(ptb, 2),
+            round(ptb, 2) if ptb is not None else "na",
             market.get("end_time"),
         )
 
-        expires_at: Optional[datetime] = None
-        end_time = market.get("end_time")
-        if isinstance(end_time, str):
-            try:
-                parsed = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                expires_at = _to_utc_naive(parsed)
-            except Exception:
-                expires_at = None
+        expires_at: Optional[datetime] = parsed_end_time
         if expires_at is None:
             expires_at = now + timedelta(minutes=20)
+
+        payload = dict(market)
+        payload.update(
+            {
+                "signal_version": "crypto_worker_v2",
+                "signal_family": "crypto_multistrategy",
+                "strategy_origin": "crypto_worker",
+                "selected_direction": direction,
+                "regime": regime,
+                "oracle_available": has_oracle,
+                "timeframe_seconds": timeframe_seconds,
+                "time_remaining_seconds": round(seconds_left, 2),
+                "oracle_delta_pct": round(diff_pct, 6) if has_oracle else None,
+                "model_prob_yes": round(model_prob_yes, 6),
+                "model_prob_no": round(model_prob_no, 6),
+                "strategy_weights": weights,
+                "component_edges": {
+                    "buy_yes": {
+                        "directional": round(directional_yes, 6),
+                        "pure_arb": round(pure_arb_yes, 6),
+                        "rebalance": round(rebalance_yes, 6),
+                    },
+                    "buy_no": {
+                        "directional": round(directional_no, 6),
+                        "pure_arb": round(pure_arb_no, 6),
+                        "rebalance": round(rebalance_no, 6),
+                    },
+                },
+                "gross_edges": {
+                    "buy_yes": round(gross_yes, 6),
+                    "buy_no": round(gross_no, 6),
+                },
+                "execution_penalty_percent": round(execution_penalty, 6),
+                "execution_penalty_breakdown": {
+                    "fees": round(fee_penalty, 6),
+                    "spread": round(spread_penalty, 6),
+                    "slippage": round(slippage_penalty, 6),
+                },
+                "net_edges": {
+                    "buy_yes": round(net_yes, 6),
+                    "buy_no": round(net_no, 6),
+                },
+                "dominant_strategy": dominant_strategy,
+                "dominant_component_edge": round(dominant_weighted_edge, 6),
+                "edge_gap_percent": round(edge_gap, 6),
+            }
+        )
 
         await upsert_trade_signal(
             session,
             source="crypto",
             source_item_id=str(market.get("slug") or market_id),
-            signal_type="crypto_5m_15m_hf",
-            strategy_type="btc_eth_highfreq",
+            signal_type="crypto_worker_multistrat",
+            strategy_type="crypto_15m",
             market_id=market_id,
             market_question=market.get("question"),
             direction=direction,
             entry_price=entry_price,
             edge_percent=edge_percent,
             confidence=confidence,
-            liquidity=float(market.get("liquidity") or 0.0),
+            liquidity=liquidity,
             expires_at=expires_at,
-            payload_json=market,
+            payload_json=payload,
             dedupe_key=dedupe_key,
             commit=False,
         )

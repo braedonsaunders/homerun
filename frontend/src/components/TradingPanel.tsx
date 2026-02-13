@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Loader2,
   Play,
@@ -21,6 +23,7 @@ import {
   getTraderDecisions,
   getTraderEvents,
   getTraderOrchestratorOverview,
+  getTraderSources,
   getSimulationAccounts,
   getTraderTemplates,
   getTraders,
@@ -35,6 +38,7 @@ import {
   stopTraderOrchestratorLive,
   type Trader,
   type TraderOrder,
+  type TraderSource,
   updateTrader,
 } from '../services/api'
 import { cn } from '../lib/utils'
@@ -82,8 +86,16 @@ type PositionBookRow = {
   statusSummary: string
 }
 
+const CRYPTO_STRATEGY_MODES = ['auto', 'directional', 'pure_arb', 'rebalance'] as const
+const CRYPTO_ASSET_OPTIONS = ['BTC', 'ETH', 'SOL', 'XRP'] as const
+const CRYPTO_TIMEFRAME_OPTIONS = ['5m', '15m', '1h', '4h'] as const
+type CryptoStrategyMode = (typeof CRYPTO_STRATEGY_MODES)[number]
+
 type TraderAdvancedConfig = {
   cadenceProfile: string
+  strategyMode: CryptoStrategyMode
+  cryptoAssetsCsv: string
+  cryptoTimeframesCsv: string
   minSignalScore: number
   minEdgePercent: number
   minConfidence: number
@@ -118,13 +130,154 @@ type TraderAdvancedConfig = {
   notes: string
 }
 
+type TraderSourceGroupKey = 'markets' | 'crypto' | 'pool_watched' | 'other'
+
+type TraderSourceGroupMeta = {
+  key: TraderSourceGroupKey
+  label: string
+  subtitle: string
+}
+
 const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
 const RESOLVED_ORDER_STATUSES = new Set(['resolved', 'resolved_win', 'resolved_loss', 'win', 'loss'])
 const FAILED_ORDER_STATUSES = new Set(['failed', 'rejected', 'error', 'cancelled'])
 
+const FALLBACK_TRADER_SOURCES: TraderSource[] = [
+  {
+    key: 'crypto',
+    label: 'Crypto Markets',
+    description: 'Crypto microstructure and 5m/15m market signals.',
+    domains: ['crypto'],
+    signal_types: ['crypto_market'],
+  },
+  {
+    key: 'insider',
+    label: 'Insider Signals',
+    description: 'Insider and smart-wallet behavior intents.',
+    domains: ['event_markets'],
+    signal_types: ['insider_intent'],
+  },
+  {
+    key: 'news',
+    label: 'News Workflow',
+    description: 'News-driven intents and event reactions.',
+    domains: ['event_markets'],
+    signal_types: ['news_intent'],
+  },
+  {
+    key: 'scanner',
+    label: 'General Opportunities',
+    description: 'Scanner-originated arbitrage opportunities.',
+    domains: ['event_markets'],
+    signal_types: ['opportunity'],
+  },
+  {
+    key: 'tracked_traders',
+    label: 'Tracked Traders',
+    description: 'Signals synthesized from tracked trader activity.',
+    domains: ['event_markets'],
+    signal_types: ['tracked_trader'],
+  },
+  {
+    key: 'weather',
+    label: 'Weather Workflow',
+    description: 'Weather forecast probability dislocations.',
+    domains: ['event_markets'],
+    signal_types: ['weather_intent'],
+  },
+  {
+    key: 'world_intelligence',
+    label: 'World Intelligence',
+    description: 'Geopolitical conflict and tension opportunity signals.',
+    domains: ['event_markets'],
+    signal_types: ['world_intelligence'],
+  },
+]
+
+const TRADER_SOURCE_GROUPS: TraderSourceGroupMeta[] = [
+  {
+    key: 'markets',
+    label: 'Markets',
+    subtitle: 'General event and workflow opportunities',
+  },
+  {
+    key: 'crypto',
+    label: 'Crypto',
+    subtitle: 'Fast crypto market signals',
+  },
+  {
+    key: 'pool_watched',
+    label: 'Pool / Watched Traders',
+    subtitle: 'Insider and tracked trader signal pools',
+  },
+  {
+    key: 'other',
+    label: 'Other',
+    subtitle: 'Custom or uncategorized adapters',
+  },
+]
+
 function toNumber(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function isCryptoStrategyKey(value: string): boolean {
+  const key = String(value || '').trim().toLowerCase()
+  return key === 'crypto_15m' || key.includes('crypto') || key.includes('btc')
+}
+
+function normalizeCryptoStrategyMode(value: unknown): CryptoStrategyMode {
+  const mode = String(value || '').trim().toLowerCase()
+  if (CRYPTO_STRATEGY_MODES.includes(mode as CryptoStrategyMode)) {
+    return mode as CryptoStrategyMode
+  }
+  return 'auto'
+}
+
+function normalizeCryptoAsset(value: unknown): string | null {
+  const asset = String(value || '').trim().toUpperCase()
+  if (!asset) return null
+  if (asset === 'XBT') return 'BTC'
+  return CRYPTO_ASSET_OPTIONS.includes(asset as (typeof CRYPTO_ASSET_OPTIONS)[number]) ? asset : null
+}
+
+function normalizeCryptoTimeframe(value: unknown): string | null {
+  const tf = String(value || '').trim().toLowerCase()
+  if (!tf) return null
+  if (tf === '5m' || tf === '5min' || tf === '5') return '5m'
+  if (tf === '15m' || tf === '15min' || tf === '15') return '15m'
+  if (tf === '1h' || tf === '1hr' || tf === '60m' || tf === '60min') return '1h'
+  if (tf === '4h' || tf === '4hr' || tf === '240m' || tf === '240min') return '4h'
+  return null
+}
+
+function toStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return csvToList(value)
+  }
+  return []
+}
+
+function normalizeCryptoAssetList(value: unknown): string[] {
+  const selected = new Set(
+    toStringList(value)
+      .map((item) => normalizeCryptoAsset(item))
+      .filter((item): item is string => Boolean(item))
+  )
+  return CRYPTO_ASSET_OPTIONS.filter((item) => selected.has(item))
+}
+
+function normalizeCryptoTimeframeList(value: unknown): string[] {
+  const selected = new Set(
+    toStringList(value)
+      .map((item) => normalizeCryptoTimeframe(item))
+      .filter((item): item is string => Boolean(item))
+  )
+  return CRYPTO_TIMEFRAME_OPTIONS.filter((item) => selected.has(item))
 }
 
 function normalizeStatus(value: string | null | undefined): string {
@@ -154,6 +307,12 @@ function normalizeConfidencePercent(value: number): number {
   if (!Number.isFinite(value)) return 0
   if (Math.abs(value) <= 1) return value * 100
   return value
+}
+
+function confidencePercentToFraction(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  const normalized = Math.abs(value) <= 1 ? value : value / 100
+  return Math.max(0, Math.min(1, normalized))
 }
 
 function normalizeEdgePercent(value: number): number {
@@ -245,9 +404,55 @@ function csvToList(value: string): string[] {
     .filter(Boolean)
 }
 
+function normalizeSourceKey(value: string): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function uniqueSourceList(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of values) {
+    const trimmed = String(value || '').trim()
+    const normalized = normalizeSourceKey(trimmed)
+    if (!trimmed || !normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(trimmed)
+  }
+  return out
+}
+
+function classifyTraderSource(source: Pick<TraderSource, 'key' | 'domains'>): TraderSourceGroupKey {
+  const sourceKey = normalizeSourceKey(source.key)
+  const domains = (source.domains || []).map((item) => normalizeSourceKey(item))
+  if (sourceKey === 'crypto' || domains.some((item) => item.includes('crypto'))) {
+    return 'crypto'
+  }
+  if (
+    sourceKey.includes('tracked') ||
+    sourceKey.includes('watch') ||
+    sourceKey.includes('pool') ||
+    sourceKey.includes('insider')
+  ) {
+    return 'pool_watched'
+  }
+  if (
+    domains.some((item) => item.includes('market')) ||
+    sourceKey.includes('scanner') ||
+    sourceKey.includes('news') ||
+    sourceKey.includes('weather') ||
+    sourceKey.includes('world')
+  ) {
+    return 'markets'
+  }
+  return 'other'
+}
+
 function defaultAdvancedConfig(): TraderAdvancedConfig {
   return {
     cadenceProfile: 'custom',
+    strategyMode: 'auto',
+    cryptoAssetsCsv: CRYPTO_ASSET_OPTIONS.join(', '),
+    cryptoTimeframesCsv: CRYPTO_TIMEFRAME_OPTIONS.join(', '),
     minSignalScore: 0.1,
     minEdgePercent: 8,
     minConfidence: 60,
@@ -290,9 +495,18 @@ function computeAdvancedConfig(
 ): TraderAdvancedConfig {
   const defaults = defaultAdvancedConfig()
   const tradingWindow = isRecord(metadata.trading_window_utc) ? metadata.trading_window_utc : {}
+  const configuredCryptoAssets = normalizeCryptoAssetList(
+    params.target_assets ?? params.allowed_assets ?? params.assets ?? params.coins
+  )
+  const configuredCryptoTimeframes = normalizeCryptoTimeframeList(
+    params.target_timeframes ?? params.allowed_timeframes ?? params.timeframes ?? params.cadence
+  )
 
   return {
     cadenceProfile: String(metadata.cadence_profile || defaults.cadenceProfile),
+    strategyMode: normalizeCryptoStrategyMode(params.strategy_mode ?? params.mode ?? defaults.strategyMode),
+    cryptoAssetsCsv: (configuredCryptoAssets.length > 0 ? configuredCryptoAssets : [...CRYPTO_ASSET_OPTIONS]).join(', '),
+    cryptoTimeframesCsv: (configuredCryptoTimeframes.length > 0 ? configuredCryptoTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]).join(', '),
     minSignalScore: toNumber(params.min_signal_score ?? defaults.minSignalScore),
     minEdgePercent: toNumber(params.min_edge_percent ?? defaults.minEdgePercent),
     minConfidence: normalizeConfidencePercent(toNumber(params.min_confidence ?? defaults.minConfidence)),
@@ -330,13 +544,16 @@ function computeAdvancedConfig(
 
 function withConfiguredParams(
   raw: Record<string, unknown>,
-  config: TraderAdvancedConfig
+  config: TraderAdvancedConfig,
+  strategyKey: string
 ): Record<string, unknown> {
-  return {
+  const targetAssets = normalizeCryptoAssetList(config.cryptoAssetsCsv)
+  const targetTimeframes = normalizeCryptoTimeframeList(config.cryptoTimeframesCsv)
+  const next: Record<string, unknown> = {
     ...raw,
     min_signal_score: config.minSignalScore,
     min_edge_percent: config.minEdgePercent,
-    min_confidence: config.minConfidence,
+    min_confidence: confidencePercentToFraction(config.minConfidence),
     lookback_minutes: config.lookbackMinutes,
     scan_batch_size: config.scanBatchSize,
     max_signals_per_cycle: config.maxSignalsPerCycle,
@@ -344,6 +561,16 @@ function withConfiguredParams(
     source_priority: csvToList(config.sourcePriorityCsv),
     blocked_market_keywords: csvToList(config.blockedKeywordsCsv),
   }
+  if (isCryptoStrategyKey(strategyKey)) {
+    next.strategy_mode = config.strategyMode
+    next.target_assets = targetAssets.length > 0 ? targetAssets : [...CRYPTO_ASSET_OPTIONS]
+    next.target_timeframes = targetTimeframes.length > 0 ? targetTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]
+  } else {
+    delete next.strategy_mode
+    delete next.target_assets
+    delete next.target_timeframes
+  }
+  return next
 }
 
 function withConfiguredRiskLimits(
@@ -388,6 +615,14 @@ function withConfiguredMetadata(
     tags: csvToList(config.tagsCsv),
     notes: config.notes,
   }
+}
+
+function cadenceProfileForInterval(seconds: number): string {
+  if (seconds === 2) return 'ultra_fast'
+  if (seconds === 5) return 'fast'
+  if (seconds === 10) return 'balanced'
+  if (seconds === 30) return 'slow'
+  return 'custom'
 }
 
 function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<string, string>): PositionBookRow[] {
@@ -476,6 +711,67 @@ function buildPositionBookRows(orders: TraderOrder[], traderNameById: Record<str
     .sort((a, b) => b.exposureUsd - a.exposureUsd)
 }
 
+function FlyoutSection({
+  title,
+  subtitle,
+  icon: Icon,
+  count,
+  defaultOpen = true,
+  iconClassName = 'text-orange-500',
+  tone = 'default',
+  children,
+}: {
+  title: string
+  subtitle?: string
+  icon: any
+  count?: string
+  defaultOpen?: boolean
+  iconClassName?: string
+  tone?: 'default' | 'danger'
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  return (
+    <Card
+      className={cn(
+        'rounded-xl shadow-none overflow-hidden',
+        tone === 'danger' ? 'bg-red-500/5 border-red-500/25' : 'bg-card/40 border-border/40'
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className={cn(
+          'w-full flex items-center justify-between gap-2 px-3 py-2 transition-colors border-b',
+          tone === 'danger'
+            ? 'border-red-500/20 hover:bg-red-500/10'
+            : 'border-border/40 hover:bg-muted/25'
+        )}
+      >
+        <div className="flex items-center gap-1.5">
+          <Icon className={cn('w-3.5 h-3.5', iconClassName)} />
+          <h4 className="text-[10px] uppercase tracking-widest font-semibold">{title}</h4>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {count ? (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/60 text-muted-foreground">
+              {count}
+            </span>
+          ) : null}
+          {open ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />}
+        </div>
+      </button>
+      {open ? (
+        <div className="px-3 py-3 space-y-3">
+          {subtitle ? <p className="text-[10px] text-muted-foreground/70 -mt-0.5">{subtitle}</p> : null}
+          {children}
+        </div>
+      ) : null}
+    </Card>
+  )
+}
+
 export default function TradingPanel() {
   const queryClient = useQueryClient()
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
@@ -525,6 +821,12 @@ export default function TradingPanel() {
     staleTime: 60000,
   })
 
+  const traderSourcesQuery = useQuery({
+    queryKey: ['trader-sources'],
+    queryFn: getTraderSources,
+    staleTime: 300000,
+  })
+
   const simulationAccountsQuery = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
@@ -533,6 +835,12 @@ export default function TradingPanel() {
 
   const traders = tradersQuery.data || []
   const templates = templatesQuery.data || []
+  const sourceCatalog = traderSourcesQuery.data?.length ? traderSourcesQuery.data : FALLBACK_TRADER_SOURCES
+  const defaultSourceKeys = useMemo(
+    () => uniqueSourceList(sourceCatalog.map((source) => source.key)),
+    [sourceCatalog]
+  )
+  const defaultSourceCsv = useMemo(() => defaultSourceKeys.join(', '), [defaultSourceKeys])
 
   const traderIds = useMemo(() => traders.map((trader) => trader.id), [traders])
   const traderIdsKey = useMemo(() => traderIds.join('|'), [traderIds])
@@ -596,6 +904,114 @@ export default function TradingPanel() {
     [allEvents, selectedTraderId]
   )
 
+  const sourceCards = useMemo(() => {
+    const known = uniqueSourceList(sourceCatalog.map((source) => source.key))
+      .map((key) => sourceCatalog.find((source) => normalizeSourceKey(source.key) === normalizeSourceKey(key)))
+      .filter((source): source is TraderSource => Boolean(source))
+      .map((source) => ({
+        ...source,
+        isLegacy: false,
+      }))
+
+    const knownKeys = new Set(known.map((source) => normalizeSourceKey(source.key)))
+    const selected = csvToList(draftSources)
+    const legacy = selected
+      .filter((sourceKey) => !knownKeys.has(normalizeSourceKey(sourceKey)))
+      .map((sourceKey) => ({
+        key: sourceKey,
+        label: sourceKey,
+        description: 'Custom/legacy adapter key.',
+        domains: ['legacy'],
+        signal_types: [],
+        isLegacy: true,
+      }))
+
+    return [...known, ...legacy]
+  }, [draftSources, sourceCatalog])
+
+  const selectedSourceKeySet = useMemo(
+    () => new Set(csvToList(draftSources).map((sourceKey) => normalizeSourceKey(sourceKey))),
+    [draftSources]
+  )
+
+  const sourceCardsByGroup = useMemo(() => {
+    const grouped: Record<TraderSourceGroupKey, Array<TraderSource & { isLegacy: boolean }>> = {
+      markets: [],
+      crypto: [],
+      pool_watched: [],
+      other: [],
+    }
+    for (const source of sourceCards) {
+      grouped[classifyTraderSource(source)].push(source)
+    }
+    return grouped
+  }, [sourceCards])
+
+  const selectedSourceCount = useMemo(
+    () => sourceCards.filter((source) => selectedSourceKeySet.has(normalizeSourceKey(source.key))).length,
+    [selectedSourceKeySet, sourceCards]
+  )
+
+  const effectiveDraftSources = useMemo(() => {
+    const explicit = uniqueSourceList(csvToList(draftSources))
+    if (explicit.length > 0) return explicit
+    return defaultSourceKeys
+  }, [defaultSourceKeys, draftSources])
+
+  const isCryptoStrategyDraft = useMemo(
+    () => isCryptoStrategyKey(draftStrategyKey),
+    [draftStrategyKey]
+  )
+  const selectedCryptoAssets = useMemo(
+    () => new Set(normalizeCryptoAssetList(advancedConfig.cryptoAssetsCsv)),
+    [advancedConfig.cryptoAssetsCsv]
+  )
+  const selectedCryptoTimeframes = useMemo(
+    () => new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoTimeframesCsv)),
+    [advancedConfig.cryptoTimeframesCsv]
+  )
+
+  const toggleDraftSource = (sourceKey: string) => {
+    setDraftSources((current) => {
+      const currentList = csvToList(current)
+      const normalizedTarget = normalizeSourceKey(sourceKey)
+      const hasTarget = currentList.some((item) => normalizeSourceKey(item) === normalizedTarget)
+      const next = hasTarget
+        ? currentList.filter((item) => normalizeSourceKey(item) !== normalizedTarget)
+        : [...currentList, sourceKey]
+      return uniqueSourceList(next).join(', ')
+    })
+  }
+
+  const enableAllSourceCards = () => {
+    setDraftSources(uniqueSourceList(sourceCards.map((source) => source.key)).join(', '))
+  }
+
+  const toggleCryptoAssetTarget = (asset: (typeof CRYPTO_ASSET_OPTIONS)[number]) => {
+    const next = new Set(normalizeCryptoAssetList(advancedConfig.cryptoAssetsCsv))
+    if (next.has(asset)) {
+      next.delete(asset)
+    } else {
+      next.add(asset)
+    }
+    setAdvancedValue('cryptoAssetsCsv', CRYPTO_ASSET_OPTIONS.filter((item) => next.has(item)).join(', '))
+  }
+
+  const toggleCryptoTimeframeTarget = (timeframe: (typeof CRYPTO_TIMEFRAME_OPTIONS)[number]) => {
+    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoTimeframesCsv))
+    if (next.has(timeframe)) {
+      next.delete(timeframe)
+    } else {
+      next.add(timeframe)
+    }
+    setAdvancedValue('cryptoTimeframesCsv', CRYPTO_TIMEFRAME_OPTIONS.filter((item) => next.has(item)).join(', '))
+  }
+
+  const enableAllCryptoTargets = () => {
+    setAdvancedValue('cryptoAssetsCsv', CRYPTO_ASSET_OPTIONS.join(', '))
+    setAdvancedValue('cryptoTimeframesCsv', CRYPTO_TIMEFRAME_OPTIONS.join(', '))
+  }
+
   useEffect(() => {
     if (!selectedTraderId && traders.length > 0) {
       setSelectedTraderId(traders[0].id)
@@ -608,7 +1024,7 @@ export default function TradingPanel() {
     setDraftDescription(selectedTrader.description || '')
     setDraftStrategyKey(selectedTrader.strategy_key)
     setDraftInterval(String(selectedTrader.interval_seconds || 60))
-    setDraftSources((selectedTrader.sources || []).join(', '))
+    setDraftSources(uniqueSourceList(selectedTrader.sources || []).join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(selectedTrader.is_enabled))
     setDraftPaused(Boolean(selectedTrader.is_paused))
     const params = selectedTrader.params || {}
@@ -619,7 +1035,7 @@ export default function TradingPanel() {
     setDraftMetadata(JSON.stringify(metadata, null, 2))
     setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
     setSaveError(null)
-  }, [selectedTrader])
+  }, [defaultSourceCsv, selectedTrader])
 
   useEffect(() => {
     if (selectedDecisions.length === 0) {
@@ -664,7 +1080,7 @@ export default function TradingPanel() {
     setDraftDescription(template.description || '')
     setDraftStrategyKey(template.strategy_key)
     setDraftInterval(String(suggestedInterval))
-    setDraftSources((template.sources || []).join(', '))
+    setDraftSources(uniqueSourceList(template.sources || []).join(', ') || defaultSourceCsv)
     setDraftEnabled(true)
     setDraftPaused(false)
     setDraftParams(JSON.stringify(params, null, 2))
@@ -680,7 +1096,7 @@ export default function TradingPanel() {
     setDraftDescription('')
     setDraftStrategyKey('strategy.default')
     setDraftInterval('5')
-    setDraftSources('')
+    setDraftSources(defaultSourceCsv)
     setDraftEnabled(true)
     setDraftPaused(false)
     setDraftParams('{}')
@@ -701,7 +1117,7 @@ export default function TradingPanel() {
     setDraftDescription(trader.description || '')
     setDraftStrategyKey(trader.strategy_key)
     setDraftInterval(String(trader.interval_seconds || 60))
-    setDraftSources((trader.sources || []).join(', '))
+    setDraftSources(uniqueSourceList(trader.sources || []).join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(trader.is_enabled))
     setDraftPaused(Boolean(trader.is_paused))
     const params = trader.params || {}
@@ -794,9 +1210,9 @@ export default function TradingPanel() {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
         strategy_key: draftStrategyKey.trim(),
-        interval_seconds: Math.max(1, Number(draftInterval || 60)),
-        sources: draftSources.split(',').map((item) => item.trim()).filter(Boolean),
-        params: withConfiguredParams(parsedParams.value, advancedConfig),
+        interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
+        sources: effectiveDraftSources,
+        params: withConfiguredParams(parsedParams.value, advancedConfig, draftStrategyKey),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
@@ -835,9 +1251,9 @@ export default function TradingPanel() {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
         strategy_key: draftStrategyKey.trim(),
-        interval_seconds: Math.max(1, Number(draftInterval || 60)),
-        sources: draftSources.split(',').map((item) => item.trim()).filter(Boolean),
-        params: withConfiguredParams(parsedParams.value, advancedConfig),
+        interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
+        sources: effectiveDraftSources,
+        params: withConfiguredParams(parsedParams.value, advancedConfig, draftStrategyKey),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
@@ -1264,6 +1680,41 @@ export default function TradingPanel() {
     () => selectedDecisions.find((decision) => decision.id === selectedDecisionId) || null,
     [selectedDecisions, selectedDecisionId]
   )
+  const decisionChecks = decisionDetailQuery.data?.checks || []
+  const decisionOrders = decisionDetailQuery.data?.orders || []
+  const decisionOutcomeSummary = useMemo(() => {
+    let selected = 0
+    let blocked = 0
+    let skipped = 0
+    for (const decision of selectedDecisions) {
+      const outcome = String(decision.decision || '').toLowerCase()
+      if (outcome === 'selected') selected += 1
+      else if (outcome === 'blocked') blocked += 1
+      else skipped += 1
+    }
+    return {
+      selected,
+      blocked,
+      skipped,
+    }
+  }, [selectedDecisions])
+  const decisionPassCount = decisionChecks.filter((check) => check.passed).length
+  const decisionFailCount = decisionChecks.length - decisionPassCount
+  const riskChecks = Array.isArray(selectedDecision?.risk_snapshot?.checks)
+    ? selectedDecision?.risk_snapshot?.checks
+    : []
+  const riskAllowed = selectedDecision ? toBoolean(selectedDecision.risk_snapshot?.allowed, false) : false
+  const lastCycleDecisions = toNumber(worker?.stats?.decisions_last_cycle)
+  const lastCycleOrders = toNumber(worker?.stats?.orders_last_cycle)
+  const latestSelectedTraderActivityTs = selectedTraderActivityRows.length > 0
+    ? toTs(selectedTraderActivityRows[0].ts)
+    : 0
+  const latestSelectedTraderRunTs = toTs(selectedTrader?.last_run_at || worker?.last_run_at)
+  const selectedTraderNoNewRows = Boolean(
+    selectedTrader &&
+    orchestratorRunning &&
+    latestSelectedTraderRunTs > (latestSelectedTraderActivityTs + 1000)
+  )
 
   const runRate = toNumber(metrics?.decisions_count) > 0
     ? (toNumber(metrics?.orders_count) / toNumber(metrics?.decisions_count)) * 100
@@ -1271,6 +1722,15 @@ export default function TradingPanel() {
   const tradersRunningDisplay = orchestratorRunning ? toNumber(metrics?.traders_running) : 0
   const displayAvgEdge = normalizeEdgePercent(globalSummary.avgEdge)
   const displayAvgConfidence = normalizeConfidencePercent(globalSummary.avgConfidence)
+  const selectedTraderStatusLabel = !orchestratorRunning
+    ? 'Engine Off'
+    : !selectedTrader?.is_enabled
+      ? 'Disabled'
+      : selectedTrader?.is_paused
+        ? 'Paused'
+        : 'Running'
+  const selectedTraderCanResume = Boolean(selectedTrader?.is_enabled && selectedTrader?.is_paused)
+  const selectedTraderCanPause = Boolean(selectedTrader?.is_enabled && !selectedTrader?.is_paused)
 
   const requestOrchestratorStart = () => {
     if (selectedAccountIsLive) {
@@ -1358,7 +1818,7 @@ export default function TradingPanel() {
               ) : (
                 <Play className="w-3.5 h-3.5 mr-1.5" />
               )}
-              {startStopIsRunning ? 'Stop Engine' : `Start (${selectedAccountMode.toUpperCase()})`}
+              {startStopIsRunning ? 'Stop Engine' : `Start Engine (${selectedAccountMode.toUpperCase()})`}
             </Button>
             <div className="flex items-center gap-2 rounded-md border border-red-500/35 bg-red-500/10 px-2 py-1">
               <ShieldAlert className="w-3.5 h-3.5 text-red-700 dark:text-red-200" />
@@ -1371,10 +1831,10 @@ export default function TradingPanel() {
             </div>
             <span className="ml-auto text-[11px] text-muted-foreground hidden xl:block">
               {!selectedAccountValid
-                ? 'Select a global account in the top control panel to start.'
+                ? 'Select a global account in the top control panel to start the engine.'
                 : modeMismatch
                   ? 'Account mode and orchestrator mode are not aligned.'
-                  : 'Stop turns engine off. Block New Orders keeps engine running but blocks new order creation.'}
+                  : 'Start/Stop controls the global engine. Trader controls below only pause/resume individual traders.'}
             </span>
           </div>
 
@@ -1768,12 +2228,8 @@ export default function TradingPanel() {
                   <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
                     <span>{selectedTrader?.name || 'Trader Console'}</span>
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <Badge variant={!orchestratorRunning || selectedTrader?.is_paused || !selectedTrader?.is_enabled ? 'secondary' : 'default'}>
-                        {!orchestratorRunning
-                          ? 'Engine Off'
-                          : selectedTrader?.is_paused || !selectedTrader?.is_enabled
-                            ? 'Paused'
-                            : 'Running'}
+                      <Badge variant={selectedTraderStatusLabel === 'Running' ? 'default' : 'secondary'}>
+                        {selectedTraderStatusLabel}
                       </Badge>
                       <span>{formatTimestamp(selectedTrader?.last_run_at)}</span>
                     </div>
@@ -1786,16 +2242,16 @@ export default function TradingPanel() {
                       variant="outline"
                       className="h-7 px-2 text-[11px]"
                       onClick={() => selectedTrader && traderStartMutation.mutate(selectedTrader.id)}
-                      disabled={!selectedTrader || traderStartMutation.isPending}
+                      disabled={!selectedTraderCanResume || traderStartMutation.isPending}
                     >
-                      Start Trader
+                      Resume Trader
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
                       className="h-7 px-2 text-[11px]"
                       onClick={() => selectedTrader && traderPauseMutation.mutate(selectedTrader.id)}
-                      disabled={!selectedTrader || traderPauseMutation.isPending}
+                      disabled={!selectedTraderCanPause || traderPauseMutation.isPending}
                     >
                       Pause Trader
                     </Button>
@@ -1804,7 +2260,7 @@ export default function TradingPanel() {
                       variant="outline"
                       className="h-7 px-2 text-[11px]"
                       onClick={() => selectedTrader && traderRunOnceMutation.mutate(selectedTrader.id)}
-                      disabled={!selectedTrader || traderRunOnceMutation.isPending}
+                      disabled={!selectedTrader || !selectedTrader.is_enabled || traderRunOnceMutation.isPending}
                     >
                       Run Once
                     </Button>
@@ -1818,6 +2274,9 @@ export default function TradingPanel() {
                       Configure
                     </Button>
                   </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Engine start/stop is global. Trader controls here only change this trader&apos;s runtime state.
+                  </p>
 
                   <div className="grid gap-1.5 grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
                     <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
@@ -1889,11 +2348,28 @@ export default function TradingPanel() {
                         </div>
                       </CardTitle>
                     </CardHeader>
-                    <CardContent className="flex-1 min-h-0 overflow-hidden">
+                    <CardContent className="flex-1 min-h-0 overflow-hidden space-y-2">
+                      {selectedTrader ? (
+                        <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1.5 text-[11px]">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-medium">Engine heartbeat</span>
+                            <span className="font-mono text-muted-foreground">{formatTimestamp(selectedTrader?.last_run_at || worker?.last_run_at)}</span>
+                          </div>
+                          <p className="mt-1 text-muted-foreground">
+                            Last cycle: decisions={lastCycleDecisions} orders={lastCycleOrders}
+                            {selectedTraderNoNewRows ? ' • no new qualifying signals for this trader yet.' : ''}
+                          </p>
+                        </div>
+                      ) : null}
                       {!selectedTrader ? (
                         <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a trader from the roster.</div>
                       ) : filteredTraderActivityRows.length === 0 ? (
-                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No terminal rows for this trader yet.</div>
+                        <div className="h-full flex flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
+                          <p>No terminal rows for this trader yet.</p>
+                          {orchestratorRunning ? (
+                            <p className="text-[11px]">Worker is running; rows appear when new decisions, orders, or events are created.</p>
+                          ) : null}
+                        </div>
                       ) : (
                         <ScrollArea className="h-full min-h-0 rounded-md border border-border/70 bg-muted/20">
                           <div className="space-y-1 p-2 font-mono text-[11px] leading-relaxed">
@@ -1966,19 +2442,36 @@ export default function TradingPanel() {
                   </Card>
                 </TabsContent>
 
-                <TabsContent value="decisions" className="mt-0 flex-1 min-h-0">
+                <TabsContent value="decisions" className="mt-0 flex-1 min-h-0 overflow-hidden">
                   <Card className="h-full flex flex-col min-h-0 overflow-hidden">
                     <CardHeader className="py-2">
-                      <CardTitle className="text-sm">Decision Logic Inspector</CardTitle>
+                      <CardTitle className="text-sm flex flex-wrap items-center justify-between gap-2">
+                        <span>Decision Inspector</span>
+                        <Badge variant="outline">{filteredDecisions.length} rows</Badge>
+                      </CardTitle>
                     </CardHeader>
-                    <CardContent className="flex-1 min-h-0 overflow-hidden grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                      <div className="space-y-2 min-h-0">
+                    <CardContent className="flex-1 min-h-0 overflow-hidden grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                      <div className="min-h-0 flex flex-col gap-2 overflow-hidden">
                         <Input
                           value={decisionSearch}
                           onChange={(event) => setDecisionSearch(event.target.value)}
-                          placeholder="Filter decisions..."
+                          placeholder="Filter by source, strategy, reason..."
                         />
-                        <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
+                        <div className="grid gap-2 grid-cols-3">
+                          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Selected</p>
+                            <p className="text-[11px] font-mono">{decisionOutcomeSummary.selected}</p>
+                          </div>
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Blocked</p>
+                            <p className="text-[11px] font-mono">{decisionOutcomeSummary.blocked}</p>
+                          </div>
+                          <div className="rounded-md border border-border/70 bg-background/70 px-2 py-1">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Other</p>
+                            <p className="text-[11px] font-mono">{decisionOutcomeSummary.skipped}</p>
+                          </div>
+                        </div>
+                        <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/80 p-2">
                           <div className="space-y-2 pr-2">
                             {filteredDecisions.map((decision) => (
                               <button
@@ -1989,14 +2482,19 @@ export default function TradingPanel() {
                                   selectedDecisionId === decision.id ? 'border-cyan-500/40 bg-cyan-500/10' : 'border-border hover:bg-muted/30'
                                 )}
                               >
-                                <div className="flex items-center justify-between gap-2">
-                                  <Badge variant={String(decision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="font-mono text-muted-foreground">{formatTimestamp(decision.created_at)}</span>
+                                  <Badge variant={String(decision.decision).toLowerCase() === 'selected' ? 'default' : String(decision.decision).toLowerCase() === 'blocked' ? 'destructive' : 'outline'}>
                                     {String(decision.decision).toUpperCase()}
                                   </Badge>
-                                  <span className="text-[11px] text-muted-foreground">{formatShortDate(decision.created_at)}</span>
                                 </div>
-                                <p className="text-xs mt-1 font-medium">{decision.source} • {decision.strategy_key}</p>
-                                <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{decision.reason || 'No reason captured'}</p>
+                                <div className="mt-1 flex items-center justify-between gap-2">
+                                  <p className="text-xs font-medium truncate">{decision.source} • {decision.strategy_key}</p>
+                                  <span className="text-[11px] font-mono text-muted-foreground">
+                                    {decision.score !== null ? decision.score.toFixed(2) : 'n/a'}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{decision.reason || 'No reason captured.'}</p>
                               </button>
                             ))}
                             {filteredDecisions.length === 0 ? <p className="text-sm text-muted-foreground">No decisions matching filter.</p> : null}
@@ -2004,44 +2502,128 @@ export default function TradingPanel() {
                         </ScrollArea>
                       </div>
 
-                      <div className="space-y-2 min-h-0">
+                      <div className="min-h-0 flex flex-col gap-2 overflow-hidden">
                         {!selectedDecision ? (
-                          <p className="text-sm text-muted-foreground">Select a decision to inspect checks and risk logic.</p>
+                          <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                            Select a decision from the left panel to inspect signal, risk, checks, and order linkage.
+                          </div>
                         ) : (
                           <>
-                            <div className="rounded-md border border-border p-2">
+                            <div className="rounded-md border border-border p-2.5 space-y-2">
                               <div className="flex items-center justify-between gap-2">
-                                <p className="font-medium text-sm">{selectedDecision.strategy_key}</p>
-                                <Badge variant={String(selectedDecision.decision).toLowerCase() === 'selected' ? 'default' : 'outline'}>
+                                <p className="font-medium text-sm truncate">{selectedDecision.strategy_key}</p>
+                                <Badge variant={String(selectedDecision.decision).toLowerCase() === 'selected' ? 'default' : String(selectedDecision.decision).toLowerCase() === 'blocked' ? 'destructive' : 'outline'}>
                                   {String(selectedDecision.decision).toUpperCase()}
                                 </Badge>
                               </div>
-                              <p className="text-[11px] text-muted-foreground mt-1">{selectedDecision.reason || 'No reason text'}</p>
-                              <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-muted-foreground">
+                              <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
                                 <span>Score: {selectedDecision.score !== null ? selectedDecision.score.toFixed(2) : 'n/a'}</span>
-                                <span>{formatTimestamp(selectedDecision.created_at)}</span>
+                                <span>Timestamp: {formatTimestamp(selectedDecision.created_at)}</span>
+                                <span className="truncate">Source: {selectedDecision.source}</span>
+                                <span className="truncate">Signal: {shortId(selectedDecision.signal_id)}</span>
                               </div>
+                              <p className="text-[11px] text-muted-foreground">{selectedDecision.reason || 'No reason text.'}</p>
                             </div>
 
-                            <ScrollArea className="h-full min-h-0 rounded-md border border-border/80 p-2">
-                              {(decisionDetailQuery.data?.checks || []).length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No check records for this decision.</p>
-                              ) : (
-                                <div className="space-y-2 pr-2">
-                                  {(decisionDetailQuery.data?.checks || []).map((check) => (
-                                    <div key={check.id} className={cn(
-                                      'rounded-md border p-2',
-                                      check.passed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'
-                                    )}>
-                                      <div className="flex items-center justify-between gap-2">
-                                        <p className="text-xs font-medium">{check.check_label}</p>
-                                        <Badge variant={check.passed ? 'default' : 'destructive'}>{check.passed ? 'PASS' : 'FAIL'}</Badge>
-                                      </div>
-                                      <p className="text-[11px] text-muted-foreground mt-1">{check.detail || 'No detail provided'}</p>
+                            <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/80 p-2">
+                              <div className="space-y-2 pr-2">
+                                <div className={cn(
+                                  'rounded-md border p-2',
+                                  riskAllowed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/10'
+                                )}>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-semibold">Risk Gate</p>
+                                    <Badge variant={riskAllowed ? 'default' : 'destructive'}>
+                                      {riskAllowed ? 'ALLOW' : 'BLOCK'}
+                                    </Badge>
+                                  </div>
+                                  {riskChecks.length === 0 ? (
+                                    <p className="mt-1 text-[11px] text-muted-foreground">No risk checks captured.</p>
+                                  ) : (
+                                    <div className="mt-2 space-y-1.5">
+                                      {riskChecks.map((check, index) => {
+                                        const passed = toBoolean(check?.passed, false)
+                                        const label = String(check?.check_label || check?.check_key || `risk_check_${index + 1}`)
+                                        const detail = String(check?.detail || '')
+                                        const score = check?.score
+                                        return (
+                                          <div key={`${label}:${index}`} className="rounded border border-border/60 px-2 py-1.5 text-[11px]">
+                                            <div className="flex items-center justify-between gap-2">
+                                              <span className="truncate">{label}</span>
+                                              <Badge variant={passed ? 'default' : 'destructive'}>{passed ? 'PASS' : 'FAIL'}</Badge>
+                                            </div>
+                                            <p className="mt-1 text-muted-foreground">{detail || 'No detail.'}</p>
+                                            {score !== null && score !== undefined ? (
+                                              <p className="mt-1 text-muted-foreground font-mono">score={toNumber(score).toFixed(2)}</p>
+                                            ) : null}
+                                          </div>
+                                        )
+                                      })}
                                     </div>
-                                  ))}
+                                  )}
                                 </div>
-                              )}
+
+                                <div className="rounded-md border border-border p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-semibold">Strategy Checks</p>
+                                    <span className="text-[11px] text-muted-foreground font-mono">
+                                      pass={decisionPassCount} fail={decisionFailCount}
+                                    </span>
+                                  </div>
+                                  {decisionDetailQuery.isLoading ? (
+                                    <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      Loading check records...
+                                    </div>
+                                  ) : decisionChecks.length === 0 ? (
+                                    <p className="mt-2 text-[11px] text-muted-foreground">No check records for this decision.</p>
+                                  ) : (
+                                    <div className="mt-2 space-y-1.5">
+                                      {decisionChecks.map((check) => (
+                                        <div key={check.id} className={cn(
+                                          'rounded-md border p-2',
+                                          check.passed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'
+                                        )}>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-xs font-medium truncate">{check.check_label}</p>
+                                            <Badge variant={check.passed ? 'default' : 'destructive'}>{check.passed ? 'PASS' : 'FAIL'}</Badge>
+                                          </div>
+                                          <p className="mt-1 text-[11px] text-muted-foreground">{check.detail || 'No detail provided.'}</p>
+                                          {check.score !== null ? (
+                                            <p className="mt-1 text-[11px] text-muted-foreground font-mono">score={check.score.toFixed(2)}</p>
+                                          ) : null}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="rounded-md border border-border p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-semibold">Linked Orders</p>
+                                    <span className="text-[11px] text-muted-foreground font-mono">{decisionOrders.length}</span>
+                                  </div>
+                                  {decisionOrders.length === 0 ? (
+                                    <p className="mt-2 text-[11px] text-muted-foreground">No order linked to this decision.</p>
+                                  ) : (
+                                    <div className="mt-2 space-y-1.5">
+                                      {decisionOrders.map((order) => (
+                                        <div key={order.id} className="rounded border border-border/60 px-2 py-1.5 text-[11px]">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="truncate">{order.market_question || shortId(order.market_id)}</span>
+                                            <Badge variant={FAILED_ORDER_STATUSES.has(normalizeStatus(order.status)) ? 'destructive' : OPEN_ORDER_STATUSES.has(normalizeStatus(order.status)) ? 'outline' : 'default'}>
+                                              {normalizeStatus(order.status)}
+                                            </Badge>
+                                          </div>
+                                          <p className="mt-1 text-muted-foreground font-mono">
+                                            {formatCurrency(toNumber(order.notional_usd))} • {String(order.mode || 'n/a').toUpperCase()} • {String(order.direction || 'n/a').toUpperCase()}
+                                          </p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
                             </ScrollArea>
                           </>
                         )}
@@ -2334,132 +2916,302 @@ export default function TradingPanel() {
 
             <ScrollArea className="flex-1 min-h-0 px-4 py-3">
               <div className="space-y-3 pb-2">
-                {traderFlyoutMode === 'create' ? (
-                  <div>
-                    <Label>Template</Label>
-                    <Select
-                      value={templateSelection}
-                      onValueChange={(value) => {
-                        setTemplateSelection(value)
-                        if (value !== 'none') {
-                          hydrateDraftFromTemplate(value)
-                        }
-                      }}
-                    >
-                      <SelectTrigger className="mt-1 h-9">
-                        <SelectValue placeholder="Start from blank trader" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Blank Trader</SelectItem>
-                        {templates.map((template) => (
-                          <SelectItem key={template.id} value={template.id}>
-                            {template.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : null}
+                <FlyoutSection
+                  title="Trader Profile"
+                  icon={Sparkles}
+                  subtitle="Core identity and strategy metadata used by the orchestrator."
+                >
+                  {traderFlyoutMode === 'create' ? (
+                    <div>
+                      <Label>Template</Label>
+                      <Select
+                        value={templateSelection}
+                        onValueChange={(value) => {
+                          setTemplateSelection(value)
+                          if (value !== 'none') {
+                            hydrateDraftFromTemplate(value)
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="mt-1 h-9">
+                          <SelectValue placeholder="Start from blank trader" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Blank Trader</SelectItem>
+                          {templates.map((template) => (
+                            <SelectItem key={template.id} value={template.id}>
+                              {template.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <Label>Name</Label>
-                    <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <Label>Name</Label>
+                      <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label>Strategy Key</Label>
+                      <Input value={draftStrategyKey} onChange={(event) => setDraftStrategyKey(event.target.value)} className="mt-1 font-mono" />
+                    </div>
                   </div>
-                  <div>
-                    <Label>Strategy Key</Label>
-                    <Input value={draftStrategyKey} onChange={(event) => setDraftStrategyKey(event.target.value)} className="mt-1 font-mono" />
-                  </div>
-                </div>
 
-                <div>
-                  <Label>Description</Label>
-                  <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} className="mt-1" />
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
                   <div>
-                    <Label>Interval Seconds</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      value={draftInterval}
-                      onChange={(event) => setDraftInterval(event.target.value)}
-                      className="mt-1"
-                    />
+                    <Label>Description</Label>
+                    <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} className="mt-1" />
                   </div>
-                  <div>
-                    <Label>Sources (comma separated)</Label>
-                    <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} className="mt-1" />
-                  </div>
-                </div>
+                </FlyoutSection>
 
-                <div className="rounded-md border border-border p-3 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Execution Cadence</p>
-                    <Select
-                      value={advancedConfig.cadenceProfile}
-                      onValueChange={(value) => {
-                        setAdvancedValue('cadenceProfile', value)
-                        if (value === 'ultra_fast') setDraftInterval('2')
-                        if (value === 'fast') setDraftInterval('5')
-                        if (value === 'balanced') setDraftInterval('10')
-                        if (value === 'slow') setDraftInterval('30')
-                      }}
-                    >
-                      <SelectTrigger className="h-8 w-[180px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ultra_fast">Ultra Fast (2s)</SelectItem>
-                        <SelectItem value="fast">Fast (5s)</SelectItem>
-                        <SelectItem value="balanced">Balanced (10s)</SelectItem>
-                        <SelectItem value="slow">Slow (30s)</SelectItem>
-                        <SelectItem value="custom">Custom</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[2, 5, 10, 30, 60].map((sec) => (
+                <FlyoutSection
+                  title="Signal Sources"
+                  icon={Zap}
+                  count={`${selectedSourceCount}/${sourceCards.length || sourceCatalog.length} enabled`}
+                  subtitle="Pick the signal sources this trader should consume."
+                >
+                  <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">
+                    <p className="text-[11px] font-medium">Source Controls</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <Button
-                        key={sec}
                         type="button"
                         size="sm"
-                        variant={Number(draftInterval || 0) === sec ? 'default' : 'outline'}
+                        variant="outline"
                         className="h-6 px-2 text-[11px]"
-                        onClick={() => setDraftInterval(String(sec))}
+                        onClick={enableAllSourceCards}
                       >
-                        {sec}s
+                        Enable all
                       </Button>
-                    ))}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => setDraftSources(defaultSourceCsv)}
+                      >
+                        Use default
+                      </Button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-muted-foreground/70">
+                      3-4 cards per row on desktop for quick source toggling.
+                    </p>
                   </div>
-                  {(draftStrategyKey.toLowerCase().includes('crypto') || draftStrategyKey.toLowerCase().includes('btc')) && Number(draftInterval || 0) >= 60 ? (
+
+                  {TRADER_SOURCE_GROUPS.map((group) => {
+                    const groupSources = sourceCardsByGroup[group.key]
+                    if (!groupSources || groupSources.length === 0) return null
+                    const enabledCount = groupSources.filter((source) => selectedSourceKeySet.has(normalizeSourceKey(source.key))).length
+                    return (
+                      <div key={group.key} className="rounded-lg border border-border/60 bg-muted/10 p-2.5 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+                            <p className="text-[10px] text-muted-foreground/70">{group.subtitle}</p>
+                          </div>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/70 text-muted-foreground">
+                            {enabledCount}/{groupSources.length}
+                          </span>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                          {groupSources.map((source) => {
+                            const isEnabled = selectedSourceKeySet.has(normalizeSourceKey(source.key))
+                            const descriptor = source.signal_types?.slice(0, 2).join(' • ') || source.key
+                            return (
+                              <button
+                                key={source.key}
+                                type="button"
+                                onClick={() => toggleDraftSource(source.key)}
+                                className={cn(
+                                  'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                                  isEnabled
+                                    ? 'border-emerald-500/40 bg-emerald-500/10'
+                                    : 'border-border/70 bg-background hover:border-emerald-500/30 hover:bg-muted/40'
+                                )}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-medium leading-tight">{source.label}</p>
+                                  <span
+                                    className={cn(
+                                      'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
+                                      isEnabled ? 'bg-emerald-500/20 text-emerald-600' : 'bg-muted text-muted-foreground'
+                                    )}
+                                  >
+                                    {isEnabled ? 'ON' : 'OFF'}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[10px] leading-tight text-muted-foreground/75">
+                                  {source.description}
+                                </p>
+                                <p className="mt-1 text-[9px] uppercase tracking-wide text-muted-foreground/70">
+                                  {descriptor}
+                                </p>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  <details className="rounded-md border border-border/60 bg-muted/10 p-2.5">
+                    <summary className="cursor-pointer text-xs font-medium">Custom source keys (optional)</summary>
+                    <div className="mt-2 space-y-1">
+                      <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} className="h-8 font-mono text-xs" />
+                      <p className="text-[10px] text-muted-foreground/70">
+                        Comma-separated keys are supported for legacy/custom source adapters.
+                      </p>
+                    </div>
+                  </details>
+                </FlyoutSection>
+
+                <FlyoutSection
+                  title="Execution Cadence"
+                  icon={Clock3}
+                  iconClassName="text-sky-500"
+                  count={`${Number(draftInterval || 0)}s`}
+                  subtitle="Set how often this trader is eligible to run."
+                >
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                    <div>
+                      <Label>Trader Interval Seconds</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={draftInterval}
+                        onChange={(event) => {
+                          setDraftInterval(event.target.value)
+                          setAdvancedValue('cadenceProfile', cadenceProfileForInterval(Math.max(1, Number(event.target.value) || 60)))
+                        }}
+                        className="mt-1"
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">
+                        Saves to this trader&apos;s <span className="font-mono">interval_seconds</span>.
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">
+                      <p className="text-[11px] font-medium">Global Orchestrator Loop</p>
+                      <p className="mt-1 text-sm font-mono">{toNumber(overviewQuery.data?.control?.run_interval_seconds)}s</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground/70">
+                        Separate worker-level cadence. Traders run only when due on both schedules.
+                      </p>
+                    </div>
+                  </div>
+                  {isCryptoStrategyDraft && Number(draftInterval || 0) >= 60 ? (
                     <p className="text-xs text-amber-700 dark:text-amber-100">
                       60s is too slow for most BTC 15m execution loops. Recommended cadence is 2s to 10s.
                     </p>
                   ) : null}
-                </div>
+                </FlyoutSection>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="rounded-md border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">Enabled</span>
-                      <Switch checked={draftEnabled} onCheckedChange={(checked) => setDraftEnabled(checked)} />
+                <FlyoutSection
+                  title="Runtime State"
+                  icon={Play}
+                  iconClassName="text-emerald-500"
+                  count={`${draftEnabled ? 'enabled' : 'disabled'} / ${draftPaused ? 'paused' : 'active'}`}
+                  defaultOpen={false}
+                  subtitle="Lifecycle controls applied when this trader is loaded by the orchestrator."
+                >
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-md border border-border p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm">Enabled</span>
+                        <Switch checked={draftEnabled} onCheckedChange={(checked) => setDraftEnabled(checked)} />
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">Disabled traders are excluded from orchestrator cycles.</p>
                     </div>
-                    <p className="mt-2 text-xs text-muted-foreground">Disabled traders are excluded from orchestrator cycles.</p>
-                  </div>
-                  <div className="rounded-md border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm">Paused</span>
-                      <Switch checked={draftPaused} onCheckedChange={(checked) => setDraftPaused(checked)} />
+                    <div className="rounded-md border border-border p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm">Paused</span>
+                        <Switch checked={draftPaused} onCheckedChange={(checked) => setDraftPaused(checked)} />
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">Paused traders stay loaded but do not execute decisions.</p>
                     </div>
-                    <p className="mt-2 text-xs text-muted-foreground">Paused traders stay loaded but do not execute decisions.</p>
                   </div>
-                </div>
+                </FlyoutSection>
 
-                <div className="rounded-md border border-border p-3 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Signal Gating + Selection</p>
-                  <div className="grid gap-3 md:grid-cols-3">
+                <FlyoutSection
+                  title="Signal Gating + Selection"
+                  icon={ShieldAlert}
+                  iconClassName="text-amber-500"
+                  count={isCryptoStrategyDraft ? '10 controls' : '7 controls'}
+                  defaultOpen={false}
+                >
+                  {isCryptoStrategyDraft ? (
+                    <div className="rounded-md border border-border/60 bg-muted/10 p-2.5 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Crypto Market Targets</p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={enableAllCryptoTargets}
+                        >
+                          Use all
+                        </Button>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground/80">Coins</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {CRYPTO_ASSET_OPTIONS.map((asset) => (
+                            <Button
+                              key={asset}
+                              type="button"
+                              size="sm"
+                              variant={selectedCryptoAssets.has(asset) ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => toggleCryptoAssetTarget(asset)}
+                            >
+                              {asset}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground/80">Market Cadence</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {CRYPTO_TIMEFRAME_OPTIONS.map((timeframe) => (
+                            <Button
+                              key={timeframe}
+                              type="button"
+                              size="sm"
+                              variant={selectedCryptoTimeframes.has(timeframe) ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => toggleCryptoTimeframeTarget(timeframe)}
+                            >
+                              {timeframe}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      {selectedCryptoAssets.size === 0 || selectedCryptoTimeframes.size === 0 ? (
+                        <p className="text-[11px] text-amber-700 dark:text-amber-100">
+                          Empty target lists default to all configured crypto assets and timeframes.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className={cn('grid gap-3 md:grid-cols-3', isCryptoStrategyDraft ? 'lg:grid-cols-4' : '')}>
+                    {isCryptoStrategyDraft ? (
+                      <div>
+                        <Label>Crypto Strategy Mode</Label>
+                        <Select
+                          value={advancedConfig.strategyMode}
+                          onValueChange={(value) => setAdvancedValue('strategyMode', normalizeCryptoStrategyMode(value))}
+                        >
+                          <SelectTrigger className="mt-1">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto (Regime)</SelectItem>
+                            <SelectItem value="directional">Directional</SelectItem>
+                            <SelectItem value="pure_arb">Pure Arb</SelectItem>
+                            <SelectItem value="rebalance">Rebalance</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
                     <div>
                       <Label>Min Signal Score</Label>
                       <Input type="number" value={advancedConfig.minSignalScore} onChange={(event) => setAdvancedValue('minSignalScore', toNumber(event.target.value))} className="mt-1" />
@@ -2485,6 +3237,11 @@ export default function TradingPanel() {
                       <Input type="number" value={advancedConfig.maxSignalsPerCycle} onChange={(event) => setAdvancedValue('maxSignalsPerCycle', toNumber(event.target.value))} className="mt-1" />
                     </div>
                   </div>
+                  {isCryptoStrategyDraft ? (
+                    <p className="text-[11px] text-muted-foreground/80">
+                      Auto switches between directional, pure-arb, and rebalance by market regime.
+                    </p>
+                  ) : null}
                   <div className="grid gap-3 md:grid-cols-2">
                     <div>
                       <Label>Source Priority (comma separated)</Label>
@@ -2499,10 +3256,15 @@ export default function TradingPanel() {
                     <span className="text-sm">Require Second Source Confirmation</span>
                     <Switch checked={advancedConfig.requireSecondSource} onCheckedChange={(checked) => setAdvancedValue('requireSecondSource', checked)} />
                   </div>
-                </div>
+                </FlyoutSection>
 
-                <div className="rounded-md border border-border p-3 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Risk Envelope</p>
+                <FlyoutSection
+                  title="Risk Envelope"
+                  icon={AlertTriangle}
+                  iconClassName="text-rose-500"
+                  count="9 limits"
+                  defaultOpen={false}
+                >
                   <div className="grid gap-3 md:grid-cols-3">
                     <div>
                       <Label>Max Orders / Cycle</Label>
@@ -2541,10 +3303,15 @@ export default function TradingPanel() {
                       <Input type="number" value={advancedConfig.cooldownSeconds} onChange={(event) => setAdvancedValue('cooldownSeconds', toNumber(event.target.value))} className="mt-1" />
                     </div>
                   </div>
-                </div>
+                </FlyoutSection>
 
-                <div className="rounded-md border border-border p-3 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Execution Quality + Circuit Breakers</p>
+                <FlyoutSection
+                  title="Execution Quality + Circuit Breakers"
+                  icon={CheckCircle2}
+                  iconClassName="text-cyan-500"
+                  count="10 controls"
+                  defaultOpen={false}
+                >
                   <div className="grid gap-3 md:grid-cols-3">
                     <div>
                       <Label>Order TTL (seconds)</Label>
@@ -2589,10 +3356,15 @@ export default function TradingPanel() {
                       <Switch checked={advancedConfig.haltOnConsecutiveLosses} onCheckedChange={(checked) => setAdvancedValue('haltOnConsecutiveLosses', checked)} />
                     </div>
                   </div>
-                </div>
+                </FlyoutSection>
 
-                <div className="rounded-md border border-border p-3 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Session Window + Metadata</p>
+                <FlyoutSection
+                  title="Session Window + Metadata"
+                  icon={Sparkles}
+                  iconClassName="text-blue-500"
+                  count="4 fields"
+                  defaultOpen={false}
+                >
                   <div className="grid gap-3 md:grid-cols-2">
                     <div>
                       <Label>Trading Window Start (UTC HH:MM)</Label>
@@ -2611,38 +3383,52 @@ export default function TradingPanel() {
                       <Input value={advancedConfig.notes} onChange={(event) => setAdvancedValue('notes', event.target.value)} className="mt-1" />
                     </div>
                   </div>
-                </div>
+                </FlyoutSection>
 
-                <details className="rounded-md border border-border p-2">
-                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: strategy params</summary>
-                  <textarea
-                    className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
-                    value={draftParams}
-                    onChange={(event) => setDraftParams(event.target.value)}
-                  />
-                </details>
+                <FlyoutSection
+                  title="Advanced JSON Editors"
+                  icon={Square}
+                  iconClassName="text-slate-500"
+                  count="3 editors"
+                  defaultOpen={false}
+                >
+                  <details className="rounded-md border border-border p-2">
+                    <summary className="cursor-pointer text-xs font-medium">Strategy Params JSON</summary>
+                    <textarea
+                      className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
+                      value={draftParams}
+                      onChange={(event) => setDraftParams(event.target.value)}
+                    />
+                  </details>
 
-                <details className="rounded-md border border-border p-2">
-                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: risk limits</summary>
-                  <textarea
-                    className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
-                    value={draftRisk}
-                    onChange={(event) => setDraftRisk(event.target.value)}
-                  />
-                </details>
+                  <details className="rounded-md border border-border p-2">
+                    <summary className="cursor-pointer text-xs font-medium">Risk Limits JSON</summary>
+                    <textarea
+                      className="mt-2 w-full min-h-[190px] rounded-md border bg-background p-2 text-xs font-mono"
+                      value={draftRisk}
+                      onChange={(event) => setDraftRisk(event.target.value)}
+                    />
+                  </details>
 
-                <details className="rounded-md border border-border p-2">
-                  <summary className="cursor-pointer text-xs font-medium">Advanced JSON editor: metadata</summary>
-                  <textarea
-                    className="mt-2 w-full min-h-[160px] rounded-md border bg-background p-2 text-xs font-mono"
-                    value={draftMetadata}
-                    onChange={(event) => setDraftMetadata(event.target.value)}
-                  />
-                </details>
+                  <details className="rounded-md border border-border p-2">
+                    <summary className="cursor-pointer text-xs font-medium">Metadata JSON</summary>
+                    <textarea
+                      className="mt-2 w-full min-h-[160px] rounded-md border bg-background p-2 text-xs font-mono"
+                      value={draftMetadata}
+                      onChange={(event) => setDraftMetadata(event.target.value)}
+                    />
+                  </details>
+                </FlyoutSection>
 
                 {traderFlyoutMode === 'edit' && selectedTrader ? (
-                  <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 space-y-2">
-                    <p className="text-sm font-medium text-red-600 dark:text-red-300">Delete / Disable Trader</p>
+                  <FlyoutSection
+                    title="Delete / Disable Trader"
+                    icon={AlertTriangle}
+                    iconClassName="text-red-500"
+                    tone="danger"
+                    count={`${selectedTraderOpenLiveOrders + selectedTraderOpenPaperOrders} open orders`}
+                    defaultOpen={false}
+                  >
                     <p className="text-xs text-muted-foreground">
                       Open live orders: {selectedTraderOpenLiveOrders} • Open paper orders: {selectedTraderOpenPaperOrders}
                     </p>
@@ -2682,7 +3468,7 @@ export default function TradingPanel() {
                     >
                       {deleteAction === 'disable' ? 'Disable Trader' : 'Delete Trader'}
                     </Button>
-                  </div>
+                  </FlyoutSection>
                 ) : null}
 
                 {saveError ? <div className="text-xs text-red-500">{saveError}</div> : null}

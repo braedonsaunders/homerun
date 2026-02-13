@@ -227,6 +227,7 @@ async def get_weather_opportunities_from_db(
     target_date: Optional[date] = None,
     require_tradable_markets: bool = False,
     exclude_near_resolution: bool = False,
+    include_report_only: bool = True,
 ) -> list[ArbitrageOpportunity]:
     opportunities, _ = await read_weather_snapshot(session)
     for opp in opportunities:
@@ -293,6 +294,13 @@ async def get_weather_opportunities_from_db(
     if target_date is not None:
         opportunities = [o for o in opportunities if _opportunity_target_date(o) == target_date]
 
+    if not include_report_only:
+        opportunities = [
+            o
+            for o in opportunities
+            if (o.max_position_size or 0.0) > 0.0 and bool(o.positions_to_take)
+        ]
+
     if opportunities and require_tradable_markets:
         market_ids: set[str] = set()
         by_index: dict[int, list[str]] = {}
@@ -329,6 +337,7 @@ async def get_weather_target_date_counts_from_db(
     location_query: Optional[str] = None,
     require_tradable_markets: bool = False,
     exclude_near_resolution: bool = False,
+    include_report_only: bool = True,
 ) -> list[dict[str, Any]]:
     opportunities = await get_weather_opportunities_from_db(
         session,
@@ -339,6 +348,7 @@ async def get_weather_target_date_counts_from_db(
         target_date=None,
         require_tradable_markets=require_tradable_markets,
         exclude_near_resolution=exclude_near_resolution,
+        include_report_only=include_report_only,
     )
 
     counts: dict[date, int] = {}

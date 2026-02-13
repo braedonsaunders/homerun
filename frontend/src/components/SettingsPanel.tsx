@@ -71,6 +71,13 @@ const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   delay_between_wallets: 0.15,
   max_markets_per_run: 100,
   max_wallets_per_market: 50,
+  trader_opps_source_filter: 'all',
+  trader_opps_min_tier: 'WATCH',
+  trader_opps_side_filter: 'all',
+  trader_opps_confluence_limit: 50,
+  trader_opps_insider_limit: 40,
+  trader_opps_insider_min_confidence: 0.62,
+  trader_opps_insider_max_age_minutes: 180,
 }
 
 const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefined): DiscoverySettings => {
@@ -173,19 +180,7 @@ export default function SettingsPanel() {
     min_liquidity: 1000
   })
 
-  const [discoveryForm, setDiscoveryForm] = useState<DiscoverySettings>({
-    max_discovered_wallets: 20_000,
-    maintenance_enabled: true,
-    keep_recent_trade_days: 7,
-    keep_new_discoveries_days: 30,
-    maintenance_batch: 900,
-    stale_analysis_hours: 12,
-    analysis_priority_batch_limit: 2500,
-    delay_between_markets: 0.25,
-    delay_between_wallets: 0.15,
-    max_markets_per_run: 100,
-    max_wallets_per_market: 50,
-  })
+  const [discoveryForm, setDiscoveryForm] = useState<DiscoverySettings>(DEFAULT_DISCOVERY_SETTINGS)
 
   const [tradingForm, setTradingForm] = useState({
     trading_enabled: false,
@@ -303,19 +298,7 @@ export default function SettingsPanel() {
       })
 
       const discoverySettings = getDiscoverySettings(settings.discovery)
-      setDiscoveryForm({
-        max_discovered_wallets: discoverySettings.max_discovered_wallets,
-        maintenance_enabled: discoverySettings.maintenance_enabled,
-        keep_recent_trade_days: discoverySettings.keep_recent_trade_days,
-        keep_new_discoveries_days: discoverySettings.keep_new_discoveries_days,
-        maintenance_batch: discoverySettings.maintenance_batch,
-        stale_analysis_hours: discoverySettings.stale_analysis_hours,
-        analysis_priority_batch_limit: discoverySettings.analysis_priority_batch_limit,
-        delay_between_markets: discoverySettings.delay_between_markets,
-        delay_between_wallets: discoverySettings.delay_between_wallets,
-        max_markets_per_run: discoverySettings.max_markets_per_run,
-        max_wallets_per_market: discoverySettings.max_wallets_per_market,
-      })
+      setDiscoveryForm(discoverySettings)
 
       setTradingForm({
         trading_enabled: settings.trading?.trading_enabled ?? false,

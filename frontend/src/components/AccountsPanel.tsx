@@ -555,7 +555,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             </Card>
 
             <Card className="xl:col-span-4 min-h-0 border-border bg-card/40 shadow-none">
-              <CardContent className="space-y-2.5 p-3">
+              <CardContent className="h-full min-h-0 space-y-2.5 overflow-y-auto p-3">
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Live Venues</p>
                   <p className="text-xs text-muted-foreground">Connection status, balances, and deployment footprint</p>
@@ -608,7 +608,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
           </div>
 
           <Card className="min-h-0 border-border bg-card/40 shadow-none">
-            <CardContent className="space-y-3 p-3">
+            <CardContent className="h-full min-h-0 space-y-3 overflow-y-auto p-3">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Allocation & Risk Radar</p>

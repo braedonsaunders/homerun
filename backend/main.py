@@ -53,7 +53,9 @@ from services.position_monitor import position_monitor
 from services.maintenance import maintenance_service
 from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
+from services.market_prioritizer import market_prioritizer
 from models.database import AsyncSessionLocal, init_database
+from models.model_registry import register_all_models
 from services import discovery_shared_state, shared_state
 from services.news import shared_state as news_shared_state
 from services.pause_state import global_pause_state
@@ -66,21 +68,7 @@ from services.worker_state import list_worker_snapshots, read_worker_control
 from utils.logger import setup_logging, get_logger
 from utils.rate_limiter import rate_limiter
 
-# Import new service modules so their SQLAlchemy models are registered
-# before init_database() calls create_all()
-from services.depth_analyzer import DepthCheck  # noqa: F401
-from services.wallet_ws_monitor import WalletMonitorEvent  # noqa: F401
-from services.execution_tiers import TierAssignment  # noqa: F401
-from services.price_chaser import OrderRetryLog  # noqa: F401
-from services.token_circuit_breaker import TokenTrip  # noqa: F401
-from services.category_buffers import CategoryBufferLog  # noqa: F401
-from services.market_cache import CachedMarket, CachedUsername  # noqa: F401
-from services.market_prioritizer import market_prioritizer  # noqa: F401
-from services.live_market_detector import MarketLiveStatus  # noqa: F401
-from services.credential_manager import StoredCredential  # noqa: F401
-from services.latency_tracker import PipelineLatencyLog  # noqa: F401
-from services.sport_classifier import SportTokenClassification  # noqa: F401
-from services.fill_monitor import FillEvent  # noqa: F401
+register_all_models()
 
 # Setup logging
 setup_logging(level=settings.LOG_LEVEL if hasattr(settings, "LOG_LEVEL") else "INFO")
@@ -113,6 +101,18 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Load persisted world-intelligence runtime config before any world
+        # source modules are imported (they snapshot some settings on import).
+        try:
+            from config import apply_world_intelligence_settings
+
+            await apply_world_intelligence_settings()
+            logger.info("World intelligence settings loaded from database")
+        except Exception as e:
+            logger.warning(
+                f"Failed to load world intelligence settings (using defaults): {e}"
+            )
 
         # Load DB-backed country reference catalog into runtime cache so
         # country normalization uses dynamic records instead of static files.

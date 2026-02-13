@@ -64,17 +64,30 @@ class IntentGenerator:
             token_ids = market_meta.get("token_ids") or []
             if not isinstance(token_ids, list):
                 token_ids = []
+            market_link_payload = {
+                "id": finding.market_id,
+                "market_id": finding.market_id,
+                "slug": market_meta.get("slug"),
+                "event_slug": market_meta.get("event_slug"),
+                "event_ticker": market_meta.get("event_ticker"),
+                "platform": market_meta.get("platform"),
+            }
+            market_url = self._build_market_url(market_link_payload)
 
             metadata = {
                 "market": {
                     "id": finding.market_id,
                     "slug": market_meta.get("slug"),
                     "event_slug": market_meta.get("event_slug"),
+                    "event_ticker": market_meta.get("event_ticker"),
+                    "platform": market_meta.get("platform"),
                     "event_title": market_meta.get("event_title"),
                     "liquidity": market_meta.get("liquidity"),
                     "yes_price": market_meta.get("yes_price"),
                     "no_price": market_meta.get("no_price"),
                     "token_ids": token_ids,
+                    "market_url": market_url,
+                    "url": market_url,
                 },
                 "finding": {
                     "article_id": finding.article_id,
@@ -196,6 +209,16 @@ class IntentGenerator:
         size = max(size, 1.0)
 
         return round(size, 2)
+
+    @staticmethod
+    def _build_market_url(market_payload: dict[str, Any]) -> str | None:
+        from utils.market_urls import build_market_url
+
+        url = build_market_url(
+            market_payload,
+            opportunity_event_slug=market_payload.get("event_slug"),
+        )
+        return str(url).strip() if isinstance(url, str) and url.strip() else None
 
     def clear_cooldowns(self) -> int:
         """Back-compat no-op (cooldowns replaced by DB idempotency)."""

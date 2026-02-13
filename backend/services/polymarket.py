@@ -31,7 +31,9 @@ class PolymarketClient:
         self.clob_url = settings.CLOB_API_URL
         self.data_url = settings.DATA_API_URL
         self._client: Optional[httpx.AsyncClient] = None
-        self._trading_client: Optional[httpx.AsyncClient] = None  # Proxy-aware for trading
+        self._trading_client: Optional[httpx.AsyncClient] = (
+            None  # Proxy-aware for trading
+        )
         self._market_cache: dict[str, dict] = {}  # condition_id -> {question, slug}
         self._username_cache: dict[str, str] = {}  # address (lowercase) -> username
         self._persistent_cache = None  # Lazy-loaded MarketCacheService
@@ -72,7 +74,9 @@ class PolymarketClient:
             self._trading_client = get_async_proxy_client()
         return self._trading_client
 
-    async def _rate_limited_get(self, url: str, client: Optional[httpx.AsyncClient] = None, **kwargs) -> httpx.Response:
+    async def _rate_limited_get(
+        self, url: str, client: Optional[httpx.AsyncClient] = None, **kwargs
+    ) -> httpx.Response:
         """GET request with rate limiting and retry on 429/5xx errors.
 
         Acquires a token from the global rate limiter before each attempt,
@@ -162,7 +166,9 @@ class PolymarketClient:
             "offset": offset,
         }
 
-        response = await self._rate_limited_get(f"{self.gamma_url}/markets", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/markets", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -214,7 +220,9 @@ class PolymarketClient:
                     "order": "createdAt",
                     "ascending": "false",
                 }
-                response = await self._rate_limited_get(f"{self.gamma_url}/markets", params=params)
+                response = await self._rate_limited_get(
+                    f"{self.gamma_url}/markets", params=params
+                )
                 response.raise_for_status()
                 data = response.json()
 
@@ -228,15 +236,19 @@ class PolymarketClient:
                 # Check if the oldest market in this page is older than cutoff.
                 # If so, we've gone far enough back in time.
                 oldest_in_page = data[-1]
-                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get("created_at")
+                created_at_raw = oldest_in_page.get("createdAt") or oldest_in_page.get(
+                    "created_at"
+                )
                 if created_at_raw:
                     try:
                         if isinstance(created_at_raw, str):
-                            created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00")).replace(
-                                tzinfo=None
-                            )
+                            created_at = datetime.fromisoformat(
+                                created_at_raw.replace("Z", "+00:00")
+                            ).replace(tzinfo=None)
                         else:
-                            created_at = utcfromtimestamp(float(created_at_raw))
+                            created_at = utcfromtimestamp(
+                                float(created_at_raw)
+                            )
                         if created_at < cutoff:
                             break
                     except (ValueError, TypeError, OSError):
@@ -252,11 +264,15 @@ class PolymarketClient:
 
         return all_markets
 
-    async def get_events(self, closed: bool = False, limit: int = 100, offset: int = 0) -> list[Event]:
+    async def get_events(
+        self, closed: bool = False, limit: int = 100, offset: int = 0
+    ) -> list[Event]:
         """Fetch events from Gamma API (events contain grouped markets)"""
         params = {"closed": str(closed).lower(), "limit": limit, "offset": offset}
 
-        response = await self._rate_limited_get(f"{self.gamma_url}/events", params=params)
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params=params
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -281,7 +297,9 @@ class PolymarketClient:
 
         return all_events
 
-    async def search_events(self, query: str, limit: int = 20, closed: bool = False) -> list[Event]:
+    async def search_events(
+        self, query: str, limit: int = 20, closed: bool = False
+    ) -> list[Event]:
         """Search events on Polymarket by keyword using Gamma API text search.
 
         Uses the Strapi ``_q`` full-text search parameter for fast, broad
@@ -324,7 +342,9 @@ class PolymarketClient:
 
         return [Event.from_gamma_response(e) for e in combined[:limit]]
 
-    async def search_markets(self, query: str, limit: int = 50, closed: bool = False) -> list[Market]:
+    async def search_markets(
+        self, query: str, limit: int = 50, closed: bool = False
+    ) -> list[Market]:
         """Search markets directly by keyword using Gamma API full-text search.
 
         Faster than searching events when the caller only needs market-level
@@ -364,7 +384,9 @@ class PolymarketClient:
 
     async def get_event_by_slug(self, slug: str) -> Optional[Event]:
         """Get a specific event by slug"""
-        response = await self._rate_limited_get(f"{self.gamma_url}/events", params={"slug": slug})
+        response = await self._rate_limited_get(
+            f"{self.gamma_url}/events", params={"slug": slug}
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -387,19 +409,29 @@ class PolymarketClient:
                 except Exception:
                     pass
 
-    async def get_market_by_condition_id(self, condition_id: str) -> Optional[dict]:
+    async def get_market_by_condition_id(self, condition_id: str, **kwargs) -> Optional[dict]:
         """Look up a market by condition_id, using cache when available."""
         requested = self._normalize_identifier(condition_id)
-        cached = self._market_cache.get(condition_id) or self._market_cache.get(requested)
-        if cached:
-            cached_cid = self._normalize_identifier(cached.get("condition_id"))
-            has_payload = bool(str(cached.get("question") or "").strip() or str(cached.get("slug") or "").strip())
-            has_tradability = self._has_tradability_metadata(cached)
-            has_outcome_context = self._has_outcome_context(cached)
-            if cached_cid == requested and has_payload and has_tradability and has_outcome_context:
-                return cached
-            # Drop stale/mismatched cache entries to prevent poisoning.
-            await self._evict_market_cache_entry(condition_id, requested)
+        force_refresh = bool(kwargs.get("force_refresh", False))
+        if not force_refresh:
+            cached = self._market_cache.get(condition_id) or self._market_cache.get(requested)
+            if cached:
+                cached_cid = self._normalize_identifier(cached.get("condition_id"))
+                has_payload = bool(
+                    str(cached.get("question") or "").strip()
+                    or str(cached.get("slug") or "").strip()
+                )
+                has_tradability = self._has_tradability_metadata(cached)
+                has_outcome_context = self._has_outcome_context(cached)
+                if (
+                    cached_cid == requested
+                    and has_payload
+                    and has_tradability
+                    and has_outcome_context
+                ):
+                    return cached
+                # Drop stale/mismatched cache entries to prevent poisoning.
+                await self._evict_market_cache_entry(condition_id, requested)
 
         try:
             # Gamma expects plural ``condition_ids`` for direct condition lookups.
@@ -417,14 +449,20 @@ class PolymarketClient:
                     continue
 
                 market_data = next(
-                    (row for row in data if self._market_matches_condition_id(row, requested)),
+                    (
+                        row
+                        for row in data
+                        if self._market_matches_condition_id(row, requested)
+                    ),
                     None,
                 )
                 if market_data is None:
                     continue
 
                 info = self._extract_market_info(market_data)
-                resolved_key = self._normalize_identifier(info.get("condition_id", condition_id)) or requested
+                resolved_key = self._normalize_identifier(
+                    info.get("condition_id", condition_id)
+                ) or requested
                 self._market_cache[resolved_key] = info
                 self._market_cache[condition_id] = info
 
@@ -449,7 +487,9 @@ class PolymarketClient:
                 trades=trades,
             )
             if info:
-                resolved_key = self._normalize_identifier(info.get("condition_id", condition_id)) or requested
+                resolved_key = self._normalize_identifier(
+                    info.get("condition_id", condition_id)
+                ) or requested
                 self._market_cache[resolved_key] = info
                 self._market_cache[condition_id] = info
 
@@ -471,7 +511,7 @@ class PolymarketClient:
 
         return None
 
-    async def get_market_by_token_id(self, token_id: str) -> Optional[dict]:
+    async def get_market_by_token_id(self, token_id: str, **kwargs) -> Optional[dict]:
         """Look up a market by CLOB token ID (asset_id), using cache when available."""
         requested = self._normalize_identifier(token_id)
         if not self._looks_like_token_id(requested):
@@ -479,18 +519,32 @@ class PolymarketClient:
 
         cache_key = f"token:{requested}"
         legacy_cache_key = f"token:{token_id}"
-        cached = self._market_cache.get(cache_key) or self._market_cache.get(legacy_cache_key)
-        if cached:
-            token_ids = {
-                self._normalize_identifier(t) for t in (cached.get("token_ids") or []) if self._normalize_identifier(t)
-            }
-            has_payload = bool(str(cached.get("question") or "").strip() or str(cached.get("slug") or "").strip())
-            has_tradability = self._has_tradability_metadata(cached)
-            has_outcome_context = self._has_outcome_context(cached)
-            if requested in token_ids and has_payload and has_tradability and has_outcome_context:
-                return cached
-            cached_cid = self._normalize_identifier(cached.get("condition_id"))
-            await self._evict_market_cache_entry(cache_key, legacy_cache_key, token_id, cached_cid)
+        force_refresh = bool(kwargs.get("force_refresh", False))
+        if not force_refresh:
+            cached = self._market_cache.get(cache_key) or self._market_cache.get(legacy_cache_key)
+            if cached:
+                token_ids = {
+                    self._normalize_identifier(t)
+                    for t in (cached.get("token_ids") or [])
+                    if self._normalize_identifier(t)
+                }
+                has_payload = bool(
+                    str(cached.get("question") or "").strip()
+                    or str(cached.get("slug") or "").strip()
+                )
+                has_tradability = self._has_tradability_metadata(cached)
+                has_outcome_context = self._has_outcome_context(cached)
+                if (
+                    requested in token_ids
+                    and has_payload
+                    and has_tradability
+                    and has_outcome_context
+                ):
+                    return cached
+                cached_cid = self._normalize_identifier(cached.get("condition_id"))
+                await self._evict_market_cache_entry(
+                    cache_key, legacy_cache_key, token_id, cached_cid
+                )
 
         try:
             for params in (
@@ -510,7 +564,11 @@ class PolymarketClient:
                     continue
 
                 market_data = next(
-                    (row for row in data if self._market_matches_token_id(row, requested)),
+                    (
+                        row
+                        for row in data
+                        if self._market_matches_token_id(row, requested)
+                    ),
                     None,
                 )
                 if market_data is None:
@@ -595,11 +653,24 @@ class PolymarketClient:
             if isinstance(first, dict):
                 event_slug = str(first.get("slug") or "").strip()
         if not event_slug:
-            event_slug = str(market_data.get("event_slug") or market_data.get("eventSlug") or "").strip()
+            event_slug = str(
+                market_data.get("event_slug") or market_data.get("eventSlug") or ""
+            ).strip()
+        uma_resolution_status = (
+            market_data.get("umaResolutionStatus")
+            if market_data.get("umaResolutionStatus") is not None
+            else market_data.get("uma_resolution_status")
+        )
+        uma_resolution_statuses = PolymarketClient._coerce_text_list(
+            market_data.get("umaResolutionStatuses")
+            if market_data.get("umaResolutionStatuses") is not None
+            else market_data.get("uma_resolution_statuses")
+        )
 
         return {
             "id": market_data.get("id", ""),
-            "condition_id": market_data.get("condition_id", "") or market_data.get("conditionId", ""),
+            "condition_id": market_data.get("condition_id", "")
+            or market_data.get("conditionId", ""),
             "question": market_data.get("question", ""),
             "slug": market_data.get("slug", ""),
             "groupItemTitle": market_data.get("groupItemTitle", ""),
@@ -635,6 +706,8 @@ class PolymarketClient:
                 if market_data.get("marketStatus") is not None
                 else market_data.get("market_status")
             ),
+            "uma_resolution_status": uma_resolution_status,
+            "uma_resolution_statuses": uma_resolution_statuses,
             "liquidity": market_data.get("liquidity")
             if market_data.get("liquidity") is not None
             else market_data.get("liquidityNum"),
@@ -687,9 +760,23 @@ class PolymarketClient:
                     token_ids.append(norm_token)
 
         sample = candidates[0]
-        question = str(sample.get("title") or sample.get("market_title") or sample.get("question") or "").strip()
-        slug = str(sample.get("slug") or sample.get("market_slug") or sample.get("marketSlug") or "").strip()
-        event_slug = str(sample.get("eventSlug") or sample.get("event_slug") or "").strip()
+        question = str(
+            sample.get("title")
+            or sample.get("market_title")
+            or sample.get("question")
+            or ""
+        ).strip()
+        slug = str(
+            sample.get("slug")
+            or sample.get("market_slug")
+            or sample.get("marketSlug")
+            or ""
+        ).strip()
+        event_slug = str(
+            sample.get("eventSlug")
+            or sample.get("event_slug")
+            or ""
+        ).strip()
 
         if not question and not slug:
             return None
@@ -718,7 +805,10 @@ class PolymarketClient:
         normalized = PolymarketClient._normalize_identifier(value)
         if not normalized or PolymarketClient._looks_like_condition_id(normalized):
             return False
-        return bool(_NUMERIC_TOKEN_ID_RE.fullmatch(normalized) or _HEX_TOKEN_ID_RE.fullmatch(normalized))
+        return bool(
+            _NUMERIC_TOKEN_ID_RE.fullmatch(normalized)
+            or _HEX_TOKEN_ID_RE.fullmatch(normalized)
+        )
 
     @staticmethod
     def _has_tradability_metadata(market_info: Optional[dict]) -> bool:
@@ -737,6 +827,8 @@ class PolymarketClient:
                 "winner",
                 "winning_outcome",
                 "status",
+                "uma_resolution_status",
+                "uma_resolution_statuses",
             )
         )
 
@@ -805,6 +897,39 @@ class PolymarketClient:
         return None
 
     @staticmethod
+    def _coerce_text_list(value: object) -> list[str]:
+        if value is None:
+            return []
+
+        raw_values: list[object] = []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, list):
+                    raw_values.extend(parsed)
+                else:
+                    raw_values.append(text)
+            else:
+                raw_values.extend(part.strip() for part in text.split(",") if part.strip())
+        elif isinstance(value, (list, tuple, set)):
+            raw_values.extend(list(value))
+        else:
+            raw_values.append(value)
+
+        out: list[str] = []
+        for item in raw_values:
+            text = str(item or "").strip()
+            if text:
+                out.append(text)
+        return out
+
+    @staticmethod
     def is_market_tradable(
         market_info: Optional[dict],
         *,
@@ -857,7 +982,9 @@ class PolymarketClient:
             return False
 
         end_dt = PolymarketClient._coerce_datetime(
-            market_info.get("end_date") if market_info.get("end_date") is not None else market_info.get("endDate")
+            market_info.get("end_date")
+            if market_info.get("end_date") is not None
+            else market_info.get("endDate")
         )
         if end_dt and end_dt <= ref_now:
             return False
@@ -904,6 +1031,39 @@ class PolymarketClient:
             )
             if any(term in normalized for term in blocked):
                 return False
+
+        uma_status_values: list[str] = []
+        uma_status_values.extend(
+            PolymarketClient._coerce_text_list(
+                market_info.get("uma_resolution_status")
+                if market_info.get("uma_resolution_status") is not None
+                else market_info.get("umaResolutionStatus")
+            )
+        )
+        uma_status_values.extend(
+            PolymarketClient._coerce_text_list(
+                market_info.get("uma_resolution_statuses")
+                if market_info.get("uma_resolution_statuses") is not None
+                else market_info.get("umaResolutionStatuses")
+            )
+        )
+        if uma_status_values:
+            blocked = (
+                "proposed",
+                "review",
+                "dispute",
+                "final",
+                "resolved",
+                "settled",
+                "closed",
+                "expired",
+                "cancelled",
+                "canceled",
+            )
+            for raw in uma_status_values:
+                normalized = str(raw).strip().lower().replace("_", " ").replace("-", " ")
+                if any(term in normalized for term in blocked):
+                    return False
 
         return True
 
@@ -959,7 +1119,9 @@ class PolymarketClient:
     @staticmethod
     def _market_matches_condition_id(market_data: dict, condition_id: str) -> bool:
         return (
-            PolymarketClient._normalize_identifier(market_data.get("condition_id") or market_data.get("conditionId"))
+            PolymarketClient._normalize_identifier(
+                market_data.get("condition_id") or market_data.get("conditionId")
+            )
             == condition_id
         )
 
@@ -977,7 +1139,11 @@ class PolymarketClient:
 
         def _get_asset_id(trade: dict) -> str:
             """Get asset/token ID, handling both camelCase and snake_case."""
-            return trade.get("asset_id", "") or trade.get("assetId", "") or trade.get("asset", "")
+            return (
+                trade.get("asset_id", "")
+                or trade.get("assetId", "")
+                or trade.get("asset", "")
+            )
 
         def _get_condition_id(trade: dict) -> str:
             """Get condition_id from trade, checking multiple field names."""
@@ -991,7 +1157,11 @@ class PolymarketClient:
         unknown_cids = set()
         for trade in trades:
             market_val = trade.get("market", "")
-            if market_val and _is_hex_id(market_val) and market_val not in self._market_cache:
+            if (
+                market_val
+                and _is_hex_id(market_val)
+                and market_val not in self._market_cache
+            ):
                 unknown_cids.add(market_val)
             # Also check explicit conditionId / condition_id field
             cid = _get_condition_id(trade)
@@ -1016,7 +1186,11 @@ class PolymarketClient:
 
             # Check if already resolved via condition_id
             resolved = False
-            if market_val and _is_hex_id(market_val) and self._market_cache.get(market_val):
+            if (
+                market_val
+                and _is_hex_id(market_val)
+                and self._market_cache.get(market_val)
+            ):
                 resolved = True
             if not resolved and cid and _is_hex_id(cid) and self._market_cache.get(cid):
                 resolved = True
@@ -1075,11 +1249,14 @@ class PolymarketClient:
             api_slug = trade.get("slug", "")
             api_event_slug = trade.get("eventSlug", trade.get("event_slug", ""))
             if market_info:
-                enriched_trade["market_title"] = api_title or (
-                    market_info.get("groupItemTitle") or market_info.get("question", "")
+                enriched_trade["market_title"] = (
+                    api_title
+                    or (market_info.get("groupItemTitle") or market_info.get("question", ""))
                 )
                 enriched_trade["market_slug"] = api_slug or market_info.get("slug", "")
-                enriched_trade["event_slug"] = api_event_slug or market_info.get("event_slug", "")
+                enriched_trade["event_slug"] = api_event_slug or market_info.get(
+                    "event_slug", ""
+                )
             else:
                 enriched_trade["market_title"] = api_title
                 enriched_trade["market_slug"] = api_slug
@@ -1097,14 +1274,18 @@ class PolymarketClient:
                 try:
                     if isinstance(ts, (int, float)):
                         # Unix timestamp in seconds
-                        enriched_trade["timestamp_iso"] = utcfromtimestamp(ts).isoformat() + "Z"
+                        enriched_trade["timestamp_iso"] = (
+                            utcfromtimestamp(ts).isoformat() + "Z"
+                        )
                     elif isinstance(ts, str):
                         if "T" in ts or "-" in ts:
                             # Already ISO format
                             enriched_trade["timestamp_iso"] = ts
                         else:
                             # Numeric string (unix seconds)
-                            enriched_trade["timestamp_iso"] = utcfromtimestamp(float(ts)).isoformat() + "Z"
+                            enriched_trade["timestamp_iso"] = (
+                                utcfromtimestamp(float(ts)).isoformat() + "Z"
+                            )
                 except (ValueError, TypeError, OSError):
                     enriched_trade["timestamp_iso"] = ""
             else:
@@ -1122,9 +1303,13 @@ class PolymarketClient:
 
     # ==================== CLOB API ====================
 
-    async def get_midpoint(self, token_id: str, use_trading_proxy: bool = False) -> float:
+    async def get_midpoint(
+        self, token_id: str, use_trading_proxy: bool = False
+    ) -> float:
         """Get midpoint price for a token"""
-        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
         response = await self._rate_limited_get(
             f"{self.clob_url}/midpoint", client=client, params={"token_id": token_id}
         )
@@ -1132,9 +1317,13 @@ class PolymarketClient:
         data = response.json()
         return float(data.get("mid", 0))
 
-    async def get_price(self, token_id: str, side: str = "BUY", use_trading_proxy: bool = False) -> float:
+    async def get_price(
+        self, token_id: str, side: str = "BUY", use_trading_proxy: bool = False
+    ) -> float:
         """Get best price for a token (BUY = best ask, SELL = best bid)"""
-        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
         response = await self._rate_limited_get(
             f"{self.clob_url}/price",
             client=client,
@@ -1144,10 +1333,16 @@ class PolymarketClient:
         data = response.json()
         return float(data.get("price", 0))
 
-    async def get_order_book(self, token_id: str, use_trading_proxy: bool = False) -> dict:
+    async def get_order_book(
+        self, token_id: str, use_trading_proxy: bool = False
+    ) -> dict:
         """Get full order book for a token"""
-        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
-        response = await self._rate_limited_get(f"{self.clob_url}/book", client=client, params={"token_id": token_id})
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
+        response = await self._rate_limited_get(
+            f"{self.clob_url}/book", client=client, params={"token_id": token_id}
+        )
         response.raise_for_status()
         return response.json()
 
@@ -1164,7 +1359,9 @@ class PolymarketClient:
 
         Returns a normalized list of ``{"t": epoch_ms, "p": price}`` points.
         """
-        client = await (self._get_trading_client() if use_trading_proxy else self._get_client())
+        client = await (
+            self._get_trading_client() if use_trading_proxy else self._get_client()
+        )
 
         params: dict[str, object] = {"market": token_id}
         if interval:
@@ -1196,7 +1393,12 @@ class PolymarketClient:
         # Keep parsing defensive in case payload shape drifts.
         raw_history = payload
         if isinstance(payload, dict):
-            raw_history = payload.get("history") or payload.get("prices") or payload.get("data") or []
+            raw_history = (
+                payload.get("history")
+                or payload.get("prices")
+                or payload.get("data")
+                or []
+            )
         if not isinstance(raw_history, list):
             return []
 
@@ -1204,7 +1406,12 @@ class PolymarketClient:
         for item in raw_history:
             if not isinstance(item, dict):
                 continue
-            t_raw = item.get("t") or item.get("timestamp") or item.get("time") or item.get("ts")
+            t_raw = (
+                item.get("t")
+                or item.get("timestamp")
+                or item.get("time")
+                or item.get("ts")
+            )
             p_raw = item.get("p")
             if p_raw is None:
                 p_raw = item.get("price")
@@ -1248,7 +1455,9 @@ class PolymarketClient:
 
     async def get_wallet_positions(self, address: str) -> list[dict]:
         """Get open positions for a wallet"""
-        response = await self._rate_limited_get(f"{self.data_url}/positions", params={"user": address})
+        response = await self._rate_limited_get(
+            f"{self.data_url}/positions", params={"user": address}
+        )
         response.raise_for_status()
         return response.json()
 
@@ -1328,7 +1537,9 @@ class PolymarketClient:
         try:
             for order_by in ["PNL", "VOL"]:
                 for offset in range(0, 200, 50):
-                    leaderboard = await self.get_leaderboard(limit=50, order_by=order_by, offset=offset)
+                    leaderboard = await self.get_leaderboard(
+                        limit=50, order_by=order_by, offset=offset
+                    )
                     if not leaderboard:
                         break
                     for entry in leaderboard:
@@ -1350,7 +1561,9 @@ class PolymarketClient:
 
         # Try the data API profile endpoint
         try:
-            response = await self._rate_limited_get(f"{self.data_url}/profile", params={"address": address})
+            response = await self._rate_limited_get(
+                f"{self.data_url}/profile", params={"address": address}
+            )
             if response.status_code == 200:
                 data = response.json()
                 if data and data.get("username"):
@@ -1364,12 +1577,16 @@ class PolymarketClient:
 
         # Try the users endpoint which may have username
         try:
-            response = await self._rate_limited_get(f"{self.data_url}/users", params={"proxyAddress": address})
+            response = await self._rate_limited_get(
+                f"{self.data_url}/users", params={"proxyAddress": address}
+            )
             if response.status_code == 200:
                 data = response.json()
                 if data and len(data) > 0:
                     user = data[0]
-                    username = user.get("name") or user.get("username") or user.get("userName")
+                    username = (
+                        user.get("name") or user.get("username") or user.get("userName")
+                    )
                     if username:
                         return {"username": username, "address": address, **user}
         except Exception:
@@ -1380,7 +1597,9 @@ class PolymarketClient:
             client = await self._get_client()
             response = await client.get(
                 f"https://polymarket.com/profile/{address}",
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                },
                 follow_redirects=True,
             )
             if response.status_code == 200:
@@ -1395,7 +1614,9 @@ class PolymarketClient:
                         return {"username": username, "address": address}
 
                 # Try meta og:title
-                og_match = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html)
+                og_match = re.search(
+                    r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html
+                )
                 if og_match:
                     username = og_match.group(1).strip()
                     if username and "polymarket" not in username.lower():
@@ -1408,7 +1629,9 @@ class PolymarketClient:
 
     async def get_wallet_trades(self, address: str, limit: int = 100) -> list[dict]:
         """Get recent trades for a wallet"""
-        response = await self._rate_limited_get(f"{self.data_url}/trades", params={"user": address, "limit": limit})
+        response = await self._rate_limited_get(
+            f"{self.data_url}/trades", params={"user": address, "limit": limit}
+        )
         response.raise_for_status()
         data = response.json()
         return self._extract_list_payload(
@@ -1416,7 +1639,9 @@ class PolymarketClient:
             preferred_keys=("data", "items", "trades", "activity"),
         )
 
-    async def get_market_trades(self, condition_id: str, limit: int = 100) -> list[dict]:
+    async def get_market_trades(
+        self, condition_id: str, limit: int = 100
+    ) -> list[dict]:
         """Get recent trades for a market"""
         response = await self._rate_limited_get(
             f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
@@ -1537,7 +1762,9 @@ class PolymarketClient:
             if category.upper() != "OVERALL":
                 params["category"] = category.upper()
 
-            response = await self._rate_limited_get(f"{self.data_url}/v1/leaderboard", params=params)
+            response = await self._rate_limited_get(
+                f"{self.data_url}/v1/leaderboard", params=params
+            )
             response.raise_for_status()
             data = response.json()
             # API may return a list or a wrapper object
@@ -1635,7 +1862,9 @@ class PolymarketClient:
                 if not address:
                     return None
 
-                result = await self.calculate_win_rate_fast(address, min_positions=min_trades)
+                result = await self.calculate_win_rate_fast(
+                    address, min_positions=min_trades
+                )
                 if not result:
                     return None
 
@@ -1667,7 +1896,9 @@ class PolymarketClient:
 
         return results[:limit]
 
-    def _filter_by_time_period(self, trades: list[dict], time_period: str) -> list[dict]:
+    def _filter_by_time_period(
+        self, trades: list[dict], time_period: str
+    ) -> list[dict]:
         """Filter trades by time period (DAY, WEEK, MONTH, ALL)."""
         if not trades or time_period.upper() == "ALL":
             return trades
@@ -1685,13 +1916,19 @@ class PolymarketClient:
         cutoff = now - delta
         filtered = []
         for trade in trades:
-            ts = trade.get("timestamp") or trade.get("created_at") or trade.get("createdAt", "")
+            ts = (
+                trade.get("timestamp")
+                or trade.get("created_at")
+                or trade.get("createdAt", "")
+            )
             if not ts:
                 filtered.append(trade)  # Keep trades without timestamps
                 continue
             try:
                 if isinstance(ts, str):
-                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(
+                        tzinfo=None
+                    )
                 if ts >= cutoff:
                     filtered.append(trade)
             except (ValueError, TypeError):
@@ -1699,7 +1936,9 @@ class PolymarketClient:
 
         return filtered
 
-    async def calculate_wallet_win_rate(self, address: str, max_trades: int = 500, time_period: str = "ALL") -> dict:
+    async def calculate_wallet_win_rate(
+        self, address: str, max_trades: int = 500, time_period: str = "ALL"
+    ) -> dict:
         """
         Calculate win rate for a wallet by analyzing trade history and open positions.
 
@@ -1731,7 +1970,11 @@ class PolymarketClient:
             # Group trades by market
             markets: dict[str, dict] = {}
             for trade in trades:
-                market_id = trade.get("market") or trade.get("condition_id") or trade.get("assetId", "unknown")
+                market_id = (
+                    trade.get("market")
+                    or trade.get("condition_id")
+                    or trade.get("assetId", "unknown")
+                )
                 if market_id not in markets:
                     markets[market_id] = {
                         "buys": 0.0,
@@ -1791,7 +2034,9 @@ class PolymarketClient:
             total_losses = closed_losses + position_losses
             total_positions = total_wins + total_losses
 
-            win_rate = (total_wins / total_positions * 100) if total_positions > 0 else 0.0
+            win_rate = (
+                (total_wins / total_positions * 100) if total_positions > 0 else 0.0
+            )
 
             return {
                 "address": address,
@@ -1818,7 +2063,9 @@ class PolymarketClient:
                 "error": str(e),
             }
 
-    async def get_closed_positions(self, address: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def get_closed_positions(
+        self, address: str, limit: int = 50, offset: int = 0
+    ) -> list[dict]:
         """Fetch closed positions for a wallet. Much more efficient than analyzing raw trades."""
         try:
             response = await self._rate_limited_get(
@@ -1841,14 +2088,18 @@ class PolymarketClient:
             )
             return []
 
-    async def get_closed_positions_paginated(self, address: str, max_positions: int = 200) -> list[dict]:
+    async def get_closed_positions_paginated(
+        self, address: str, max_positions: int = 200
+    ) -> list[dict]:
         """Fetch multiple pages of closed positions."""
         all_positions = []
         offset = 0
         page_size = 50
 
         while len(all_positions) < max_positions:
-            page = await self.get_closed_positions(address, limit=page_size, offset=offset)
+            page = await self.get_closed_positions(
+                address, limit=page_size, offset=offset
+            )
             if not page:
                 break
             all_positions.extend(page)
@@ -1858,7 +2109,9 @@ class PolymarketClient:
 
         return all_positions[:max_positions]
 
-    async def calculate_win_rate_fast(self, address: str, min_positions: int = 5) -> Optional[dict]:
+    async def calculate_win_rate_fast(
+        self, address: str, min_positions: int = 5
+    ) -> Optional[dict]:
         """
         Fast win rate calculation using closed-positions endpoint.
         Returns None if trader doesn't meet minimum position threshold.
@@ -1966,7 +2219,9 @@ class PolymarketClient:
                     return None
 
                 try:
-                    result = await self.calculate_win_rate_fast(address, min_positions=min_trades)
+                    result = await self.calculate_win_rate_fast(
+                        address, min_positions=min_trades
+                    )
                 except Exception:
                     return None
 
@@ -2051,16 +2306,30 @@ class PolymarketClient:
             total_cash_pnl = 0.0
 
             for pos in positions:
-                current_value = float(pos.get("currentValue", 0) or pos.get("current_value", 0) or 0)
-                initial_value = float(pos.get("initialValue", 0) or pos.get("initial_value", 0) or 0)
-                cash_pnl = float(pos.get("cashPnl", 0) or pos.get("cash_pnl", 0) or pos.get("pnl", 0) or 0)
+                current_value = float(
+                    pos.get("currentValue", 0) or pos.get("current_value", 0) or 0
+                )
+                initial_value = float(
+                    pos.get("initialValue", 0) or pos.get("initial_value", 0) or 0
+                )
+                cash_pnl = float(
+                    pos.get("cashPnl", 0)
+                    or pos.get("cash_pnl", 0)
+                    or pos.get("pnl", 0)
+                    or 0
+                )
 
                 # Fallback: calculate from size * price if API values are 0
                 if current_value == 0 and initial_value == 0:
                     size = float(pos.get("size", 0) or 0)
-                    avg_price = float(pos.get("avgPrice", 0) or pos.get("avg_price", 0) or 0)
+                    avg_price = float(
+                        pos.get("avgPrice", 0) or pos.get("avg_price", 0) or 0
+                    )
                     current_price = float(
-                        pos.get("currentPrice", 0) or pos.get("curPrice", 0) or pos.get("price", 0) or 0
+                        pos.get("currentPrice", 0)
+                        or pos.get("curPrice", 0)
+                        or pos.get("price", 0)
+                        or 0
                     )
                     initial_value = size * avg_price
                     current_value = size * current_price
@@ -2088,8 +2357,14 @@ class PolymarketClient:
                 total_invested = closed_invested + total_initial_value
                 total_returned = closed_returned
             else:
-                total_invested = total_bought if total_bought > 0 else total_initial_value
-                total_returned = total_sold if total_sold > 0 else total_cash_pnl + total_initial_value
+                total_invested = (
+                    total_bought if total_bought > 0 else total_initial_value
+                )
+                total_returned = (
+                    total_sold
+                    if total_sold > 0
+                    else total_cash_pnl + total_initial_value
+                )
 
             # Calculate ROI
             roi_percent = 0.0

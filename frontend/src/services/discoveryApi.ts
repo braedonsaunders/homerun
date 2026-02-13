@@ -77,11 +77,7 @@ export interface ConfluenceSignal {
   market_slug: string | null
   yes_price?: number | null
   no_price?: number | null
-  price_history?: Array<{
-    t: number
-    yes: number
-    no: number
-  }>
+  price_history?: Array<Record<string, unknown> | unknown[]>
   signal_type: string
   strength: number
   conviction_score?: number
@@ -165,6 +161,7 @@ export interface TrackedTraderOpportunity extends ConfluenceSignal {
     activity_score: number
   }>
   outcome_labels?: string[]
+  outcome_prices?: number[]
   yes_label?: string | null
   no_label?: string | null
   current_yes_price?: number | null
@@ -204,11 +201,7 @@ export interface InsiderOpportunity {
   market_slug?: string | null
   yes_price?: number | null
   no_price?: number | null
-  price_history?: Array<{
-    t: number
-    yes: number
-    no: number
-  }>
+  price_history?: Array<Record<string, unknown> | unknown[]>
   direction: 'buy_yes' | 'buy_no' | string
   entry_price?: number | null
   edge_percent?: number | null
@@ -237,6 +230,7 @@ export interface InsiderOpportunity {
   }>
   created_at?: string | null
   outcome_labels?: string[]
+  outcome_prices?: number[]
   yes_label?: string | null
   no_label?: string | null
   current_yes_price?: number | null

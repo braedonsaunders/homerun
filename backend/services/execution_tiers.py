@@ -16,9 +16,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, String, Float, Integer, DateTime, Index, select, func
+from sqlalchemy import Column, String, Integer, DateTime, Index, select, func
 
 from models.database import Base, AsyncSessionLocal
+from models.types import PreciseFloat as Float
 from utils.logger import get_logger
 
 logger = get_logger("execution_tiers")

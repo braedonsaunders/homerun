@@ -40,6 +40,7 @@ Thumbs.db
 *.db-wal
 *.sqlite
 *.sqlite3
+backend/.alembic.sqlite.lock
 
 # Logs
 *.log

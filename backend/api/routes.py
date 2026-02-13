@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from typing import Optional
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from utils.utcnow import utcnow
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +84,112 @@ def _strategy_meta(strategy_type: str, *, is_plugin: bool) -> dict[str, object]:
     return base
 
 
+def _normalize_sub_strategy(value: Optional[str]) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return text.replace("-", "_").replace(" ", "_")
+
+
+def _derive_opportunity_sub_strategy(opportunity: object) -> Optional[str]:
+    """Derive strategy-specific subtype from opportunity metadata/title."""
+
+    def _field(name: str, default=None):
+        if isinstance(opportunity, Mapping):
+            return opportunity.get(name, default)
+        return getattr(opportunity, name, default)
+
+    strategy = str(_field("strategy") or "").strip().lower()
+    title = str(_field("title") or "").strip().lower()
+    positions_raw = _field("positions_to_take", [])
+    positions = (
+        [p for p in positions_raw if isinstance(p, Mapping)]
+        if isinstance(positions_raw, list)
+        else []
+    )
+
+    if strategy == StrategyType.TEMPORAL_DECAY.value:
+        if title.startswith("certainty shock:"):
+            return "certainty_shock"
+        if title.startswith("temporal decay:"):
+            return "decay_curve"
+        return None
+
+    if strategy == StrategyType.BTC_ETH_HIGHFREQ.value:
+        for pos in positions:
+            if pos.get("_highfreq_metadata"):
+                sub = _normalize_sub_strategy(str(pos.get("sub_strategy") or ""))
+                if sub:
+                    return sub
+        return None
+
+    if strategy == StrategyType.NEWS_EDGE.value:
+        for pos in positions:
+            payload = pos.get("_news_edge")
+            if isinstance(payload, Mapping):
+                direction = _normalize_sub_strategy(str(payload.get("direction") or ""))
+                if direction:
+                    return direction
+        return None
+
+    if strategy == StrategyType.CROSS_PLATFORM.value:
+        pm = next(
+            (
+                pos
+                for pos in positions
+                if str(pos.get("platform") or "").strip().lower() == "polymarket"
+            ),
+            None,
+        )
+        kalshi = next(
+            (
+                pos
+                for pos in positions
+                if str(pos.get("platform") or "").strip().lower() == "kalshi"
+            ),
+            None,
+        )
+        if pm and kalshi:
+            pm_outcome = _normalize_sub_strategy(str(pm.get("outcome") or ""))
+            kalshi_outcome = _normalize_sub_strategy(str(kalshi.get("outcome") or ""))
+            if pm_outcome and kalshi_outcome:
+                return f"poly_{pm_outcome}_kalshi_{kalshi_outcome}"
+        return None
+
+    if strategy == StrategyType.SETTLEMENT_LAG.value:
+        if title.startswith("settlement lag (negrisk):"):
+            return "negrisk_bundle"
+        if title.startswith("settlement lag:"):
+            return "binary_market"
+        return None
+
+    if strategy == StrategyType.NEGRISK.value:
+        if title.startswith("negrisk short:"):
+            return "binary_short"
+        if title.startswith("negrisk:"):
+            return "binary_long"
+        if title.startswith("multi-outcome short:"):
+            return "multi_outcome_short"
+        if title.startswith("multi-outcome:"):
+            return "multi_outcome_long"
+        return None
+
+    if strategy == StrategyType.MIRACLE.value:
+        if title.startswith("stale market:"):
+            return "stale_market"
+        if title.startswith("miracle:"):
+            return "impossibility_scan"
+        return None
+
+    return None
+
+
+def _serialize_with_sub_strategy(opportunity: object) -> dict:
+    payload = serialize_opportunity_with_links(opportunity)
+    payload["strategy_subtype"] = _derive_opportunity_sub_strategy(opportunity)
+    return payload
+
+
 async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str]:
     """Resolve strategy param to list of strategy type strings.
 
@@ -142,6 +249,10 @@ async def get_opportunities(
         None,
         description="Exclude a strategy type from results (e.g. btc_eth_highfreq)",
     ),
+    sub_strategy: Optional[str] = Query(
+        None,
+        description="Filter by strategy-specific subtype (e.g. certainty_shock, pure_arb)",
+    ),
     limit: int = Query(50, description="Maximum results to return"),
     offset: int = Query(0, description="Number of results to skip"),
 ):
@@ -170,6 +281,15 @@ async def get_opportunities(
             if search_lower in opp.title.lower()
             or (opp.event_title and search_lower in opp.event_title.lower())
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
+        ]
+
+    # Apply strategy-specific subtype filter if provided.
+    normalized_sub = _normalize_sub_strategy(sub_strategy)
+    if normalized_sub:
+        opportunities = [
+            opp
+            for opp in opportunities
+            if _derive_opportunity_sub_strategy(opp) == normalized_sub
         ]
 
     # Keep all analyzed opportunities visible in Markets, including STRONG SKIP.
@@ -215,7 +335,7 @@ async def get_opportunities(
     # Using Response injection (not JSONResponse) lets FastAPI handle
     # content-negotiation and CORS headers correctly.
     response.headers["X-Total-Count"] = str(total)
-    return [serialize_opportunity_with_links(o) for o in paginated]
+    return [_serialize_with_sub_strategy(o) for o in paginated]
 
 
 @router.get("/opportunities/search-polymarket")
@@ -385,16 +505,25 @@ async def get_opportunity_counts(
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
+    strategy: Optional[str] = Query(
+        None,
+        description="Optional strategy type filter (supports plugin_<slug>) for subfilter lookups",
+    ),
+    category: Optional[str] = Query(
+        None, description="Optional category filter for subfilter lookups"
+    ),
 ):
     """Get counts of opportunities grouped by strategy and category.
 
-    Applies base filters (profit, risk, liquidity, search) but NOT strategy/category
-    filters, so the UI can show how many opportunities each filter value would match.
+    Applies base filters (profit, risk, liquidity, search). Optional strategy/category
+    filters can be supplied to narrow subtype counts for strategy-specific subfilters.
     """
     filter = OpportunityFilter(
         min_profit=min_profit / 100,
         max_risk=max_risk,
+        strategies=await _resolve_strategy_to_filter(strategy),
         min_liquidity=min_liquidity,
+        category=category,
     )
 
     opportunities = await shared_state.get_opportunities_from_db(session, filter)
@@ -413,14 +542,22 @@ async def get_opportunity_counts(
     # Count by strategy
     strategy_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
+    sub_strategy_counts: dict[str, int] = {}
     for opp in opportunities:
         s = opp.strategy
         strategy_counts[s] = strategy_counts.get(s, 0) + 1
         if opp.category:
             cat = opp.category.lower()
             category_counts[cat] = category_counts.get(cat, 0) + 1
+        sub = _derive_opportunity_sub_strategy(opp)
+        if sub:
+            sub_strategy_counts[sub] = sub_strategy_counts.get(sub, 0) + 1
 
-    return {"strategies": strategy_counts, "categories": category_counts}
+    return {
+        "strategies": strategy_counts,
+        "categories": category_counts,
+        "sub_strategies": sub_strategy_counts,
+    }
 
 
 @router.get("/opportunities/{opportunity_id}", response_model=ArbitrageOpportunity)
@@ -432,7 +569,7 @@ async def get_opportunity(
     opportunities = await shared_state.get_opportunities_from_db(session, None)
     for opp in opportunities:
         if opp.id == opportunity_id:
-            return serialize_opportunity_with_links(opp)
+            return _serialize_with_sub_strategy(opp)
     raise HTTPException(status_code=404, detail="Opportunity not found")
 
 

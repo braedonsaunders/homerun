@@ -17,11 +17,13 @@ Setup:
 """
 
 import asyncio
+from collections import OrderedDict
 from datetime import datetime
 from utils.utcnow import utcnow
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
+from decimal import Decimal
 import uuid
 
 from config import settings
@@ -36,6 +38,14 @@ from services.trading_proxy import (
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+ZERO = Decimal("0")
+
+
+def _to_decimal(value) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 class OrderSide(str, Enum):
@@ -122,12 +132,25 @@ class TradingService:
     def __init__(self):
         self._initialized = False
         self._client = None
-        self._orders: dict[str, Order] = {}
+        self._orders: OrderedDict[str, Order] = OrderedDict()
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
         self._daily_volume_reset = utcnow().date()
-        self._market_positions: dict[str, float] = {}  # token_id -> USD exposure
+        self._market_positions: OrderedDict[str, Decimal] = OrderedDict()  # token_id -> USD exposure
+        self._stats_lock = asyncio.Lock()
+        self._daily_volume = ZERO
+        self._daily_pnl = ZERO
+        self._total_volume = ZERO
+        self._total_pnl = ZERO
         self.MAX_PER_MARKET_USD = settings.MAX_PER_MARKET_USD
+        self._max_order_history = max(
+            100,
+            int(getattr(settings, "TRADING_ORDER_HISTORY_LIMIT", 5000)),
+        )
+        self._max_market_position_entries = max(
+            100,
+            int(getattr(settings, "TRADING_MARKET_POSITION_LIMIT", 5000)),
+        )
 
     async def initialize(self) -> bool:
         """
@@ -147,7 +170,9 @@ class TradingService:
                 settings.POLYMARKET_API_PASSPHRASE,
             ]
         ):
-            logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
+            logger.error(
+                "Missing Polymarket API credentials. Cannot initialize trading."
+            )
             return False
 
         try:
@@ -177,14 +202,19 @@ class TradingService:
                 if patched:
                     logger.info("Trading requests will be routed through VPN proxy")
                 else:
-                    logger.warning("Trading proxy enabled but patch failed — trades will use direct connection")
+                    logger.warning(
+                        "Trading proxy enabled but patch failed — "
+                        "trades will use direct connection"
+                    )
 
             self._initialized = True
             logger.info("Trading service initialized successfully")
             return True
 
         except ImportError:
-            logger.error("py-clob-client not installed. Run: pip install py-clob-client")
+            logger.error(
+                "py-clob-client not installed. Run: pip install py-clob-client"
+            )
             return False
         except Exception as e:
             logger.error(f"Failed to initialize trading client: {e}")
@@ -194,20 +224,71 @@ class TradingService:
         """Check if trading service is ready"""
         return self._initialized and self._client is not None
 
-    def _check_daily_reset(self):
-        """Reset daily counters if it's a new day"""
+    def _sync_stats_from_decimals(self) -> None:
+        self._stats.total_volume = float(self._total_volume)
+        self._stats.total_pnl = float(self._total_pnl)
+        self._stats.daily_volume = float(self._daily_volume)
+        self._stats.daily_pnl = float(self._daily_pnl)
+
+    def _prune_order_cache(self) -> None:
+        if len(self._orders) <= self._max_order_history:
+            return
+
+        active_statuses = {
+            OrderStatus.PENDING,
+            OrderStatus.OPEN,
+            OrderStatus.PARTIALLY_FILLED,
+        }
+        for order_id, cached_order in list(self._orders.items()):
+            if len(self._orders) <= self._max_order_history:
+                break
+            if cached_order.status not in active_statuses:
+                self._orders.pop(order_id, None)
+
+        while len(self._orders) > self._max_order_history:
+            self._orders.popitem(last=False)
+
+    def _remember_order(self, order: Order) -> None:
+        self._orders[order.id] = order
+        self._orders.move_to_end(order.id)
+        self._prune_order_cache()
+
+    def _prune_market_positions(self) -> None:
+        while len(self._market_positions) > self._max_market_position_entries:
+            self._market_positions.popitem(last=False)
+
+    def _apply_market_exposure_delta(
+        self,
+        token_id: Optional[str],
+        delta_usd: Decimal,
+    ) -> None:
+        if not token_id:
+            return
+        current = self._market_positions.get(token_id, ZERO)
+        updated = current + delta_usd
+        if updated <= ZERO:
+            self._market_positions.pop(token_id, None)
+            return
+        self._market_positions[token_id] = updated
+        self._market_positions.move_to_end(token_id)
+        self._prune_market_positions()
+
+    def _check_daily_reset(self) -> None:
+        """Reset daily counters if it's a new day."""
         today = utcnow().date()
         if today != self._daily_volume_reset:
-            self._stats.daily_volume = 0.0
-            self._stats.daily_pnl = 0.0
+            self._daily_volume = ZERO
+            self._daily_pnl = ZERO
             self._daily_volume_reset = today
+            self._sync_stats_from_decimals()
 
-    def _validate_order(self, size_usd: float, token_id: str = None) -> tuple[bool, str]:
-        """
-        Validate order against safety limits.
-
-        Returns (is_valid, error_message)
-        """
+    def _validate_order(
+        self,
+        size_usd: Decimal,
+        side: OrderSide,
+        token_id: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Validate order against safety limits."""
         self._check_daily_reset()
 
         if global_pause_state.is_paused:
@@ -219,23 +300,28 @@ class TradingService:
         if not settings.TRADING_ENABLED:
             return False, "Trading is disabled"
 
-        if size_usd < settings.MIN_ORDER_SIZE_USD:
+        min_order_size = _to_decimal(settings.MIN_ORDER_SIZE_USD)
+        max_trade_size = _to_decimal(settings.MAX_TRADE_SIZE_USD)
+        max_daily_volume = _to_decimal(settings.MAX_DAILY_TRADE_VOLUME)
+        max_per_market = _to_decimal(self.MAX_PER_MARKET_USD)
+
+        if size_usd < min_order_size:
             return (
                 False,
-                f"Order size ${size_usd:.2f} below minimum ${settings.MIN_ORDER_SIZE_USD:.2f}",
+                f"Order size ${float(size_usd):.2f} below minimum ${settings.MIN_ORDER_SIZE_USD:.2f}",
             )
 
-        if size_usd > settings.MAX_TRADE_SIZE_USD:
+        if size_usd > max_trade_size:
             return (
                 False,
-                f"Order size ${size_usd:.2f} exceeds maximum ${settings.MAX_TRADE_SIZE_USD:.2f}",
+                f"Order size ${float(size_usd):.2f} exceeds maximum ${settings.MAX_TRADE_SIZE_USD:.2f}",
             )
 
-        projected_daily_volume = self._stats.daily_volume + size_usd
-        if projected_daily_volume > settings.MAX_DAILY_TRADE_VOLUME:
+        projected_daily_volume = self._daily_volume + size_usd
+        if projected_daily_volume > max_daily_volume:
             return (
                 False,
-                f"Would exceed daily volume limit (${projected_daily_volume:.2f} > ${settings.MAX_DAILY_TRADE_VOLUME:.2f})",
+                f"Would exceed daily volume limit (${float(projected_daily_volume):.2f} > ${settings.MAX_DAILY_TRADE_VOLUME:.2f})",
             )
 
         if len(self._positions) >= settings.MAX_OPEN_POSITIONS:
@@ -244,16 +330,57 @@ class TradingService:
                 f"Maximum open positions ({settings.MAX_OPEN_POSITIONS}) reached",
             )
 
-        # Per-market position limit
-        if token_id and token_id in self._market_positions:
-            current = self._market_positions[token_id]
-            if current + size_usd > self.MAX_PER_MARKET_USD:
+        # Per-market position limit applies only to increased exposure.
+        if token_id and side == OrderSide.BUY:
+            current = self._market_positions.get(token_id, ZERO)
+            if current + size_usd > max_per_market:
                 return (
                     False,
-                    f"Per-market limit: ${current:.2f} + ${size_usd:.2f} exceeds ${self.MAX_PER_MARKET_USD:.2f}",
+                    f"Per-market limit: ${float(current):.2f} + ${float(size_usd):.2f} exceeds ${self.MAX_PER_MARKET_USD:.2f}",
                 )
 
         return True, ""
+
+    async def _validate_and_reserve_order(
+        self,
+        *,
+        size_usd: Decimal,
+        side: OrderSide,
+        token_id: Optional[str],
+    ) -> tuple[bool, str]:
+        # Force refresh from shared DB controls so pause-all propagates quickly
+        # across API and worker containers.
+        await global_pause_state.refresh_from_db(force=True)
+
+        async with self._stats_lock:
+            is_valid, error = self._validate_order(
+                size_usd=size_usd,
+                side=side,
+                token_id=token_id,
+            )
+            if not is_valid:
+                return False, error
+
+            self._daily_volume += size_usd
+            self._total_volume += size_usd
+            delta = size_usd if side == OrderSide.BUY else -size_usd
+            self._apply_market_exposure_delta(token_id, delta)
+            self._sync_stats_from_decimals()
+            return True, ""
+
+    async def _release_reservation(
+        self,
+        *,
+        size_usd: Decimal,
+        side: OrderSide,
+        token_id: Optional[str],
+    ) -> None:
+        async with self._stats_lock:
+            self._daily_volume = max(ZERO, self._daily_volume - size_usd)
+            self._total_volume = max(ZERO, self._total_volume - size_usd)
+            delta = -size_usd if side == OrderSide.BUY else size_usd
+            self._apply_market_exposure_delta(token_id, delta)
+            self._sync_stats_from_decimals()
 
     async def place_order(
         self,
@@ -292,26 +419,32 @@ class TradingService:
             opportunity_id=opportunity_id,
         )
 
-        # Calculate USD value
-        size_usd = price * size
+        # Calculate USD notional with Decimal to avoid float accumulation drift.
+        size_usd = _to_decimal(price) * _to_decimal(size)
+        reserved = False
 
         # VPN pre-trade check (blocks if VPN required but unreachable)
         vpn_ok, vpn_reason = await pre_trade_vpn_check()
         if not vpn_ok:
             order.status = OrderStatus.FAILED
             order.error_message = f"VPN check failed: {vpn_reason}"
-            self._orders[order_id] = order
+            self._remember_order(order)
             logger.error(f"Trade blocked by VPN check: {vpn_reason}")
             return order
 
-        # Validate order
-        is_valid, error = self._validate_order(size_usd, token_id=token_id)
+        # Validate and reserve risk budget atomically to prevent async races.
+        is_valid, error = await self._validate_and_reserve_order(
+            size_usd=size_usd,
+            side=side,
+            token_id=token_id,
+        )
         if not is_valid:
             order.status = OrderStatus.FAILED
             order.error_message = error
-            self._orders[order_id] = order
+            self._remember_order(order)
             logger.warning(f"Order validation failed: {error}")
             return order
+        reserved = True
 
         try:
             # Build and sign order using py-clob-client
@@ -334,28 +467,35 @@ class TradingService:
             if response.get("success"):
                 order.status = OrderStatus.OPEN
                 order.clob_order_id = response.get("orderID")
-                self._stats.total_trades += 1
-                self._stats.daily_volume += size_usd
-                self._stats.total_volume += size_usd
-                self._stats.last_trade_at = utcnow()
+                async with self._stats_lock:
+                    self._stats.total_trades += 1
+                    self._stats.last_trade_at = utcnow()
                 logger.info(f"Order placed successfully: {order.clob_order_id}")
-
-                # Update per-market position tracking
-                if token_id not in self._market_positions:
-                    self._market_positions[token_id] = 0.0
-                self._market_positions[token_id] += size_usd
             else:
                 order.status = OrderStatus.FAILED
                 order.error_message = response.get("errorMsg", "Unknown error")
+                await self._release_reservation(
+                    size_usd=size_usd,
+                    side=side,
+                    token_id=token_id,
+                )
+                reserved = False
                 logger.error(f"Order failed: {order.error_message}")
 
         except Exception as e:
             order.status = OrderStatus.FAILED
             order.error_message = str(e)
+            if reserved:
+                await self._release_reservation(
+                    size_usd=size_usd,
+                    side=side,
+                    token_id=token_id,
+                )
+                reserved = False
             logger.error(f"Order execution error: {e}")
 
         order.updated_at = utcnow()
-        self._orders[order_id] = order
+        self._remember_order(order)
         return order
 
     async def place_order_with_chase(
@@ -513,7 +653,11 @@ class TradingService:
         except Exception as e:
             logger.error(f"Get orders error: {e}")
 
-        return [o for o in self._orders.values() if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]]
+        return [
+            o
+            for o in self._orders.values()
+            if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
+        ]
 
     async def sync_positions(self) -> list[Position]:
         """Sync positions from Polymarket"""
@@ -543,7 +687,9 @@ class TradingService:
                     average_cost=float(pos.get("avgCost", 0)),
                     current_price=float(pos.get("currentPrice", 0)),
                 )
-                position.unrealized_pnl = (position.current_price - position.average_cost) * position.size
+                position.unrealized_pnl = (
+                    position.current_price - position.average_cost
+                ) * position.size
                 self._positions[token_id] = position
 
             self._stats.open_positions = len(self._positions)
@@ -565,7 +711,9 @@ class TradingService:
         except Exception:
             return None
 
-    async def execute_opportunity(self, opportunity_id: str, positions: list[dict], size_usd: float) -> list[Order]:
+    async def execute_opportunity(
+        self, opportunity_id: str, positions: list[dict], size_usd: float
+    ) -> list[Order]:
         """
         Execute an arbitrage opportunity with PARALLEL order submission.
 
@@ -656,14 +804,18 @@ class TradingService:
                 f"Position has EXPOSURE RISK!"
             )
             # Auto-reconcile: unwind filled legs from failed arbitrage
-            asyncio.create_task(self._auto_reconcile(orders, valid_positions, failed_count))
+            asyncio.create_task(
+                self._auto_reconcile(orders, valid_positions, failed_count)
+            )
 
         return orders
 
     async def _auto_reconcile(self, orders: list, positions: list, failed_count: int):
         """Auto-unwind partial multi-leg fills to prevent one-sided exposure."""
         await asyncio.sleep(2)  # Brief delay before reconciliation
-        logger.info(f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs")
+        logger.info(
+            f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs"
+        )
         for order in orders:
             if order.status in (
                 OrderStatus.OPEN,
@@ -674,19 +826,26 @@ class TradingService:
                     try:
                         unwind = await self.place_order(
                             token_id=order.token_id,
-                            side=OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY,
-                            price=order.price * 0.95 if order.side == OrderSide.BUY else order.price * 1.05,
+                            side=OrderSide.SELL
+                            if order.side == OrderSide.BUY
+                            else OrderSide.BUY,
+                            price=order.price * 0.95
+                            if order.side == OrderSide.BUY
+                            else order.price * 1.05,
                             size=order.filled_size,
                             order_type=OrderType.FOK,
                             market_question=f"AUTO_RECONCILE: {order.market_question}",
                         )
-                        logger.info(f"Reconciliation order placed: {unwind.status.value}")
+                        logger.info(
+                            f"Reconciliation order placed: {unwind.status.value}"
+                        )
                     except Exception as e:
                         logger.error(f"Reconciliation failed: {e}")
 
     def get_stats(self) -> TradingStats:
         """Get trading statistics"""
         self._check_daily_reset()
+        self._sync_stats_from_decimals()
         return self._stats
 
     def get_order(self, order_id: str) -> Optional[Order]:
@@ -718,7 +877,9 @@ class TradingService:
             return {
                 "address": address,
                 "usdc_balance": 0.0,  # Would need web3 call
-                "positions_value": sum(p.size * p.current_price for p in self._positions.values()),
+                "positions_value": sum(
+                    p.size * p.current_price for p in self._positions.values()
+                ),
             }
         except Exception as e:
             return {"error": str(e)}

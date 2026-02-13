@@ -6,7 +6,6 @@ from .must_happen import MustHappenStrategy
 from .miracle import MiracleStrategy
 from .combinatorial import CombinatorialStrategy
 from .settlement_lag import SettlementLagStrategy
-from .btc_eth_highfreq import BtcEthHighFreqStrategy
 from .news_edge import NewsEdgeStrategy
 from .cross_platform import CrossPlatformStrategy
 from .market_making import MarketMakingStrategy
@@ -27,7 +26,6 @@ __all__ = [
     "MiracleStrategy",
     "CombinatorialStrategy",
     "SettlementLagStrategy",
-    "BtcEthHighFreqStrategy",
     "NewsEdgeStrategy",
     "CrossPlatformStrategy",
     "MarketMakingStrategy",

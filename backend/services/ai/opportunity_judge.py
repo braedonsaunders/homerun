@@ -156,6 +156,58 @@ A skeptical prior is appropriate.
 Respond with valid JSON matching the required schema.\
 """
 
+WEATHER_OPPORTUNITY_JUDGE_SYSTEM_PROMPT = """\
+You are a risk-first weather prediction market trade reviewer.
+
+Score the provided opportunity on:
+- profit_viability
+- resolution_safety
+- execution_feasibility
+- market_efficiency
+- overall_score
+
+Rules:
+1) Use ONLY facts present in the prompt.
+2) Do not invent missing data (liquidity, model agreement, sources, or rules).
+3) If data is missing, state uncertainty explicitly.
+4) Keep reasoning concise and concrete.
+
+Recommendation guidance:
+- strong_execute / execute only when executable and edge is credible
+- review for mixed evidence
+- skip / strong_skip for non-executable, low-confidence, or structurally filtered trades
+
+Respond with valid JSON matching the required schema.
+"""
+
+DIRECTIONAL_OPPORTUNITY_JUDGE_SYSTEM_PROMPT = """\
+You are a risk-first directional trade judge for prediction markets.
+
+The opportunity may be a statistical edge (not guaranteed arbitrage).
+Do NOT reject solely because it is directional; instead evaluate whether
+the expected edge is credible, executable, and sized appropriately.
+
+Score:
+- profit_viability
+- resolution_safety
+- execution_feasibility
+- market_efficiency
+- overall_score
+
+Rules:
+1) Use only evidence present in the prompt.
+2) Explicitly account for uncertainty and edge fragility (slippage, stale moves, thin books).
+3) Distinguish "not guaranteed" from "invalid" — directional can still be tradeable.
+4) Penalize extreme/implausible ROI or weak data quality.
+
+Recommendation guidance:
+- strong_execute/execute when edge is credible and executable
+- review for mixed evidence
+- skip/strong_skip only when edge is likely noise, non-executable, or structurally unsafe
+
+Respond with valid JSON matching the required schema.
+"""
+
 # ---------------------------------------------------------------------------
 # Structured output schema
 # ---------------------------------------------------------------------------
@@ -167,45 +219,35 @@ OPPORTUNITY_JUDGMENT_SCHEMA = {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Composite score reflecting the weakest dimension",
         },
         "profit_viability": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Likelihood that the stated profit will materialize",
         },
         "resolution_safety": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Likelihood that all markets resolve cleanly",
         },
         "execution_feasibility": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Can we execute at quoted prices without unacceptable slippage?",
         },
         "market_efficiency": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Is this a real market inefficiency or noise?",
         },
         "recommendation": {
             "type": "string",
             "enum": ["strong_execute", "execute", "review", "skip", "strong_skip"],
-            "description": "Action recommendation based on overall assessment",
         },
-        "reasoning": {
-            "type": "string",
-            "description": "Concise rationale explaining the scores",
-        },
+        "reasoning": {"type": "string"},
         "risk_factors": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Specific risk factors identified for this opportunity",
         },
     },
     "required": [
@@ -249,6 +291,7 @@ class OpportunityJudge:
         resolution_analysis: dict | None = None,
         ml_prediction: dict | None = None,
         model: str | None = None,
+        force_llm: bool = False,
     ) -> dict:
         """Judge an arbitrage opportunity.
 
@@ -264,6 +307,8 @@ class OpportunityJudge:
             recommendation, confidence). Used for agreement tracking.
         model:
             LLM model override. Defaults to gpt-4o-mini.
+        force_llm:
+            When True, bypass report-only heuristic and run full LLM judgment.
 
         Returns
         -------
@@ -275,20 +320,64 @@ class OpportunityJudge:
         started_at = utcnow()
 
         try:
+            # Non-executable/report-only opportunities do not need LLM calls.
+            if self._is_report_only_opportunity(opportunity) and not force_llm:
+                judgment = self._report_only_judgment(opportunity)
+                judgment = self._annotate_reject_codes(judgment)
+                ml_agreement = self._compute_ml_agreement(judgment, ml_prediction)
+                result = {
+                    "opportunity_id": opportunity.id,
+                    "overall_score": judgment["overall_score"],
+                    "profit_viability": judgment["profit_viability"],
+                    "resolution_safety": judgment["resolution_safety"],
+                    "execution_feasibility": judgment["execution_feasibility"],
+                    "market_efficiency": judgment["market_efficiency"],
+                    "recommendation": judgment["recommendation"],
+                    "reasoning": judgment["reasoning"],
+                    "risk_factors": judgment.get("risk_factors", []),
+                    "reject_codes": judgment.get("reject_codes", []),
+                    "ml_agreement": ml_agreement,
+                    "session_id": session_id,
+                    "model_used": "heuristic_report_only",
+                    "judged_at": started_at.isoformat(),
+                }
+                await self._store_judgment(
+                    result=result,
+                    opportunity=opportunity,
+                    ml_prediction=ml_prediction,
+                    session_id=session_id,
+                    model_used="heuristic_report_only",
+                    started_at=started_at,
+                )
+                return result
+
             # 1. Build context prompt with opportunity details
-            user_prompt = self._build_judgment_prompt(
-                opportunity=opportunity,
-                resolution_analysis=resolution_analysis,
-                ml_prediction=ml_prediction,
-            )
+            if self._is_weather_opportunity(opportunity):
+                user_prompt = self._build_weather_judgment_prompt(
+                    opportunity=opportunity,
+                    resolution_analysis=resolution_analysis,
+                    ml_prediction=ml_prediction,
+                )
+            else:
+                user_prompt = self._build_judgment_prompt(
+                    opportunity=opportunity,
+                    resolution_analysis=resolution_analysis,
+                    ml_prediction=ml_prediction,
+                )
 
             # 2. Call LLM with structured output
             manager = get_llm_manager()
             resolved_model = model or manager._default_model
             from services.ai.llm_provider import LLMMessage
 
+            if self._is_weather_opportunity(opportunity):
+                system_prompt = WEATHER_OPPORTUNITY_JUDGE_SYSTEM_PROMPT
+            elif self._is_directional_opportunity(opportunity):
+                system_prompt = DIRECTIONAL_OPPORTUNITY_JUDGE_SYSTEM_PROMPT
+            else:
+                system_prompt = OPPORTUNITY_JUDGE_SYSTEM_PROMPT
             messages = [
-                LLMMessage(role="system", content=OPPORTUNITY_JUDGE_SYSTEM_PROMPT),
+                LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=user_prompt),
             ]
 
@@ -325,6 +414,7 @@ class OpportunityJudge:
 
             # Validate and fill defaults
             judgment = self._validate_judgment(judgment)
+            judgment = self._annotate_reject_codes(judgment)
 
             # 3. Compare with ML prediction
             ml_agreement = self._compute_ml_agreement(judgment, ml_prediction)
@@ -340,6 +430,7 @@ class OpportunityJudge:
                 "recommendation": judgment["recommendation"],
                 "reasoning": judgment["reasoning"],
                 "risk_factors": judgment.get("risk_factors", []),
+                "reject_codes": judgment.get("reject_codes", []),
                 "ml_agreement": ml_agreement,
                 "session_id": session_id,
                 "model_used": resolved_model,
@@ -378,6 +469,7 @@ class OpportunityJudge:
                 started_at=started_at,
             )
             fallback = self._fallback_judgment(str(exc))
+            fallback = self._annotate_reject_codes(fallback)
             fallback["opportunity_id"] = opportunity.id
             fallback["session_id"] = session_id
             fallback["ml_agreement"] = None
@@ -491,6 +583,11 @@ class OpportunityJudge:
                         "recommendation": row.recommendation,
                         "reasoning": row.reasoning,
                         "risk_factors": row.risk_factors or [],
+                        "reject_codes": [
+                            str(x).replace("CODE::", "")
+                            for x in (row.risk_factors or [])
+                            if str(x).startswith("CODE::")
+                        ],
                         "ml_probability": row.ml_probability,
                         "ml_recommendation": row.ml_recommendation,
                         "agreement": row.agreement,
@@ -602,6 +699,11 @@ class OpportunityJudge:
         sections.append(f"**Strategy:** {opportunity.strategy if opportunity.strategy else 'unknown'}")
         sections.append(f"**Title:** {opportunity.title}")
         sections.append(f"**Description:** {opportunity.description}")
+        sections.append(
+            f"**Guaranteed arbitrage:** {'yes' if bool(opportunity.is_guaranteed) else 'no'}"
+        )
+        if opportunity.roi_type:
+            sections.append(f"**ROI type:** {opportunity.roi_type}")
 
         # Profit metrics
         sections.append("\n### Profit Metrics")
@@ -661,6 +763,66 @@ class OpportunityJudge:
                 except Exception as exc:
                     sections.append(f"\n**Market {i + 1}:** (error reading market data: {exc})")
 
+        weather = self._extract_weather_context(opportunity)
+        if weather:
+            sections.append("\n### Weather Context")
+            sections.append(
+                f"- Report-only mode: {'yes' if self._is_report_only_opportunity(opportunity) else 'no'}"
+            )
+            if weather.get("location"):
+                sections.append(f"- Location: {weather.get('location')}")
+            if weather.get("target_time"):
+                sections.append(f"- Target time: {weather.get('target_time')}")
+            if isinstance(weather.get("source_count"), (int, float)):
+                sections.append(f"- Forecast sources: {int(weather.get('source_count') or 0)}")
+            if isinstance(weather.get("consensus_probability"), (int, float)):
+                sections.append(
+                    f"- Model probability (YES): {float(weather.get('consensus_probability')):.3f}"
+                )
+            if isinstance(weather.get("market_probability"), (int, float)):
+                sections.append(
+                    f"- Market probability (selected side): {float(weather.get('market_probability')):.3f}"
+                )
+            if isinstance(weather.get("consensus_temp_f"), (int, float)):
+                sections.append(
+                    f"- Consensus temperature: {float(weather.get('consensus_temp_f')):.1f}F"
+                )
+            if isinstance(weather.get("market_implied_temp_f"), (int, float)):
+                sections.append(
+                    f"- Market-implied temperature: {float(weather.get('market_implied_temp_f')):.1f}F"
+                )
+            if isinstance(weather.get("agreement"), (int, float)):
+                sections.append(
+                    f"- Model agreement: {float(weather.get('agreement')):.3f}"
+                )
+
+            raw_sources = weather.get("forecast_sources")
+            if isinstance(raw_sources, list) and raw_sources:
+                sections.append("- Forecast source snapshots:")
+                for src in raw_sources[:3]:
+                    if not isinstance(src, dict):
+                        continue
+                    source_id = src.get("source_id", "unknown")
+                    src_prob = src.get("probability")
+                    src_temp = src.get("value_f")
+                    src_weight = src.get("weight")
+                    prob_txt = (
+                        f"{float(src_prob):.3f}" if isinstance(src_prob, (int, float)) else "n/a"
+                    )
+                    temp_txt = (
+                        f"{float(src_temp):.1f}F"
+                        if isinstance(src_temp, (int, float))
+                        else "n/a"
+                    )
+                    weight_txt = (
+                        f"{float(src_weight):.2f}"
+                        if isinstance(src_weight, (int, float))
+                        else "n/a"
+                    )
+                    sections.append(
+                        f"  - {source_id}: prob={prob_txt}, temp={temp_txt}, weight={weight_txt}"
+                    )
+
         # Event context
         if opportunity.event_title:
             sections.append(f"\n**Event:** {opportunity.event_title}")
@@ -709,10 +871,220 @@ class OpportunityJudge:
             "\n---\n"
             "Score this opportunity on all dimensions. Be skeptical -- "
             "most detected prediction market arbitrage opportunities are "
-            "false positives. Explain your recommendation briefly and concretely."
+            "false positives. Explain your recommendation briefly and concretely. "
+            "Do not assert facts that are not explicitly present in the data above."
         )
 
         return "\n".join(sections)
+
+    def _build_weather_judgment_prompt(
+        self,
+        opportunity: "ArbitrageOpportunity",
+        resolution_analysis: dict | None = None,
+        ml_prediction: dict | None = None,
+    ) -> str:
+        """Build a compact weather-specific prompt to reduce context pressure."""
+        sections = ["## Weather Opportunity to Judge"]
+        sections.append(f"- ID: {opportunity.id}")
+        sections.append(f"- Title: {opportunity.title}")
+        sections.append(f"- Description: {opportunity.description}")
+        sections.append(
+            f"- Report-only: {'yes' if self._is_report_only_opportunity(opportunity) else 'no'}"
+        )
+        sections.append(
+            f"- Liquidity: min_liquidity=${opportunity.min_liquidity:.2f}, "
+            f"max_position_size=${opportunity.max_position_size:.2f}"
+        )
+        sections.append(
+            f"- Profit fields: total_cost=${opportunity.total_cost:.4f}, "
+            f"expected_payout=${opportunity.expected_payout:.4f}, "
+            f"net_profit=${opportunity.net_profit:.4f}, roi={opportunity.roi_percent:.2f}%"
+        )
+        if opportunity.risk_factors:
+            sections.append(
+                f"- Risk factors: {'; '.join(str(x) for x in opportunity.risk_factors[:6])}"
+            )
+
+        if opportunity.positions_to_take:
+            pos = opportunity.positions_to_take[0]
+            sections.append(
+                f"- Proposed leg: {pos.get('action', 'BUY')} {pos.get('outcome', 'N/A')} "
+                f"@ {pos.get('price', 'N/A')}"
+            )
+
+        weather = self._extract_weather_context(opportunity) or {}
+        if weather:
+            sections.append("### Weather Data")
+            for label, key in [
+                ("Location", "location"),
+                ("Target time", "target_time"),
+                ("Source count", "source_count"),
+                ("Consensus YES probability", "consensus_probability"),
+                ("Market selected-side probability", "market_probability"),
+                ("Consensus temp F", "consensus_temp_f"),
+                ("Market-implied temp F", "market_implied_temp_f"),
+                ("Model agreement", "agreement"),
+            ]:
+                value = weather.get(key)
+                if value is not None:
+                    sections.append(f"- {label}: {value}")
+
+            raw_sources = weather.get("forecast_sources")
+            if isinstance(raw_sources, list) and raw_sources:
+                sections.append("- Forecast sources:")
+                for src in raw_sources[:4]:
+                    if not isinstance(src, dict):
+                        continue
+                    sections.append(
+                        f"  - {src.get('source_id', 'unknown')}: "
+                        f"prob={src.get('probability', 'n/a')}, "
+                        f"temp_f={src.get('value_f', 'n/a')}, "
+                        f"weight={src.get('weight', 'n/a')}"
+                    )
+
+        if resolution_analysis:
+            sections.append("### Resolution Analysis")
+            sections.append(
+                f"- clarity={resolution_analysis.get('clarity_score', 'N/A')}, "
+                f"risk={resolution_analysis.get('risk_score', 'N/A')}, "
+                f"rec={resolution_analysis.get('recommendation', 'N/A')}"
+            )
+            summary = resolution_analysis.get("summary")
+            if summary:
+                sections.append(f"- Summary: {summary}")
+
+        if ml_prediction:
+            sections.append("### ML Classifier")
+            sections.append(
+                f"- probability={ml_prediction.get('probability', 'N/A')}, "
+                f"recommendation={ml_prediction.get('recommendation', 'N/A')}, "
+                f"confidence={ml_prediction.get('confidence', 'N/A')}"
+            )
+
+        sections.append(
+            "---\n"
+            "Score strictly from the provided fields. "
+            "If execution is blocked (report-only or max_position_size=0), "
+            "execution_feasibility should be 0 and recommendation should be skip/strong_skip."
+        )
+        return "\n".join(sections)
+
+    @staticmethod
+    def _extract_weather_context(opportunity: "ArbitrageOpportunity") -> dict | None:
+        for market in opportunity.markets or []:
+            if not isinstance(market, dict):
+                continue
+            weather = market.get("weather")
+            if isinstance(weather, dict):
+                return weather
+        return None
+
+    def _is_weather_opportunity(self, opportunity: "ArbitrageOpportunity") -> bool:
+        return (
+            str(opportunity.strategy).lower() == "weather_edge"
+            or self._extract_weather_context(opportunity) is not None
+        )
+
+    @staticmethod
+    def _is_directional_opportunity(opportunity: "ArbitrageOpportunity") -> bool:
+        return not bool(getattr(opportunity, "is_guaranteed", False))
+
+    @staticmethod
+    def _is_report_only_opportunity(opportunity: "ArbitrageOpportunity") -> bool:
+        if (opportunity.max_position_size or 0.0) <= 0.0:
+            return True
+        desc = (opportunity.description or "").strip().lower()
+        return desc.startswith("report only")
+
+    def _report_only_judgment(self, opportunity: "ArbitrageOpportunity") -> dict:
+        reason_bits = []
+        for rf in (opportunity.risk_factors or []):
+            text = str(rf).strip()
+            if not text:
+                continue
+            reason_bits.append(text)
+            if len(reason_bits) >= 4:
+                break
+        reason_tail = (
+            " Key blockers: " + "; ".join(reason_bits)
+            if reason_bits
+            else ""
+        )
+        return {
+            "overall_score": 0.12,
+            "profit_viability": 0.30,
+            "resolution_safety": 0.45,
+            "execution_feasibility": 0.0,
+            "market_efficiency": 0.20,
+            "recommendation": "strong_skip",
+            "reasoning": (
+                "Opportunity is report-only/non-executable in current state "
+                f"(max_position_size=${opportunity.max_position_size:.2f})."
+                f"{reason_tail}"
+            ),
+            "risk_factors": [
+                "CODE::NON_EXECUTABLE",
+                "Report-only opportunity (non-executable)",
+                *reason_bits,
+            ],
+            "reject_codes": ["NON_EXECUTABLE"],
+        }
+
+    @staticmethod
+    def _derive_reject_codes(judgment: dict) -> list[str]:
+        text_bits: list[str] = []
+        reasoning = str(judgment.get("reasoning") or "").strip().lower()
+        if reasoning:
+            text_bits.append(reasoning)
+        for rf in judgment.get("risk_factors", []) or []:
+            t = str(rf or "").strip().lower()
+            if t:
+                text_bits.append(t)
+        text = " | ".join(text_bits)
+
+        codes: list[str] = []
+        if (judgment.get("execution_feasibility") or 0.0) <= 0.05:
+            codes.append("NON_EXECUTABLE")
+        if "report-only" in text or "report only" in text:
+            codes.append("NON_EXECUTABLE")
+        if "directional bet" in text:
+            codes.append("DIRECTIONAL_NON_ARB")
+        if "rate-limited" in text or "source diversity" in text or "single-source" in text:
+            codes.append("DATA_QUALITY")
+        if "slippage" in text:
+            codes.append("SLIPPAGE_RISK")
+        if "liquidity" in text:
+            codes.append("LIQUIDITY_RISK")
+        if "edge" in text and "< min" in text:
+            codes.append("WEAK_EDGE")
+        if "confidence" in text and "< min" in text:
+            codes.append("LOW_CONFIDENCE")
+
+        recommendation = str(judgment.get("recommendation") or "").strip().lower()
+        if recommendation in {"skip", "strong_skip"} and "NON_EXECUTABLE" not in codes:
+            # Keep a default structured tag for skip-like outcomes.
+            codes.append("RISK_REJECTED")
+
+        # Preserve order while de-duplicating.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for code in codes:
+            if code in seen:
+                continue
+            seen.add(code)
+            deduped.append(code)
+        return deduped
+
+    def _annotate_reject_codes(self, judgment: dict) -> dict:
+        codes = self._derive_reject_codes(judgment)
+        factors = [str(x) for x in (judgment.get("risk_factors") or []) if str(x).strip()]
+        for code in codes:
+            tag = f"CODE::{code}"
+            if tag not in factors:
+                factors.insert(0, tag)
+        judgment["risk_factors"] = factors
+        judgment["reject_codes"] = codes
+        return judgment
 
     def _validate_judgment(self, judgment: dict) -> dict:
         """Ensure all required fields exist with sensible defaults."""
@@ -781,7 +1153,11 @@ class OpportunityJudge:
             "reasoning": (
                 f"Automated judgment was unable to complete ({reason}). Defaulting to strong_skip as a safety measure."
             ),
-            "risk_factors": [f"Judgment failed: {reason}"],
+            "risk_factors": [
+                "CODE::JUDGMENT_FAILURE",
+                f"Judgment failed: {reason}",
+            ],
+            "reject_codes": ["JUDGMENT_FAILURE"],
         }
 
     def _compute_ml_agreement(

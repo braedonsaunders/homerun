@@ -15,7 +15,10 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { buildPolymarketMarketUrl } from '../lib/marketUrls'
-import { buildYesNoSparklineSeries } from '../lib/priceHistory'
+import {
+  buildOutcomeFallbacks,
+  buildOutcomeSparklineSeries,
+} from '../lib/priceHistory'
 import { Badge } from './ui/badge'
 import Sparkline from './Sparkline'
 import type { InsiderOpportunity, TrackedTraderOpportunity } from '../services/discoveryApi'
@@ -33,13 +36,10 @@ export interface UnifiedTraderSignal {
   current_yes_price?: number | null
   current_no_price?: number | null
   outcome_labels?: string[]
+  outcome_prices?: number[]
   yes_label?: string | null
   no_label?: string | null
-  price_history?: Array<{
-    t: number
-    yes: number
-    no: number
-  }>
+  price_history?: Array<Record<string, unknown> | unknown[]>
   direction: 'BUY' | 'SELL' | null
   confidence: number
   wallet_count: number
@@ -219,6 +219,7 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     current_yes_price: signal.current_yes_price ?? signal.yes_price ?? null,
     current_no_price: signal.current_no_price ?? signal.no_price ?? null,
     outcome_labels: signal.outcome_labels,
+    outcome_prices: signal.outcome_prices,
     yes_label: signal.yes_label ?? signal.outcome_labels?.[0] ?? null,
     no_label: signal.no_label ?? signal.outcome_labels?.[1] ?? null,
     price_history: signal.price_history,
@@ -263,6 +264,7 @@ export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSi
     current_yes_price: opp.current_yes_price ?? opp.yes_price ?? null,
     current_no_price: opp.current_no_price ?? opp.no_price ?? null,
     outcome_labels: opp.outcome_labels,
+    outcome_prices: opp.outcome_prices,
     yes_label: opp.yes_label ?? opp.outcome_labels?.[0] ?? null,
     no_label: opp.no_label ?? opp.outcome_labels?.[1] ?? null,
     price_history: opp.price_history,
@@ -319,6 +321,28 @@ const SOURCE_COLORS: Record<string, string> = {
   confluence: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
   insider: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
 }
+
+const SPARKLINE_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#38bdf8',
+  '#f59e0b',
+  '#a78bfa',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+]
+
+const SPARKLINE_TEXT_CLASSES = [
+  'text-green-300',
+  'text-red-300',
+  'text-sky-300',
+  'text-amber-300',
+  'text-violet-300',
+  'text-teal-300',
+  'text-orange-300',
+  'text-pink-300',
+]
 
 function timeAgo(dateStr?: string | null): string {
   if (!dateStr) return '\u2014'
@@ -408,6 +432,22 @@ function compactOutcomeLabel(label: string, maxChars = 14): string {
   return `${text.slice(0, Math.max(1, maxChars - 1))}\u2026`
 }
 
+function buildSignalOutcomeFallbacks(
+  signal: UnifiedTraderSignal,
+  currentYes: number | null | undefined,
+  currentNo: number | null | undefined,
+) {
+  return buildOutcomeFallbacks({
+    labels: signal.outcome_labels,
+    prices: signal.outcome_prices,
+    yesPrice: currentYes,
+    noPrice: currentNo,
+    yesLabel: signal.yes_label,
+    noLabel: signal.no_label,
+    preferIndexedKeys: (signal.outcome_labels?.length || 0) > 2,
+  })
+}
+
 function formatSignalReason(reason: string): string {
   return reason
     .replace(/_/g, ' ')
@@ -464,13 +504,28 @@ function TraderSignalCard({
   const directionLabelCompact = compactOutcomeLabel(directionLabel, 18)
   const currentYes = signal.current_yes_price ?? signal.yes_price
   const currentNo = signal.current_no_price ?? signal.no_price
-  const sparkData = useMemo(
-    () => buildYesNoSparklineSeries(signal.price_history, currentYes, currentNo),
-    [signal.price_history, currentYes, currentNo],
+  const sparkSeries = useMemo(
+    () => buildOutcomeSparklineSeries(
+      signal.price_history,
+      buildSignalOutcomeFallbacks(signal, currentYes, currentNo),
+    ),
+    [signal, currentYes, currentNo],
   )
-  const hasSparkline = sparkData.yes.length >= 2
-  const yesLast = sparkData.yes[sparkData.yes.length - 1]
-  const noLast = sparkData.no[sparkData.no.length - 1]
+  const hasBackfilledHistory = (
+    Array.isArray(signal.price_history)
+    && signal.price_history.length >= 2
+  )
+  const hasSparkline = hasBackfilledHistory && sparkSeries.length > 0
+  const sparklineSeries = useMemo(
+    () => sparkSeries.map((row, index) => ({
+      data: row.data,
+      color: SPARKLINE_COLORS[index % SPARKLINE_COLORS.length],
+      lineWidth: index === 0 ? 1.6 : 1.3,
+      fill: false,
+      showDot: true,
+    })),
+    [sparkSeries],
+  )
   const accentBar = ACCENT_BAR_COLORS[signal.tier] || 'bg-yellow-500'
 
   const poolWallets = signal.source_breakdown?.pool_wallets || 0
@@ -603,18 +658,22 @@ function TraderSignalCard({
         {hasSparkline && (
           <div ref={chartRef} className="mb-3 w-full">
             <Sparkline
-              data={sparkData.yes}
-              data2={sparkData.no}
+              data={sparkSeries[0]?.data || []}
+              series={sparklineSeries}
               width={chartWidth}
               height={44}
-              color="#22c55e"
-              color2="#ef4444"
               lineWidth={1.5}
               showDots
             />
-            <div className="flex justify-between text-xs font-data font-bold mt-1 px-0.5">
-              <span className="text-green-300">{yesLabel} {Number.isFinite(yesLast) ? `${(yesLast * 100).toFixed(0)}¢` : '—'}</span>
-              <span className="text-red-300">{noLabel} {Number.isFinite(noLast) ? `${(noLast * 100).toFixed(0)}¢` : '—'}</span>
+            <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 px-0.5 text-[11px] font-data font-bold">
+              {sparkSeries.map((row, index) => (
+                <span
+                  key={`${signal.id}-spark-${row.key}`}
+                  className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
+                >
+                  {compactOutcomeLabel(row.label, 14)} {row.latest != null && Number.isFinite(row.latest) ? `${(row.latest * 100).toFixed(0)}¢` : '—'}
+                </span>
+              ))}
             </div>
           </div>
         )}

@@ -8,13 +8,14 @@ if str(BACKEND_ROOT) not in sys.path:
 import config
 
 
-def test_detect_project_root_backend_only_layout(tmp_path):
-    backend_dir = tmp_path / "app"
+def test_detect_project_root_repo_layout(tmp_path):
+    project_root = tmp_path / "project"
+    backend_dir = project_root / "backend"
     backend_dir.mkdir(parents=True, exist_ok=True)
     (backend_dir / "config.py").write_text("# stub\n", encoding="utf-8")
 
     resolved = config._detect_project_root(backend_dir.resolve())
-    assert resolved == backend_dir.resolve()
+    assert resolved == project_root.resolve()
 
 
 def test_normalize_database_url_bootstraps_legacy_backend_db(tmp_path, monkeypatch):

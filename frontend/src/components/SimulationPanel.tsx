@@ -235,42 +235,46 @@ export default function SimulationPanel() {
         {selectedAccountData && (
           <SheetContent
             side="right"
-            className="w-[min(96vw,1100px)] sm:max-w-none border-l border-border bg-background/95 p-0 backdrop-blur-xl"
+            className="w-[min(95vw,1080px)] sm:max-w-none border-l border-border/80 bg-card/90 p-0 backdrop-blur-xl"
           >
             <div className="relative flex h-full flex-col">
-              <div className="border-b border-border/70 bg-gradient-to-r from-blue-500/10 via-blue-500/5 to-transparent px-6 pb-5 pt-6">
-                <SheetHeader className="space-y-0.5 pr-10 text-left">
-                  <div className="flex items-center gap-2">
-                    <SheetTitle className="text-xl font-bold">{selectedAccountData.name}</SheetTitle>
-                    <Badge className="h-5 rounded border border-blue-500/30 bg-blue-500/15 px-2 text-[10px] uppercase tracking-[0.08em] text-blue-300">
-                      Sandbox Desk
-                    </Badge>
-                  </div>
-                  <SheetDescription className="text-xs text-muted-foreground/90">
-                    Created {selectedAccountData.created_at ? new Date(selectedAccountData.created_at).toLocaleDateString() : 'N/A'} ·
-                    {' '}
-                    {selectedAccountData.total_trades} trades ·
-                    {' '}
-                    {selectedAccountData.open_positions} open positions
-                  </SheetDescription>
-                </SheetHeader>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    queryClient.invalidateQueries({ queryKey: ['account-equity', selectedAccount] })
-                    queryClient.invalidateQueries({ queryKey: ['account-trades', selectedAccount] })
-                    queryClient.invalidateQueries({ queryKey: ['account-positions', selectedAccount] })
-                  }}
-                  className="absolute bottom-4 right-6 gap-2 rounded-lg bg-background/70 px-3 py-1.5 text-xs hover:bg-background"
-                >
-                  <RefreshCw className="h-3 w-3" />
-                  Refresh
-                </Button>
+              <div className="border-b border-border/80 bg-card/60 px-4 py-3">
+                <div className="flex items-start justify-between gap-3 pr-12">
+                  <SheetHeader className="space-y-1 text-left">
+                    <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">Sandbox Account Desk</p>
+                    <div className="flex items-center gap-2.5">
+                      <SheetTitle className="text-xl font-bold">{selectedAccountData.name}</SheetTitle>
+                      <Badge className="h-5 rounded border border-transparent bg-primary/15 px-2 text-[10px] uppercase tracking-[0.08em] text-primary">
+                        Sandbox Desk
+                      </Badge>
+                    </div>
+                    <SheetDescription className="text-xs text-muted-foreground/90">
+                      Created {selectedAccountData.created_at ? new Date(selectedAccountData.created_at).toLocaleDateString() : 'N/A'} ·
+                      {' '}
+                      {selectedAccountData.total_trades} trades ·
+                      {' '}
+                      {selectedAccountData.open_positions} open positions
+                    </SheetDescription>
+                  </SheetHeader>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      queryClient.invalidateQueries({ queryKey: ['account-equity', selectedAccount] })
+                      queryClient.invalidateQueries({ queryKey: ['account-trades', selectedAccount] })
+                      queryClient.invalidateQueries({ queryKey: ['account-positions', selectedAccount] })
+                    }}
+                    className="mt-0.5 h-7 shrink-0 gap-1.5 bg-background/40 text-xs"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Refresh
+                  </Button>
+                </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-6 pb-6 pt-4">
+              <div className="flex-1 overflow-y-auto px-4 pb-4 pt-3">
                 {/* Key Metrics Row */}
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+                <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
                   <MiniStat
                     label="Initial Capital"
                     value={`$${selectedAccountData.initial_capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
@@ -309,7 +313,7 @@ export default function SimulationPanel() {
 
                 {/* Advanced Metrics */}
                 {summary && (
-                  <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-6">
+                  <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-6">
                     <MiniStat
                       label="Book Value"
                       value={`$${summary.book_value.toFixed(2)}`}
@@ -349,7 +353,7 @@ export default function SimulationPanel() {
 
                 {/* Tab Navigation */}
                 <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as DetailTab)} className="mt-4 w-fit">
-                  <TabsList className="h-auto rounded-lg border border-border bg-card p-1">
+                  <TabsList className="h-auto rounded-lg border border-border/80 bg-background/70 p-1">
                     {([
                       { key: 'overview', label: 'Performance', icon: <BarChart3 className="w-3.5 h-3.5" /> },
                       { key: 'holdings', label: 'Holdings', icon: <Briefcase className="w-3.5 h-3.5" /> },
@@ -358,12 +362,12 @@ export default function SimulationPanel() {
                       <TabsTrigger
                         key={tab.key}
                         value={tab.key}
-                        className="flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium text-muted-foreground data-[state=active]:bg-blue-500 data-[state=active]:text-foreground"
+                        className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
                       >
                         {tab.icon}
                         {tab.label}
                         {tab.key === 'holdings' && positions.length > 0 && (
-                          <Badge className="ml-1 rounded border-0 bg-blue-500/20 px-1.5 py-0.5 text-xs text-blue-400">
+                          <Badge className="ml-1 rounded border-0 bg-primary/15 px-1.5 py-0.5 text-xs text-primary">
                             {positions.length}
                           </Badge>
                         )}
@@ -374,10 +378,10 @@ export default function SimulationPanel() {
 
                 {/* Tab Content */}
                 {detailTab === 'overview' && (
-                  <div className="mt-4 space-y-4">
-                    <Card className="bg-card border-border shadow-none p-6">
-                      <h4 className="font-semibold mb-4 flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5 text-blue-500" />
+                  <div className="mt-3 space-y-3">
+                    <Card className="border-border bg-card/40 p-4 shadow-none">
+                      <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                        <BarChart3 className="w-4 h-4 text-primary" />
                         Account Equity Over Time
                       </h4>
                       {equityHistory && equityHistory.equity_points.length > 1 ? (
@@ -395,9 +399,9 @@ export default function SimulationPanel() {
                     </Card>
 
                     {Object.keys(strategyBreakdown).length > 0 && (
-                      <Card className="bg-card border-border shadow-none p-6">
-                        <h4 className="font-semibold mb-4 flex items-center gap-2">
-                          <PieChart className="w-5 h-5 text-indigo-500" />
+                      <Card className="border-border bg-card/40 p-4 shadow-none">
+                        <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                          <PieChart className="w-4 h-4 text-primary" />
                           Performance by Strategy
                         </h4>
                         <div className="space-y-2">
@@ -406,7 +410,7 @@ export default function SimulationPanel() {
                             .map(([strategy, stats]) => {
                               const winRate = (stats.wins + stats.losses) > 0 ? (stats.wins / (stats.wins + stats.losses)) * 100 : 0
                               return (
-                                <div key={strategy} className="flex items-center justify-between bg-muted rounded-lg p-3">
+                                <div key={strategy} className="flex items-center justify-between rounded-lg border border-border/70 bg-background/40 p-2.5">
                                   <div className="flex items-center gap-3">
                                     <div className={cn('w-2 h-2 rounded-full', stats.pnl >= 0 ? 'bg-green-500' : 'bg-red-500')} />
                                     <div>
@@ -430,14 +434,14 @@ export default function SimulationPanel() {
                     )}
 
                     {summary && (summary.best_trade !== 0 || summary.worst_trade !== 0) && (
-                      <div className="grid grid-cols-2 gap-4">
-                        <Card className="bg-card border-border shadow-none p-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <Card className="border-border bg-card/40 p-3 shadow-none">
                           <p className="text-xs text-muted-foreground mb-1">Best Trade</p>
                           <p className="text-xl font-mono font-bold text-green-400">
                             +${summary.best_trade.toFixed(2)}
                           </p>
                         </Card>
-                        <Card className="bg-card border-border shadow-none p-4">
+                        <Card className="border-border bg-card/40 p-3 shadow-none">
                           <p className="text-xs text-muted-foreground mb-1">Worst Trade</p>
                           <p className="text-xl font-mono font-bold text-red-400">
                             ${summary.worst_trade.toFixed(2)}
@@ -449,19 +453,19 @@ export default function SimulationPanel() {
                 )}
 
                 {detailTab === 'holdings' && (
-                  <div className="mt-4 space-y-4">
-                    <div className="grid grid-cols-3 gap-4">
-                      <Card className="bg-card border-border shadow-none p-4">
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      <Card className="border-border bg-card/40 p-3 shadow-none">
                         <p className="text-xs text-muted-foreground mb-1">Open Positions</p>
                         <p className="text-2xl font-mono font-bold">{positions.length}</p>
                       </Card>
-                      <Card className="bg-card border-border shadow-none p-4">
+                      <Card className="border-border bg-card/40 p-3 shadow-none">
                         <p className="text-xs text-muted-foreground mb-1">Book Value (Cost Basis)</p>
                         <p className="text-2xl font-mono font-bold">
                           ${positions.reduce((s: number, p: SimulationPosition) => s + p.entry_cost, 0).toFixed(2)}
                         </p>
                       </Card>
-                      <Card className="bg-card border-border shadow-none p-4">
+                      <Card className="border-border bg-card/40 p-3 shadow-none">
                         <p className="text-xs text-muted-foreground mb-1">Market Value</p>
                         <p className="text-2xl font-mono font-bold">
                           ${positions.reduce((s: number, p: SimulationPosition) => s + p.quantity * (p.current_price || p.entry_price), 0).toFixed(2)}
@@ -470,13 +474,13 @@ export default function SimulationPanel() {
                     </div>
 
                     {positions.length === 0 ? (
-                      <Card className="text-center py-8 bg-card border-border shadow-none">
+                      <Card className="border-border bg-card/40 py-8 text-center shadow-none">
                         <Briefcase className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
                         <p className="text-muted-foreground">No open positions</p>
                         <p className="text-sm text-muted-foreground">This account has no open holdings yet.</p>
                       </Card>
                     ) : (
-                      <Card className="bg-card border-border shadow-none overflow-hidden">
+                      <Card className="overflow-hidden border-border bg-card/40 shadow-none">
                         <CardContent className="p-0">
                           <table className="w-full text-sm">
                             <thead>
@@ -555,7 +559,7 @@ export default function SimulationPanel() {
                 )}
 
                 {detailTab === 'trades' && (
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-3 space-y-3">
                     <div className="flex items-center gap-3">
                       <select
                         value={tradeFilter}
@@ -580,7 +584,7 @@ export default function SimulationPanel() {
                             }}
                             className={cn(
                               'px-2 py-1 h-auto rounded text-xs',
-                              tradeSort === s ? 'bg-blue-500/20 text-blue-400' : 'hover:bg-muted'
+                              tradeSort === s ? 'bg-primary/15 text-primary' : 'hover:bg-muted'
                             )}
                           >
                             {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -592,11 +596,11 @@ export default function SimulationPanel() {
                     </div>
 
                     {processedTrades.length === 0 ? (
-                      <Card className="text-center py-8 bg-card border-border shadow-none">
+                      <Card className="border-border bg-card/40 py-8 text-center shadow-none">
                         <p className="text-muted-foreground">No trades found</p>
                       </Card>
                     ) : (
-                      <Card className="bg-card border-border shadow-none overflow-hidden">
+                      <Card className="overflow-hidden border-border bg-card/40 shadow-none">
                         <CardContent className="p-0">
                           <div className="max-h-[600px] overflow-y-auto">
                             <table className="w-full text-sm">
@@ -782,13 +786,13 @@ function MiniStat({
   valueColor?: string
 }) {
   return (
-    <Card className="bg-card border-border shadow-none p-3">
-      <div className="flex items-center gap-2 mb-1">
+    <Card className="rounded-lg border border-border/70 bg-background/40 px-2.5 py-2 shadow-none">
+      <div className="mb-1 flex items-center gap-1.5">
         {icon}
-        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/80">{label}</p>
       </div>
-      <p className={cn("text-lg font-semibold font-mono", valueColor)}>{value}</p>
-      {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+      <p className={cn("text-sm font-semibold font-mono", valueColor)}>{value}</p>
+      {subtitle && <p className="text-[11px] text-muted-foreground">{subtitle}</p>}
     </Card>
   )
 }

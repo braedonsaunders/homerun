@@ -160,6 +160,7 @@ async def test_get_weather_opportunities_enforces_tradability_filters(monkeypatc
         target_date=None,
         require_tradable_markets=True,
         exclude_near_resolution=True,
+        include_report_only=False,
     )
 
 
@@ -220,4 +221,5 @@ async def test_get_weather_opportunity_dates_uses_shared_date_counts(monkeypatch
         location_query="Wellington",
         require_tradable_markets=True,
         exclude_near_resolution=True,
+        include_report_only=False,
     )

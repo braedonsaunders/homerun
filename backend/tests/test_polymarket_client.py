@@ -191,6 +191,63 @@ def test_get_market_by_condition_id_rejects_cache_without_tradability(monkeypatc
     assert any(params.get("condition_ids") == requested for params in seen_params)
 
 
+def test_get_market_by_condition_id_force_refresh_bypasses_cache(monkeypatch):
+    client = PolymarketClient()
+    requested = "0x4f7ca19f1c0f2dc7d7b8b2a52981a2eea9b0f56ef31a31f9c9e64eeb424f06f0"
+    seen_params = []
+
+    client._market_cache[requested] = {
+        "condition_id": requested,
+        "question": "Cached row",
+        "slug": "cached-row",
+        "outcomes": ["Yes", "No"],
+        "outcome_prices": [0.5, 0.5],
+        "active": True,
+        "closed": False,
+        "accepting_orders": True,
+        "end_date": "2026-12-31T00:00:00Z",
+    }
+
+    async def _fake_rate_limited_get(url: str, **kwargs):
+        params = kwargs.get("params") or {}
+        seen_params.append(params)
+        return _FakeResponse(
+            [
+                {
+                    "id": "2000001",
+                    "question": "Fresh row",
+                    "conditionId": requested,
+                    "slug": "fresh-row",
+                    "endDate": "2026-12-31T00:00:00Z",
+                    "active": True,
+                    "closed": True,
+                    "acceptingOrders": False,
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": ["0.99", "0.01"],
+                }
+            ]
+        )
+
+    async def _fake_get_market_trades(*args, **kwargs):
+        raise AssertionError("should not hit fallback trade lookup")
+
+    async def _fake_cache():
+        return None
+
+    monkeypatch.setattr(client, "_rate_limited_get", _fake_rate_limited_get)
+    monkeypatch.setattr(client, "get_market_trades", _fake_get_market_trades)
+    monkeypatch.setattr(client, "_get_persistent_cache", _fake_cache)
+
+    info = asyncio.run(client.get_market_by_condition_id(requested, force_refresh=True))
+
+    assert info is not None
+    assert info["condition_id"] == requested
+    assert info["question"] == "Fresh row"
+    assert info["closed"] is True
+    assert info["accepting_orders"] is False
+    assert any(params.get("condition_ids") == requested for params in seen_params)
+
+
 def test_get_market_by_token_id_skips_invalid_ids(monkeypatch):
     client = PolymarketClient()
 
@@ -307,6 +364,38 @@ def test_is_market_tradable_false_for_review_or_dispute_status():
                 "resolved": False,
                 "accepting_orders": True,
                 "status": "in review",
+                "end_date": (now + timedelta(hours=2)).isoformat(),
+            },
+            now=now,
+        )
+        is False
+    )
+
+
+def test_is_market_tradable_false_for_uma_resolution_proposed():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert (
+        PolymarketClient.is_market_tradable(
+            {
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "uma_resolution_status": "proposed",
+                "end_date": (now + timedelta(hours=2)).isoformat(),
+            },
+            now=now,
+        )
+        is False
+    )
+    assert (
+        PolymarketClient.is_market_tradable(
+            {
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "uma_resolution_statuses": ["proposed"],
                 "end_date": (now + timedelta(hours=2)).isoformat(),
             },
             now=now,

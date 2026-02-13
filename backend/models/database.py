@@ -1,7 +1,6 @@
 from sqlalchemy import (
     Column,
     String,
-    Float,
     Integer,
     Boolean,
     DateTime,
@@ -12,17 +11,18 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     event,
-    inspect as sa_inspect,
-    text,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 import enum
-import json
 import logging
+import os
 
 from config import settings
+from models.types import PreciseFloat as Float
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,9 @@ class CopyTradingConfig(Base):
 
     enabled = Column(Boolean, default=True)
     copy_mode = Column(SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES)
-    min_roi_threshold = Column(Float, default=2.5)  # Only copy if ROI > X% (arb_only mode)
+    min_roi_threshold = Column(
+        Float, default=2.5
+    )  # Only copy if ROI > X% (arb_only mode)
     max_position_size = Column(Float, default=1000.0)
     copy_delay_seconds = Column(Integer, default=5)
     slippage_tolerance = Column(Float, default=1.0)
@@ -284,7 +286,9 @@ class WalletTrade(Base):
     __tablename__ = "wallet_trades"
 
     id = Column(String, primary_key=True)
-    wallet_address = Column(String, ForeignKey("tracked_wallets.address"), nullable=False)
+    wallet_address = Column(
+        String, ForeignKey("tracked_wallets.address"), nullable=False
+    )
 
     # Trade details
     market_id = Column(String, nullable=False)
@@ -480,7 +484,9 @@ class NewsTradeIntent(Base):
     confidence = Column(Float, nullable=True)
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
@@ -538,7 +544,9 @@ class MLModelWeights(Base):
 
     id = Column(String, primary_key=True)
     model_version = Column(Integer, nullable=False, default=1)
-    weights = Column(JSON, nullable=False)  # Model parameters (weights, bias, thresholds)
+    weights = Column(
+        JSON, nullable=False
+    )  # Model parameters (weights, bias, thresholds)
     feature_names = Column(JSON, nullable=False)  # Ordered list of feature names
     metrics = Column(JSON, nullable=True)  # accuracy, precision, recall, f1
     training_samples = Column(Integer, default=0)
@@ -594,7 +602,9 @@ class ValidationJob(Base):
 
     id = Column(String, primary_key=True)
     job_type = Column(String, nullable=False)  # backtest | optimize
-    status = Column(String, nullable=False, default="queued")  # queued | running | completed | failed | cancelled
+    status = Column(
+        String, nullable=False, default="queued"
+    )  # queued | running | completed | failed | cancelled
     payload = Column(JSON, nullable=True)
     result = Column(JSON, nullable=True)
     error = Column(Text, nullable=True)
@@ -673,7 +683,9 @@ class AppSettings(Base):
     # LLM/AI Service Settings
     openai_api_key = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
-    llm_provider = Column(String, default="none")  # none, openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    llm_provider = Column(
+        String, default="none"
+    )  # none, openai, anthropic, google, xai, deepseek, ollama, lmstudio
     llm_model = Column(String, nullable=True)
     google_api_key = Column(String, nullable=True)
     xai_api_key = Column(String, nullable=True)
@@ -685,11 +697,15 @@ class AppSettings(Base):
 
     # AI Feature Settings
     ai_enabled = Column(Boolean, default=False)  # Master switch for AI features
-    ai_resolution_analysis = Column(Boolean, default=True)  # Auto-analyze resolution criteria
+    ai_resolution_analysis = Column(
+        Boolean, default=True
+    )  # Auto-analyze resolution criteria
     ai_opportunity_scoring = Column(Boolean, default=True)  # LLM-as-judge scoring
     ai_news_sentiment = Column(Boolean, default=True)  # News/sentiment analysis
     ai_max_monthly_spend = Column(Float, default=50.0)  # Monthly LLM cost cap
-    ai_default_model = Column(String, default="gpt-4o-mini")  # Default model for AI tasks
+    ai_default_model = Column(
+        String, default="gpt-4o-mini"
+    )  # Default model for AI tasks
     ai_premium_model = Column(String, default="gpt-4o")  # Model for high-value analysis
 
     # Notification Settings
@@ -723,6 +739,14 @@ class AppSettings(Base):
     discovery_delay_between_wallets = Column(Float, default=0.15)
     discovery_max_markets_per_run = Column(Integer, default=100)
     discovery_max_wallets_per_market = Column(Integer, default=50)
+    # Opportunities -> Traders UI defaults (persisted user preferences)
+    discovery_trader_opps_source_filter = Column(String, default="all")
+    discovery_trader_opps_min_tier = Column(String, default="WATCH")
+    discovery_trader_opps_side_filter = Column(String, default="all")
+    discovery_trader_opps_confluence_limit = Column(Integer, default=50)
+    discovery_trader_opps_insider_limit = Column(Integer, default=40)
+    discovery_trader_opps_insider_min_confidence = Column(Float, default=0.62)
+    discovery_trader_opps_insider_max_age_minutes = Column(Integer, default=180)
 
     # Trading Safety Settings
     trading_enabled = Column(Boolean, default=False)
@@ -739,6 +763,7 @@ class AppSettings(Base):
     max_resolution_months = Column(Integer, default=18)
     max_plausible_roi = Column(Float, default=30.0)
     max_trade_legs = Column(Integer, default=8)
+    min_liquidity_per_leg = Column(Float, default=500.0)
 
     # NegRisk Exhaustivity Thresholds
     negrisk_min_total_yes = Column(Float, default=0.95)
@@ -791,6 +816,7 @@ class AppSettings(Base):
 
     # BTC/ETH High-Frequency Enable
     btc_eth_hf_enabled = Column(Boolean, default=True)
+    btc_eth_hf_maker_mode = Column(Boolean, default=True)
 
     # Cross-Platform Arbitrage
     cross_platform_enabled = Column(Boolean, default=True)
@@ -846,10 +872,14 @@ class AppSettings(Base):
 
     # Trading VPN/Proxy (routes ONLY trading requests through proxy)
     trading_proxy_enabled = Column(Boolean, default=False)
-    trading_proxy_url = Column(String, nullable=True)  # socks5://host:port, http://host:port
+    trading_proxy_url = Column(
+        String, nullable=True
+    )  # socks5://host:port, http://host:port
     trading_proxy_verify_ssl = Column(Boolean, default=True)
     trading_proxy_timeout = Column(Float, default=30.0)
-    trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
+    trading_proxy_require_vpn = Column(
+        Boolean, default=True
+    )  # Block trades if VPN unreachable
 
     # Validation guardrails (auto strategy demotion/promotion)
     validation_guardrails_enabled = Column(Boolean, default=True)
@@ -889,6 +919,13 @@ class AppSettings(Base):
     news_rss_feeds_json = Column(JSON, default=list)
     news_gov_rss_enabled = Column(Boolean, default=True)
     news_gov_rss_feeds_json = Column(JSON, default=list)
+    world_intel_settings_json = Column(JSON, default=dict)
+    world_intel_acled_api_key = Column(String, nullable=True)
+    world_intel_acled_email = Column(String, nullable=True)
+    world_intel_opensky_username = Column(String, nullable=True)
+    world_intel_opensky_password = Column(String, nullable=True)
+    world_intel_aisstream_api_key = Column(String, nullable=True)
+    world_intel_cloudflare_radar_token = Column(String, nullable=True)
     world_intel_country_reference_json = Column(JSON, default=list)
     world_intel_country_reference_source = Column(String, nullable=True)
     world_intel_country_reference_synced_at = Column(DateTime, nullable=True)
@@ -985,7 +1022,9 @@ class LLMModelCache(Base):
     __tablename__ = "llm_model_cache"
 
     id = Column(String, primary_key=True)
-    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    provider = Column(
+        String, nullable=False
+    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model_id = Column(String, nullable=False)  # The model identifier used in API calls
     display_name = Column(String, nullable=True)  # Human-readable name
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1036,7 +1075,9 @@ class ResearchSession(Base):
     completed_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
-    entries = relationship("ScratchpadEntry", back_populates="session", cascade="all, delete-orphan")
+    entries = relationship(
+        "ScratchpadEntry", back_populates="session", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_research_type", "session_type"),
@@ -1061,7 +1102,9 @@ class ScratchpadEntry(Base):
     sequence = Column(Integer, nullable=False)  # Order within session
 
     # Entry content
-    entry_type = Column(String, nullable=False)  # "thinking", "tool_call", "tool_result", "observation", "answer"
+    entry_type = Column(
+        String, nullable=False
+    )  # "thinking", "tool_call", "tool_result", "observation", "answer"
     tool_name = Column(String, nullable=True)  # Which tool was called
     input_data = Column(JSON, nullable=True)  # Tool input or thinking content
     output_data = Column(JSON, nullable=True)  # Tool output or result
@@ -1144,7 +1187,9 @@ class ResolutionAnalysis(Base):
     resolution_rules = Column(Text, nullable=True)
 
     # Analysis results
-    clarity_score = Column(Float, nullable=True)  # 0-1: how clear/unambiguous the resolution criteria are
+    clarity_score = Column(
+        Float, nullable=True
+    )  # 0-1: how clear/unambiguous the resolution criteria are
     risk_score = Column(Float, nullable=True)  # 0-1: risk of unexpected resolution
     confidence = Column(Float, nullable=True)  # 0-1: confidence in the analysis
 
@@ -1152,7 +1197,9 @@ class ResolutionAnalysis(Base):
     ambiguities = Column(JSON, nullable=True)  # List of identified ambiguities
     edge_cases = Column(JSON, nullable=True)  # Potential edge cases
     key_dates = Column(JSON, nullable=True)  # Important dates for resolution
-    resolution_likelihood = Column(JSON, nullable=True)  # Likelihood assessment per outcome
+    resolution_likelihood = Column(
+        JSON, nullable=True
+    )  # Likelihood assessment per outcome
     summary = Column(Text, nullable=True)  # Human-readable summary
     recommendation = Column(String, nullable=True)  # "safe", "caution", "avoid"
 
@@ -1186,12 +1233,18 @@ class OpportunityJudgment(Base):
     overall_score = Column(Float, nullable=False)  # Composite score
     profit_viability = Column(Float, nullable=True)  # Will the profit materialize?
     resolution_safety = Column(Float, nullable=True)  # Will it resolve as expected?
-    execution_feasibility = Column(Float, nullable=True)  # Can we execute at these prices?
-    market_efficiency = Column(Float, nullable=True)  # Is this a real inefficiency or noise?
+    execution_feasibility = Column(
+        Float, nullable=True
+    )  # Can we execute at these prices?
+    market_efficiency = Column(
+        Float, nullable=True
+    )  # Is this a real inefficiency or noise?
 
     # LLM reasoning
     reasoning = Column(Text, nullable=True)  # Concise decision rationale
-    recommendation = Column(String, nullable=False)  # "strong_execute", "execute", "review", "skip", "strong_skip"
+    recommendation = Column(
+        String, nullable=False
+    )  # "strong_execute", "execute", "review", "skip", "strong_skip"
     risk_factors = Column(JSON, nullable=True)
 
     # Comparison with ML classifier
@@ -1254,7 +1307,9 @@ class LLMUsageLog(Base):
     __tablename__ = "llm_usage_log"
 
     id = Column(String, primary_key=True)
-    provider = Column(String, nullable=False)  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
+    provider = Column(
+        String, nullable=False
+    )  # openai, anthropic, google, xai, deepseek, ollama, lmstudio
     model = Column(String, nullable=False)
 
     # Usage
@@ -1263,7 +1318,9 @@ class LLMUsageLog(Base):
     cost_usd = Column(Float, nullable=False)
 
     # Context
-    purpose = Column(String, nullable=True)  # "resolution_analysis", "opportunity_judge", etc.
+    purpose = Column(
+        String, nullable=True
+    )  # "resolution_analysis", "opportunity_judge", etc.
     session_id = Column(String, nullable=True)
 
     # Timing
@@ -1324,7 +1381,9 @@ class DiscoveredWallet(Base):
     # Risk-adjusted metrics
     sharpe_ratio = Column(Float, nullable=True)
     sortino_ratio = Column(Float, nullable=True)
-    max_drawdown = Column(Float, nullable=True)  # Stored as positive fraction (0.15 = 15% drawdown)
+    max_drawdown = Column(
+        Float, nullable=True
+    )  # Stored as positive fraction (0.15 = 15% drawdown)
     profit_factor = Column(Float, nullable=True)  # gross_profit / gross_loss
     calmar_ratio = Column(Float, nullable=True)  # annualized_return / max_drawdown
 
@@ -1339,7 +1398,9 @@ class DiscoveredWallet(Base):
     anomaly_score = Column(Float, default=0.0)
     is_bot = Column(Boolean, default=False)
     is_profitable = Column(Boolean, default=False)
-    recommendation = Column(String, default="unanalyzed")  # copy_candidate, monitor, avoid, unanalyzed
+    recommendation = Column(
+        String, default="unanalyzed"
+    )  # copy_candidate, monitor, avoid, unanalyzed
     strategies_detected = Column(JSON, default=list)
 
     # Leaderboard ranking (computed periodically)
@@ -1403,7 +1464,9 @@ class WalletTag(Base):
     name = Column(String, nullable=False, unique=True)  # e.g., "smart_predictor"
     display_name = Column(String, nullable=False)  # e.g., "Smart Predictor"
     description = Column(Text, nullable=True)
-    category = Column(String, default="behavioral")  # behavioral, performance, risk, strategy
+    category = Column(
+        String, default="behavioral"
+    )  # behavioral, performance, risk, strategy
     color = Column(String, default="#6B7280")  # Hex color for UI
     criteria = Column(JSON, nullable=True)  # Auto-assignment criteria
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1430,7 +1493,9 @@ class WalletCluster(Base):
     avg_win_rate = Column(Float, default=0.0)
 
     # Detection method
-    detection_method = Column(String, nullable=True)  # funding_source, timing_correlation, pattern_match
+    detection_method = Column(
+        String, nullable=True
+    )  # funding_source, timing_correlation, pattern_match
     evidence = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1467,7 +1532,9 @@ class TraderGroupMember(Base):
     __tablename__ = "trader_group_members"
 
     id = Column(String, primary_key=True)
-    group_id = Column(String, ForeignKey("trader_groups.id", ondelete="CASCADE"), nullable=False)
+    group_id = Column(
+        String, ForeignKey("trader_groups.id", ondelete="CASCADE"), nullable=False
+    )
     wallet_address = Column(String, nullable=False)
     source = Column(String, default="manual")  # manual, suggested, imported
     confidence = Column(Float, nullable=True)
@@ -1492,7 +1559,9 @@ class MarketConfluenceSignal(Base):
     market_slug = Column(String, nullable=True)
 
     # Signal details
-    signal_type = Column(String, nullable=False)  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
+    signal_type = Column(
+        String, nullable=False
+    )  # "multi_wallet_buy", "multi_wallet_sell", "accumulation"
     strength = Column(Float, default=0.0)  # 0-1 signal strength
     conviction_score = Column(Float, default=0.0)  # 0-100 signal conviction
     tier = Column(String, default="WATCH")  # WATCH, HIGH, EXTREME
@@ -1507,7 +1576,9 @@ class MarketConfluenceSignal(Base):
     outcome = Column(String, nullable=True)  # YES or NO
     avg_entry_price = Column(Float, nullable=True)
     total_size = Column(Float, nullable=True)  # Combined position size
-    avg_wallet_rank = Column(Float, nullable=True)  # Average rank of participating wallets
+    avg_wallet_rank = Column(
+        Float, nullable=True
+    )  # Average rank of participating wallets
     net_notional = Column(Float, nullable=True)
     conflicting_notional = Column(Float, nullable=True)
     market_liquidity = Column(Float, nullable=True)
@@ -1574,7 +1645,9 @@ class CrossPlatformEntity(Base):
     combined_pnl = Column(Float, default=0.0)
 
     # Behavioral analysis
-    cross_platform_arb = Column(Boolean, default=False)  # Trades same event on both platforms
+    cross_platform_arb = Column(
+        Boolean, default=False
+    )  # Trades same event on both platforms
     hedging_detected = Column(Boolean, default=False)
     matching_markets = Column(JSON, default=list)  # Markets traded on both platforms
 
@@ -1640,7 +1713,9 @@ class OpportunityEvent(Base):
     id = Column(String, primary_key=True)
     stable_id = Column(String, nullable=False)
     run_id = Column(String, ForeignKey("scanner_runs.id"), nullable=False)
-    event_type = Column(String, nullable=False)  # detected | updated | expired | reactivated
+    event_type = Column(
+        String, nullable=False
+    )  # detected | updated | expired | reactivated
     opportunity_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -1797,7 +1872,9 @@ class WeatherTradeIntent(Base):
     model_agreement = Column(Float, nullable=True)
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
@@ -1825,7 +1902,9 @@ class InsiderTradeIntent(Base):
     suggested_size_usd = Column(Float, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     signal_key = Column(String, nullable=True, index=True)
-    status = Column(String, default="pending", nullable=False)  # pending | submitted | executed | skipped | expired
+    status = Column(
+        String, default="pending", nullable=False
+    )  # pending | submitted | executed | skipped | expired
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     consumed_at = Column(DateTime, nullable=True)
 
@@ -2066,7 +2145,9 @@ class TraderDecisionCheck(Base):
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    __table_args__ = (Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),)
+    __table_args__ = (
+        Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),
+    )
 
 
 class TraderOrder(Base):
@@ -2172,7 +2253,9 @@ class TraderEvent(Base):
     payload_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
-    __table_args__ = (Index("idx_trader_events_type_created", "event_type", "created_at"),)
+    __table_args__ = (
+        Index("idx_trader_events_type_created", "event_type", "created_at"),
+    )
 
 
 class TraderConfigRevision(Base):
@@ -2195,7 +2278,6 @@ class TraderConfigRevision(Base):
     trader_after_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
-
 # ==================== WORLD INTELLIGENCE ====================
 
 
@@ -2205,9 +2287,7 @@ class WorldIntelligenceSignal(Base):
     __tablename__ = "world_intelligence_signals"
 
     id = Column(String, primary_key=True)
-    signal_type = Column(
-        String, nullable=False
-    )  # conflict, tension, instability, convergence, anomaly, military, infrastructure
+    signal_type = Column(String, nullable=False)  # conflict, tension, instability, convergence, anomaly, military, infrastructure
     severity = Column(Float, nullable=False, default=0.0)  # 0-1 normalized
     country = Column(String, nullable=True)
     iso3 = Column(String, nullable=True)
@@ -2334,461 +2414,74 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
 # Apply pragmas on each new SQLite connection
 event.listens_for(async_engine.sync_engine, "connect")(_set_sqlite_pragma)
 
-AsyncSessionLocal = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+AsyncSessionLocal = sessionmaker(
+    async_engine, class_=AsyncSession, expire_on_commit=False
+)
 
 
-def _get_column_default_sql(col):
-    """Get SQL default value for a column."""
-    if col.default is not None:
-        val = col.default.arg
-        if callable(val):
-            return None
-        if isinstance(val, bool):
-            return "1" if val else "0"
-        if isinstance(val, (int, float)):
-            return str(val)
-        if isinstance(val, str):
-            return f"'{val}'"
-        if isinstance(val, enum.Enum):
-            return f"'{val.name}'"
-    return None
+
+def _run_alembic_upgrade(connection) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    backend_root = Path(__file__).resolve().parents[1]
+    alembic_cfg = Config(str(backend_root / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(backend_root / "alembic"))
+    alembic_cfg.set_main_option("sqlalchemy.url", str(connection.engine.url))
+    alembic_cfg.attributes["connection"] = connection
+    command.upgrade(alembic_cfg, "head")
 
 
-def _get_column_type_sql(col):
-    """Get SQL type string for a column."""
-    type_obj = col.type
-    type_name = type_obj.__class__.__name__.upper()
-    type_map = {
-        "STRING": "VARCHAR",
-        "TEXT": "TEXT",
-        "INTEGER": "INTEGER",
-        "FLOAT": "FLOAT",
-        "BOOLEAN": "BOOLEAN",
-        "DATETIME": "DATETIME",
-        "JSON": "JSON",
-        "ENUM": "VARCHAR",
-    }
-    return type_map.get(type_name, "VARCHAR")
-
-
-def _fix_enum_values(connection):
-    """Fix enum columns that were stored with .value instead of .name."""
-    # Map of (table, column) -> {wrong_value: correct_name}
-    enum_fixes = {
-        ("copy_trading_configs", "copy_mode"): {
-            "all_trades": "ALL_TRADES",
-            "arb_only": "ARB_ONLY",
-        },
-    }
-    inspector = sa_inspect(connection)
-    existing_tables = set(inspector.get_table_names())
-
-    for (table_name, col_name), value_map in enum_fixes.items():
-        if table_name not in existing_tables:
-            continue
-        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
-        if col_name not in existing_cols:
-            continue
-        for wrong_val, correct_val in value_map.items():
-            connection.execute(
-                text(f"UPDATE {table_name} SET {col_name} = :correct WHERE {col_name} = :wrong"),
-                {"correct": correct_val, "wrong": wrong_val},
-            )
-
-
-def _prepare_news_uniqueness(connection):
-    """Best-effort cleanup so unique intent/finding indexes can be created safely."""
-    inspector = sa_inspect(connection)
-    existing_tables = set(inspector.get_table_names())
-    dialect = connection.dialect.name
-
-    # SQL relies on SQLite rowid semantics; skip for non-SQLite engines.
-    if dialect != "sqlite":
+@contextmanager
+def _sqlite_migration_lock():
+    """Serialize Alembic upgrades across processes for SQLite databases."""
+    if "sqlite" not in settings.DATABASE_URL:
+        yield
         return
 
-    if "news_workflow_findings" in existing_tables:
-        cols = {c["name"] for c in inspector.get_columns("news_workflow_findings")}
-        if "signal_key" in cols:
-            connection.execute(
-                text(
-                    """
-                    DELETE FROM news_workflow_findings
-                    WHERE signal_key IS NOT NULL
-                      AND rowid NOT IN (
-                        SELECT MAX(rowid)
-                        FROM news_workflow_findings
-                        WHERE signal_key IS NOT NULL
-                        GROUP BY signal_key
-                      )
-                    """
-                )
-            )
+    lock_path = Path(__file__).resolve().parents[1] / ".alembic.sqlite.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        lock_file.seek(0)
+        if lock_file.read(1) == "":
+            lock_file.seek(0)
+            lock_file.write("1")
+            lock_file.flush()
+        lock_file.seek(0)
 
-    if "news_trade_intents" in existing_tables:
-        cols = {c["name"] for c in inspector.get_columns("news_trade_intents")}
-        if "signal_key" in cols:
-            connection.execute(
-                text(
-                    """
-                    DELETE FROM news_trade_intents
-                    WHERE signal_key IS NOT NULL
-                      AND rowid NOT IN (
-                        SELECT MAX(rowid)
-                        FROM news_trade_intents
-                        WHERE signal_key IS NOT NULL
-                        GROUP BY signal_key
-                      )
-                    """
-                )
-            )
+        if os.name == "posix":
+            import fcntl
 
-    if "insider_trade_intents" in existing_tables:
-        cols = {c["name"] for c in inspector.get_columns("insider_trade_intents")}
-        if "signal_key" in cols:
-            connection.execute(
-                text(
-                    """
-                    DELETE FROM insider_trade_intents
-                    WHERE signal_key IS NOT NULL
-                      AND rowid NOT IN (
-                        SELECT MAX(rowid)
-                        FROM insider_trade_intents
-                        WHERE signal_key IS NOT NULL
-                        GROUP BY signal_key
-                      )
-                    """
-                )
-            )
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return
 
+        if os.name == "nt":
+            import msvcrt
 
-def _migrate_schema(connection):
-    """Add missing columns to existing tables (SQLite ALTER TABLE ADD COLUMN)."""
-    inspector = sa_inspect(connection)
-    existing_tables = inspector.get_table_names()
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            return
 
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            continue
-
-        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
-        for col in table.columns:
-            if col.name in existing_cols:
-                continue
-
-            col_type = _get_column_type_sql(col)
-            default_sql = _get_column_default_sql(col)
-
-            stmt = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}"
-            if default_sql is not None:
-                stmt += f" DEFAULT {default_sql}"
-
-            logger.info(f"Migrating: {stmt}")
-            connection.execute(text(stmt))
-
-    _fix_enum_values(connection)
-
-    # Backfill new news workflow precision guard settings for legacy rows.
-    if "app_settings" in existing_tables:
-        default_gov_feeds_payload = "[]"
-        try:
-            from services.news.rss_config import default_gov_rss_feeds
-
-            default_gov_feeds_payload = json.dumps(default_gov_rss_feeds())
-        except Exception as e:
-            logger.debug("default gov RSS seed fallback to empty list: %s", e)
-        default_country_payload = "[]"
-        try:
-            from services.world_intelligence.country_catalog import country_catalog
-
-            payload = country_catalog.payload()
-            countries = payload if isinstance(payload, list) else payload.get("countries", [])
-            if isinstance(countries, list):
-                default_country_payload = json.dumps(countries)
-        except Exception as e:
-            logger.debug("default country reference seed fallback to empty list: %s", e)
-        default_ucdp_active_payload = "[]"
-        default_ucdp_minor_payload = "[]"
-        try:
-            from services.world_intelligence.instability_catalog import instability_catalog
-
-            payload = instability_catalog.payload()
-            active_rows = payload.get("ucdp_active_wars") or []
-            minor_rows = payload.get("ucdp_minor_conflicts") or []
-            if isinstance(active_rows, list):
-                default_ucdp_active_payload = json.dumps(active_rows)
-            if isinstance(minor_rows, list):
-                default_ucdp_minor_payload = json.dumps(minor_rows)
-        except Exception as e:
-            logger.debug("default UCDP seed fallback to empty lists: %s", e)
-        default_mid_map_payload = "{}"
-        try:
-            from services.world_intelligence.military_catalog import military_catalog
-
-            default_mid_map_payload = json.dumps(military_catalog.vessel_mid_iso3())
-        except Exception as e:
-            logger.debug("default MID map seed fallback to empty map: %s", e)
-        default_trade_dependencies_payload = "{}"
-        try:
-            from services.world_intelligence.infrastructure_catalog import infrastructure_catalog
-
-            payload = infrastructure_catalog.payload()
-            default_trade_dependencies_payload = json.dumps(payload.get("trade_dependencies") or {})
-        except Exception as e:
-            logger.debug("default trade dependency seed fallback to empty map: %s", e)
-        default_chokepoints_payload = "[]"
-        try:
-            from services.world_intelligence.region_catalog import region_catalog
-
-            payload = region_catalog.payload()
-            rows = payload.get("chokepoints") or []
-            if isinstance(rows, list):
-                default_chokepoints_payload = json.dumps(rows)
-        except Exception as e:
-            logger.debug("default chokepoint seed fallback to empty list: %s", e)
-        default_gdelt_queries_payload = "[]"
-        try:
-            from services.world_intelligence.gdelt_news_source import (
-                default_world_intel_gdelt_queries,
-            )
-
-            default_gdelt_queries_payload = json.dumps(default_world_intel_gdelt_queries())
-        except Exception as e:
-            logger.debug("default world GDELT query seed fallback to empty list: %s", e)
-
-        try:
-            connection.execute(
-                text(
-                    """
-                    UPDATE app_settings
-                    SET
-                        news_workflow_top_k = CASE
-                            WHEN news_workflow_top_k IS NULL THEN 20
-                            WHEN news_workflow_top_k = 8 THEN 20
-                            ELSE news_workflow_top_k
-                        END,
-                        news_workflow_rerank_top_n = CASE
-                            WHEN news_workflow_rerank_top_n IS NULL THEN 8
-                            WHEN news_workflow_rerank_top_n = 5 THEN 8
-                            ELSE news_workflow_rerank_top_n
-                        END,
-                        news_workflow_similarity_threshold = CASE
-                            WHEN news_workflow_similarity_threshold IS NULL THEN 0.20
-                            WHEN news_workflow_similarity_threshold IN (0.35, 0.42) THEN 0.20
-                            ELSE news_workflow_similarity_threshold
-                        END,
-                        news_workflow_require_verifier = COALESCE(news_workflow_require_verifier, 1),
-                        news_workflow_market_min_liquidity = COALESCE(news_workflow_market_min_liquidity, 500.0),
-                        news_workflow_market_max_days_to_resolution = COALESCE(news_workflow_market_max_days_to_resolution, 365),
-                        news_workflow_min_keyword_signal = COALESCE(news_workflow_min_keyword_signal, 0.04),
-                        news_workflow_min_semantic_signal = CASE
-                            WHEN news_workflow_min_semantic_signal IS NULL THEN 0.05
-                            WHEN news_workflow_min_semantic_signal = 0.22 THEN 0.05
-                            ELSE news_workflow_min_semantic_signal
-                        END,
-                        news_workflow_max_edge_evals_per_article = CASE
-                            WHEN news_workflow_max_edge_evals_per_article IS NULL THEN 6
-                            WHEN news_workflow_max_edge_evals_per_article = 3 THEN 6
-                            ELSE news_workflow_max_edge_evals_per_article
-                        END,
-                        news_gov_rss_enabled = COALESCE(news_gov_rss_enabled, 1),
-                        news_rss_feeds_json = COALESCE(news_rss_feeds_json, '[]'),
-                        news_gov_rss_feeds_json = CASE
-                            WHEN news_gov_rss_feeds_json IS NULL THEN :default_gov_feeds
-                            WHEN TRIM(CAST(news_gov_rss_feeds_json AS TEXT)) IN ('', '[]', 'null') THEN :default_gov_feeds
-                            ELSE news_gov_rss_feeds_json
-                        END,
-                        world_intel_country_reference_json = CASE
-                            WHEN world_intel_country_reference_json IS NULL THEN :default_country_reference
-                            WHEN TRIM(CAST(world_intel_country_reference_json AS TEXT)) IN ('', '[]', 'null') THEN :default_country_reference
-                            ELSE world_intel_country_reference_json
-                        END,
-                        world_intel_ucdp_active_wars_json = CASE
-                            WHEN world_intel_ucdp_active_wars_json IS NULL THEN :default_ucdp_active_wars
-                            WHEN TRIM(CAST(world_intel_ucdp_active_wars_json AS TEXT)) IN ('', '[]', 'null') THEN :default_ucdp_active_wars
-                            ELSE world_intel_ucdp_active_wars_json
-                        END,
-                        world_intel_ucdp_minor_conflicts_json = CASE
-                            WHEN world_intel_ucdp_minor_conflicts_json IS NULL THEN :default_ucdp_minor_conflicts
-                            WHEN TRIM(CAST(world_intel_ucdp_minor_conflicts_json AS TEXT)) IN ('', '[]', 'null') THEN :default_ucdp_minor_conflicts
-                            ELSE world_intel_ucdp_minor_conflicts_json
-                        END,
-                        world_intel_mid_iso3_json = CASE
-                            WHEN world_intel_mid_iso3_json IS NULL THEN :default_mid_map
-                            WHEN TRIM(CAST(world_intel_mid_iso3_json AS TEXT)) IN ('', '{}', 'null') THEN :default_mid_map
-                            ELSE world_intel_mid_iso3_json
-                        END,
-                        world_intel_trade_dependencies_json = CASE
-                            WHEN world_intel_trade_dependencies_json IS NULL THEN :default_trade_dependencies
-                            WHEN TRIM(CAST(world_intel_trade_dependencies_json AS TEXT)) IN ('', '{}', 'null') THEN :default_trade_dependencies
-                            ELSE world_intel_trade_dependencies_json
-                        END,
-                        world_intel_chokepoints_json = CASE
-                            WHEN world_intel_chokepoints_json IS NULL THEN :default_chokepoints
-                            WHEN TRIM(CAST(world_intel_chokepoints_json AS TEXT)) IN ('', '[]', 'null') THEN :default_chokepoints
-                            ELSE world_intel_chokepoints_json
-                        END,
-                        world_intel_chokepoints_source = CASE
-                            WHEN world_intel_chokepoints_source IS NULL THEN 'static_seed'
-                            WHEN TRIM(world_intel_chokepoints_source) = '' THEN 'static_seed'
-                            ELSE world_intel_chokepoints_source
-                        END,
-                        world_intel_gdelt_news_enabled = COALESCE(world_intel_gdelt_news_enabled, 1),
-                        world_intel_gdelt_news_queries_json = CASE
-                            WHEN world_intel_gdelt_news_queries_json IS NULL THEN :default_gdelt_queries
-                            WHEN TRIM(CAST(world_intel_gdelt_news_queries_json AS TEXT)) IN ('', '[]', 'null') THEN :default_gdelt_queries
-                            ELSE world_intel_gdelt_news_queries_json
-                        END,
-                        world_intel_gdelt_news_timespan_hours = COALESCE(world_intel_gdelt_news_timespan_hours, 6),
-                        world_intel_gdelt_news_max_records = COALESCE(world_intel_gdelt_news_max_records, 40),
-                        world_intel_gdelt_news_source = CASE
-                            WHEN world_intel_gdelt_news_source IS NULL THEN 'gdelt_doc_seed'
-                            WHEN TRIM(world_intel_gdelt_news_source) = '' THEN 'gdelt_doc_seed'
-                            ELSE world_intel_gdelt_news_source
-                        END
-                    """
-                ),
-                {
-                    "default_gov_feeds": default_gov_feeds_payload,
-                    "default_country_reference": default_country_payload,
-                    "default_ucdp_active_wars": default_ucdp_active_payload,
-                    "default_ucdp_minor_conflicts": default_ucdp_minor_payload,
-                    "default_mid_map": default_mid_map_payload,
-                    "default_trade_dependencies": default_trade_dependencies_payload,
-                    "default_chokepoints": default_chokepoints_payload,
-                    "default_gdelt_queries": default_gdelt_queries_payload,
-                },
-            )
-        except Exception as e:
-            logger.debug("app_settings news precision backfill skipped: %s", e)
-
-    # Rebrand historical feed source labels to the unified RSS name.
-    if "news_article_cache" in existing_tables:
-        try:
-            connection.execute(
-                text(
-                    """
-                    UPDATE news_article_cache
-                    SET feed_source = 'rss'
-                    WHERE feed_source = 'gov_rss'
-                    """
-                )
-            )
-        except Exception as e:
-            logger.debug("news_article_cache feed_source rebrand skipped: %s", e)
-
-    # Ensure composite index for usage stats (requested_at, success)
-    if "llm_usage_log" in existing_tables:
-        try:
-            connection.execute(
-                text("CREATE INDEX IF NOT EXISTS idx_llm_usage_time_success ON llm_usage_log(requested_at, success)")
-            )
-        except Exception as e:
-            logger.debug("idx_llm_usage_time_success may already exist: %s", e)
-
-    # Ensure unique signal indexes for news workflow idempotency.
-    if "news_workflow_findings" in existing_tables:
-        try:
-            connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_finding_signal ON news_workflow_findings(signal_key)")
-            )
-        except Exception as e:
-            logger.debug("idx_news_finding_signal may already exist: %s", e)
-
-    if "news_trade_intents" in existing_tables:
-        try:
-            connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_intent_signal ON news_trade_intents(signal_key)")
-            )
-        except Exception as e:
-            logger.debug("idx_news_intent_signal may already exist: %s", e)
-
-    if "insider_trade_intents" in existing_tables:
-        try:
-            connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS idx_insider_intent_signal ON insider_trade_intents(signal_key)")
-            )
-        except Exception as e:
-            logger.debug("idx_insider_intent_signal may already exist: %s", e)
-
-    # Ensure wallet activity identity is idempotent across worker/API restarts.
-    if "wallet_activity_rollups" in existing_tables:
-        try:
-            connection.execute(
-                text(
-                    """
-                    DELETE FROM wallet_activity_rollups
-                    WHERE rowid NOT IN (
-                        SELECT MAX(rowid)
-                        FROM wallet_activity_rollups
-                        GROUP BY
-                            wallet_address,
-                            market_id,
-                            COALESCE(side, ''),
-                            traded_at,
-                            COALESCE(tx_hash, '')
-                    )
-                    """
-                )
-            )
-        except Exception as e:
-            logger.debug("wallet_activity_rollups dedupe skipped: %s", e)
-        try:
-            connection.execute(
-                text(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_war_identity_unique
-                    ON wallet_activity_rollups(
-                        wallet_address,
-                        market_id,
-                        COALESCE(side, ''),
-                        traded_at,
-                        COALESCE(tx_hash, '')
-                    )
-                    """
-                )
-            )
-        except Exception as e:
-            logger.debug("idx_war_identity_unique may already exist: %s", e)
-
-
-def _legacy_autotrader_tables(connection) -> list[str]:
-    inspector = sa_inspect(connection)
-    return sorted(table_name for table_name in inspector.get_table_names() if table_name.startswith("auto_trader_"))
-
-
-def _drop_all_user_tables(connection) -> None:
-    inspector = sa_inspect(connection)
-    table_names = [table_name for table_name in inspector.get_table_names() if not table_name.startswith("sqlite_")]
-    if not table_names:
-        return
-
-    if connection.dialect.name == "sqlite":
-        connection.execute(text("PRAGMA foreign_keys=OFF"))
-    try:
-        for table_name in table_names:
-            connection.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
-    finally:
-        if connection.dialect.name == "sqlite":
-            connection.execute(text("PRAGMA foreign_keys=ON"))
+        # Unknown platform: continue without an OS-level file lock.
+        yield
 
 
 async def init_database():
-    """Initialize database tables and migrate schema for existing databases."""
-    async with async_engine.begin() as conn:
-        legacy_tables = await conn.run_sync(_legacy_autotrader_tables)
-        if legacy_tables:
-            logger.warning(
-                "Legacy autotrader schema detected. Performing destructive reset.",
-                extra={"legacy_tables": legacy_tables},
-            )
-            await conn.run_sync(_drop_all_user_tables)
+    """Initialize database and apply Alembic migrations."""
+    from models.model_registry import register_all_models
 
-        await conn.run_sync(_prepare_news_uniqueness)
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_migrate_schema)
-        remaining_legacy = await conn.run_sync(_legacy_autotrader_tables)
-        if remaining_legacy:
-            raise RuntimeError(f"Legacy auto_trader tables remain after init: {remaining_legacy}")
+    register_all_models()
+    with _sqlite_migration_lock():
+        async with async_engine.begin() as conn:
+            await conn.run_sync(_run_alembic_upgrade)
 
 
 async def get_db_session() -> AsyncSession:

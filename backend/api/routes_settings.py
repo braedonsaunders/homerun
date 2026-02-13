@@ -6,7 +6,7 @@ Endpoints for managing application settings.
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 
 from sqlalchemy import select
 from models.database import AsyncSessionLocal, AppSettings
@@ -24,6 +24,7 @@ from api.settings_helpers import (
     search_filters_payload,
     trading_payload,
     trading_proxy_payload,
+    world_intelligence_payload,
 )
 
 logger = get_logger(__name__)
@@ -38,8 +39,12 @@ class PolymarketSettings(BaseModel):
 
     api_key: Optional[str] = Field(default=None, description="Polymarket API key")
     api_secret: Optional[str] = Field(default=None, description="Polymarket API secret")
-    api_passphrase: Optional[str] = Field(default=None, description="Polymarket API passphrase")
-    private_key: Optional[str] = Field(default=None, description="Wallet private key for signing")
+    api_passphrase: Optional[str] = Field(
+        default=None, description="Polymarket API passphrase"
+    )
+    private_key: Optional[str] = Field(
+        default=None, description="Wallet private key for signing"
+    )
 
 
 class KalshiSettings(BaseModel):
@@ -58,31 +63,53 @@ class LLMSettings(BaseModel):
         description="LLM provider: none, openai, anthropic, google, xai, deepseek, ollama, lmstudio",
     )
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
-    anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    google_api_key: Optional[str] = Field(default=None, description="Google (Gemini) API key")
+    anthropic_api_key: Optional[str] = Field(
+        default=None, description="Anthropic API key"
+    )
+    google_api_key: Optional[str] = Field(
+        default=None, description="Google (Gemini) API key"
+    )
     xai_api_key: Optional[str] = Field(default=None, description="xAI (Grok) API key")
-    deepseek_api_key: Optional[str] = Field(default=None, description="DeepSeek API key")
-    ollama_api_key: Optional[str] = Field(default=None, description="Ollama API key (optional)")
+    deepseek_api_key: Optional[str] = Field(
+        default=None, description="DeepSeek API key"
+    )
+    ollama_api_key: Optional[str] = Field(
+        default=None, description="Ollama API key (optional)"
+    )
     ollama_base_url: Optional[str] = Field(
         default=None, description="Ollama base URL (default: http://localhost:11434)"
     )
-    lmstudio_api_key: Optional[str] = Field(default=None, description="LM Studio API key (optional)")
+    lmstudio_api_key: Optional[str] = Field(
+        default=None, description="LM Studio API key (optional)"
+    )
     lmstudio_base_url: Optional[str] = Field(
         default=None, description="LM Studio base URL (default: http://localhost:1234/v1)"
     )
-    model: Optional[str] = Field(default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)")
-    max_monthly_spend: Optional[float] = Field(default=None, ge=0, description="Monthly LLM cost cap in USD")
+    model: Optional[str] = Field(
+        default=None, description="Model to use (e.g., gpt-4o, gemini-2.0-flash)"
+    )
+    max_monthly_spend: Optional[float] = Field(
+        default=None, ge=0, description="Monthly LLM cost cap in USD"
+    )
 
 
 class NotificationSettings(BaseModel):
     """Notification configuration"""
 
     enabled: bool = Field(default=False, description="Enable notifications")
-    telegram_bot_token: Optional[str] = Field(default=None, description="Telegram bot token")
-    telegram_chat_id: Optional[str] = Field(default=None, description="Telegram chat ID")
-    notify_on_opportunity: bool = Field(default=True, description="Notify on new opportunities")
+    telegram_bot_token: Optional[str] = Field(
+        default=None, description="Telegram bot token"
+    )
+    telegram_chat_id: Optional[str] = Field(
+        default=None, description="Telegram chat ID"
+    )
+    notify_on_opportunity: bool = Field(
+        default=True, description="Notify on new opportunities"
+    )
     notify_on_trade: bool = Field(default=True, description="Notify on trade execution")
-    notify_min_roi: float = Field(default=5.0, ge=0, description="Minimum ROI % to notify")
+    notify_min_roi: float = Field(
+        default=5.0, ge=0, description="Minimum ROI % to notify"
+    )
     notify_autotrader_orders: bool = Field(
         default=False, description="Notify immediately when orchestrator creates orders"
     )
@@ -109,20 +136,36 @@ class NotificationSettings(BaseModel):
 class ScannerSettingsModel(BaseModel):
     """Scanner configuration"""
 
-    scan_interval_seconds: int = Field(default=60, ge=10, le=3600, description="Scan interval in seconds")
-    min_profit_threshold: float = Field(default=2.5, ge=0, description="Minimum profit threshold %")
-    max_markets_to_scan: int = Field(default=500, ge=10, le=5000, description="Maximum markets to scan")
-    min_liquidity: float = Field(default=1000.0, ge=0, description="Minimum liquidity in USD")
+    scan_interval_seconds: int = Field(
+        default=60, ge=10, le=3600, description="Scan interval in seconds"
+    )
+    min_profit_threshold: float = Field(
+        default=2.5, ge=0, description="Minimum profit threshold %"
+    )
+    max_markets_to_scan: int = Field(
+        default=500, ge=10, le=5000, description="Maximum markets to scan"
+    )
+    min_liquidity: float = Field(
+        default=1000.0, ge=0, description="Minimum liquidity in USD"
+    )
 
 
 class TradingSettings(BaseModel):
     """Trading safety configuration"""
 
     trading_enabled: bool = Field(default=False, description="Enable live trading")
-    max_trade_size_usd: float = Field(default=100.0, ge=1, description="Maximum single trade size")
-    max_daily_trade_volume: float = Field(default=1000.0, ge=10, description="Maximum daily trading volume")
-    max_open_positions: int = Field(default=10, ge=1, le=100, description="Maximum concurrent open positions")
-    max_slippage_percent: float = Field(default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %")
+    max_trade_size_usd: float = Field(
+        default=100.0, ge=1, description="Maximum single trade size"
+    )
+    max_daily_trade_volume: float = Field(
+        default=1000.0, ge=10, description="Maximum daily trading volume"
+    )
+    max_open_positions: int = Field(
+        default=10, ge=1, le=100, description="Maximum concurrent open positions"
+    )
+    max_slippage_percent: float = Field(
+        default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %"
+    )
 
 
 class DiscoverySettings(BaseModel):
@@ -147,7 +190,9 @@ class DiscoverySettings(BaseModel):
         le=365,
         description="Keep newly discovered wallets within this window",
     )
-    maintenance_batch: int = Field(default=900, ge=10, le=5000, description="Cleanup insert/chunk batch size")
+    maintenance_batch: int = Field(
+        default=900, ge=10, le=5000, description="Cleanup insert/chunk batch size"
+    )
     stale_analysis_hours: int = Field(
         default=12,
         ge=1,
@@ -184,13 +229,53 @@ class DiscoverySettings(BaseModel):
         le=500,
         description="Max wallets to extract from each market",
     )
+    trader_opps_source_filter: Literal["all", "confluence", "insider"] = Field(
+        default="all",
+        description="Opportunities -> Traders source view filter",
+    )
+    trader_opps_min_tier: Literal["WATCH", "HIGH", "EXTREME"] = Field(
+        default="WATCH",
+        description="Minimum confluence tier for tracked-trader opportunities",
+    )
+    trader_opps_side_filter: Literal["all", "buy", "sell"] = Field(
+        default="all",
+        description="Opportunities -> Traders directional side filter",
+    )
+    trader_opps_confluence_limit: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Tracked-trader confluence fetch limit",
+    )
+    trader_opps_insider_limit: int = Field(
+        default=40,
+        ge=1,
+        le=500,
+        description="Insider opportunities fetch limit",
+    )
+    trader_opps_insider_min_confidence: float = Field(
+        default=0.62,
+        ge=0.0,
+        le=1.0,
+        description="Minimum insider confidence threshold",
+    )
+    trader_opps_insider_max_age_minutes: int = Field(
+        default=180,
+        ge=1,
+        le=1440,
+        description="Maximum insider opportunity freshness window in minutes",
+    )
 
 
 class MaintenanceSettings(BaseModel):
     """Database maintenance configuration"""
 
-    auto_cleanup_enabled: bool = Field(default=False, description="Enable automatic database cleanup")
-    cleanup_interval_hours: int = Field(default=24, ge=1, le=168, description="Cleanup interval in hours")
+    auto_cleanup_enabled: bool = Field(
+        default=False, description="Enable automatic database cleanup"
+    )
+    cleanup_interval_hours: int = Field(
+        default=24, ge=1, le=168, description="Cleanup interval in hours"
+    )
     cleanup_resolved_trade_days: int = Field(
         default=30, ge=1, le=365, description="Delete resolved trades older than X days"
     )
@@ -239,26 +324,129 @@ class TradingProxySettings(BaseModel):
         description="Proxy URL: socks5://user:pass@host:port, http://host:port",
     )
     verify_ssl: bool = Field(default=True, description="Verify SSL certs through proxy")
-    timeout: float = Field(default=30.0, ge=5, le=120, description="Timeout for proxied requests (seconds)")
-    require_vpn: bool = Field(default=True, description="Block trades if VPN proxy is unreachable")
+    timeout: float = Field(
+        default=30.0, ge=5, le=120, description="Timeout for proxied requests (seconds)"
+    )
+    require_vpn: bool = Field(
+        default=True, description="Block trades if VPN proxy is unreachable"
+    )
+
+
+class WorldIntelligenceSettings(BaseModel):
+    """World intelligence source and threshold configuration."""
+
+    enabled: Optional[bool] = None
+    interval_seconds: Optional[int] = None
+    emit_trade_signals: Optional[bool] = None
+
+    acled_api_key: Optional[str] = None
+    acled_email: Optional[str] = None
+    opensky_username: Optional[str] = None
+    opensky_password: Optional[str] = None
+    aisstream_api_key: Optional[str] = None
+    cloudflare_radar_token: Optional[str] = None
+
+    ais_enabled: Optional[bool] = None
+    ais_sample_seconds: Optional[int] = None
+    ais_max_messages: Optional[int] = None
+    airplanes_live_enabled: Optional[bool] = None
+    airplanes_live_timeout_seconds: Optional[float] = None
+    airplanes_live_max_records: Optional[int] = None
+    military_dedupe_radius_km: Optional[float] = None
+    military_enabled: Optional[bool] = None
+
+    country_reference_sync_enabled: Optional[bool] = None
+    country_reference_sync_hours: Optional[int] = None
+    country_reference_request_timeout_seconds: Optional[float] = None
+
+    ucdp_sync_enabled: Optional[bool] = None
+    ucdp_sync_hours: Optional[int] = None
+    ucdp_lookback_years: Optional[int] = None
+    ucdp_max_pages: Optional[int] = None
+    ucdp_request_timeout_seconds: Optional[float] = None
+
+    mid_sync_enabled: Optional[bool] = None
+    mid_sync_hours: Optional[int] = None
+    mid_request_timeout_seconds: Optional[float] = None
+
+    trade_dependency_sync_enabled: Optional[bool] = None
+    trade_dependency_sync_hours: Optional[int] = None
+    trade_dependency_request_timeout_seconds: Optional[float] = None
+    trade_dependency_wb_per_page: Optional[int] = None
+    trade_dependency_wb_max_pages: Optional[int] = None
+    trade_dependency_base_divisor: Optional[float] = None
+    trade_dependency_min_factor: Optional[float] = None
+    trade_dependency_max_factor: Optional[float] = None
+
+    chokepoints_enabled: Optional[bool] = None
+    chokepoints_refresh_seconds: Optional[int] = None
+    chokepoints_request_timeout_seconds: Optional[float] = None
+    chokepoints_max_daily_rows: Optional[int] = None
+    chokepoints_db_sync_enabled: Optional[bool] = None
+    chokepoints_db_sync_hours: Optional[int] = None
+
+    convergence_min_types: Optional[int] = None
+    anomaly_threshold: Optional[float] = None
+    anomaly_min_baseline_points: Optional[int] = None
+    instability_signal_min: Optional[float] = None
+    instability_critical: Optional[float] = None
+    tension_critical: Optional[float] = None
+
+    gdelt_query_delay_seconds: Optional[float] = None
+    gdelt_max_concurrency: Optional[int] = None
+    gdelt_news_enabled: Optional[bool] = None
+    gdelt_news_timespan_hours: Optional[int] = None
+    gdelt_news_max_records: Optional[int] = None
+    gdelt_news_request_timeout_seconds: Optional[float] = None
+    gdelt_news_cache_seconds: Optional[int] = None
+    gdelt_news_query_delay_seconds: Optional[float] = None
+    gdelt_news_sync_enabled: Optional[bool] = None
+    gdelt_news_sync_hours: Optional[int] = None
+
+    acled_rate_limit_per_min: Optional[int] = None
+    acled_auth_rate_limit_per_min: Optional[int] = None
+    acled_cb_max_failures: Optional[int] = None
+    acled_cb_cooldown_seconds: Optional[float] = None
+    opensky_cb_max_failures: Optional[int] = None
+    opensky_cb_cooldown_seconds: Optional[float] = None
+
+    usgs_enabled: Optional[bool] = None
+    usgs_min_magnitude: Optional[float] = None
 
 
 class SearchFilterSettings(BaseModel):
     """Opportunity search filter thresholds — controls which opportunities are shown"""
 
     # Hard rejection filters
-    min_liquidity_hard: float = Field(default=200.0, ge=0, description="Hard reject below this liquidity ($)")
-    min_position_size: float = Field(default=25.0, ge=0, description="Reject if max position < this ($)")
-    min_absolute_profit: float = Field(default=5.0, ge=0, description="Reject if net profit on max position < this ($)")
-    min_annualized_roi: float = Field(default=10.0, ge=0, description="Reject if annualized ROI < this %")
+    min_liquidity_hard: float = Field(
+        default=200.0, ge=0, description="Hard reject below this liquidity ($)"
+    )
+    min_position_size: float = Field(
+        default=25.0, ge=0, description="Reject if max position < this ($)"
+    )
+    min_absolute_profit: float = Field(
+        default=5.0, ge=0, description="Reject if net profit on max position < this ($)"
+    )
+    min_annualized_roi: float = Field(
+        default=10.0, ge=0, description="Reject if annualized ROI < this %"
+    )
     max_resolution_months: int = Field(
         default=18,
         ge=1,
         le=120,
         description="Reject if resolution > this many months away",
     )
-    max_plausible_roi: float = Field(default=30.0, ge=1, description="ROI above this % rejected as false positive")
-    max_trade_legs: int = Field(default=8, ge=2, le=20, description="Maximum legs in a multi-leg trade")
+    max_plausible_roi: float = Field(
+        default=30.0, ge=1, description="ROI above this % rejected as false positive"
+    )
+    max_trade_legs: int = Field(
+        default=8, ge=2, le=20, description="Maximum legs in a multi-leg trade"
+    )
+    min_liquidity_per_leg: float = Field(
+        default=500.0,
+        ge=0,
+        description="Minimum liquidity required per leg in multi-leg trades ($)",
+    )
 
     # NegRisk exhaustivity thresholds
     negrisk_min_total_yes: float = Field(
@@ -267,7 +455,9 @@ class SearchFilterSettings(BaseModel):
         le=1.0,
         description="Hard reject NegRisk if total YES < this",
     )
-    negrisk_warn_total_yes: float = Field(default=0.97, ge=0.5, le=1.0, description="Warn if total YES below this")
+    negrisk_warn_total_yes: float = Field(
+        default=0.97, ge=0.5, le=1.0, description="Warn if total YES below this"
+    )
     negrisk_election_min_total_yes: float = Field(
         default=0.97, ge=0.5, le=1.0, description="Stricter reject for election markets"
     )
@@ -329,30 +519,68 @@ class SearchFilterSettings(BaseModel):
         le=1825,
         description="Days threshold for 'extended capital lockup' risk",
     )
-    risk_low_liquidity: float = Field(default=1000.0, ge=0, description="Liquidity below this adds high risk ($)")
+    risk_low_liquidity: float = Field(
+        default=1000.0, ge=0, description="Liquidity below this adds high risk ($)"
+    )
     risk_moderate_liquidity: float = Field(
         default=5000.0, ge=0, description="Liquidity below this adds moderate risk ($)"
     )
-    risk_complex_legs: int = Field(default=5, ge=2, le=20, description="Legs above this = complex trade risk")
-    risk_multiple_legs: int = Field(default=3, ge=2, le=20, description="Legs above this = multiple positions risk")
+    risk_complex_legs: int = Field(
+        default=5, ge=2, le=20, description="Legs above this = complex trade risk"
+    )
+    risk_multiple_legs: int = Field(
+        default=3, ge=2, le=20, description="Legs above this = multiple positions risk"
+    )
 
     # BTC/ETH high-frequency
-    btc_eth_hf_series_btc_15m: str = Field(default="10192", description="Polymarket series ID for BTC 15-min markets")
-    btc_eth_hf_series_eth_15m: str = Field(default="10191", description="Polymarket series ID for ETH 15-min markets")
-    btc_eth_hf_series_sol_15m: str = Field(default="10423", description="Polymarket series ID for SOL 15-min markets")
-    btc_eth_hf_series_xrp_15m: str = Field(default="10422", description="Polymarket series ID for XRP 15-min markets")
-    btc_eth_hf_series_btc_5m: str = Field(default="10684", description="Polymarket series ID for BTC 5-min markets")
-    btc_eth_hf_series_eth_5m: str = Field(default="", description="Polymarket series ID for ETH 5-min markets")
-    btc_eth_hf_series_sol_5m: str = Field(default="", description="Polymarket series ID for SOL 5-min markets")
-    btc_eth_hf_series_xrp_5m: str = Field(default="", description="Polymarket series ID for XRP 5-min markets")
-    btc_eth_hf_series_btc_1h: str = Field(default="10114", description="Polymarket series ID for BTC hourly markets")
-    btc_eth_hf_series_eth_1h: str = Field(default="10117", description="Polymarket series ID for ETH hourly markets")
-    btc_eth_hf_series_sol_1h: str = Field(default="10122", description="Polymarket series ID for SOL hourly markets")
-    btc_eth_hf_series_xrp_1h: str = Field(default="10123", description="Polymarket series ID for XRP hourly markets")
-    btc_eth_hf_series_btc_4h: str = Field(default="10331", description="Polymarket series ID for BTC 4-hour markets")
-    btc_eth_hf_series_eth_4h: str = Field(default="10332", description="Polymarket series ID for ETH 4-hour markets")
-    btc_eth_hf_series_sol_4h: str = Field(default="10326", description="Polymarket series ID for SOL 4-hour markets")
-    btc_eth_hf_series_xrp_4h: str = Field(default="10327", description="Polymarket series ID for XRP 4-hour markets")
+    btc_eth_hf_series_btc_15m: str = Field(
+        default="10192", description="Polymarket series ID for BTC 15-min markets"
+    )
+    btc_eth_hf_series_eth_15m: str = Field(
+        default="10191", description="Polymarket series ID for ETH 15-min markets"
+    )
+    btc_eth_hf_series_sol_15m: str = Field(
+        default="10423", description="Polymarket series ID for SOL 15-min markets"
+    )
+    btc_eth_hf_series_xrp_15m: str = Field(
+        default="10422", description="Polymarket series ID for XRP 15-min markets"
+    )
+    btc_eth_hf_series_btc_5m: str = Field(
+        default="10684", description="Polymarket series ID for BTC 5-min markets"
+    )
+    btc_eth_hf_series_eth_5m: str = Field(
+        default="", description="Polymarket series ID for ETH 5-min markets"
+    )
+    btc_eth_hf_series_sol_5m: str = Field(
+        default="", description="Polymarket series ID for SOL 5-min markets"
+    )
+    btc_eth_hf_series_xrp_5m: str = Field(
+        default="", description="Polymarket series ID for XRP 5-min markets"
+    )
+    btc_eth_hf_series_btc_1h: str = Field(
+        default="10114", description="Polymarket series ID for BTC hourly markets"
+    )
+    btc_eth_hf_series_eth_1h: str = Field(
+        default="10117", description="Polymarket series ID for ETH hourly markets"
+    )
+    btc_eth_hf_series_sol_1h: str = Field(
+        default="10122", description="Polymarket series ID for SOL hourly markets"
+    )
+    btc_eth_hf_series_xrp_1h: str = Field(
+        default="10123", description="Polymarket series ID for XRP hourly markets"
+    )
+    btc_eth_hf_series_btc_4h: str = Field(
+        default="10331", description="Polymarket series ID for BTC 4-hour markets"
+    )
+    btc_eth_hf_series_eth_4h: str = Field(
+        default="10332", description="Polymarket series ID for ETH 4-hour markets"
+    )
+    btc_eth_hf_series_sol_4h: str = Field(
+        default="10326", description="Polymarket series ID for SOL 4-hour markets"
+    )
+    btc_eth_hf_series_xrp_4h: str = Field(
+        default="10327", description="Polymarket series ID for XRP 4-hour markets"
+    )
     btc_eth_pure_arb_max_combined: float = Field(
         default=0.98, ge=0.5, le=1.0, description="Use pure arb when YES+NO < this"
     )
@@ -362,11 +590,17 @@ class SearchFilterSettings(BaseModel):
         le=0.5,
         description="Min price drop to trigger dump-hedge",
     )
-    btc_eth_thin_liquidity_usd: float = Field(default=500.0, ge=0, description="Below this = thin order book ($)")
+    btc_eth_thin_liquidity_usd: float = Field(
+        default=500.0, ge=0, description="Below this = thin order book ($)"
+    )
 
     # Miracle strategy
-    miracle_min_no_price: float = Field(default=0.90, ge=0.5, le=0.999, description="Only consider NO prices >= this")
-    miracle_max_no_price: float = Field(default=0.995, ge=0.9, le=1.0, description="Skip if NO already at this+")
+    miracle_min_no_price: float = Field(
+        default=0.90, ge=0.5, le=0.999, description="Only consider NO prices >= this"
+    )
+    miracle_max_no_price: float = Field(
+        default=0.995, ge=0.9, le=1.0, description="Skip if NO already at this+"
+    )
     miracle_min_impossibility_score: float = Field(
         default=0.70,
         ge=0.0,
@@ -375,7 +609,13 @@ class SearchFilterSettings(BaseModel):
     )
 
     # BTC/ETH high-frequency enable
-    btc_eth_hf_enabled: bool = Field(default=True, description="Enable BTC/ETH high-frequency strategy")
+    btc_eth_hf_enabled: bool = Field(
+        default=True, description="Enable BTC/ETH high-frequency strategy"
+    )
+    btc_eth_hf_maker_mode: bool = Field(
+        default=True,
+        description="Use maker/limit execution for BTC/ETH high-frequency strategy",
+    )
 
     # Cross-platform arbitrage
     cross_platform_enabled: bool = Field(
@@ -398,7 +638,9 @@ class SearchFilterSettings(BaseModel):
     )
 
     # Bayesian cascade
-    bayesian_cascade_enabled: bool = Field(default=True, description="Enable Bayesian cascade strategy")
+    bayesian_cascade_enabled: bool = Field(
+        default=True, description="Enable Bayesian cascade strategy"
+    )
     bayesian_min_edge_percent: float = Field(
         default=5.0,
         ge=0.0,
@@ -413,17 +655,23 @@ class SearchFilterSettings(BaseModel):
     )
 
     # Liquidity vacuum
-    liquidity_vacuum_enabled: bool = Field(default=True, description="Enable liquidity vacuum strategy")
+    liquidity_vacuum_enabled: bool = Field(
+        default=True, description="Enable liquidity vacuum strategy"
+    )
     liquidity_vacuum_min_imbalance_ratio: float = Field(
         default=5.0,
         ge=1.0,
         le=100.0,
         description="Min bid/ask imbalance ratio to trigger",
     )
-    liquidity_vacuum_min_depth_usd: float = Field(default=100.0, ge=0, description="Min order book depth ($)")
+    liquidity_vacuum_min_depth_usd: float = Field(
+        default=100.0, ge=0, description="Min order book depth ($)"
+    )
 
     # Entropy arbitrage
-    entropy_arb_enabled: bool = Field(default=True, description="Enable entropy arbitrage strategy")
+    entropy_arb_enabled: bool = Field(
+        default=True, description="Enable entropy arbitrage strategy"
+    )
     entropy_arb_min_deviation: float = Field(
         default=0.25,
         ge=0.0,
@@ -432,13 +680,19 @@ class SearchFilterSettings(BaseModel):
     )
 
     # Event-driven arbitrage
-    event_driven_enabled: bool = Field(default=True, description="Enable event-driven arbitrage strategy")
+    event_driven_enabled: bool = Field(
+        default=True, description="Enable event-driven arbitrage strategy"
+    )
 
     # Temporal decay
-    temporal_decay_enabled: bool = Field(default=True, description="Enable temporal decay strategy")
+    temporal_decay_enabled: bool = Field(
+        default=True, description="Enable temporal decay strategy"
+    )
 
     # Correlation arbitrage
-    correlation_arb_enabled: bool = Field(default=True, description="Enable correlation arbitrage strategy")
+    correlation_arb_enabled: bool = Field(
+        default=True, description="Enable correlation arbitrage strategy"
+    )
     correlation_arb_min_correlation: float = Field(
         default=0.7,
         ge=0.0,
@@ -453,17 +707,23 @@ class SearchFilterSettings(BaseModel):
     )
 
     # Market making
-    market_making_enabled: bool = Field(default=True, description="Enable market making strategy")
+    market_making_enabled: bool = Field(
+        default=True, description="Enable market making strategy"
+    )
     market_making_spread_bps: float = Field(
         default=100.0,
         ge=10.0,
         le=1000.0,
         description="Min bid-ask spread in basis points",
     )
-    market_making_max_inventory_usd: float = Field(default=500.0, ge=0, description="Max inventory per market ($)")
+    market_making_max_inventory_usd: float = Field(
+        default=500.0, ge=0, description="Max inventory per market ($)"
+    )
 
     # Statistical arbitrage
-    stat_arb_enabled: bool = Field(default=True, description="Enable statistical arbitrage strategy")
+    stat_arb_enabled: bool = Field(
+        default=True, description="Enable statistical arbitrage strategy"
+    )
     stat_arb_min_edge: float = Field(
         default=0.05,
         ge=0.0,
@@ -484,6 +744,7 @@ class AllSettings(BaseModel):
     maintenance: MaintenanceSettings
     discovery: DiscoverySettings
     trading_proxy: TradingProxySettings
+    world_intelligence: WorldIntelligenceSettings
     search_filters: SearchFilterSettings
     updated_at: Optional[str] = None
 
@@ -500,13 +761,16 @@ class UpdateSettingsRequest(BaseModel):
     maintenance: Optional[MaintenanceSettings] = None
     discovery: Optional[DiscoverySettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
+    world_intelligence: Optional[WorldIntelligenceSettings] = None
     search_filters: Optional[SearchFilterSettings] = None
 
 
 async def get_or_create_settings() -> AppSettings:
     """Get existing settings or create default"""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+        result = await session.execute(
+            select(AppSettings).where(AppSettings.id == "default")
+        )
         settings = result.scalar_one_or_none()
 
         if not settings:
@@ -541,6 +805,9 @@ async def get_settings():
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
             discovery=DiscoverySettings(**discovery_payload(settings)),
             trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
+            world_intelligence=WorldIntelligenceSettings(
+                **world_intelligence_payload(settings)
+            ),
             search_filters=SearchFilterSettings(**search_filters_payload(settings)),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
         )
@@ -559,7 +826,9 @@ async def update_settings(request: UpdateSettingsRequest):
     """
     try:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+            result = await session.execute(
+                select(AppSettings).where(AppSettings.id == "default")
+            )
             settings = result.scalar_one_or_none()
 
             if not settings:
@@ -572,6 +841,7 @@ async def update_settings(request: UpdateSettingsRequest):
             needs_llm_reinit = update_flags["needs_llm_reinit"]
             needs_proxy_reinit = update_flags["needs_proxy_reinit"]
             needs_filter_reload = update_flags["needs_filter_reload"]
+            needs_world_intel_reload = update_flags["needs_world_intel_reload"]
 
         # Re-initialize LLM manager OUTSIDE the DB session so the new
         # session inside initialize() can see the just-committed data
@@ -614,6 +884,17 @@ async def update_settings(request: UpdateSettingsRequest):
             except Exception as reinit_err:
                 logger.error(
                     f"Failed to reload search filters: {reinit_err}",
+                )
+
+        if needs_world_intel_reload:
+            try:
+                from config import apply_world_intelligence_settings
+
+                await apply_world_intelligence_settings()
+                logger.info("World intelligence config reloaded after settings update")
+            except Exception as reinit_err:
+                logger.error(
+                    f"Failed to reload world intelligence settings: {reinit_err}",
                 )
 
         logger.info("Settings updated successfully")

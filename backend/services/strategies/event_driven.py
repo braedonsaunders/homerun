@@ -94,14 +94,16 @@ _STOP_WORDS = frozenset(
 _MIN_WORD_LENGTH = 3
 # Minimum shared keywords for relatedness (simple markets)
 _MIN_SHARED_KEYWORDS = 2
-# Minimum shared keywords for multi-leg / parlay markets
-_MIN_SHARED_KEYWORDS_PARLAY = 5
 # Minimum Jaccard keyword overlap ratio to consider related
 _MIN_KEYWORD_OVERLAP_RATIO = 0.3
 # Catalyst move threshold (10%)
 _CATALYST_THRESHOLD = 0.10
 # Minimum proportional lag to flag an opportunity
 _MIN_LAG_RATIO = 0.3
+# Minimum expected repricing for directional edge to be actionable
+_MIN_TARGET_MOVE = 0.02
+# Cap expected repricing to avoid unrealistic single-step assumptions
+_MAX_TARGET_MOVE = 0.20
 
 
 class EventDrivenStrategy(BaseStrategy):
@@ -132,7 +134,9 @@ class EventDrivenStrategy(BaseStrategy):
         # market_id -> Market (latest snapshot)
         self._market_cache: dict[str, Market] = {}
 
-    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
+    def detect(
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
+    ) -> list[ArbitrageOpportunity]:
         if not settings.EVENT_DRIVEN_ENABLED:
             return []
 
@@ -152,6 +156,8 @@ class EventDrivenStrategy(BaseStrategy):
         # Record current prices and extract keywords
         for market in markets:
             if market.closed or not market.active:
+                continue
+            if self._is_parlay_or_multileg(market.question):
                 continue
 
             yes_price = self._get_live_price(market, prices)
@@ -202,6 +208,7 @@ class EventDrivenStrategy(BaseStrategy):
                     if opp:
                         opportunities.append(opp)
 
+        opportunities = self._deduplicate_by_question(opportunities)
         return opportunities
 
     def _get_live_price(self, market: Market, prices: dict[str, dict]) -> float:
@@ -261,7 +268,9 @@ class EventDrivenStrategy(BaseStrategy):
             return True
         return False
 
-    def _find_related_markets(self, catalyst_id: str, event_market_ids: dict[str, list[str]]) -> list[str]:
+    def _find_related_markets(
+        self, catalyst_id: str, event_market_ids: dict[str, list[str]]
+    ) -> list[str]:
         """
         Find markets related to the catalyst via:
         1. Same event (always valid)
@@ -275,14 +284,18 @@ class EventDrivenStrategy(BaseStrategy):
         related: dict[str, bool] = {}
 
         catalyst_event = self._market_to_event.get(catalyst_id)
-        catalyst_keywords = self._market_keywords.get(catalyst_id, set())
         catalyst_market = self._market_cache.get(catalyst_id)
-        catalyst_is_parlay = self._is_parlay_or_multileg(catalyst_market.question) if catalyst_market else False
+        catalyst_is_parlay = (
+            self._is_parlay_or_multileg(catalyst_market.question)
+            if catalyst_market
+            else False
+        )
 
-        # 1. Same event — structurally related, always valid
+        # 1. Same event — related, but still require keyword overlap to avoid
+        # broad fan-out in large sports events.
         if catalyst_event and catalyst_event in event_market_ids:
             for mid in event_market_ids[catalyst_event]:
-                if mid != catalyst_id:
+                if mid != catalyst_id and self._has_keyword_overlap(catalyst_id, mid):
                     related[mid] = True
 
         # 2. Keyword overlap with Jaccard ratio check
@@ -296,30 +309,42 @@ class EventDrivenStrategy(BaseStrategy):
         # fundamentally independent bets. Same-event matching (above)
         # still works for parlays within the same event.
         if catalyst_is_parlay:
-            return list(related.keys())
+            return []
 
         for mid in self._price_history:
             if mid == catalyst_id or mid in related:
                 continue
 
-            mid_keywords = self._market_keywords.get(mid, set())
-            if not mid_keywords or not catalyst_keywords:
-                continue
-
             # Skip parlay targets when matching via keywords
             mid_market = self._market_cache.get(mid)
-            mid_is_parlay = self._is_parlay_or_multileg(mid_market.question) if mid_market else False
+            mid_is_parlay = (
+                self._is_parlay_or_multileg(mid_market.question)
+                if mid_market
+                else False
+            )
             if mid_is_parlay:
                 continue
 
-            shared = catalyst_keywords & mid_keywords
-            union = catalyst_keywords | mid_keywords
-            jaccard = len(shared) / len(union) if union else 0.0
-
-            if len(shared) >= _MIN_SHARED_KEYWORDS and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO:
+            if self._has_keyword_overlap(catalyst_id, mid):
                 related[mid] = True
 
         return list(related.keys())
+
+    def _has_keyword_overlap(self, market_a_id: str, market_b_id: str) -> bool:
+        """Check keyword overlap quality between two markets."""
+        a_keywords = self._market_keywords.get(market_a_id, set())
+        b_keywords = self._market_keywords.get(market_b_id, set())
+        if not a_keywords or not b_keywords:
+            return False
+
+        shared = a_keywords & b_keywords
+        union = a_keywords | b_keywords
+        jaccard = len(shared) / len(union) if union else 0.0
+        return len(shared) >= _MIN_SHARED_KEYWORDS and jaccard >= _MIN_KEYWORD_OVERLAP_RATIO
+
+    @staticmethod
+    def _normalize_question_key(question: str) -> str:
+        return " ".join((question or "").lower().split())
 
     def _create_lag_opportunity(
         self,
@@ -340,6 +365,10 @@ class EventDrivenStrategy(BaseStrategy):
             return None
         if len(lagging_market.outcome_prices) < 2:
             return None
+        if self._normalize_question_key(catalyst_market.question) == self._normalize_question_key(
+            lagging_market.question
+        ):
+            return None
 
         lagging_yes = self._get_live_price(lagging_market, prices)
         lagging_no = lagging_market.no_price
@@ -356,7 +385,11 @@ class EventDrivenStrategy(BaseStrategy):
             action = "BUY"
             outcome = "YES"
             entry_price = lagging_yes
-            token_id = lagging_market.clob_token_ids[0] if lagging_market.clob_token_ids else None
+            token_id = (
+                lagging_market.clob_token_ids[0]
+                if lagging_market.clob_token_ids
+                else None
+            )
         else:
             # Catalyst moved down -> lagging should move down -> buy NO
             action = "BUY"
@@ -364,7 +397,8 @@ class EventDrivenStrategy(BaseStrategy):
             entry_price = lagging_no
             token_id = (
                 lagging_market.clob_token_ids[1]
-                if lagging_market.clob_token_ids and len(lagging_market.clob_token_ids) > 1
+                if lagging_market.clob_token_ids
+                and len(lagging_market.clob_token_ids) > 1
                 else None
             )
 
@@ -372,7 +406,18 @@ class EventDrivenStrategy(BaseStrategy):
         total_cost = entry_price
 
         # Skip if price is already extreme (no room for movement)
-        if entry_price < 0.05 or entry_price > 0.95:
+        if entry_price < 0.08 or entry_price > 0.92:
+            return None
+
+        target_move = min(catalyst_magnitude * 0.5, _MAX_TARGET_MOVE)
+        if target_move < _MIN_TARGET_MOVE:
+            return None
+        # If the lagging leg already moved most of the expected catch-up, skip.
+        if abs(lagging_move) >= target_move * 0.8:
+            return None
+        target_exit_price = min(0.98, entry_price + target_move)
+        expected_move = target_exit_price - entry_price
+        if expected_move < _MIN_TARGET_MOVE:
             return None
 
         # Risk score: 0.55 - 0.65 depending on magnitude of catalyst
@@ -409,26 +454,67 @@ class EventDrivenStrategy(BaseStrategy):
                 f"{direction_word} {catalyst_magnitude:.1%}. "
                 f"Related market '{lagging_q}' lagged "
                 f"(moved only {abs(lagging_move):.1%}). "
-                f"Buy {outcome} at ${entry_price:.3f}."
+                f"Buy {outcome} at ${entry_price:.3f}, "
+                f"target re-price ${target_exit_price:.3f}."
             ),
             total_cost=total_cost,
+            expected_payout=target_exit_price,
             markets=[lagging_market],
             positions=positions,
             event=event,
             is_guaranteed=False,
+            min_liquidity_hard=1500.0,
+            min_position_size=50.0,
         )
 
         if opp:
             # Override risk score to our statistical range
             opp.risk_score = risk_score
-            opp.risk_factors.append(f"Statistical edge (not risk-free): catalyst {catalyst_magnitude:.1%} move")
-            opp.risk_factors.append("Price lag may reflect legitimate market disagreement")
+            opp.risk_factors.append(
+                f"Statistical edge (not risk-free): catalyst {catalyst_magnitude:.1%} move"
+            )
+            opp.risk_factors.append(
+                "Price lag may reflect legitimate market disagreement"
+            )
+            opp.risk_factors.append(
+                f"Expected repricing target: +${expected_move:.3f} per share"
+            )
             opp.risk_factors.insert(
                 0,
-                "DIRECTIONAL BET — not arbitrage. Price lag may reflect legitimate market disagreement.",
+                "DIRECTIONAL BET — not arbitrage. "
+                "Price lag may reflect legitimate market disagreement.",
             )
 
         return opp
+
+    def _deduplicate_by_question(
+        self, opportunities: list[ArbitrageOpportunity]
+    ) -> list[ArbitrageOpportunity]:
+        """Collapse duplicate markets with equivalent question text."""
+        deduped: dict[tuple[str, str], ArbitrageOpportunity] = {}
+        for opp in opportunities:
+            market_rows = getattr(opp, "markets", []) or []
+            if not market_rows:
+                continue
+            first_market = market_rows[0] if isinstance(market_rows[0], dict) else {}
+            question = str(first_market.get("question", "") or "")
+            question_key = self._normalize_question_key(question)
+            if not question_key:
+                continue
+            outcome = ""
+            if opp.positions_to_take:
+                outcome = str(opp.positions_to_take[0].get("outcome", "") or "").upper()
+            key = (question_key, outcome)
+            existing = deduped.get(key)
+            if existing is None or opp.min_liquidity > existing.min_liquidity:
+                deduped[key] = opp
+
+        if not deduped:
+            return opportunities
+
+        rows = list(deduped.values())
+        rows.sort(key=lambda o: o.roi_percent, reverse=True)
+        return rows
 
     def _find_event_for_market(self, market_id: str) -> Optional[Event]:
         """Find the Event object associated with a market_id (best effort)."""

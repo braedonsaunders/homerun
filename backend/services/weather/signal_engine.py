@@ -24,6 +24,7 @@ class WeatherSignal:
     market_implied_temperature_c: Optional[float]
     should_trade: bool
     reasons: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def _clamp01(value: float) -> float:
@@ -84,6 +85,10 @@ def build_weather_signal(
 ) -> WeatherSignal:
     gfs = _clamp01(forecast.gfs_probability)
     ecmwf = _clamp01(forecast.ecmwf_probability)
+    fallback_mode = bool(forecast.metadata.get("fallback"))
+
+    yes_price = max(0.01, min(0.99, yes_price))
+    no_price = max(0.01, min(0.99, no_price))
 
     meta_probs = forecast.metadata.get("source_probabilities")
     source_probs: dict[str, float] = {}
@@ -94,10 +99,13 @@ def build_weather_signal(
             except Exception:
                 continue
     if not source_probs:
-        source_probs = {
-            "open_meteo:gfs_seamless": gfs,
-            "open_meteo:ecmwf_ifs04": ecmwf,
-        }
+        # When adapter explicitly reports fallback/no-data, do not synthesize
+        # model diversity from neutral 50/50 placeholders.
+        if not fallback_mode:
+            source_probs = {
+                "open_meteo:gfs_seamless": gfs,
+                "open_meteo:ecmwf_ifs04": ecmwf,
+            }
 
     raw_weights = forecast.metadata.get("source_weights")
     source_weights: dict[str, float] = {}
@@ -110,19 +118,30 @@ def build_weather_signal(
     norm_weights = _normalize_weights(source_probs, source_weights)
 
     source_count = len(source_probs)
-    consensus_yes = sum(source_probs[k] * norm_weights.get(k, 0.0) for k in source_probs)
-    consensus_yes = _clamp01(consensus_yes)
+    if source_count == 0:
+        # No real forecast data available: align model to market to avoid
+        # synthetic edge inflation and force report-only behavior.
+        consensus_yes = yes_price
+        agreement = 0.0
+        confidence = 0.0
+    else:
+        consensus_yes = sum(source_probs[k] * norm_weights.get(k, 0.0) for k in source_probs)
+        consensus_yes = _clamp01(consensus_yes)
 
-    probs = list(source_probs.values())
-    agreement = 1.0
-    if len(probs) >= 2:
-        agreement = 1.0 - (max(probs) - min(probs))
-    agreement = _clamp01(agreement)
+        probs = list(source_probs.values())
+        agreement = 1.0
+        if len(probs) >= 2:
+            agreement = 1.0 - (max(probs) - min(probs))
+        elif len(probs) == 1:
+            # A single source can still be actionable, but should not be
+            # treated as perfect cross-model agreement.
+            agreement = 0.67
+        agreement = _clamp01(agreement)
 
-    # Confidence blends agreement with separation from 50/50.
-    separation = abs(consensus_yes - 0.5) * 2.0
-    source_depth = min(1.0, source_count / 3.0)
-    confidence = _clamp01((agreement * 0.45) + (separation * 0.35) + (source_depth * 0.20))
+        # Confidence blends agreement with separation from 50/50.
+        separation = abs(consensus_yes - 0.5) * 2.0
+        source_depth = min(1.0, source_count / 3.0)
+        confidence = _clamp01((agreement * 0.45) + (separation * 0.35) + (source_depth * 0.20))
 
     source_spread_c = None
     if forecast.source_spread_c is not None:
@@ -133,9 +152,6 @@ def build_weather_signal(
         # Penalize confidence as source disagreement grows.
         spread_penalty = min(0.35, source_spread_c / 20.0)
         confidence = _clamp01(confidence * (1.0 - spread_penalty))
-
-    yes_price = max(0.01, min(0.99, yes_price))
-    no_price = max(0.01, min(0.99, no_price))
 
     market_implied_temp_c = _infer_market_temp_c(
         yes_price=yes_price,
@@ -159,17 +175,37 @@ def build_weather_signal(
         model_probability = 1.0 - consensus_yes
         edge_percent = (model_probability - market_price) * 100.0
 
-    reasons: list[str] = []
+    notes: list[str] = []
+    hard_entry_cap = _clamp01(max(0.01, min(0.98, float(entry_max_price) + 0.25)))
     if market_price > entry_max_price:
-        reasons.append(f"entry_price {market_price:.3f} > max {entry_max_price:.3f}")
+        # Entry max is a sizing preference, not a universal reject. Penalize
+        # confidence as the selected-side entry gets more expensive.
+        soft_excess = market_price - entry_max_price
+        confidence_penalty = max(0.35, 1.0 - (soft_excess / 0.75))
+        confidence = _clamp01(confidence * confidence_penalty)
+        notes.append(
+            f"entry_price {market_price:.3f} above soft max {entry_max_price:.3f}; size should be reduced"
+        )
+
+    reasons: list[str] = []
+    if market_price > hard_entry_cap:
+        reasons.append(
+            f"entry_price {market_price:.3f} > hard cap {hard_entry_cap:.3f}"
+        )
     if edge_percent < min_edge_percent:
         reasons.append(f"edge {edge_percent:.2f}% < min {min_edge_percent:.2f}%")
     if confidence < min_confidence:
         reasons.append(f"confidence {confidence:.2f} < min {min_confidence:.2f}")
     if agreement < min_model_agreement:
         reasons.append(f"agreement {agreement:.2f} < min {min_model_agreement:.2f}")
-    if source_count < 2:
-        reasons.append("insufficient source diversity (<2 forecast sources)")
+    if bool(forecast.metadata.get("rate_limited")) and source_count == 0:
+        reasons.append("forecast provider rate-limited")
+    elif bool(forecast.metadata.get("rate_limited")) and source_count > 0:
+        notes.append("forecast provider rate-limited; using partial source set")
+    if source_count == 0:
+        reasons.append("forecast unavailable (no source data)")
+    elif source_count < 2:
+        notes.append("single-source forecast; confidence reduced")
 
     return WeatherSignal(
         market_id=market_id,
@@ -187,4 +223,5 @@ def build_weather_signal(
         market_implied_temperature_c=market_implied_temp_c,
         should_trade=len(reasons) == 0,
         reasons=reasons,
+        notes=notes,
     )

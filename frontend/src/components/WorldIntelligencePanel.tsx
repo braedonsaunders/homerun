@@ -13,6 +13,7 @@ import {
   Swords,
   Wifi,
   Map as MapIcon,
+  Settings,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { formatCountry, formatCountryPair, normalizeCountryCode, parseCountryPair } from '../lib/worldCountries'
@@ -20,7 +21,7 @@ import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import ErrorBoundary from './ErrorBoundary'
-import WorldIntelligenceOpportunitiesView from './WorldIntelligenceOpportunitiesPanel'
+import WorldIntelligenceSettingsFlyout from './WorldIntelligenceSettingsFlyout'
 
 const WorldMap = lazy(() => import('./WorldMap'))
 import {
@@ -35,7 +36,7 @@ import {
   WorldSignal,
 } from '../services/worldIntelligenceApi'
 
-type WorldSubView = 'opportunities' | 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
+type WorldSubView = 'map' | 'overview' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
 
 const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; label: string }> = {
   conflict: { icon: Swords, color: 'text-red-400', label: 'Conflict' },
@@ -91,6 +92,9 @@ function classifySourceTone(details: any): 'ok' | 'degraded' | 'error' {
     'http 429',
     "client error '429",
     'status code 429',
+    "client error '403",
+    'status code 403',
+    '403 forbidden',
     'soft rate-limit',
     'soft rate-limited',
     'nodename nor servname provided',
@@ -389,6 +393,8 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
             <SelectItem value="250">250 rows</SelectItem>
             <SelectItem value="500">500 rows</SelectItem>
             <SelectItem value="1000">1000 rows</SelectItem>
+            <SelectItem value="2500">2500 rows</SelectItem>
+            <SelectItem value="5000">5000 rows</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -596,7 +602,6 @@ function AnomaliesView({ isConnected }: { isConnected: boolean }) {
 // ==================== MAIN COMPONENT ====================
 
 const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = [
-  { id: 'opportunities', label: 'Opportunities', icon: TrendingUp },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'overview', label: 'Overview', icon: Globe },
   { id: 'signals', label: 'Signals', icon: Radio },
@@ -604,6 +609,7 @@ const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = 
 
 export default function WorldIntelligencePanel({ isConnected = true }: { isConnected?: boolean }) {
   const [subView, setSubView] = useState<WorldSubView>('map')
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden">
@@ -621,6 +627,15 @@ export default function WorldIntelligencePanel({ isConnected = true }: { isConne
             {item.label}
           </Button>
         ))}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1 ml-auto shrink-0"
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          Settings
+        </Button>
       </div>
 
       {/* Content */}
@@ -635,7 +650,6 @@ export default function WorldIntelligencePanel({ isConnected = true }: { isConne
       ) : (
         <div className="flex-1 overflow-y-auto p-4">
           <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">This world intelligence view failed to render.</div>}>
-            {subView === 'opportunities' && <WorldIntelligenceOpportunitiesView />}
             {subView === 'overview' && <OverviewView isConnected={isConnected} />}
             {subView === 'signals' && <SignalsView isConnected={isConnected} />}
             {subView === 'countries' && <CountriesView isConnected={isConnected} />}
@@ -645,6 +659,11 @@ export default function WorldIntelligencePanel({ isConnected = true }: { isConne
           </ErrorBoundary>
         </div>
       )}
+
+      <WorldIntelligenceSettingsFlyout
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   )
 }

@@ -49,6 +49,7 @@ const DEFAULTS = {
   max_resolution_months: 18,
   max_plausible_roi: 30,
   max_trade_legs: 8,
+  min_liquidity_per_leg: 500,
   // Risk scoring
   risk_very_short_days: 2,
   risk_short_days: 7,
@@ -68,27 +69,6 @@ const DEFAULTS = {
   settlement_lag_near_zero: 0.05,
   settlement_lag_near_one: 0.95,
   settlement_lag_min_sum_deviation: 0.03,
-  // BTC/ETH
-  btc_eth_hf_enabled: true,
-  btc_eth_hf_series_btc_15m: '10192',
-  btc_eth_hf_series_eth_15m: '10191',
-  btc_eth_hf_series_sol_15m: '10423',
-  btc_eth_hf_series_xrp_15m: '10422',
-  btc_eth_hf_series_btc_5m: '10684',
-  btc_eth_hf_series_eth_5m: '',
-  btc_eth_hf_series_sol_5m: '',
-  btc_eth_hf_series_xrp_5m: '',
-  btc_eth_hf_series_btc_1h: '10114',
-  btc_eth_hf_series_eth_1h: '10117',
-  btc_eth_hf_series_sol_1h: '10122',
-  btc_eth_hf_series_xrp_1h: '10123',
-  btc_eth_hf_series_btc_4h: '10331',
-  btc_eth_hf_series_eth_4h: '10332',
-  btc_eth_hf_series_sol_4h: '10326',
-  btc_eth_hf_series_xrp_4h: '10327',
-  btc_eth_pure_arb_max_combined: 0.98,
-  btc_eth_dump_hedge_drop_pct: 0.05,
-  btc_eth_thin_liquidity_usd: 500,
   // Miracle
   miracle_min_no_price: 0.90,
   miracle_max_no_price: 0.995,
@@ -125,6 +105,7 @@ const DEFAULTS = {
   stat_arb_enabled: true,
   stat_arb_min_edge: 0.05,
 }
+const SEARCH_FILTER_KEYS = Object.keys(DEFAULTS) as Array<keyof typeof DEFAULTS>
 
 // ==================== HELPER COMPONENTS ====================
 
@@ -280,7 +261,16 @@ export default function SearchFiltersFlyout({
 
   useEffect(() => {
     if (settings?.search_filters) {
-      setForm((prev) => ({ ...prev, ...settings.search_filters }))
+      setForm(() => {
+        const next = { ...DEFAULTS }
+        SEARCH_FILTER_KEYS.forEach((key) => {
+          const value = settings.search_filters[key]
+          if (value !== undefined && value !== null) {
+            ;(next as any)[key] = value
+          }
+        })
+        return next
+      })
     }
   }, [settings])
 
@@ -298,7 +288,11 @@ export default function SearchFiltersFlyout({
   })
 
   const handleSave = () => {
-    saveMutation.mutate({ search_filters: form })
+    const payload = SEARCH_FILTER_KEYS.reduce((acc, key) => {
+      ;(acc as any)[key] = form[key]
+      return acc
+    }, {} as Partial<typeof DEFAULTS>)
+    saveMutation.mutate({ search_filters: payload })
   }
 
   const set = <K extends keyof typeof DEFAULTS>(key: K, val: (typeof DEFAULTS)[K]) =>
@@ -321,7 +315,7 @@ export default function SearchFiltersFlyout({
             <SlidersHorizontal className="w-4 h-4 text-orange-500" />
             <h3 className="text-sm font-semibold">Market Settings</h3>
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-              {18 + plugins.length} strategies
+              {17 + plugins.length} strategies
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -362,7 +356,7 @@ export default function SearchFiltersFlyout({
           {/* ============================================================ */}
           {/* SECTION 1: GLOBAL FILTERS */}
           {/* ============================================================ */}
-          <CollapsibleSection title="Global Rejection Filters" icon={Shield} color="text-red-500" defaultOpen={true} count={7}>
+          <CollapsibleSection title="Global Rejection Filters" icon={Shield} color="text-red-500" defaultOpen={true} count={8}>
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
               Hard rejection thresholds applied to every opportunity regardless of strategy.
             </p>
@@ -374,6 +368,7 @@ export default function SearchFiltersFlyout({
               <NumericField label="Max Resolution (months)" help="Reject if too far out" value={form.max_resolution_months} onChange={(v) => set('max_resolution_months', v)} min={1} max={120} />
               <NumericField label="Max Plausible ROI (%)" help="Above = false positive" value={form.max_plausible_roi} onChange={(v) => set('max_plausible_roi', v)} min={1} />
               <NumericField label="Max Trade Legs" help="Max legs in multi-leg trade" value={form.max_trade_legs} onChange={(v) => set('max_trade_legs', v)} min={2} max={20} />
+              <NumericField label="Min Liquidity / Leg ($)" help="Required liquidity per leg" value={form.min_liquidity_per_leg} onChange={(v) => set('min_liquidity_per_leg', v)} min={0} />
             </div>
           </CollapsibleSection>
 

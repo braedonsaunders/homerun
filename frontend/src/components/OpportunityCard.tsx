@@ -18,7 +18,12 @@ import {
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { getOpportunityPlatformLinks } from '../lib/marketUrls'
-import { buildYesNoSparklineSeries } from '../lib/priceHistory'
+import {
+  buildOutcomeFallbacks,
+  buildOutcomeSparklineSeries,
+  extractOutcomeLabels,
+  extractOutcomePrices,
+} from '../lib/priceHistory'
 import { Opportunity, WeatherForecastSource, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
@@ -113,6 +118,28 @@ const CARD_BG_GRADIENT: Record<string, string> = {
   strong_skip: 'from-red-500/[0.04] via-transparent to-transparent',
 }
 
+const SPARKLINE_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#38bdf8',
+  '#f59e0b',
+  '#a78bfa',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+]
+
+const SPARKLINE_TEXT_CLASSES = [
+  'text-green-400/70',
+  'text-red-400/70',
+  'text-sky-300/80',
+  'text-amber-300/80',
+  'text-violet-300/80',
+  'text-teal-300/80',
+  'text-orange-300/80',
+  'text-pink-300/80',
+]
+
 // ─── Utilities ────────────────────────────────────────────
 
 export function timeAgo(dateStr: string): string {
@@ -143,13 +170,26 @@ function timeUntil(dateStr?: string | null): string {
   return `${Math.floor(diffMs / 60_000)}m`
 }
 
-function formatWeatherTargetDisplay(dateStr?: string | null): { date: string; time: string } | null {
+function formatWeatherTargetDisplay(dateStr?: string | null): { date: string; time: string | null } | null {
   if (!dateStr) return null
   const dt = new Date(dateStr)
   if (Number.isNaN(dt.getTime())) return null
+  const hasExplicitTime = !(
+    dt.getUTCHours() === 0
+    && dt.getUTCMinutes() === 0
+    && dt.getUTCSeconds() === 0
+  )
   return {
-    date: dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
-    time: dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+    date: dt.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+    }),
+    time: hasExplicitTime
+      ? `${dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })} UTC`
+      : null,
   }
 }
 
@@ -179,6 +219,49 @@ function formatPct(value: number | null | undefined): string {
   return `${(value * 100).toFixed(1)}%`
 }
 
+function compactOutcomeLabel(value: string, maxChars = 12): string {
+  const text = String(value || '').trim()
+  if (!text) return '—'
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, Math.max(1, maxChars - 1))}…`
+}
+
+function resolveMarketOutcomes(market: Opportunity['markets'][number] | undefined): {
+  labels: string[]
+  prices: number[]
+} {
+  if (!market) return { labels: [], prices: [] }
+  const marketRow = market as unknown as Record<string, unknown>
+  const labels = extractOutcomeLabels(
+    marketRow.outcome_labels
+    ?? marketRow.outcomes
+    ?? marketRow.tokens
+  )
+  const prices = extractOutcomePrices(
+    marketRow.outcome_prices
+    ?? marketRow.prices
+  )
+  return { labels, prices }
+}
+
+function formatOutcomePriceSummary(
+  market: Opportunity['markets'][number],
+  maxOutcomes = 4,
+): string {
+  const { labels, prices } = resolveMarketOutcomes(market)
+  if (prices.length < 1) {
+    return `Yes:${safeFixed(market.yes_price, 3)} No:${safeFixed(market.no_price, 3)}`
+  }
+  const visible = prices.slice(0, maxOutcomes).map((price, index) => {
+    const label = compactOutcomeLabel(labels[index] || `Outcome ${index + 1}`, 10)
+    return `${label}:${safeFixed(price, 3)}`
+  })
+  const suffix = prices.length > maxOutcomes
+    ? ` +${prices.length - maxOutcomes}`
+    : ''
+  return `${visible.join(' ')}${suffix}`
+}
+
 // ─── Props ────────────────────────────────────────────────
 
 interface Props {
@@ -197,13 +280,21 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
   // AI analysis
   const inlineAnalysis = opportunity.ai_analysis
+  const forceWeatherLlm = (
+    (opportunity.strategy === 'weather_edge' || Boolean(opportunity.markets?.[0]?.weather))
+    && opportunity.max_position_size > 0
+  )
   const judgeMutation = useMutation({
     mutationFn: async () => {
-      const { data } = await judgeOpportunity({ opportunity_id: opportunity.id })
+      const { data } = await judgeOpportunity({
+        opportunity_id: opportunity.id,
+        force_llm: forceWeatherLlm,
+      })
       return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
     },
   })
   const isPending = inlineAnalysis?.recommendation === 'pending'
@@ -240,7 +331,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
       return [...explicit].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
     }
     const fallback: WeatherForecastSource[] = []
-    if (weather.gfs_value != null || weather.gfs_probability != null) {
+    if (weather.gfs_value != null) {
       fallback.push({
         source_id: 'open_meteo:gfs_seamless',
         provider: 'open_meteo',
@@ -252,7 +343,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         target_time: weather.target_time ?? null,
       })
     }
-    if (weather.ecmwf_value != null || weather.ecmwf_probability != null) {
+    if (weather.ecmwf_value != null) {
       fallback.push({
         source_id: 'open_meteo:ecmwf_ifs04',
         provider: 'open_meteo',
@@ -269,7 +360,13 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
   const primaryOutcome = String(opportunity.positions_to_take?.[0]?.outcome ?? '').toUpperCase()
   const isBuyNoWeather = primaryOutcome === 'NO'
-  const consensusYesProbability = (weather?.consensus_probability ?? opportunity.expected_payout) ?? null
+  const weatherSourceCount = weather?.source_count ?? weatherSources.length ?? 0
+  const hasWeatherModelSignal = weatherSourceCount > 0 || weather?.consensus_probability != null
+  const consensusYesProbability = (
+    hasWeatherModelSignal
+      ? ((weather?.consensus_probability ?? opportunity.expected_payout) ?? null)
+      : null
+  )
   const modelProbability = (
     consensusYesProbability != null
       ? Math.max(0, Math.min(1, isBuyNoWeather ? 1 - consensusYesProbability : consensusYesProbability))
@@ -306,22 +403,43 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
     }
     return '—'
   }, [weather])
-  const weatherTargetLabel = weather?.target_time
-    ? new Date(weather.target_time).toLocaleString()
-    : '—'
   const weatherTargetDisplay = useMemo(
     () => formatWeatherTargetDisplay(weather?.target_time ?? opportunity.resolution_date ?? null),
     [weather?.target_time, opportunity.resolution_date]
   )
+  const weatherTargetLabel = weatherTargetDisplay
+    ? `${weatherTargetDisplay.date}${weatherTargetDisplay.time ? `, ${weatherTargetDisplay.time}` : ''}`
+    : '—'
 
-  const sparkData = useMemo(() => {
-    if (!market) return { yes: [], no: [] }
-    return buildYesNoSparklineSeries(
-      market.price_history,
-      market.yes_price,
-      market.no_price
-    )
-  }, [market?.id, market?.yes_price, market?.no_price, market?.price_history])
+  const marketOutcomes = useMemo(() => resolveMarketOutcomes(market), [market])
+  const primaryOutcomeLabel = marketOutcomes.labels[0] || 'Yes'
+  const secondaryOutcomeLabel = marketOutcomes.labels[1] || 'No'
+  const sparkSeries = useMemo(
+    () => buildOutcomeSparklineSeries(
+      market?.price_history,
+      buildOutcomeFallbacks({
+        labels: marketOutcomes.labels,
+        prices: marketOutcomes.prices,
+        yesPrice: market?.yes_price,
+        noPrice: market?.no_price,
+        yesLabel: marketOutcomes.labels[0] || 'Yes',
+        noLabel: marketOutcomes.labels[1] || 'No',
+        preferIndexedKeys: marketOutcomes.labels.length > 2 || marketOutcomes.prices.length > 2,
+      }),
+    ),
+    [market, marketOutcomes],
+  )
+  const hasSparkline = sparkSeries.length > 0
+  const sparklineSeries = useMemo(
+    () => sparkSeries.map((row, index) => ({
+      data: row.data,
+      color: SPARKLINE_COLORS[index % SPARKLINE_COLORS.length],
+      lineWidth: index === 0 ? 1.6 : 1.3,
+      fill: false,
+      showDot: true,
+    })),
+    [sparkSeries],
+  )
 
   // Accent bar color
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || 'bg-border') : 'bg-border/50'
@@ -387,14 +505,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
           <div className="text-right shrink-0">
             {isSearch && market ? (
               <>
-                {/* Search results: show Yes/No prices prominently */}
-                <div className="flex items-center gap-2 justify-end">
-                  <span className="text-sm font-bold font-data text-green-400 leading-none">
-                    Yes {safeFixed((market.yes_price ?? 0) * 100, 0)}¢
-                  </span>
-                  <span className="text-sm font-bold font-data text-red-400 leading-none">
-                    No {safeFixed((market.no_price ?? 0) * 100, 0)}¢
-                  </span>
+                {/* Search results: show all market outcomes with real labels */}
+                <div className="flex items-center justify-end gap-2 flex-wrap">
+                  {sparkSeries.map((row, index) => (
+                    <span
+                      key={`${opportunity.id}-search-outcome-${row.key}`}
+                      className={cn('text-sm font-bold font-data leading-none', SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length])}
+                    >
+                      {compactOutcomeLabel(row.label, 12)} {safeFixed((row.latest ?? 0) * 100, 0)}¢
+                    </span>
+                  ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground font-data mt-0.5">
                   {formatCompact(opportunity.volume ?? opportunity.min_liquidity)} vol
@@ -430,28 +550,34 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               <CalendarDays className="w-3 h-3 text-cyan-300 shrink-0" />
               <span className="text-xs font-semibold text-cyan-100 truncate">{weatherTargetDisplay.date}</span>
             </span>
-            <span className="text-[10px] font-data text-cyan-200/90 ml-2 shrink-0">{weatherTargetDisplay.time}</span>
+            {weatherTargetDisplay.time && (
+              <span className="text-[10px] font-data text-cyan-200/90 ml-2 shrink-0">{weatherTargetDisplay.time}</span>
+            )}
           </div>
         )}
 
         {/* ── Row 3: Sparkline + Metrics ── */}
         <div className="flex items-stretch gap-3">
           {/* Sparkline */}
-          {market && sparkData.yes.length >= 2 && (
+          {market && hasSparkline && (
             <div className="shrink-0">
               <Sparkline
-                data={sparkData.yes}
-                data2={sparkData.no}
+                data={sparkSeries[0]?.data || []}
+                series={sparklineSeries}
                 width={96}
                 height={40}
-                color="#22c55e"
-                color2="#ef4444"
                 lineWidth={1.5}
                 showDots
               />
-              <div className="flex justify-between text-[9px] text-muted-foreground font-data mt-0.5 px-0.5">
-                <span className="text-green-400/70">Y {safeFixed(market.yes_price, 2)}</span>
-                <span className="text-red-400/70">N {safeFixed(market.no_price, 2)}</span>
+              <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 px-0.5 text-[9px] font-data">
+                {sparkSeries.map((row, index) => (
+                  <span
+                    key={`${opportunity.id}-spark-${row.key}`}
+                    className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
+                  >
+                    {compactOutcomeLabel(row.label, 10)} {safeFixed(row.latest, 2)}
+                  </span>
+                ))}
               </div>
             </div>
           )}
@@ -578,11 +704,16 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
           {isSearch ? (
             <div className="flex items-center gap-1 truncate min-w-0">
               {market && (
-                <span className="font-data">
-                  <span className="text-green-400/80">Yes {safeFixed(market.yes_price, 3)}</span>
-                  {' / '}
-                  <span className="text-red-400/80">No {safeFixed(market.no_price, 3)}</span>
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap font-data">
+                  {sparkSeries.map((row, index) => (
+                    <span
+                      key={`${opportunity.id}-search-line-${row.key}`}
+                      className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
+                    >
+                      {compactOutcomeLabel(row.label, 12)} {safeFixed(row.latest, 3)}
+                    </span>
+                  ))}
+                </div>
               )}
             </div>
           ) : (
@@ -700,11 +831,11 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Market Details</h4>
                   <div className="grid grid-cols-3 gap-3 text-xs">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Yes Price</p>
+                      <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(primaryOutcomeLabel, 16)} Price</p>
                       <p className="font-data text-green-400">{safeFixed((market?.yes_price ?? 0) * 100, 1)}¢</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">No Price</p>
+                      <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(secondaryOutcomeLabel, 16)} Price</p>
                       <p className="font-data text-red-400">{safeFixed((market?.no_price ?? 0) * 100, 1)}¢</p>
                     </div>
                     <div>
@@ -735,7 +866,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                         <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                          Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Vol:{formatCompact((mkt as any).volume)} Liq:{formatCompact((mkt as any).liquidity || mkt.liquidity)}
+                          {formatOutcomePriceSummary(mkt)} Vol:{formatCompact((mkt as any).volume)} Liq:{formatCompact((mkt as any).liquidity || mkt.liquidity)}
                         </p>
                       </div>
                       {url && (
@@ -900,7 +1031,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                           <div className="min-w-0 flex-1">
                             <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                             <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                              Y:{safeFixed(mkt.yes_price, 3)} N:{safeFixed(mkt.no_price, 3)} Liq:{formatCompact(mkt.liquidity)}
+                              {formatOutcomePriceSummary(mkt)} Liq:{formatCompact(mkt.liquidity)}
                             </p>
                           </div>
                           {url && (

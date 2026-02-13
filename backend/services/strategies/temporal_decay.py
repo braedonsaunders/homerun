@@ -91,6 +91,34 @@ _MAX_DAYS_TO_DEADLINE = 30
 # Minimum days to deadline (avoid markets about to expire)
 _MIN_DAYS_TO_DEADLINE = 1
 
+# Require at least N observed points before trusting decay deviation.
+_MIN_HISTORY_POINTS = 5
+
+# Skip deep-OTM tails where tiny absolute moves produce misleading ROI.
+_MIN_ENTRY_PRICE = 0.08
+_MAX_ENTRY_PRICE = 0.92
+
+# Minimum expected repricing for a directional trade to be actionable.
+_MIN_EXPECTED_MOVE = 0.02
+
+# Certainty shock defaults (all overridable via config/env).
+_SHOCK_LOOKBACK_SECONDS = 6 * 3600
+_SHOCK_MIN_POINTS = 3
+_SHOCK_MAX_DAYS_TO_DEADLINE = 10.0
+_SHOCK_MIN_DAYS_TO_DEADLINE = -0.25
+_SHOCK_MIN_ABS_MOVE = 0.18
+_SHOCK_MAX_RETRACE = 0.12
+_SHOCK_MIN_FAVORED_PRICE = 0.55
+_SHOCK_MAX_FAVORED_PRICE = 0.97
+_SHOCK_TARGET_CERTAINTY = 0.96
+_SHOCK_EXTENSION_FACTOR = 0.45
+_SHOCK_MIN_EXPECTED_MOVE = 0.03
+_SHOCK_MIN_LIQUIDITY_HARD = 1000.0
+_SHOCK_MIN_POSITION_SIZE = 50.0
+
+# Known multi-leg sportsbook contracts where temporal decay is not valid.
+_MULTILEG_MARKET_PREFIXES = ("KXMVESPORTSMULTIGAMEEXTENDED-",)
+
 
 class TemporalDecayStrategy(BaseStrategy):
     """
@@ -115,7 +143,9 @@ class TemporalDecayStrategy(BaseStrategy):
         # market_id -> (deadline_dt, first_seen_price) for decay calculation
         self._market_baselines: dict[str, tuple[datetime, float]] = {}
 
-    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
+    def detect(
+        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
+    ) -> list[ArbitrageOpportunity]:
         if not settings.TEMPORAL_DECAY_ENABLED:
             return []
 
@@ -129,11 +159,23 @@ class TemporalDecayStrategy(BaseStrategy):
             if len(market.outcome_prices) < 2:
                 continue
 
-            # Skip sports parlays -- temporal decay model is invalid for discrete events
+            market_keys = [
+                str(getattr(market, "id", "") or "").upper(),
+                str(getattr(market, "condition_id", "") or "").upper(),
+            ]
+            if any(
+                key.startswith(prefix)
+                for key in market_keys
+                for prefix in _MULTILEG_MARKET_PREFIXES
+            ):
+                continue
+
+            # Skip sports parlays before either decay or shock branches.
             if self._is_sports_parlay(market):
                 continue
 
             yes_price = self._get_live_price(market, prices)
+            no_price = self._get_live_no_price(market, prices)
 
             # Record price history
             if market.id not in self._price_history:
@@ -142,6 +184,19 @@ class TemporalDecayStrategy(BaseStrategy):
             # Keep bounded
             if len(self._price_history[market.id]) > 100:
                 self._price_history[market.id] = self._price_history[market.id][-100:]
+
+            # Fast directional branch: detect sudden repricing toward certainty
+            # in either direction (YES surge or YES crash -> NO surge).
+            shock_opp = self._create_certainty_shock_opportunity(
+                market=market,
+                yes_price=yes_price,
+                no_price=no_price,
+                now=now,
+                scan_time=scan_time,
+            )
+            if shock_opp:
+                opportunities.append(shock_opp)
+                continue
 
             # Try to extract a deadline from the question
             deadline = self._extract_deadline(market)
@@ -168,6 +223,9 @@ class TemporalDecayStrategy(BaseStrategy):
                 initial_price = max(stored_price, yes_price)
                 if initial_price > stored_price:
                     self._market_baselines[market.id] = (stored_deadline, initial_price)
+
+            if len(self._price_history[market.id]) < _MIN_HISTORY_POINTS:
+                continue
 
             # Calculate total days from first observation to deadline
             first_seen_time = self._price_history[market.id][0][0]
@@ -198,7 +256,9 @@ class TemporalDecayStrategy(BaseStrategy):
                 opportunities.append(opp)
 
         if opportunities:
-            logger.info(f"Temporal Decay: found {len(opportunities)} decay mispricing(s)")
+            logger.info(
+                f"Temporal Decay: found {len(opportunities)} decay mispricing(s)"
+            )
 
         return opportunities
 
@@ -211,6 +271,223 @@ class TemporalDecayStrategy(BaseStrategy):
                 yes_price = prices[token].get("mid", yes_price)
         return yes_price
 
+    def _get_live_no_price(self, market: Market, prices: dict[str, dict]) -> float:
+        """Get the best available NO price for a market."""
+        no_price = market.no_price
+        if market.clob_token_ids and len(market.clob_token_ids) > 1:
+            token = market.clob_token_ids[1]
+            if token in prices:
+                no_price = prices[token].get("mid", no_price)
+        return no_price
+
+    def _create_certainty_shock_opportunity(
+        self,
+        market: Market,
+        yes_price: float,
+        no_price: float,
+        now: datetime,
+        scan_time: float,
+    ) -> Optional[ArbitrageOpportunity]:
+        """Create directional opportunity when price rapidly reprices toward certainty."""
+        if not getattr(settings, "TEMPORAL_SHOCK_ENABLED", True):
+            return None
+
+        history = self._price_history.get(market.id, [])
+        min_points = int(getattr(settings, "TEMPORAL_SHOCK_MIN_POINTS", _SHOCK_MIN_POINTS))
+        if len(history) < min_points:
+            return None
+
+        deadline = self._extract_deadline(market)
+        if deadline is None:
+            return None
+
+        days_remaining = (deadline - now).total_seconds() / 86400.0
+        max_days = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MAX_DAYS_TO_DEADLINE",
+                _SHOCK_MAX_DAYS_TO_DEADLINE,
+            )
+        )
+        min_days = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MIN_DAYS_TO_DEADLINE",
+                _SHOCK_MIN_DAYS_TO_DEADLINE,
+            )
+        )
+        if days_remaining > max_days or days_remaining < min_days:
+            return None
+
+        lookback_seconds = int(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_LOOKBACK_SECONDS",
+                _SHOCK_LOOKBACK_SECONDS,
+            )
+        )
+        cutoff = scan_time - lookback_seconds
+        window_prices = [p for ts, p in history if ts >= cutoff]
+        if len(window_prices) < min_points:
+            window_prices = [p for _, p in history[-min_points:]]
+        if len(window_prices) < min_points:
+            return None
+
+        peak = max(window_prices)
+        trough = min(window_prices)
+        up_move = yes_price - trough
+        down_move = peak - yes_price
+        min_abs_move = float(
+            getattr(settings, "TEMPORAL_SHOCK_MIN_ABS_MOVE", _SHOCK_MIN_ABS_MOVE)
+        )
+        if up_move < min_abs_move and down_move < min_abs_move:
+            return None
+
+        yes_token = market.clob_token_ids[0] if market.clob_token_ids else None
+        no_token = (
+            market.clob_token_ids[1]
+            if market.clob_token_ids and len(market.clob_token_ids) > 1
+            else None
+        )
+
+        if up_move >= down_move:
+            outcome = "YES"
+            entry_price = yes_price
+            token_id = yes_token
+            move = up_move
+            retrace = max(peak - yes_price, 0.0)
+            shock_desc = "YES repricing upward"
+        else:
+            outcome = "NO"
+            entry_price = no_price
+            token_id = no_token
+            move = down_move
+            retrace = max(yes_price - trough, 0.0)
+            shock_desc = "YES repricing downward (NO upward)"
+
+        max_retrace = float(
+            getattr(settings, "TEMPORAL_SHOCK_MAX_RETRACE", _SHOCK_MAX_RETRACE)
+        )
+        if retrace > max_retrace:
+            return None
+
+        min_favored = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MIN_FAVORED_PRICE",
+                _SHOCK_MIN_FAVORED_PRICE,
+            )
+        )
+        max_favored = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MAX_FAVORED_PRICE",
+                _SHOCK_MAX_FAVORED_PRICE,
+            )
+        )
+        if entry_price < min_favored or entry_price > max_favored:
+            return None
+
+        target_floor = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_TARGET_CERTAINTY",
+                _SHOCK_TARGET_CERTAINTY,
+            )
+        )
+        extension = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_EXTENSION_FACTOR",
+                _SHOCK_EXTENSION_FACTOR,
+            )
+        )
+        target_exit_price = max(target_floor, entry_price + move * extension)
+        target_exit_price = max(0.01, min(0.995, target_exit_price))
+        expected_move = target_exit_price - entry_price
+
+        min_expected_move = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MIN_EXPECTED_MOVE",
+                _SHOCK_MIN_EXPECTED_MOVE,
+            )
+        )
+        if expected_move < min_expected_move:
+            return None
+
+        question_short = market.question[:50]
+        positions = [
+            {
+                "action": "BUY",
+                "outcome": outcome,
+                "market": question_short,
+                "price": entry_price,
+                "token_id": token_id,
+                "rationale": (
+                    f"{shock_desc}; lookback move {move:.3f}, "
+                    f"retrace {retrace:.3f}, target ${target_exit_price:.3f}"
+                ),
+            },
+        ]
+
+        min_liquidity_hard = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MIN_LIQUIDITY_HARD",
+                _SHOCK_MIN_LIQUIDITY_HARD,
+            )
+        )
+        min_position_size = float(
+            getattr(
+                settings,
+                "TEMPORAL_SHOCK_MIN_POSITION_SIZE",
+                _SHOCK_MIN_POSITION_SIZE,
+            )
+        )
+
+        opp = self.create_opportunity(
+            title=f"Certainty Shock: {question_short}...",
+            description=(
+                f"Rapid repricing detected near deadline ({days_remaining:.2f}d). "
+                f"{shock_desc}: peak=${peak:.3f}, trough=${trough:.3f}, "
+                f"current YES=${yes_price:.3f}. "
+                f"Buy {outcome} @ ${entry_price:.3f}, "
+                f"target repricing ${target_exit_price:.3f}."
+            ),
+            total_cost=entry_price,
+            expected_payout=target_exit_price,
+            markets=[market],
+            positions=positions,
+            is_guaranteed=False,
+            min_liquidity_hard=min_liquidity_hard,
+            min_position_size=min_position_size,
+        )
+
+        if opp and opp.roi_percent > 120.0:
+            return None
+
+        if opp:
+            risk_score = 0.62 - min(move * 0.35, 0.20)
+            if days_remaining <= 1.0:
+                risk_score -= 0.05
+            opp.risk_score = max(0.35, min(risk_score, 0.75))
+            opp.risk_factors.insert(
+                0,
+                "DIRECTIONAL BET — certainty shock can reverse before final settlement.",
+            )
+            opp.risk_factors.append(
+                f"Certainty shock: {shock_desc}, move={move:.1%}, retrace={retrace:.1%}"
+            )
+            opp.risk_factors.append(
+                f"Near expiry window: {days_remaining:.2f} days to deadline"
+            )
+            opp.risk_factors.append(
+                f"Target repricing edge: +${expected_move:.3f} per share"
+            )
+
+        return opp
+
     def _is_sports_parlay(self, market: Market) -> bool:
         """Check if a market is a sports parlay where temporal decay is invalid.
 
@@ -220,6 +497,13 @@ class TemporalDecayStrategy(BaseStrategy):
         patterns, spread/line syntax, and other sport-specific keywords.
         """
         q = market.question.lower()
+
+        # Generic multi-leg detection catches many sportsbook contracts
+        # before sport-specific keyword checks.
+        if q.count("yes ") + q.count("no ") >= 2:
+            return True
+        if q.count(",") >= 2:
+            return True
 
         # Check sport league / general sport keywords
         sport_keywords = [
@@ -434,7 +718,11 @@ class TemporalDecayStrategy(BaseStrategy):
             action = "BUY"
             outcome = "NO"
             entry_price = no_price
-            token_id = market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
+            token_id = (
+                market.clob_token_ids[1]
+                if market.clob_token_ids and len(market.clob_token_ids) > 1
+                else None
+            )
             direction_desc = "overpriced"
         else:
             # Market is UNDERPRICED relative to decay expectation -> buy YES
@@ -447,7 +735,16 @@ class TemporalDecayStrategy(BaseStrategy):
         total_cost = entry_price
 
         # Skip extreme prices
-        if entry_price < 0.05 or entry_price > 0.95:
+        if entry_price < _MIN_ENTRY_PRICE or entry_price > _MAX_ENTRY_PRICE:
+            return None
+
+        if deviation > 0:
+            target_exit_price = max(0.01, min(0.99, 1.0 - expected_price))
+        else:
+            target_exit_price = max(0.01, min(0.99, expected_price))
+
+        expected_move = target_exit_price - entry_price
+        if expected_move < _MIN_EXPECTED_MOVE:
             return None
 
         # Risk score: 0.55 - 0.65
@@ -480,24 +777,43 @@ class TemporalDecayStrategy(BaseStrategy):
                 f"YES actual: ${actual_price:.3f}, expected: ${expected_price:.3f} "
                 f"(deviation: {abs(deviation):.3f}). "
                 f"{days_remaining:.1f} days to deadline. "
-                f"Buy {outcome} at ${entry_price:.3f}."
+                f"Buy {outcome} at ${entry_price:.3f}, "
+                f"target re-price ${target_exit_price:.3f}."
             ),
             total_cost=total_cost,
+            expected_payout=target_exit_price,
             markets=[market],
             positions=positions,
             is_guaranteed=False,
+            min_liquidity_hard=1500.0,
+            min_position_size=50.0,
         )
+
+        if opp and opp.roi_percent > 120.0:
+            return None
 
         if opp:
             # Override risk score to our statistical range
             opp.risk_score = risk_score
-            opp.risk_factors.append(f"Statistical edge (not risk-free): decay deviation {abs(deviation):.1%}")
-            opp.risk_factors.append(f"Deadline in {days_remaining:.0f} days ({deadline.strftime('%Y-%m-%d')})")
+            opp.risk_factors.append(
+                f"Statistical edge (not risk-free): "
+                f"decay deviation {abs(deviation):.1%}"
+            )
+            opp.risk_factors.append(
+                f"Deadline in {days_remaining:.0f} days "
+                f"({deadline.strftime('%Y-%m-%d')})"
+            )
+            opp.risk_factors.append(
+                f"Expected repricing target: +${expected_move:.3f} per share"
+            )
             opp.risk_factors.insert(
                 0,
-                "DIRECTIONAL BET — not arbitrage. Decay deviation may reflect new information, not mispricing.",
+                "DIRECTIONAL BET — not arbitrage. "
+                "Decay deviation may reflect new information, not mispricing.",
             )
             if days_remaining < 7:
-                opp.risk_factors.append("Near-deadline: steep decay but higher event uncertainty")
+                opp.risk_factors.append(
+                    "Near-deadline: steep decay but higher event uncertainty"
+                )
 
         return opp

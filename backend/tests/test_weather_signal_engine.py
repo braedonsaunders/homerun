@@ -28,7 +28,7 @@ def test_signal_tradable_when_thresholds_met():
     assert signal.reasons == []
 
 
-def test_signal_rejected_when_entry_price_too_high():
+def test_signal_soft_caps_entry_price_without_auto_reject():
     forecast = WeatherForecastResult(gfs_probability=0.80, ecmwf_probability=0.82)
     signal = build_weather_signal(
         market_id="mkt2",
@@ -40,8 +40,25 @@ def test_signal_rejected_when_entry_price_too_high():
         min_confidence=0.30,
         min_model_agreement=0.50,
     )
+    assert signal.should_trade is True
+    assert signal.reasons == []
+    assert any("entry_price" in n for n in signal.notes)
+
+
+def test_signal_rejected_when_entry_price_exceeds_hard_cap():
+    forecast = WeatherForecastResult(gfs_probability=0.90, ecmwf_probability=0.88)
+    signal = build_weather_signal(
+        market_id="mkt2b",
+        yes_price=0.78,
+        no_price=0.22,
+        forecast=forecast,
+        entry_max_price=0.25,
+        min_edge_percent=5.0,
+        min_confidence=0.20,
+        min_model_agreement=0.50,
+    )
     assert signal.should_trade is False
-    assert any("entry_price" in r for r in signal.reasons)
+    assert any("hard cap" in r for r in signal.reasons)
 
 
 def test_signal_rejected_when_model_agreement_too_low():
@@ -106,3 +123,26 @@ def test_market_implied_temp_is_estimated_for_threshold_contracts():
     )
     assert signal.market_implied_temperature_c is not None
     assert signal.market_implied_temperature_c > 10.0
+
+
+def test_signal_fallback_without_source_data_is_neutral_and_report_only():
+    forecast = WeatherForecastResult(
+        gfs_probability=0.5,
+        ecmwf_probability=0.5,
+        metadata={"fallback": True},
+    )
+    signal = build_weather_signal(
+        market_id="mkt6",
+        yes_price=0.01,
+        no_price=0.99,
+        forecast=forecast,
+        entry_max_price=0.95,
+        min_edge_percent=0.0,
+        min_confidence=0.0,
+        min_model_agreement=0.0,
+    )
+    assert signal.source_count == 0
+    assert signal.should_trade is False
+    assert signal.edge_percent == 0.0
+    assert signal.model_probability == 0.99
+    assert any("forecast unavailable" in r for r in signal.reasons)

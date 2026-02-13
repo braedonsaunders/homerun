@@ -83,44 +83,11 @@ Everything boots with **SQLite** out of the box, auto-creates schema on first la
 > **Windows?** Run `.\run.ps1` in PowerShell.
 
 <details>
-<summary><strong>Other ways to run</strong></summary>
-<br/>
-
-**TUI (terminal dashboard):**
-```bash
-python tui.py
-```
-Launches backend + frontend automatically and gives you a full terminal dashboard with real-time health monitoring, activity feed, and live logs.
-
-**Docker:**
-```bash
-docker-compose up --build
-```
-
-**Make:**
-```bash
-make setup && make run
-```
-
-**Manual:**
-```bash
-# Backend
-cd backend && python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt && uvicorn main:app --port 8000
-
-# Frontend (new terminal)
-cd frontend && npm install && npm run dev
-```
-
-</details>
-
-<details>
 <summary><strong>Requirements</strong></summary>
 <br/>
 
 - Python 3.10+ (3.11 recommended)
 - Node.js 18+
-- Docker (optional)
 
 </details>
 
@@ -254,7 +221,7 @@ A custom logistic regression model (numpy-based, zero sklearn dependency) that l
 
 ### Terminal UI
 
-Run `python tui.py` for a full terminal dashboard:
+Run `./run.sh` (or `.\run.ps1` on Windows) for a full terminal dashboard:
 
 - Launches backend + frontend as managed subprocesses
 - Real-time health monitoring with sparklines
@@ -266,7 +233,7 @@ Run `python tui.py` for a full terminal dashboard:
 
 | Feature | Details |
 |---------|---------|
-| **SQLite by default** | Zero-config database, auto-created on first run, auto-migrates schema |
+| **SQLite by default** | Zero-config database, auto-created on first run, versioned Alembic migrations |
 | **Rate Limiting** | Respects Polymarket limits (Gamma: 300-4000/10s, CLOB: 500-1500/10s) |
 | **Circuit Breakers** | Per-token and portfolio-level trip mechanisms |
 | **Health Checks** | Kubernetes-compatible liveness + readiness probes |
@@ -449,6 +416,7 @@ WS   /ws                  # Real-time updates
 backend/
 ├── main.py                      # FastAPI entry, lifespan, health checks, metrics
 ├── config.py                    # 180+ settings via Pydantic Settings
+├── alembic/                     # Versioned schema/data migrations
 ├── api/                         # REST + WebSocket endpoints (11 route modules)
 ├── services/
 │   ├── scanner.py               # Orchestrates all 18 strategies
@@ -465,7 +433,7 @@ backend/
 │   ├── news/                    # Feed aggregation, semantic matching, edge detection
 │   └── ai/                      # LLM agent, skills, copilot, judgment
 ├── models/
-│   ├── database.py              # 25+ SQLAlchemy tables, auto-migration
+│   ├── database.py              # 25+ SQLAlchemy tables + migration bootstrap
 │   └── market.py                # Market + opportunity schemas
 └── utils/                       # Logging, rate limiting, retry
 
@@ -493,7 +461,7 @@ tui.py                           # Terminal UI (Textual + Rich)
 | **ML** | Custom logistic regression · FAISS (optional) · sentence-transformers (optional) |
 | **Crypto** | Chainlink oracle feeds · Binary market scanner |
 | **Notifications** | Telegram Bot API |
-| **Infra** | Docker · GitHub Actions · Prometheus · Textual TUI |
+| **Infra** | GitHub Actions · Prometheus · Textual TUI |
 
 <br/>
 
@@ -519,7 +487,8 @@ PRs welcome. See [**CONTRIBUTING.md**](CONTRIBUTING.md) for the full guide.
 ```bash
 git clone https://github.com/braedonsaunders/homerun.git
 cd homerun
-make setup && make dev
+./setup.sh
+./run.sh
 ```
 
 <br/>
@@ -533,4 +502,3 @@ Found a vulnerability? **Do not open a public issue.** See [**SECURITY.md**](SEC
 ## License
 
 [MIT](LICENSE)
-

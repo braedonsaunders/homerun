@@ -18,9 +18,10 @@ from utils.utcnow import utcnow
 from dataclasses import dataclass
 from typing import Optional, List
 
-from sqlalchemy import Column, String, Float, Boolean, DateTime
+from sqlalchemy import Column, String, Boolean, DateTime
 
 from models.database import Base, AsyncSessionLocal
+from models.types import PreciseFloat as Float
 from services.polymarket import polymarket_client
 from utils.logger import get_logger
 

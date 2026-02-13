@@ -20,7 +20,7 @@ body:
       label: Steps to Reproduce
       description: How can we reproduce this?
       placeholder: |
-        1. Start the scanner with `make run`
+        1. Start the scanner with `./run.sh` (or `.\run.ps1` on Windows)
         2. Navigate to the dashboard
         3. Click on...
     validations:
@@ -57,7 +57,6 @@ body:
         - macOS
         - Linux
         - Windows
-        - Docker
   - type: textarea
     id: logs
     attributes:

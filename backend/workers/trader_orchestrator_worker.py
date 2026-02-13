@@ -35,7 +35,6 @@ from services.trader_orchestrator_state import (
     list_traders,
     list_unconsumed_trade_signals,
     read_orchestrator_control,
-    seed_default_traders,
     write_orchestrator_snapshot,
     record_signal_consumption,
 )
@@ -397,7 +396,6 @@ async def run_worker_loop() -> None:
     while True:
         try:
             async with AsyncSessionLocal() as session:
-                await seed_default_traders(session)
                 await expire_stale_signals(session)
 
                 control = await read_orchestrator_control(session)

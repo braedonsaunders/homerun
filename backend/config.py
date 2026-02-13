@@ -11,11 +11,8 @@ _BACKEND_DIR = Path(__file__).parent.resolve()
 
 
 def _detect_project_root(backend_dir: Path) -> Path:
-    """Resolve project root for both monorepo and backend-only container layouts."""
-    monorepo_backend = (backend_dir.parent / "backend" / "config.py").resolve()
-    if monorepo_backend == (backend_dir / "config.py").resolve():
-        return backend_dir.parent.resolve()
-    return backend_dir.resolve()
+    """Resolve project root from the backend directory in the repo layout."""
+    return backend_dir.parent.resolve()
 
 
 _PROJECT_ROOT = _detect_project_root(_BACKEND_DIR)
@@ -93,6 +90,7 @@ class Settings(BaseSettings):
 
     # Scanner Settings
     SCAN_INTERVAL_SECONDS: int = 60
+    SCANNER_STALE_OPPORTUNITY_MINUTES: int = 45
     MIN_PROFIT_THRESHOLD: float = 0.015  # 1.5% minimum profit after fees
     POLYMARKET_FEE: float = 0.02  # 2% winner fee
 
@@ -318,6 +316,21 @@ class Settings(BaseSettings):
 
     # Temporal Decay
     TEMPORAL_DECAY_ENABLED: bool = True
+    # Certainty shock branch (rapid repricing toward near-certain outcome)
+    TEMPORAL_SHOCK_ENABLED: bool = True
+    TEMPORAL_SHOCK_LOOKBACK_SECONDS: int = 21600  # 6h rolling window
+    TEMPORAL_SHOCK_MIN_POINTS: int = 3
+    TEMPORAL_SHOCK_MAX_DAYS_TO_DEADLINE: float = 10.0
+    TEMPORAL_SHOCK_MIN_DAYS_TO_DEADLINE: float = -0.25
+    TEMPORAL_SHOCK_MIN_ABS_MOVE: float = 0.18
+    TEMPORAL_SHOCK_MAX_RETRACE: float = 0.12
+    TEMPORAL_SHOCK_MIN_FAVORED_PRICE: float = 0.55
+    TEMPORAL_SHOCK_MAX_FAVORED_PRICE: float = 0.97
+    TEMPORAL_SHOCK_TARGET_CERTAINTY: float = 0.96
+    TEMPORAL_SHOCK_EXTENSION_FACTOR: float = 0.45
+    TEMPORAL_SHOCK_MIN_EXPECTED_MOVE: float = 0.03
+    TEMPORAL_SHOCK_MIN_LIQUIDITY_HARD: float = 1000.0
+    TEMPORAL_SHOCK_MIN_POSITION_SIZE: float = 50.0
 
     # Correlation Arbitrage
     CORRELATION_ARB_ENABLED: bool = True
@@ -508,6 +521,182 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+_WORLD_INTELLIGENCE_DB_FIELD_MAP: dict[str, tuple[str, object]] = {
+    "enabled": ("WORLD_INTELLIGENCE_ENABLED", True),
+    "interval_seconds": ("WORLD_INTELLIGENCE_INTERVAL_SECONDS", 300),
+    "emit_trade_signals": ("WORLD_INTEL_EMIT_TRADE_SIGNALS", False),
+    "ais_enabled": ("WORLD_INTEL_AIS_ENABLED", True),
+    "ais_sample_seconds": ("WORLD_INTEL_AIS_SAMPLE_SECONDS", 10),
+    "ais_max_messages": ("WORLD_INTEL_AIS_MAX_MESSAGES", 250),
+    "airplanes_live_enabled": ("WORLD_INTEL_AIRPLANES_LIVE_ENABLED", True),
+    "airplanes_live_timeout_seconds": (
+        "WORLD_INTEL_AIRPLANES_LIVE_TIMEOUT_SECONDS",
+        20.0,
+    ),
+    "airplanes_live_max_records": ("WORLD_INTEL_AIRPLANES_LIVE_MAX_RECORDS", 1500),
+    "military_dedupe_radius_km": ("WORLD_INTEL_MILITARY_DEDUPE_RADIUS_KM", 45.0),
+    "country_reference_sync_enabled": ("WORLD_INTEL_COUNTRY_REFERENCE_SYNC_ENABLED", True),
+    "country_reference_sync_hours": ("WORLD_INTEL_COUNTRY_REFERENCE_SYNC_HOURS", 24),
+    "country_reference_request_timeout_seconds": (
+        "WORLD_INTEL_COUNTRY_REFERENCE_REQUEST_TIMEOUT_SECONDS",
+        20.0,
+    ),
+    "ucdp_sync_enabled": ("WORLD_INTEL_UCDP_SYNC_ENABLED", True),
+    "ucdp_sync_hours": ("WORLD_INTEL_UCDP_SYNC_HOURS", 24),
+    "ucdp_lookback_years": ("WORLD_INTEL_UCDP_LOOKBACK_YEARS", 8),
+    "ucdp_max_pages": ("WORLD_INTEL_UCDP_MAX_PAGES", 100),
+    "ucdp_request_timeout_seconds": ("WORLD_INTEL_UCDP_REQUEST_TIMEOUT_SECONDS", 25.0),
+    "mid_sync_enabled": ("WORLD_INTEL_MID_SYNC_ENABLED", True),
+    "mid_sync_hours": ("WORLD_INTEL_MID_SYNC_HOURS", 168),
+    "mid_request_timeout_seconds": ("WORLD_INTEL_MID_REQUEST_TIMEOUT_SECONDS", 20.0),
+    "trade_dependency_sync_enabled": ("WORLD_INTEL_TRADE_DEPENDENCY_SYNC_ENABLED", True),
+    "trade_dependency_sync_hours": ("WORLD_INTEL_TRADE_DEPENDENCY_SYNC_HOURS", 24),
+    "trade_dependency_request_timeout_seconds": (
+        "WORLD_INTEL_TRADE_DEPENDENCY_REQUEST_TIMEOUT_SECONDS",
+        20.0,
+    ),
+    "trade_dependency_wb_per_page": ("WORLD_INTEL_TRADE_DEPENDENCY_WB_PER_PAGE", 5000),
+    "trade_dependency_wb_max_pages": ("WORLD_INTEL_TRADE_DEPENDENCY_WB_MAX_PAGES", 50),
+    "trade_dependency_base_divisor": ("WORLD_INTEL_TRADE_DEPENDENCY_BASE_DIVISOR", 120.0),
+    "trade_dependency_min_factor": ("WORLD_INTEL_TRADE_DEPENDENCY_MIN_FACTOR", 0.5),
+    "trade_dependency_max_factor": ("WORLD_INTEL_TRADE_DEPENDENCY_MAX_FACTOR", 1.5),
+    "chokepoints_enabled": ("WORLD_INTEL_CHOKEPOINTS_ENABLED", True),
+    "chokepoints_refresh_seconds": ("WORLD_INTEL_CHOKEPOINTS_REFRESH_SECONDS", 1800),
+    "chokepoints_request_timeout_seconds": (
+        "WORLD_INTEL_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS",
+        20.0,
+    ),
+    "chokepoints_max_daily_rows": ("WORLD_INTEL_CHOKEPOINTS_MAX_DAILY_ROWS", 500),
+    "chokepoints_db_sync_enabled": ("WORLD_INTEL_CHOKEPOINTS_DB_SYNC_ENABLED", True),
+    "chokepoints_db_sync_hours": ("WORLD_INTEL_CHOKEPOINTS_DB_SYNC_HOURS", 6),
+    "convergence_min_types": ("WORLD_INTEL_CONVERGENCE_MIN_TYPES", 2),
+    "anomaly_threshold": ("WORLD_INTEL_ANOMALY_THRESHOLD", 1.8),
+    "anomaly_min_baseline_points": ("WORLD_INTEL_ANOMALY_MIN_BASELINE_POINTS", 3),
+    "instability_signal_min": ("WORLD_INTEL_INSTABILITY_SIGNAL_MIN", 15.0),
+    "instability_critical": ("WORLD_INTEL_INSTABILITY_CRITICAL", 60.0),
+    "tension_critical": ("WORLD_INTEL_TENSION_CRITICAL", 70.0),
+    "gdelt_query_delay_seconds": ("WORLD_INTEL_GDELT_QUERY_DELAY_SECONDS", 5.0),
+    "gdelt_max_concurrency": ("WORLD_INTEL_GDELT_MAX_CONCURRENCY", 1),
+    "gdelt_news_enabled": ("WORLD_INTEL_GDELT_NEWS_ENABLED", True),
+    "gdelt_news_timespan_hours": ("WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6),
+    "gdelt_news_max_records": ("WORLD_INTEL_GDELT_NEWS_MAX_RECORDS", 40),
+    "gdelt_news_request_timeout_seconds": (
+        "WORLD_INTEL_GDELT_NEWS_REQUEST_TIMEOUT_SECONDS",
+        20.0,
+    ),
+    "gdelt_news_cache_seconds": ("WORLD_INTEL_GDELT_NEWS_CACHE_SECONDS", 300),
+    "gdelt_news_query_delay_seconds": ("WORLD_INTEL_GDELT_NEWS_QUERY_DELAY_SECONDS", 5.0),
+    "gdelt_news_sync_enabled": ("WORLD_INTEL_GDELT_NEWS_SYNC_ENABLED", True),
+    "gdelt_news_sync_hours": ("WORLD_INTEL_GDELT_NEWS_SYNC_HOURS", 1),
+    "acled_rate_limit_per_min": ("WORLD_INTEL_ACLED_RATE_LIMIT_PER_MIN", 5),
+    "acled_auth_rate_limit_per_min": ("WORLD_INTEL_ACLED_AUTH_RATE_LIMIT_PER_MIN", 12),
+    "acled_cb_max_failures": ("WORLD_INTEL_ACLED_CB_MAX_FAILURES", 8),
+    "acled_cb_cooldown_seconds": ("WORLD_INTEL_ACLED_CB_COOLDOWN_SECONDS", 180.0),
+    "opensky_cb_max_failures": ("WORLD_INTEL_OPENSKY_CB_MAX_FAILURES", 6),
+    "opensky_cb_cooldown_seconds": ("WORLD_INTEL_OPENSKY_CB_COOLDOWN_SECONDS", 120.0),
+    "usgs_min_magnitude": ("WORLD_INTEL_USGS_MIN_MAGNITUDE", 4.5),
+    "usgs_enabled": ("WORLD_INTEL_USGS_ENABLED", True),
+    "military_enabled": ("WORLD_INTEL_MILITARY_ENABLED", True),
+}
+
+
+def _coerce_setting(value: object, default: object) -> object:
+    if value is None:
+        return default
+    if isinstance(default, bool):
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+        return bool(value)
+    if isinstance(default, int) and not isinstance(default, bool):
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+    if isinstance(default, float):
+        try:
+            return float(value)
+        except Exception:
+            return default
+    if isinstance(default, list):
+        return value if isinstance(value, list) else list(default)
+    if isinstance(default, dict):
+        return value if isinstance(value, dict) else dict(default)
+    if isinstance(default, str):
+        return str(value)
+    return value
+
+
+async def apply_world_intelligence_settings():
+    """Load world intelligence settings from DB into the runtime config singleton."""
+    from models.database import AsyncSessionLocal, AppSettings
+    from sqlalchemy import select
+    from utils.secrets import decrypt_secret
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(AppSettings).where(AppSettings.id == "default")
+        )
+        db = result.scalar_one_or_none()
+        if not db:
+            return
+
+    raw_cfg = getattr(db, "world_intel_settings_json", None)
+    config_payload = raw_cfg if isinstance(raw_cfg, dict) else {}
+
+    # Preserve older persisted GDELT-specific columns as fallback.
+    if "gdelt_news_enabled" not in config_payload:
+        config_payload["gdelt_news_enabled"] = getattr(
+            db, "world_intel_gdelt_news_enabled", None
+        )
+    if "gdelt_news_timespan_hours" not in config_payload:
+        config_payload["gdelt_news_timespan_hours"] = getattr(
+            db, "world_intel_gdelt_news_timespan_hours", None
+        )
+    if "gdelt_news_max_records" not in config_payload:
+        config_payload["gdelt_news_max_records"] = getattr(
+            db, "world_intel_gdelt_news_max_records", None
+        )
+
+    for db_field, (config_attr, default) in _WORLD_INTELLIGENCE_DB_FIELD_MAP.items():
+        resolved = _coerce_setting(config_payload.get(db_field), default)
+        object.__setattr__(settings, config_attr, resolved)
+
+    object.__setattr__(
+        settings,
+        "ACLED_API_KEY",
+        decrypt_secret(getattr(db, "world_intel_acled_api_key", None)),
+    )
+    object.__setattr__(
+        settings,
+        "ACLED_EMAIL",
+        str(getattr(db, "world_intel_acled_email", "") or "").strip() or None,
+    )
+    object.__setattr__(
+        settings,
+        "OPENSKY_USERNAME",
+        str(getattr(db, "world_intel_opensky_username", "") or "").strip() or None,
+    )
+    object.__setattr__(
+        settings,
+        "OPENSKY_PASSWORD",
+        decrypt_secret(getattr(db, "world_intel_opensky_password", None)),
+    )
+    object.__setattr__(
+        settings,
+        "AISSTREAM_API_KEY",
+        decrypt_secret(getattr(db, "world_intel_aisstream_api_key", None)),
+    )
+    object.__setattr__(
+        settings,
+        "CLOUDFLARE_RADAR_TOKEN",
+        decrypt_secret(getattr(db, "world_intel_cloudflare_radar_token", None)),
+    )
+
+
 async def apply_search_filters():
     """Load search filter values from the DB and apply them to the running config singleton.
 
@@ -578,6 +767,7 @@ async def apply_search_filters():
         ("RISK_MULTIPLE_LEGS", "risk_multiple_legs", 3),
         # Strategy enable/disable and strategy-specific thresholds
         ("BTC_ETH_HF_ENABLED", "btc_eth_hf_enabled", True),
+        ("BTC_ETH_HF_MAKER_MODE", "btc_eth_hf_maker_mode", True),
         ("CROSS_PLATFORM_ENABLED", "cross_platform_enabled", True),
         ("COMBINATORIAL_MIN_CONFIDENCE", "combinatorial_min_confidence", 0.75),
         ("COMBINATORIAL_HIGH_CONFIDENCE", "combinatorial_high_confidence", 0.90),

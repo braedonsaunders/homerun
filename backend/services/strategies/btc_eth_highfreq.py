@@ -642,6 +642,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         3. Run the dynamic strategy selector on each candidate.
         4. Return all detected opportunities.
         """
+        if not _cfg.BTC_ETH_HF_ENABLED:
+            return []
+
         opportunities: list[ArbitrageOpportunity] = []
 
         candidates = self._find_candidates(markets, prices)

@@ -11,7 +11,20 @@ This model ensures profit calculations reflect executable reality.
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
+
+
+ZERO = Decimal("0")
+ONE = Decimal("1")
+ONE_HUNDRED = Decimal("100")
+BPS_DENOMINATOR = Decimal("10000")
+
+
+def _to_decimal(value) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 @dataclass
@@ -45,7 +58,7 @@ class FeeModel:
     """
 
     # Per-leg slippage rate: each leg adds ~0.3% compounding slippage
-    SLIPPAGE_PER_LEG: float = 0.003
+    SLIPPAGE_PER_LEG: Decimal = Decimal("0.003")
 
     def __init__(
         self,
@@ -55,10 +68,10 @@ class FeeModel:
         default_spread_bps: float = 50.0,  # Default spread in basis points
         maker_mode: bool = False,  # Maker mode: 0% winner fee, no spread cost
     ):
-        self.winner_fee_rate = winner_fee_rate
-        self.gas_cost_per_tx = gas_cost_per_tx
-        self.negrisk_conversion_gas = negrisk_conversion_gas
-        self.default_spread_bps = default_spread_bps
+        self.winner_fee_rate = _to_decimal(winner_fee_rate)
+        self.gas_cost_per_tx = _to_decimal(gas_cost_per_tx)
+        self.negrisk_conversion_gas = _to_decimal(negrisk_conversion_gas)
+        self.default_spread_bps = _to_decimal(default_spread_bps)
         self.maker_mode = maker_mode
 
     def calculate_fees(
@@ -87,66 +100,78 @@ class FeeModel:
         Returns:
             FeeBreakdown with all individual fee components and totals.
         """
+        expected_payout_dec = _to_decimal(expected_payout)
+        total_cost_dec = _to_decimal(total_cost)
+        total_liquidity_dec = _to_decimal(total_liquidity)
+
         # Resolve maker_mode: explicit arg > instance default
         effective_maker_mode = maker_mode if maker_mode is not None else self.maker_mode
 
         # 1. Winner fee: applied to the payout on the winning leg
         #    Makers pay 0% on Polymarket
         if effective_maker_mode:
-            winner_fee = 0.0
+            winner_fee = ZERO
         else:
-            winner_fee = expected_payout * self.winner_fee_rate
+            winner_fee = expected_payout_dec * self.winner_fee_rate
 
         # 2. Gas costs: one transaction per leg, plus NegRisk conversion overhead
-        gas_cost_usd = self.gas_cost_per_tx * num_legs
+        gas_cost_usd = self.gas_cost_per_tx * Decimal(num_legs)
         if is_negrisk:
             gas_cost_usd += self.negrisk_conversion_gas
 
         # 3. Spread cost: cost of crossing the bid-ask spread on total position
         #    Makers use limit orders and don't cross the spread
         if effective_maker_mode:
-            spread_cost = 0.0
+            spread_cost = ZERO
         else:
-            effective_spread_bps = spread_bps if spread_bps is not None else self.default_spread_bps
-            spread_cost = total_cost * (effective_spread_bps / 10_000)
+            effective_spread_bps = (
+                _to_decimal(spread_bps)
+                if spread_bps is not None
+                else self.default_spread_bps
+            )
+            spread_cost = total_cost_dec * (effective_spread_bps / BPS_DENOMINATOR)
 
         # 4. Multi-leg slippage: depth-aware model
         # When we know the total liquidity, estimate slippage based on
         # position size relative to available depth. Thin books amplify
         # slippage far beyond the base 0.3% per leg.
-        if num_legs > 1 and total_cost > 0:
+        if num_legs > 1 and total_cost_dec > ZERO:
             base_rate = self.SLIPPAGE_PER_LEG  # 0.3% baseline
 
             # Depth-adjusted slippage: if position is >5% of total liquidity,
             # slippage increases quadratically (market impact model)
-            if total_liquidity > 0:
-                utilization = total_cost / total_liquidity
-                if utilization > 0.05:
+            if total_liquidity_dec > ZERO:
+                utilization = total_cost_dec / total_liquidity_dec
+                if utilization > Decimal("0.05"):
                     # Quadratic market impact: slippage scales with utilization^2
-                    depth_multiplier = 1.0 + (utilization * 10.0) ** 2
-                    base_rate = base_rate * min(depth_multiplier, 10.0)  # Cap at 10x
-                elif utilization > 0.02:
+                    depth_multiplier = ONE + (utilization * Decimal("10")) ** 2
+                    base_rate = base_rate * min(depth_multiplier, Decimal("10"))  # Cap at 10x
+                elif utilization > Decimal("0.02"):
                     # Linear scaling for moderate utilization
-                    base_rate = base_rate * (1.0 + utilization * 5.0)
+                    base_rate = base_rate * (ONE + utilization * Decimal("5"))
 
-            compounding_factor = (1 + base_rate) ** (num_legs - 1) - 1
-            multi_leg_slippage = total_cost * compounding_factor
+            compounding_factor = (ONE + base_rate) ** (num_legs - 1) - ONE
+            multi_leg_slippage = total_cost_dec * compounding_factor
         else:
-            multi_leg_slippage = 0.0
+            multi_leg_slippage = ZERO
 
         # Sum all fees
         total_fees = winner_fee + gas_cost_usd + spread_cost + multi_leg_slippage
 
         # Express total fees as percentage of expected payout
-        fee_as_pct = (total_fees / expected_payout * 100) if expected_payout > 0 else 0.0
+        fee_as_pct = (
+            (total_fees / expected_payout_dec * ONE_HUNDRED)
+            if expected_payout_dec > ZERO
+            else ZERO
+        )
 
         return FeeBreakdown(
-            winner_fee=winner_fee,
-            gas_cost_usd=gas_cost_usd,
-            spread_cost=spread_cost,
-            multi_leg_slippage=multi_leg_slippage,
-            total_fees=total_fees,
-            fee_as_pct_of_payout=fee_as_pct,
+            winner_fee=float(winner_fee),
+            gas_cost_usd=float(gas_cost_usd),
+            spread_cost=float(spread_cost),
+            multi_leg_slippage=float(multi_leg_slippage),
+            total_fees=float(total_fees),
+            fee_as_pct_of_payout=float(fee_as_pct),
         )
 
     def net_profit_after_all_fees(
@@ -186,7 +211,7 @@ class FeeModel:
             maker_mode=maker_mode,
             total_liquidity=total_liquidity,
         )
-        net_profit = gross_profit - breakdown.total_fees
+        net_profit = float(_to_decimal(gross_profit) - _to_decimal(breakdown.total_fees))
         return net_profit, breakdown
 
 

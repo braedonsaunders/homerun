@@ -34,7 +34,17 @@ import {
   NewsWorkflowFinding,
   NewsTradeIntent,
 } from '../services/api'
-import { buildYesNoSparklineSeries } from '../lib/priceHistory'
+import {
+  buildOutcomeFallbacks,
+  buildOutcomeSparklineSeries,
+  extractOutcomeLabels,
+  extractOutcomePrices,
+} from '../lib/priceHistory'
+import {
+  buildKalshiMarketUrl,
+  buildPolymarketMarketUrl,
+  inferMarketPlatform,
+} from '../lib/marketUrls'
 import NewsWorkflowSettingsFlyout from './NewsWorkflowSettingsFlyout'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -106,6 +116,28 @@ const CATEGORY_ICONS: Record<string, string> = {
   entertainment: '🎬',
 }
 
+const SPARKLINE_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#38bdf8',
+  '#f59e0b',
+  '#a78bfa',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+]
+
+const SPARKLINE_TEXT_CLASSES = [
+  'text-green-400/80',
+  'text-red-400/80',
+  'text-sky-400/80',
+  'text-amber-300/90',
+  'text-violet-300/90',
+  'text-teal-300/90',
+  'text-orange-300/90',
+  'text-pink-300/90',
+]
+
 function toFiniteProbability(value: unknown): number | null {
   if (value === null || value === undefined) return null
   const n = Number(value)
@@ -116,6 +148,131 @@ function toFiniteProbability(value: unknown): number | null {
 function formatCents(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '—'
   return `${Math.round(value * 100)}c`
+}
+
+function compactOutcomeLabel(value: string, maxChars = 14): string {
+  const text = String(value || '').trim()
+  if (!text) return '—'
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, Math.max(1, maxChars - 1))}…`
+}
+
+type MarketLinkLabel = 'Polymarket' | 'Kalshi'
+
+type MarketLink = {
+  label: MarketLinkLabel
+  url: string
+}
+
+type MarketLinkInputs = {
+  marketId?: string | null
+  marketSlug?: string | null
+  eventSlug?: string | null
+  eventTicker?: string | null
+  platform?: string | null
+  marketUrl?: string | null
+  polymarketUrl?: string | null
+  kalshiUrl?: string | null
+  conditionId?: string | null
+}
+
+function cleanMarketText(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function cleanAbsoluteUrl(value: unknown): string | null {
+  const text = cleanMarketText(value)
+  if (!text) return null
+  if (text.startsWith('http://') || text.startsWith('https://')) return text
+  return null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
+}
+
+function resolveMarketLinks(inputs: MarketLinkInputs): MarketLink[] {
+  const links: MarketLink[] = []
+  const seen = new Set<string>()
+  const addLink = (label: MarketLinkLabel, url: string | null) => {
+    if (!url || seen.has(url)) return
+    seen.add(url)
+    links.push({ label, url })
+  }
+
+  addLink('Polymarket', cleanAbsoluteUrl(inputs.polymarketUrl))
+  addLink('Kalshi', cleanAbsoluteUrl(inputs.kalshiUrl))
+
+  const platform = inferMarketPlatform({
+    platform: inputs.platform,
+    marketId: inputs.marketId,
+    marketSlug: inputs.marketSlug,
+    conditionId: inputs.conditionId,
+    eventTicker: inputs.eventTicker,
+  })
+
+  const directMarketUrl = cleanAbsoluteUrl(inputs.marketUrl)
+  if (directMarketUrl) {
+    addLink(platform === 'kalshi' ? 'Kalshi' : 'Polymarket', directMarketUrl)
+  }
+
+  if (!links.some((link) => link.label === 'Polymarket')) {
+    const polymarketUrl = buildPolymarketMarketUrl({
+      eventSlug: inputs.eventSlug,
+      marketSlug: inputs.marketSlug,
+      marketId: inputs.marketId,
+      conditionId: inputs.conditionId,
+    })
+    addLink('Polymarket', polymarketUrl)
+  }
+  if (!links.some((link) => link.label === 'Kalshi')) {
+    const kalshiUrl = buildKalshiMarketUrl({
+      marketTicker: inputs.marketId,
+      eventTicker: inputs.eventTicker || inputs.eventSlug,
+      eventSlug: inputs.eventSlug,
+    })
+    addLink('Kalshi', kalshiUrl)
+  }
+
+  return links
+}
+
+function resolveFindingMarketLinks(finding: NewsWorkflowFinding): MarketLink[] {
+  const evidence = asRecord(finding.evidence)
+  const eventGraph = asRecord(finding.event_graph)
+  const marketContext = (
+    asRecord(evidence?.market)
+    ?? asRecord(eventGraph?.market)
+    ?? {}
+  )
+
+  return resolveMarketLinks({
+    marketId: cleanMarketText(marketContext.id || marketContext.market_id || finding.market_id) || null,
+    marketSlug: cleanMarketText(marketContext.slug || marketContext.market_slug || finding.market_slug) || null,
+    eventSlug: cleanMarketText(marketContext.event_slug || marketContext.eventSlug || finding.market_event_slug) || null,
+    eventTicker: cleanMarketText(marketContext.event_ticker || marketContext.eventTicker || finding.market_event_ticker) || null,
+    platform: cleanMarketText(marketContext.platform || finding.market_platform) || null,
+    marketUrl: cleanMarketText(marketContext.market_url || marketContext.url || finding.market_url) || null,
+    polymarketUrl: finding.polymarket_url ?? null,
+    kalshiUrl: finding.kalshi_url ?? null,
+    conditionId: cleanMarketText(marketContext.condition_id || marketContext.conditionId) || null,
+  })
+}
+
+function resolveIntentMarketLinks(intent: NewsTradeIntent): MarketLink[] {
+  const marketContext = asRecord(intent.metadata?.market) ?? {}
+
+  return resolveMarketLinks({
+    marketId: cleanMarketText(marketContext.id || marketContext.market_id || intent.market_id) || null,
+    marketSlug: cleanMarketText(marketContext.slug || marketContext.market_slug || intent.market_slug) || null,
+    eventSlug: cleanMarketText(marketContext.event_slug || marketContext.eventSlug || intent.market_event_slug) || null,
+    eventTicker: cleanMarketText(marketContext.event_ticker || marketContext.eventTicker || intent.market_event_ticker) || null,
+    platform: cleanMarketText(marketContext.platform || intent.market_platform) || null,
+    marketUrl: cleanMarketText(marketContext.market_url || marketContext.url || intent.market_url) || null,
+    polymarketUrl: intent.polymarket_url ?? null,
+    kalshiUrl: intent.kalshi_url ?? null,
+    conditionId: cleanMarketText(marketContext.condition_id || marketContext.conditionId) || null,
+  })
 }
 
 function dedupeSupportingArticles(
@@ -230,6 +387,34 @@ function resolveCurrentOddsForFinding(
     no,
     signal: isBuyYes ? yes : no,
   }
+}
+
+function resolveFindingOutcomes(
+  finding: NewsWorkflowFinding,
+): { labels: string[]; prices: number[] } {
+  const evidence = asRecord(finding.evidence)
+  const eventGraph = asRecord(finding.event_graph)
+  const market = (
+    asRecord(evidence?.market)
+    ?? asRecord(eventGraph?.market)
+    ?? {}
+  )
+
+  const labels = extractOutcomeLabels(
+    finding.outcome_labels
+    ?? market.outcome_labels
+    ?? market.outcomes
+    ?? market.tokens
+  )
+
+  const prices = extractOutcomePrices(
+    finding.outcome_prices
+    ?? market.outcome_prices
+    ?? market.outcomePrices
+    ?? market.prices
+  )
+
+  return { labels, prices }
 }
 
 function findingCreatedAtMs(finding: NewsWorkflowFinding): number {
@@ -370,11 +555,36 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
     [finding],
   )
   const odds = useMemo(() => resolveCurrentOddsForFinding(finding), [finding])
-  const sparkData = useMemo(
-    () => buildYesNoSparklineSeries(finding.price_history, odds.yes, odds.no),
-    [finding.price_history, odds.yes, odds.no],
+  const outcomeSnapshot = useMemo(() => resolveFindingOutcomes(finding), [finding])
+  const yesOutcomeLabel = outcomeSnapshot.labels[0] || 'Yes'
+  const noOutcomeLabel = outcomeSnapshot.labels[1] || 'No'
+  const sparkSeries = useMemo(
+    () => buildOutcomeSparklineSeries(
+      finding.price_history,
+      buildOutcomeFallbacks({
+        labels: outcomeSnapshot.labels,
+        prices: outcomeSnapshot.prices,
+        yesPrice: odds.yes,
+        noPrice: odds.no,
+        yesLabel: yesOutcomeLabel,
+        noLabel: noOutcomeLabel,
+        preferIndexedKeys: outcomeSnapshot.labels.length > 2 || outcomeSnapshot.prices.length > 2,
+      }),
+    ),
+    [finding.price_history, odds.yes, odds.no, outcomeSnapshot, yesOutcomeLabel, noOutcomeLabel],
   )
-  const hasSparkline = sparkData.yes.length >= 2
+  const hasSparkline = sparkSeries.length > 0
+  const sparklineSeries = useMemo(
+    () => sparkSeries.map((row, index) => ({
+      data: row.data,
+      color: SPARKLINE_COLORS[index % SPARKLINE_COLORS.length],
+      lineWidth: index === 0 ? 1.6 : 1.3,
+      fill: false,
+      showDot: true,
+    })),
+    [sparkSeries],
+  )
+  const marketLinks = useMemo(() => resolveFindingMarketLinks(finding), [finding])
 
   const articleCount = Math.max(
     Number(finding.supporting_article_count ?? 0),
@@ -385,6 +595,7 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
     ? dedupedSupportingArticles
     : dedupedSupportingArticles.slice(0, 2)
   const isBuyYes = finding.direction === 'buy_yes'
+  const directionLabel = isBuyYes ? yesOutcomeLabel : noOutcomeLabel
 
   return (
     <Card className="overflow-hidden border-border/40 hover:border-border/80 hover:shadow-lg hover:shadow-black/20 transition-all group">
@@ -396,7 +607,7 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
               "text-[10px] font-semibold",
               isBuyYes ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20"
             )}>
-              {isBuyYes ? 'BUY YES' : 'BUY NO'}
+              {`BUY ${compactOutcomeLabel(directionLabel, 18).toUpperCase()}`}
             </Badge>
             {finding.actionable && (
               <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">
@@ -415,14 +626,30 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
             </span>
             <span className="text-[10px] text-muted-foreground block">edge</span>
             <div className="text-[10px] font-data mt-0.5">
-              <span className="text-green-400">Y {formatCents(odds.yes)}</span>
+              <span className="text-green-400">{compactOutcomeLabel(yesOutcomeLabel, 10)} {formatCents(odds.yes)}</span>
               <span className="text-muted-foreground mx-1">/</span>
-              <span className="text-red-400">N {formatCents(odds.no)}</span>
+              <span className="text-red-400">{compactOutcomeLabel(noOutcomeLabel, 10)} {formatCents(odds.no)}</span>
             </div>
           </div>
         </div>
 
         <p className="text-sm font-medium text-foreground line-clamp-2 mb-2">{finding.market_question}</p>
+        {marketLinks.length > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 flex-wrap">
+            {marketLinks.map((link) => (
+              <a
+                key={`${link.label}-${link.url}`}
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+              >
+                {link.label}
+                <ExternalLink className="w-2.5 h-2.5" />
+              </a>
+            ))}
+          </div>
+        )}
 
         <div className="mb-3">
           <div className="flex items-center justify-between gap-2">
@@ -471,18 +698,22 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
           {hasSparkline && (
             <div className="shrink-0">
               <Sparkline
-                data={sparkData.yes}
-                data2={sparkData.no}
+                data={sparkSeries[0]?.data || []}
+                series={sparklineSeries}
                 width={96}
                 height={40}
-                color="#22c55e"
-                color2="#ef4444"
                 lineWidth={1.5}
                 showDots
               />
-              <div className="flex justify-between text-[9px] text-muted-foreground font-data mt-0.5 px-0.5">
-                <span className="text-green-400/80">Y {odds.yes?.toFixed(2) ?? '—'}</span>
-                <span className="text-red-400/80">N {odds.no?.toFixed(2) ?? '—'}</span>
+              <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 px-0.5 text-[9px] font-data">
+                {sparkSeries.map((row, index) => (
+                  <span
+                    key={`${finding.id}-spark-${row.key}`}
+                    className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
+                  >
+                    {compactOutcomeLabel(row.label, 9)} {row.latest != null ? row.latest.toFixed(2) : '—'}
+                  </span>
+                ))}
               </div>
             </div>
           )}
@@ -527,6 +758,21 @@ function FindingCard({ finding }: { finding: NewsWorkflowFinding }) {
 
 function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; onSkip: (id: string) => void; isSkipping: boolean }) {
   const [expanded, setExpanded] = useState(false)
+  const marketLinks = useMemo(() => resolveIntentMarketLinks(intent), [intent])
+  const intentOutcomeLabels = useMemo(() => {
+    const market = intent.metadata?.market
+    if (!market) return []
+    return extractOutcomeLabels(
+      market.outcome_labels
+      ?? market.outcomes
+      ?? market.tokens
+    )
+  }, [intent.metadata?.market])
+  const intentDirectionLabel = (
+    intent.direction === 'buy_yes'
+      ? (intentOutcomeLabels[0] || 'Yes')
+      : (intentOutcomeLabels[1] || 'No')
+  )
   const statusColors: Record<string, string> = {
     pending: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
     submitted: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
@@ -548,7 +794,7 @@ function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; on
           <p className="text-sm font-medium text-foreground line-clamp-1">{intent.market_question}</p>
           <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
             <Badge variant="outline" className={cn("text-[9px] h-4 px-1.5", intent.direction === 'buy_yes' ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20')}>
-              {intent.direction === 'buy_yes' ? 'BUY YES' : 'BUY NO'}
+              {`BUY ${compactOutcomeLabel(intentDirectionLabel, 18).toUpperCase()}`}
             </Badge>
             <span className="font-data">Edge: {intent.edge_percent.toFixed(1)}%</span>
             <span className="font-data">Size: ${intent.suggested_size_usd.toFixed(0)}</span>
@@ -561,6 +807,22 @@ function IntentRow({ intent, onSkip, isSkipping }: { intent: NewsTradeIntent; on
               </Badge>
             )}
           </div>
+          {marketLinks.length > 0 && (
+            <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+              {marketLinks.map((link) => (
+                <a
+                  key={`${intent.id}-${link.label}-${link.url}`}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/20 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                >
+                  {link.label}
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              ))}
+            </div>
+          )}
           {supportingArticles.length > 0 && (
             <div className="mt-2">
               <button
@@ -801,7 +1063,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
           )}
         >
           <Target className="w-3.5 h-3.5" />
-          Workflow
+          Opportunities
         </Button>
         <Button
           variant="outline"

@@ -30,8 +30,12 @@ _RATE_LIMIT_MAX_REQUESTS = 10
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 # Circuit breaker
-_CB_MAX_FAILURES = int(max(1, getattr(settings, "WORLD_INTEL_OPENSKY_CB_MAX_FAILURES", 6) or 6))
-_CB_COOLDOWN_SECONDS = float(max(30.0, getattr(settings, "WORLD_INTEL_OPENSKY_CB_COOLDOWN_SECONDS", 120.0) or 120.0))
+_CB_MAX_FAILURES = int(
+    max(1, getattr(settings, "WORLD_INTEL_OPENSKY_CB_MAX_FAILURES", 6) or 6)
+)
+_CB_COOLDOWN_SECONDS = float(
+    max(30.0, getattr(settings, "WORLD_INTEL_OPENSKY_CB_COOLDOWN_SECONDS", 120.0) or 120.0)
+)
 
 _AIS_WS_URL = str(
     getattr(settings, "WORLD_INTEL_AIS_WS_URL", "wss://stream.aisstream.io/v0/stream")
@@ -48,8 +52,51 @@ _AIRPLANES_LIVE_URL = str(
 _AIRPLANES_LIVE_TIMEOUT_SECONDS = float(
     max(5.0, getattr(settings, "WORLD_INTEL_AIRPLANES_LIVE_TIMEOUT_SECONDS", 20.0) or 20.0)
 )
-_AIRPLANES_LIVE_MAX_RECORDS = int(max(50, getattr(settings, "WORLD_INTEL_AIRPLANES_LIVE_MAX_RECORDS", 1500) or 1500))
-_FLIGHT_DEDUPE_RADIUS_KM = float(max(5.0, getattr(settings, "WORLD_INTEL_MILITARY_DEDUPE_RADIUS_KM", 45.0) or 45.0))
+_AIRPLANES_LIVE_MAX_RECORDS = int(
+    max(50, getattr(settings, "WORLD_INTEL_AIRPLANES_LIVE_MAX_RECORDS", 1500) or 1500)
+)
+_FLIGHT_DEDUPE_RADIUS_KM = float(
+    max(5.0, getattr(settings, "WORLD_INTEL_MILITARY_DEDUPE_RADIUS_KM", 45.0) or 45.0)
+)
+_AIRPLANES_MIL_KEYWORDS = (
+    "military",
+    "air force",
+    "navy",
+    "army",
+    "marine",
+    "coast guard",
+    "defense",
+    "squadron",
+    "recon",
+    "fighter",
+    "tanker",
+    "awacs",
+    "black hawk",
+    "globemaster",
+    "hercules",
+)
+_AIRPLANES_MIL_TYPE_HINTS = {
+    "H60",
+    "C17",
+    "C130",
+    "C30J",
+    "KC46",
+    "KC135",
+    "K35R",
+    "E3TF",
+    "E737",
+    "P8",
+    "P1",
+    "A400",
+    "F15",
+    "F16",
+    "F18",
+    "F35",
+    "A10",
+    "B52",
+    "B1",
+    "B2",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +183,10 @@ class MilitaryMonitor:
 
     async def _wait_for_rate_limit(self) -> None:
         now = time.monotonic()
-        self._request_timestamps = [ts for ts in self._request_timestamps if now - ts < _RATE_LIMIT_WINDOW_SECONDS]
+        self._request_timestamps = [
+            ts for ts in self._request_timestamps
+            if now - ts < _RATE_LIMIT_WINDOW_SECONDS
+        ]
         if len(self._request_timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
             oldest = self._request_timestamps[0]
             wait = _RATE_LIMIT_WINDOW_SECONDS - (now - oldest) + 0.5
@@ -219,7 +269,10 @@ class MilitaryMonitor:
         lon2_r = math.radians(float(lon2))
         d_lat = lat2_r - lat1_r
         d_lon = lon2_r - lon1_r
-        a = math.sin(d_lat / 2.0) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(d_lon / 2.0) ** 2
+        a = (
+            math.sin(d_lat / 2.0) ** 2
+            + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(d_lon / 2.0) ** 2
+        )
         c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
         return 6371.0 * c
 
@@ -472,8 +525,15 @@ class MilitaryMonitor:
         except Exception:
             return None
 
-        callsign = str(row.get("flight") or row.get("r") or row.get("callsign") or row.get("hex") or "").strip()
+        callsign = str(
+            row.get("flight")
+            or row.get("r")
+            or row.get("callsign")
+            or row.get("hex")
+            or ""
+        ).strip()
         transponder = str(row.get("hex") or "").strip().lower()
+        owner = str(row.get("ownOp") or row.get("ownOpCode") or row.get("operator") or "").strip()
 
         altitude_m = 0.0
         alt_baro = row.get("alt_baro")
@@ -497,10 +557,25 @@ class MilitaryMonitor:
 
         type_code = str(row.get("t") or "").strip().upper()
         desc = str(row.get("desc") or "").strip()
+        desc_lower = desc.lower()
         aircraft_type = type_code or desc or self._infer_aircraft_type(callsign)
 
-        owner = str(row.get("ownOp") or row.get("ownOpCode") or "").strip()
         country = self._normalize_iso3(owner)
+        try:
+            db_flags = int(row.get("dbFlags") or 0)
+        except Exception:
+            db_flags = 0
+
+        owner_blob = f"{owner} {desc}".lower()
+        owner_hint = any(keyword in owner_blob for keyword in _AIRPLANES_MIL_KEYWORDS)
+        type_hint = any(hint in type_code for hint in _AIRPLANES_MIL_TYPE_HINTS)
+        callsign_hint = self._is_military_callsign(callsign)
+        icao_hint = self._is_military_icao(transponder)
+        flagged_hint = bool(db_flags & 1)
+        if not (flagged_hint or callsign_hint or icao_hint or owner_hint or type_hint or any(
+            keyword in desc_lower for keyword in _AIRPLANES_MIL_KEYWORDS
+        )):
+            return None
 
         return MilitaryActivity(
             activity_type="flight",
@@ -621,7 +696,7 @@ class MilitaryMonitor:
         for rgn, count in region_counts.items():
             self._region_history[rgn].append(count)
             if len(self._region_history[rgn]) > self._region_history_max:
-                self._region_history[rgn] = self._region_history[rgn][-self._region_history_max :]
+                self._region_history[rgn] = self._region_history[rgn][-self._region_history_max:]
 
         # Mark flights in surge regions as unusual
         surge_regions = set(self.get_surge_regions())
@@ -669,7 +744,8 @@ class MilitaryMonitor:
             regions = hotspots
 
         bounding_boxes = [
-            [[lon_min, lat_min], [lon_max, lat_max]] for lat_min, lat_max, lon_min, lon_max in regions.values()
+            [[lon_min, lat_min], [lon_max, lat_max]]
+            for lat_min, lat_max, lon_min, lon_max in regions.values()
         ]
         if not bounding_boxes:
             self._last_vessel_error = "no_bounding_boxes"
@@ -686,7 +762,10 @@ class MilitaryMonitor:
             async with websockets.connect(_AIS_WS_URL, ping_interval=20, close_timeout=3) as ws:
                 await ws.send(json.dumps(subscription))
                 started = time.monotonic()
-                while (time.monotonic() - started) < _AIS_SAMPLE_SECONDS and len(packets) < _AIS_MAX_MESSAGES:
+                while (
+                    (time.monotonic() - started) < _AIS_SAMPLE_SECONDS
+                    and len(packets) < _AIS_MAX_MESSAGES
+                ):
                     remaining = _AIS_SAMPLE_SECONDS - (time.monotonic() - started)
                     timeout = max(0.1, min(1.0, remaining))
                     try:
@@ -837,7 +916,7 @@ class MilitaryMonitor:
                 if not isinstance(counts, list):
                     continue
                 cleaned: list[int] = []
-                for count in counts[-self._region_history_max :]:
+                for count in counts[-self._region_history_max:]:
                     try:
                         cleaned.append(int(count))
                     except Exception:
@@ -862,7 +941,9 @@ class MilitaryMonitor:
                 "enabled": _AIRPLANES_LIVE_ENABLED,
                 "ok": (not bool(self._last_airplanes_live_error)) or (not _AIRPLANES_LIVE_ENABLED),
                 "error": self._last_airplanes_live_error,
-                "identified_flights": int(self._last_identified_flights_by_provider.get("airplanes_live") or 0),
+                "identified_flights": int(
+                    self._last_identified_flights_by_provider.get("airplanes_live") or 0
+                ),
                 "url": _AIRPLANES_LIVE_URL,
             },
             "aisstream": {

@@ -148,7 +148,7 @@ export default function WeatherOpportunitiesPanel({
     refetchInterval: 30000,
   })
 
-  const { data: dateData } = useQuery({
+  const { data: dateData, isLoading: dateBucketsLoading } = useQuery({
     queryKey: ['weather-workflow-opportunity-dates', direction, city, minEdge, maxEntry],
     queryFn: () =>
       getWeatherWorkflowOpportunityDates({
@@ -191,6 +191,17 @@ export default function WeatherOpportunitiesPanel({
   const opportunities = oppData?.opportunities ?? []
   const totalOpportunities = oppData?.total ?? opportunities.length
   const totalPages = Math.ceil(totalOpportunities / ITEMS_PER_PAGE)
+  const pageDateBuckets = useMemo((): WeatherOpportunityDateBucket[] => {
+    const counts = new Map<string, number>()
+    for (const opportunity of opportunities) {
+      const key = opportunityDateKey(opportunity)
+      if (!key) continue
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, count]) => ({ date, count }))
+  }, [opportunities])
   const derivedDateBuckets = useMemo((): WeatherOpportunityDateBucket[] => {
     const counts = new Map<string, number>()
     const sourceOpportunities = dateSourceOppData?.opportunities ?? []
@@ -205,7 +216,9 @@ export default function WeatherOpportunitiesPanel({
   }, [dateSourceOppData?.opportunities])
   const serverDateBuckets: WeatherOpportunityDateBucket[] = dateData?.dates ?? []
   const availableDateBuckets: WeatherOpportunityDateBucket[] = (
-    serverDateBuckets.length > 0 ? serverDateBuckets : derivedDateBuckets
+    serverDateBuckets.length > 0
+      ? serverDateBuckets
+      : (derivedDateBuckets.length > 0 ? derivedDateBuckets : pageDateBuckets)
   )
   const totalDatePages = Math.max(1, Math.ceil(availableDateBuckets.length / DATE_PAGE_SIZE))
   const visibleDateBuckets = useMemo(() => {
@@ -412,7 +425,7 @@ export default function WeatherOpportunitiesPanel({
                   </button>
                 )
               })}
-              {availableDateBuckets.length === 0 && (
+              {availableDateBuckets.length === 0 && !dateBucketsLoading && !oppsLoading && (
                 <span className="h-7 px-2.5 rounded-md border border-border text-[10px] text-muted-foreground inline-flex items-center">
                   No dated opportunities
                 </span>

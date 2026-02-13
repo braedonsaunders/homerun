@@ -768,6 +768,36 @@ class TestBaseStrategyCreateOpportunity:
         assert result.roi_percent == pytest.approx(22.5)
         assert result.max_position_size == pytest.approx(1000.0)
 
+    def test_directional_roi_cap_blocks_lottery_style_false_positive(self):
+        """Directional opportunities with implausibly huge ROI should be rejected."""
+        market = make_market(yes_price=0.05, no_price=0.95, liquidity=10000.0)
+        result = self.strategy.create_opportunity(
+            title="Directional Tail",
+            description="Unrealistic payout modeling case",
+            total_cost=0.05,
+            markets=[market],
+            positions=[{"action": "BUY", "outcome": "YES", "price": 0.05}],
+            is_guaranteed=False,
+        )
+        assert result is None
+
+    def test_directional_with_realistic_target_price_is_allowed(self):
+        """Directional opportunity should pass when expected payout is realistic."""
+        market = make_market(yes_price=0.45, no_price=0.55, liquidity=10000.0)
+        result = self.strategy.create_opportunity(
+            title="Directional Repricing",
+            description="Expected short-term repricing edge",
+            total_cost=0.45,
+            expected_payout=0.55,
+            markets=[market],
+            positions=[{"action": "BUY", "outcome": "YES", "price": 0.45}],
+            is_guaranteed=False,
+        )
+        assert result is not None
+        assert result.expected_payout == pytest.approx(0.55)
+        assert result.roi_percent > 0
+        assert result.roi_percent < 120
+
     def test_returns_none_for_zero_total_cost(self):
         """Zero total cost => roi = 0 => below threshold => None."""
         market = make_market(liquidity=10000.0)

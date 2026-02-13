@@ -1402,10 +1402,19 @@ class ArbitrageScanner:
 
         # Remove expired opportunities and keep BTC/ETH high-frequency
         # opportunities isolated to the dedicated Crypto surface.
+        stale_minutes = max(
+            5,
+            int(getattr(settings, "SCANNER_STALE_OPPORTUNITY_MINUTES", 45) or 45),
+        )
+        stale_cutoff = now - timedelta(minutes=stale_minutes)
         merged = [
             opp
             for opp in existing_map.values()
             if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now)
+            and (
+                opp.last_seen_at is None
+                or _make_aware(opp.last_seen_at) >= stale_cutoff
+            )
             and opp.strategy != "btc_eth_highfreq"
         ]
 

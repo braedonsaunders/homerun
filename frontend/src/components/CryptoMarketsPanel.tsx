@@ -56,6 +56,21 @@ function toFiniteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function clampProbability(value: number): number {
+  return Math.min(1, Math.max(0, value))
+}
+
+function polymarketTakerFeePerShare(price: number): number {
+  const p = clampProbability(price)
+  return p * 0.25 * (p * (1 - p)) ** 2
+}
+
+function polymarketTakerFeePct(price: number): number {
+  const p = clampProbability(price)
+  if (p <= 0) return 0
+  return polymarketTakerFeePerShare(p) / p
+}
+
 function normalizeTimeframe(value: string | null | undefined): string {
   const raw = String(value || '').toLowerCase()
   if (!raw) return ''
@@ -74,6 +89,25 @@ function extractCryptoMarketsFromInit(payload: any): CryptoMarket[] | null {
   const cryptoWorker = workers.find((worker) => worker?.worker_name === 'crypto')
   const markets = cryptoWorker?.stats?.markets
   return Array.isArray(markets) ? markets as CryptoMarket[] : null
+}
+
+function marketTakerFeePct(market: CryptoMarket): number | null {
+  if (!market.fees_enabled) return 0
+
+  const priceSamples = [toFiniteNumber(market.up_price), toFiniteNumber(market.down_price)]
+    .filter((v): v is number => v !== null)
+    .map((price) => polymarketTakerFeePct(price))
+
+  if (priceSamples.length > 0) {
+    return priceSamples.reduce((acc, value) => acc + value, 0) / priceSamples.length
+  }
+
+  const combined = toFiniteNumber(market.combined)
+  if (combined !== null) {
+    return polymarketTakerFeePct(clampProbability(combined / 2))
+  }
+
+  return null
 }
 
 // ─── Countdown Timer ─────────────────────────────────────
@@ -239,6 +273,7 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
     upPrice !== null && downPrice !== null ? upPrice + downPrice : null
   )
   const spread = combined !== null ? 1 - combined : null
+  const takerFeePct = marketTakerFeePct(market)
 
   const polyUrl = buildPolymarketMarketUrl({
     eventSlug: market.event_slug,
@@ -400,7 +435,7 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="grid grid-cols-4 gap-2 text-center">
           <div>
             <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Liquidity</div>
             <div className="text-xs font-bold font-data text-foreground">{formatUsd(market.liquidity)}</div>
@@ -408,6 +443,15 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
           <div>
             <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Volume</div>
             <div className="text-xs font-bold font-data text-foreground">{formatUsd(market.volume)}</div>
+          </div>
+          <div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Taker Fee</div>
+            <div className={cn(
+              "text-xs font-bold font-data",
+              takerFeePct !== null && takerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground',
+            )}>
+              {takerFeePct !== null ? `${(takerFeePct * 100).toFixed(2)}%` : '--'}
+            </div>
           </div>
           <div>
             <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Last Trade</div>
@@ -574,12 +618,50 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
   // Stats from series data
   const stats = useMemo(() => {
     const live = filteredMarkets.filter(m => m.is_live).length
-    const totalLiquidity = filteredMarkets.reduce((acc, m) => acc + (m.series_liquidity || m.liquidity || 0), 0)
-    const totalVolume24h = filteredMarkets.reduce((acc, m) => acc + (m.series_volume_24h || 0), 0)
-    const avgSpread = filteredMarkets.length > 0
-      ? filteredMarkets.reduce((acc, m) => acc + (1 - (m.combined ?? 1)), 0) / filteredMarkets.length
+    const seriesByKey = new Map<string, { liquidity: number; volume24h: number }>()
+    filteredMarkets.forEach((market) => {
+      const tf = normalizeTimeframe(market.timeframe) || String(market.timeframe || '').toLowerCase()
+      const key = `${market.asset}:${tf}`
+      if (seriesByKey.has(key)) return
+      seriesByKey.set(key, {
+        liquidity: market.series_liquidity || market.liquidity || 0,
+        volume24h: market.series_volume_24h || market.volume_24h || market.volume || 0,
+      })
+    })
+
+    const totalLiquidity = Array.from(seriesByKey.values()).reduce((acc, row) => acc + row.liquidity, 0)
+    const totalVolume24h = Array.from(seriesByKey.values()).reduce((acc, row) => acc + row.volume24h, 0)
+
+    const spreadSamples = filteredMarkets
+      .map((market) => toFiniteNumber(market.combined))
+      .filter((combined): combined is number => combined !== null)
+      .map((combined) => Math.abs(1 - combined))
+    const avgSpread = spreadSamples.length > 0
+      ? spreadSamples.reduce((acc, value) => acc + value, 0) / spreadSamples.length
       : 0
-    return { total: filteredMarkets.length, live, totalLiquidity, totalVolume24h, avgSpread }
+
+    const takerFeeSamples = filteredMarkets
+      .map((market) => marketTakerFeePct(market))
+      .filter((fee): fee is number => fee !== null)
+    const avgTakerFeePct = takerFeeSamples.length > 0
+      ? takerFeeSamples.reduce((acc, fee) => acc + fee, 0) / takerFeeSamples.length
+      : null
+    const maxTakerFeePct = takerFeeSamples.length > 0
+      ? Math.max(...takerFeeSamples)
+      : null
+
+    return {
+      total: filteredMarkets.length,
+      live,
+      totalLiquidity,
+      totalVolume24h,
+      avgSpread,
+      spreadSampleCount: spreadSamples.length,
+      seriesCount: seriesByKey.size,
+      avgTakerFeePct,
+      maxTakerFeePct,
+      takerFeeSampleCount: takerFeeSamples.length,
+    }
   }, [filteredMarkets])
 
   return (
@@ -653,10 +735,18 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {[
           { label: 'Markets', value: <span className="text-lg font-bold font-data text-foreground">{stats.total}</span>, sub: `${stats.live} live` },
-          { label: 'Series Liquidity', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalLiquidity)}</span>, sub: 'all assets' },
-          { label: 'Series 24h Vol', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalVolume24h)}</span>, sub: 'combined' },
-          { label: 'Avg Spread', value: <span className={cn("text-lg font-bold font-data", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>{(stats.avgSpread * 100).toFixed(2)}%</span>, sub: 'from $1.00' },
-          { label: 'Taker Fee', value: <span className="text-lg font-bold font-data text-muted-foreground">1.56%</span>, sub: 'max at 50%' },
+          { label: 'Series Liquidity', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalLiquidity)}</span>, sub: `${stats.seriesCount} series` },
+          { label: 'Series 24h Vol', value: <span className="text-lg font-bold font-data text-foreground">{formatUsd(stats.totalVolume24h)}</span>, sub: `${stats.seriesCount} series` },
+          { label: 'Avg Spread', value: <span className={cn("text-lg font-bold font-data", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>{(stats.avgSpread * 100).toFixed(2)}%</span>, sub: `${stats.spreadSampleCount} mkts vs $1.00` },
+          {
+            label: 'Taker Fee',
+            value: <span className={cn("text-lg font-bold font-data", stats.avgTakerFeePct !== null && stats.avgTakerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground')}>
+              {stats.avgTakerFeePct !== null ? `${(stats.avgTakerFeePct * 100).toFixed(2)}%` : '--'}
+            </span>,
+            sub: stats.takerFeeSampleCount > 0
+              ? `avg ${stats.takerFeeSampleCount} mkts${stats.maxTakerFeePct !== null ? ` · max ${(stats.maxTakerFeePct * 100).toFixed(2)}%` : ''}`
+              : 'not available'
+          },
         ].map((stat, i) => (
           <Card key={i} className="rounded-lg border border-border/40 bg-card/40 p-3">
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{stat.label}</div>

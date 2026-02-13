@@ -206,14 +206,24 @@ def _military_to_signal(activity: MilitaryActivity) -> WorldSignal:
     severity = 0.5 if not activity.is_unusual else 0.7
     source = str(activity.provider or ("opensky" if activity.activity_type == "flight" else "aisstream"))
     providers = list(activity.providers or ([source] if source else []))
+    transponder = str(activity.transponder or "").strip().lower()
+    normalized_callsign = "".join(str(activity.callsign or "").strip().upper().split())
+    entity_key = transponder or f"{normalized_callsign}:{_normalize_iso3(activity.country)}:{activity.activity_type}"
+    if activity.activity_type == "vessel":
+        description = (
+            f"{activity.aircraft_type}, speed={activity.speed:.1f}kn, "
+            f"heading={activity.heading:.0f}deg"
+        )
+    else:
+        description = (
+            f"{activity.aircraft_type}, alt={activity.altitude:.0f}m, "
+            f"speed={activity.speed:.0f}m/s, heading={activity.heading:.0f}deg"
+        )
     return WorldSignal(
         signal_id=_stable_signal_id(
-            source,
-            activity.callsign,
-            activity.transponder,
-            activity.region,
-            round(activity.latitude, 2),
-            round(activity.longitude, 2),
+            "military",
+            activity.activity_type,
+            entity_key,
         ),
         signal_type="military",
         severity=severity,
@@ -221,10 +231,7 @@ def _military_to_signal(activity: MilitaryActivity) -> WorldSignal:
         latitude=activity.latitude,
         longitude=activity.longitude,
         title=f"Military {activity.activity_type}: {activity.callsign} ({activity.region})",
-        description=(
-            f"{activity.aircraft_type}, alt={activity.altitude:.0f}m, "
-            f"speed={activity.speed:.0f}m/s, heading={activity.heading:.0f}deg"
-        ),
+        description=description,
         source=source,
         metadata={
             "callsign": activity.callsign,
@@ -399,9 +406,15 @@ class WorldSignalAggregator:
                 "http 429",
                 "client error '429",
                 "status code 429",
+                "client error '403",
+                "status code 403",
+                "403 forbidden",
                 "soft rate-limit",
                 "soft rate-limited",
                 "please limit requests to one every 5 seconds",
+                "nodename nor servname provided",
+                "name or service not known",
+                "temporary failure in name resolution",
             )
             return any(marker in text for marker in benign_markers)
 
