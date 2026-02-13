@@ -28,6 +28,7 @@ import threading
 import time
 from collections import OrderedDict, defaultdict
 from typing import Optional
+from config import settings
 from models import Market, Event, ArbitrageOpportunity, StrategyType
 from .base import BaseStrategy
 from utils.logger import get_logger

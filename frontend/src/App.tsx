@@ -42,6 +42,7 @@ import {
   evaluateSearchResults,
   getScannerStatus,
   triggerScan,
+  clearOpportunities,
   getStrategies,
   getWorkersStatus,
   pauseAllWorkers,
@@ -369,8 +370,6 @@ function App() {
   const {
     data: opportunitiesData,
     isLoading: oppsLoading,
-    isFetching: isFetchingOpportunities,
-    refetch: refetchOpportunities,
   } = useQuery({
     queryKey: ['opportunities', selectedStrategy, selectedStrategySubtype, selectedCategory, minProfit, maxRisk, searchQuery, sortBy, sortDir, currentPage],
     queryFn: () => getOpportunities({
@@ -393,8 +392,6 @@ function App() {
 
   const {
     data: status,
-    isFetching: isFetchingScannerStatus,
-    refetch: refetchScannerStatus,
   } = useQuery({
     queryKey: ['scanner-status'],
     queryFn: getScannerStatus,
@@ -467,8 +464,6 @@ function App() {
 
   const {
     data: opportunityCounts,
-    isFetching: isFetchingOpportunityCounts,
-    refetch: refetchOpportunityCounts,
   } = useQuery({
     queryKey: ['opportunity-counts', minProfit, maxRisk, searchQuery],
     queryFn: () => getOpportunityCounts({
@@ -481,8 +476,6 @@ function App() {
 
   const {
     data: subfilterCounts,
-    isFetching: isFetchingSubfilterCounts,
-    refetch: refetchSubfilterCounts,
   } = useQuery({
     queryKey: ['opportunity-subfilters', selectedStrategy, selectedCategory, minProfit, maxRisk, searchQuery],
     queryFn: () => getOpportunityCounts({
@@ -649,26 +642,24 @@ function App() {
     || maxRisk < 1
     || searchQuery.trim().length > 0
 
-  const isRefreshingMarkets =
-    isFetchingOpportunities
-    || isFetchingScannerStatus
-    || isFetchingOpportunityCounts
-    || (Boolean(selectedStrategy) && isFetchingSubfilterCounts)
+  const refreshMarketsMutation = useMutation({
+    mutationFn: async () => {
+      await clearOpportunities()
+      await triggerScan()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunity-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunity-subfilters'] })
+    },
+  })
+
+  const isRefreshingMarkets = refreshMarketsMutation.isPending
 
   const handleRefreshMarkets = useCallback(() => {
-    refetchOpportunities()
-    refetchScannerStatus()
-    refetchOpportunityCounts()
-    if (selectedStrategy) {
-      refetchSubfilterCounts()
-    }
-  }, [
-    refetchOpportunities,
-    refetchScannerStatus,
-    refetchOpportunityCounts,
-    refetchSubfilterCounts,
-    selectedStrategy,
-  ])
+    refreshMarketsMutation.mutate()
+  }, [refreshMarketsMutation])
 
   // Keyboard shortcuts
   const shortcuts: Shortcut[] = useMemo(() => [
@@ -1031,11 +1022,9 @@ function App() {
                     >
                       <Activity className="w-3.5 h-3.5" />
                       Traders
-                      {tradersCount > 0 && (
-                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                          <AnimatedNumber value={tradersCount} decimals={0} className="" />
-                        </span>
-                      )}
+                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                        <AnimatedNumber value={tradersCount} decimals={0} className="" />
+                      </span>
                     </Button>
                     <Button
                       variant="outline"

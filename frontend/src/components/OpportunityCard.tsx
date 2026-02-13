@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronDown,
   ChevronUp,
@@ -24,7 +24,7 @@ import {
   extractOutcomeLabels,
   extractOutcomePrices,
 } from '../lib/priceHistory'
-import { Opportunity, WeatherForecastSource, judgeOpportunity } from '../services/api'
+import { Opportunity, WeatherForecastSource, judgeOpportunity, getWeatherWorkflowSettings } from '../services/api'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -39,13 +39,13 @@ const STRATEGY_COLORS: Record<string, string> = {
   negrisk: 'bg-green-500/10 text-green-400 border-green-500/20',
   mutually_exclusive: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   contradiction: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
-  must_happen: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  must_happen: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 border-cyan-500/20',
   cross_platform: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
   bayesian_cascade: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
   liquidity_vacuum: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
   entropy_arb: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
   event_driven: 'bg-lime-500/10 text-lime-400 border-lime-500/20',
-  temporal_decay: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
+  temporal_decay: 'bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-500/20',
   correlation_arb: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
   market_making: 'bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20',
   stat_arb: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
@@ -130,14 +130,14 @@ const SPARKLINE_COLORS = [
 ]
 
 const SPARKLINE_TEXT_CLASSES = [
-  'text-green-400/70',
-  'text-red-400/70',
-  'text-sky-300/80',
-  'text-amber-300/80',
-  'text-violet-300/80',
-  'text-teal-300/80',
-  'text-orange-300/80',
-  'text-pink-300/80',
+  'text-green-600/70 dark:text-green-400/70',
+  'text-red-600/70 dark:text-red-400/70',
+  'text-sky-600/80 dark:text-sky-300/80',
+  'text-amber-600/80 dark:text-amber-300/80',
+  'text-violet-600/80 dark:text-violet-300/80',
+  'text-teal-600/80 dark:text-teal-300/80',
+  'text-orange-600/80 dark:text-orange-300/80',
+  'text-pink-600/80 dark:text-pink-300/80',
 ]
 
 // ─── Utilities ────────────────────────────────────────────
@@ -209,9 +209,17 @@ export function formatCompact(n: number | null | undefined): string {
   return `$${n.toFixed(4)}`
 }
 
-function formatTemp(value: number | null | undefined): string {
+function formatTemp(value: number | null | undefined, unit: 'F' | 'C' = 'F'): string {
   if (value == null || Number.isNaN(value)) return '—'
-  return `${value.toFixed(1)}F`
+  return `${value.toFixed(1)}°${unit}`
+}
+
+function fToC(f: number): number {
+  return (f - 32) * 5 / 9
+}
+
+function cToF(c: number): number {
+  return (c * 9 / 5) + 32
 }
 
 function formatPct(value: number | null | undefined): string {
@@ -241,6 +249,26 @@ function resolveMarketOutcomes(market: Opportunity['markets'][number] | undefine
     marketRow.outcome_prices
     ?? marketRow.prices
   )
+  return { labels, prices }
+}
+
+/** For multi-market opportunities (e.g. negrisk with 12 sub-markets),
+ *  build a global outcome view: each sub-market is one "outcome",
+ *  labeled by its short title, with YES price as the outcome price. */
+function resolveMultiMarketOutcomes(markets: Opportunity['markets']): {
+  labels: string[]
+  prices: number[]
+} {
+  const labels: string[] = []
+  const prices: number[] = []
+  for (const mkt of markets) {
+    // Use group_item_title if available, otherwise extract short label from question
+    const raw = (mkt as any).group_item_title || mkt.question || ''
+    // Take the first meaningful segment — remove common prefixes like "Will..."
+    const label = raw.replace(/^(Will |What will |Which |Who will )/i, '').split('?')[0].trim()
+    labels.push(label || `Market ${labels.length + 1}`)
+    prices.push(mkt.yes_price ?? 0)
+  }
   return { labels, prices }
 }
 
@@ -277,6 +305,14 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const [expanded, setExpanded] = useState(false)
   const [aiExpanded, setAiExpanded] = useState(false)
   const queryClient = useQueryClient()
+
+  // Temperature unit preference
+  const { data: weatherSettings } = useQuery({
+    queryKey: ['weather-workflow-settings'],
+    queryFn: getWeatherWorkflowSettings,
+    staleTime: 60_000,
+  })
+  const tempUnit: 'F' | 'C' = weatherSettings?.temperature_unit ?? 'F'
 
   // AI analysis
   const inlineAnalysis = opportunity.ai_analysis
@@ -381,28 +417,36 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
       ? (modelProbability - marketProbability) * 100
       : null
   )
-  const consensusTempF = weather?.consensus_temp_f
-    ?? (weather?.consensus_temp_c != null ? (weather.consensus_temp_c * 9 / 5) + 32 : null)
-  const marketImpliedTempF = weather?.market_implied_temp_f
-    ?? (weather?.market_implied_temp_c != null ? (weather.market_implied_temp_c * 9 / 5) + 32 : null)
-  const tempDeltaF = (
-    consensusTempF != null && marketImpliedTempF != null
-      ? consensusTempF - marketImpliedTempF
+  // Resolve temperatures in preferred unit
+  const consensusTemp = tempUnit === 'C'
+    ? (weather?.consensus_temp_c ?? (weather?.consensus_temp_f != null ? fToC(weather.consensus_temp_f) : null))
+    : (weather?.consensus_temp_f ?? (weather?.consensus_temp_c != null ? cToF(weather.consensus_temp_c) : null))
+  const marketImpliedTemp = tempUnit === 'C'
+    ? (weather?.market_implied_temp_c ?? (weather?.market_implied_temp_f != null ? fToC(weather.market_implied_temp_f) : null))
+    : (weather?.market_implied_temp_f ?? (weather?.market_implied_temp_c != null ? cToF(weather.market_implied_temp_c) : null))
+  const tempDelta = (
+    consensusTemp != null && marketImpliedTemp != null
+      ? consensusTemp - marketImpliedTemp
       : null
   )
   const weatherContractLabel = useMemo(() => {
     if (!weather) return '—'
-    const unit = weather.raw_unit || 'F'
+    const rawUnit = weather.raw_unit || 'F'
+    // Convert thresholds to preferred display unit
+    const convertThreshold = (val: number): number => {
+      if (rawUnit === tempUnit) return val
+      return tempUnit === 'C' ? fToC(val) : cToF(val)
+    }
     if (weather.raw_threshold != null) {
       const op = (weather.operator || 'gt').toLowerCase()
       const opText = op === 'lt' || op === 'lte' ? '<' : '>'
-      return `${opText} ${safeFixed(weather.raw_threshold, 1)}${unit}`
+      return `${opText} ${safeFixed(convertThreshold(weather.raw_threshold), 1)}°${tempUnit}`
     }
     if (weather.raw_threshold_low != null && weather.raw_threshold_high != null) {
-      return `${safeFixed(weather.raw_threshold_low, 1)}-${safeFixed(weather.raw_threshold_high, 1)}${unit}`
+      return `${safeFixed(convertThreshold(weather.raw_threshold_low), 1)}-${safeFixed(convertThreshold(weather.raw_threshold_high), 1)}°${tempUnit}`
     }
     return '—'
-  }, [weather])
+  }, [weather, tempUnit])
   const weatherTargetDisplay = useMemo(
     () => formatWeatherTargetDisplay(weather?.target_time ?? opportunity.resolution_date ?? null),
     [weather?.target_time, opportunity.resolution_date]
@@ -411,23 +455,68 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
     ? `${weatherTargetDisplay.date}${weatherTargetDisplay.time ? `, ${weatherTargetDisplay.time}` : ''}`
     : '—'
 
-  const marketOutcomes = useMemo(() => resolveMarketOutcomes(market), [market])
+  // For multi-market opportunities (negrisk, mutually_exclusive, etc.),
+  // build a global view where each sub-market is an outcome.
+  const isMultiMarket = opportunity.markets.length > 1
+  const multiMarketOutcomes = useMemo(
+    () => isMultiMarket ? resolveMultiMarketOutcomes(opportunity.markets) : null,
+    [isMultiMarket, opportunity.markets],
+  )
+  const singleMarketOutcomes = useMemo(() => resolveMarketOutcomes(market), [market])
+  const marketOutcomes = multiMarketOutcomes ?? singleMarketOutcomes
   const primaryOutcomeLabel = marketOutcomes.labels[0] || 'Yes'
   const secondaryOutcomeLabel = marketOutcomes.labels[1] || 'No'
   const sparkSeries = useMemo(
-    () => buildOutcomeSparklineSeries(
-      market?.price_history,
-      buildOutcomeFallbacks({
-        labels: marketOutcomes.labels,
-        prices: marketOutcomes.prices,
-        yesPrice: market?.yes_price,
-        noPrice: market?.no_price,
-        yesLabel: marketOutcomes.labels[0] || 'Yes',
-        noLabel: marketOutcomes.labels[1] || 'No',
-        preferIndexedKeys: marketOutcomes.labels.length > 2 || marketOutcomes.prices.length > 2,
-      }),
-    ),
-    [market, marketOutcomes],
+    () => {
+      if (isMultiMarket && multiMarketOutcomes) {
+        // Build sparkline fallbacks from all sub-markets' YES prices
+        const fallbacks = multiMarketOutcomes.labels.map((label, i) => ({
+          key: `idx_${i}`,
+          label,
+          price: multiMarketOutcomes.prices[i] ?? null,
+        }))
+        // Merge price histories from all sub-markets
+        const mergedHistory: Record<string, unknown>[] = []
+        const maxLen = Math.max(
+          ...opportunity.markets.map((m) => Array.isArray(m.price_history) ? m.price_history.length : 0),
+          0,
+        )
+        for (let j = 0; j < maxLen; j++) {
+          const point: Record<string, unknown> = {}
+          opportunity.markets.forEach((m, i) => {
+            const hist = Array.isArray(m.price_history) ? m.price_history : []
+            const entry = hist[j] as Record<string, unknown> | undefined
+            if (entry) {
+              // Extract YES price from this sub-market's history point
+              const yesVal = entry.yes ?? entry.y ?? entry.p ?? entry.price
+              if (yesVal != null) point[`idx_${i}`] = yesVal
+              // Preserve timestamp from first market
+              if (i === 0 && entry.t != null) point.t = entry.t
+            }
+          })
+          if (Object.keys(point).length > 1 || (Object.keys(point).length === 1 && !('t' in point))) {
+            mergedHistory.push(point)
+          }
+        }
+        return buildOutcomeSparklineSeries(
+          mergedHistory.length > 0 ? mergedHistory : undefined,
+          fallbacks,
+        )
+      }
+      return buildOutcomeSparklineSeries(
+        market?.price_history,
+        buildOutcomeFallbacks({
+          labels: singleMarketOutcomes.labels,
+          prices: singleMarketOutcomes.prices,
+          yesPrice: market?.yes_price,
+          noPrice: market?.no_price,
+          yesLabel: singleMarketOutcomes.labels[0] || 'Yes',
+          noLabel: singleMarketOutcomes.labels[1] || 'No',
+          preferIndexedKeys: singleMarketOutcomes.labels.length > 2 || singleMarketOutcomes.prices.length > 2,
+        }),
+      )
+    },
+    [market, isMultiMarket, multiMarketOutcomes, singleMarketOutcomes, opportunity.markets],
   )
   const hasSparkline = sparkSeries.length > 0
   const sparklineSeries = useMemo(
@@ -469,7 +558,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-1.5 flex-wrap min-w-0">
             {isWeatherOpportunity && weatherTargetDisplay && (
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-cyan-500/12 text-cyan-200 border-cyan-500/25">
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-cyan-500/12 text-cyan-700 dark:text-cyan-200 border-cyan-500/25">
                 <span className="inline-flex items-center gap-1">
                   <CalendarDays className="w-2.5 h-2.5" />
                   {weatherTargetDisplay.date}
@@ -507,14 +596,17 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               <>
                 {/* Search results: show all market outcomes with real labels */}
                 <div className="flex items-center justify-end gap-2 flex-wrap">
-                  {sparkSeries.map((row, index) => (
+                  {sparkSeries.slice(0, isMultiMarket ? 4 : undefined).map((row, index) => (
                     <span
                       key={`${opportunity.id}-search-outcome-${row.key}`}
                       className={cn('text-sm font-bold font-data leading-none', SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length])}
                     >
-                      {compactOutcomeLabel(row.label, 12)} {safeFixed((row.latest ?? 0) * 100, 0)}¢
+                      {compactOutcomeLabel(row.label, isMultiMarket ? 10 : 12)} {safeFixed((row.latest ?? 0) * 100, 0)}¢
                     </span>
                   ))}
+                  {isMultiMarket && sparkSeries.length > 4 && (
+                    <span className="text-xs text-muted-foreground/60">+{sparkSeries.length - 4}</span>
+                  )}
                 </div>
                 <p className="text-[10px] text-muted-foreground font-data mt-0.5">
                   {formatCompact(opportunity.volume ?? opportunity.min_liquidity)} vol
@@ -544,18 +636,6 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
           {opportunity.title}
         </h3>
 
-        {isWeatherOpportunity && weatherTargetDisplay && (
-          <div className="flex items-center justify-between rounded-md border border-cyan-500/25 bg-cyan-500/[0.08] px-2 py-1">
-            <span className="inline-flex items-center gap-1.5 min-w-0">
-              <CalendarDays className="w-3 h-3 text-cyan-300 shrink-0" />
-              <span className="text-xs font-semibold text-cyan-100 truncate">{weatherTargetDisplay.date}</span>
-            </span>
-            {weatherTargetDisplay.time && (
-              <span className="text-[10px] font-data text-cyan-200/90 ml-2 shrink-0">{weatherTargetDisplay.time}</span>
-            )}
-          </div>
-        )}
-
         {/* ── Row 3: Sparkline + Metrics ── */}
         <div className="flex items-stretch gap-3">
           {/* Sparkline */}
@@ -564,20 +644,26 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               <Sparkline
                 data={sparkSeries[0]?.data || []}
                 series={sparklineSeries}
-                width={96}
+                width={isMultiMarket && sparkSeries.length > 4 ? 120 : 96}
                 height={40}
                 lineWidth={1.5}
                 showDots
               />
-              <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 px-0.5 text-[9px] font-data">
-                {sparkSeries.map((row, index) => (
+              <div className={cn(
+                "mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 px-0.5 text-[9px] font-data",
+                isMultiMarket && sparkSeries.length > 4 && "max-w-[120px]",
+              )}>
+                {sparkSeries.slice(0, isMultiMarket ? 6 : undefined).map((row, index) => (
                   <span
                     key={`${opportunity.id}-spark-${row.key}`}
                     className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
                   >
-                    {compactOutcomeLabel(row.label, 10)} {safeFixed(row.latest, 2)}
+                    {compactOutcomeLabel(row.label, isMultiMarket ? 8 : 10)} {safeFixed(row.latest, 2)}
                   </span>
                 ))}
+                {isMultiMarket && sparkSeries.length > 6 && (
+                  <span className="text-muted-foreground/60">+{sparkSeries.length - 6}</span>
+                )}
               </div>
             </div>
           )}
@@ -607,8 +693,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                 />
                 <MiniMetric
                   label="Temp Delta"
-                  value={tempDeltaF != null ? `${tempDeltaF >= 0 ? '+' : ''}${safeFixed(tempDeltaF, 1)}F` : '—'}
-                  valueClass={tempDeltaF != null ? (tempDeltaF >= 0 ? 'text-cyan-300' : 'text-orange-300') : undefined}
+                  value={tempDelta != null ? `${tempDelta >= 0 ? '+' : ''}${safeFixed(tempDelta, 1)}°${tempUnit}` : '—'}
+                  valueClass={tempDelta != null ? (tempDelta >= 0 ? 'text-cyan-700 dark:text-cyan-300' : 'text-orange-600 dark:text-orange-300') : undefined}
                 />
                 <MiniMetric
                   label="Sources"
@@ -633,9 +719,9 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         </div>
 
         {isWeatherOpportunity && (
-          <div className="flex items-center justify-between rounded-md border border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1">
-            <span className="text-[10px] text-cyan-300/90 font-medium truncate">
-              Mkt {formatTemp(marketImpliedTempF)} vs Consensus {formatTemp(consensusTempF)}
+          <div className="flex items-center justify-between rounded-md border border-cyan-600/20 dark:border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1">
+            <span className="text-[10px] text-cyan-700 dark:text-cyan-300/90 font-medium truncate">
+              Mkt {formatTemp(marketImpliedTemp, tempUnit)} vs Consensus {formatTemp(consensusTemp, tempUnit)}
             </span>
             <span className="text-[10px] font-data text-muted-foreground ml-2 shrink-0">
               Edge {signalEdgePercent != null ? `${signalEdgePercent >= 0 ? '+' : ''}${safeFixed(signalEdgePercent, 1)}%` : '—'}
@@ -705,20 +791,23 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
             <div className="flex items-center gap-1 truncate min-w-0">
               {market && (
                 <div className="flex items-center gap-1.5 flex-wrap font-data">
-                  {sparkSeries.map((row, index) => (
+                  {sparkSeries.slice(0, isMultiMarket ? 4 : undefined).map((row, index) => (
                     <span
                       key={`${opportunity.id}-search-line-${row.key}`}
                       className={SPARKLINE_TEXT_CLASSES[index % SPARKLINE_TEXT_CLASSES.length]}
                     >
-                      {compactOutcomeLabel(row.label, 12)} {safeFixed(row.latest, 3)}
+                      {compactOutcomeLabel(row.label, isMultiMarket ? 10 : 12)} {safeFixed(row.latest, 3)}
                     </span>
                   ))}
+                  {isMultiMarket && sparkSeries.length > 4 && (
+                    <span className="text-muted-foreground/60">+{sparkSeries.length - 4}</span>
+                  )}
                 </div>
               )}
             </div>
           ) : (
             <div className="flex items-center gap-1 truncate min-w-0">
-              {opportunity.positions_to_take.slice(0, 3).map((pos, i) => (
+              {opportunity.positions_to_take.slice(0, isMultiMarket ? 2 : 3).map((pos, i) => (
                 <span key={i} className="inline-flex items-center gap-0.5 shrink-0">
                   {i > 0 && <span className="text-border">·</span>}
                   <span className={cn(
@@ -727,11 +816,14 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   )}>
                     {pos.action} {pos.outcome}
                   </span>
+                  {isMultiMarket && pos.market && (
+                    <span className="text-foreground/50 font-data">{compactOutcomeLabel(pos.market, 12)}</span>
+                  )}
                   <span className="font-data">@{safeFixed(pos.price, 2)}</span>
                 </span>
               ))}
-              {opportunity.positions_to_take.length > 3 && (
-                <span className="text-muted-foreground/60">+{opportunity.positions_to_take.length - 3}</span>
+              {opportunity.positions_to_take.length > (isMultiMarket ? 2 : 3) && (
+                <span className="text-muted-foreground/60">+{opportunity.positions_to_take.length - (isMultiMarket ? 2 : 3)}</span>
               )}
             </div>
           )}
@@ -887,8 +979,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
             ) : (
               <>
                 {isWeatherOpportunity && weather && (
-                  <div className="bg-cyan-500/[0.06] rounded-lg p-3 border border-cyan-500/20">
-                    <h4 className="text-[10px] font-medium text-cyan-300 mb-2 uppercase tracking-wider">Weather Intelligence</h4>
+                  <div className="bg-cyan-500/[0.06] rounded-lg p-3 border border-cyan-600/20 dark:border-cyan-500/20">
+                    <h4 className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300 mb-2 uppercase tracking-wider">Weather Intelligence</h4>
                     <div className="grid grid-cols-3 gap-3 text-xs">
                       <div>
                         <p className="text-[10px] text-muted-foreground">Location</p>
@@ -908,7 +1000,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Model</p>
-                        <p className="font-data text-cyan-300">{modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}%` : '—'}</p>
+                        <p className="font-data text-cyan-700 dark:text-cyan-300">{modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}%` : '—'}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Edge</p>
@@ -921,11 +1013,11 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Market-Implied Temp</p>
-                        <p className="font-data text-foreground">{formatTemp(marketImpliedTempF)}</p>
+                        <p className="font-data text-foreground">{formatTemp(marketImpliedTemp, tempUnit)}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Consensus Temp</p>
-                        <p className="font-data text-cyan-300">{formatTemp(consensusTempF)}</p>
+                        <p className="font-data text-cyan-700 dark:text-cyan-300">{formatTemp(consensusTemp, tempUnit)}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Model Agreement</p>
@@ -942,10 +1034,10 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                                 {src.provider}:{src.model}
                               </p>
                               <p className="text-[9px] text-muted-foreground font-data">
-                                Temp {formatTemp(src.value_f)} · Prob {formatPct(src.probability)}
+                                Temp {formatTemp(tempUnit === 'C' ? (src.value_c ?? (src.value_f != null ? fToC(src.value_f) : null)) : (src.value_f ?? (src.value_c != null ? cToF(src.value_c) : null)), tempUnit)} · Prob {formatPct(src.probability)}
                               </p>
                             </div>
-                            <span className="text-[10px] text-cyan-300 font-data shrink-0">
+                            <span className="text-[10px] text-cyan-700 dark:text-cyan-300 font-data shrink-0">
                               {src.weight != null ? `w ${safeFixed(src.weight * 100, 0)}%` : 'w —'}
                             </span>
                           </div>

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from services.copy_trader import copy_trader
@@ -9,8 +9,15 @@ copy_trading_router = APIRouter()
 
 
 class CreateCopyConfigRequest(BaseModel):
-    source_wallet: str
+    source_wallet: Optional[str] = Field(
+        default=None,
+        description="Wallet address to copy (required for individual mode)",
+    )
     account_id: str
+    source_type: Literal["individual", "tracked_group", "pool"] = Field(
+        default="individual",
+        description="individual = specific wallet; tracked_group = all tracked wallets; pool = smart wallet pool",
+    )
     copy_mode: str = Field(
         default="all_trades",
         description="all_trades = mirror every trade; arb_only = only copy arb-matching trades",
@@ -35,8 +42,10 @@ class CreateCopyConfigRequest(BaseModel):
 
     @field_validator("source_wallet")
     @classmethod
-    def validate_wallet(cls, v: str) -> str:
-        return validate_eth_address(v)
+    def validate_wallet(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return validate_eth_address(v)
+        return v
 
     @field_validator("copy_mode")
     @classmethod
@@ -77,6 +86,7 @@ async def create_copy_config(request: CreateCopyConfigRequest):
         config = await copy_trader.add_copy_config(
             source_wallet=request.source_wallet,
             account_id=request.account_id,
+            source_type=request.source_type,
             copy_mode=request.copy_mode,
             min_roi_threshold=request.min_roi_threshold,
             max_position_size=request.max_position_size,
@@ -91,6 +101,7 @@ async def create_copy_config(request: CreateCopyConfigRequest):
 
         return {
             "config_id": config.id,
+            "source_type": getattr(config, "source_type", "individual") or "individual",
             "source_wallet": config.source_wallet,
             "account_id": config.account_id,
             "enabled": config.enabled,
@@ -108,6 +119,7 @@ async def list_copy_configs(account_id: Optional[str] = Query(default=None)):
     return [
         {
             "id": cfg.id,
+            "source_type": getattr(cfg, "source_type", "individual") or "individual",
             "source_wallet": cfg.source_wallet,
             "account_id": cfg.account_id,
             "enabled": cfg.enabled,
@@ -134,6 +146,12 @@ async def list_copy_configs(account_id: Optional[str] = Query(default=None)):
         }
         for cfg in configs
     ]
+
+
+@copy_trading_router.get("/configs/active-mode")
+async def get_active_copy_mode():
+    """Get the current active copy trading mode for the UI flyout."""
+    return await copy_trader.get_active_copy_mode()
 
 
 @copy_trading_router.get("/configs/{config_id}")
@@ -259,10 +277,11 @@ async def get_copy_trading_status():
         "dedup_cache_size": len(copy_trader._realtime_dedup_cache),
         "total_configs": len(configs),
         "enabled_configs": len(enabled_configs),
-        "tracked_wallets": list(set(c.source_wallet for c in configs)),
+        "tracked_wallets": list(set(c.source_wallet for c in configs if c.source_wallet)),
         "configs_summary": [
             {
                 "id": c.id,
+                "source_type": getattr(c, "source_type", "individual") or "individual",
                 "source_wallet": c.source_wallet,
                 "copy_mode": c.copy_mode.value if c.copy_mode else "all_trades",
                 "enabled": c.enabled,

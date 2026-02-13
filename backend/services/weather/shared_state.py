@@ -549,68 +549,34 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
 
 async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
     db = await _get_or_create_app_settings(session)
+
+    def _f(attr: str, default: float) -> float:
+        """Get a float setting, falling back to *default* when the DB value is None."""
+        return float(getattr(db, attr, default) or default)
+
+    def _i(attr: str, default: int) -> int:
+        """Get an int setting, falling back to *default* when the DB value is None."""
+        return int(getattr(db, attr, default) or default)
+
     return {
-        "enabled": bool(getattr(db, "weather_workflow_enabled", True)),
-        "auto_run": bool(getattr(db, "weather_workflow_auto_run", True)),
-        "scan_interval_seconds": int(
-            getattr(
-                db,
-                "weather_workflow_scan_interval_seconds",
-                app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS,
-            )
-        ),
-        "entry_max_price": float(
-            getattr(db, "weather_workflow_entry_max_price", app_settings.WEATHER_WORKFLOW_ENTRY_MAX_PRICE)
-        ),
-        "take_profit_price": float(
-            getattr(
-                db,
-                "weather_workflow_take_profit_price",
-                app_settings.WEATHER_WORKFLOW_TAKE_PROFIT_PRICE,
-            )
-        ),
-        "stop_loss_pct": float(
-            getattr(db, "weather_workflow_stop_loss_pct", app_settings.WEATHER_WORKFLOW_STOP_LOSS_PCT)
-        ),
-        "min_edge_percent": float(
-            getattr(
-                db,
-                "weather_workflow_min_edge_percent",
-                app_settings.WEATHER_WORKFLOW_MIN_EDGE_PERCENT,
-            )
-        ),
-        "min_confidence": float(
-            getattr(
-                db,
-                "weather_workflow_min_confidence",
-                app_settings.WEATHER_WORKFLOW_MIN_CONFIDENCE,
-            )
-        ),
-        "min_model_agreement": float(
-            getattr(
-                db,
-                "weather_workflow_min_model_agreement",
-                app_settings.WEATHER_WORKFLOW_MIN_MODEL_AGREEMENT,
-            )
-        ),
-        "min_liquidity": float(
-            getattr(db, "weather_workflow_min_liquidity", app_settings.WEATHER_WORKFLOW_MIN_LIQUIDITY)
-        ),
-        "max_markets_per_scan": int(
-            getattr(
-                db,
-                "weather_workflow_max_markets_per_scan",
-                app_settings.WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN,
-            )
-        ),
-        "orchestrator_enabled": bool(getattr(db, "weather_workflow_orchestrator_enabled", True)),
-        "orchestrator_min_edge": float(getattr(db, "weather_workflow_orchestrator_min_edge", 10.0)),
-        "orchestrator_max_age_minutes": int(getattr(db, "weather_workflow_orchestrator_max_age_minutes", 240)),
-        "default_size_usd": float(
-            getattr(db, "weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD)
-        ),
-        "max_size_usd": float(getattr(db, "weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD)),
+        "enabled": bool(getattr(db, "weather_workflow_enabled", True) or True),
+        "auto_run": bool(getattr(db, "weather_workflow_auto_run", True) or True),
+        "scan_interval_seconds": _i("weather_workflow_scan_interval_seconds", app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS),
+        "entry_max_price": _f("weather_workflow_entry_max_price", app_settings.WEATHER_WORKFLOW_ENTRY_MAX_PRICE),
+        "take_profit_price": _f("weather_workflow_take_profit_price", app_settings.WEATHER_WORKFLOW_TAKE_PROFIT_PRICE),
+        "stop_loss_pct": _f("weather_workflow_stop_loss_pct", app_settings.WEATHER_WORKFLOW_STOP_LOSS_PCT),
+        "min_edge_percent": _f("weather_workflow_min_edge_percent", app_settings.WEATHER_WORKFLOW_MIN_EDGE_PERCENT),
+        "min_confidence": _f("weather_workflow_min_confidence", app_settings.WEATHER_WORKFLOW_MIN_CONFIDENCE),
+        "min_model_agreement": _f("weather_workflow_min_model_agreement", app_settings.WEATHER_WORKFLOW_MIN_MODEL_AGREEMENT),
+        "min_liquidity": _f("weather_workflow_min_liquidity", app_settings.WEATHER_WORKFLOW_MIN_LIQUIDITY),
+        "max_markets_per_scan": _i("weather_workflow_max_markets_per_scan", app_settings.WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN),
+        "orchestrator_enabled": bool(getattr(db, "weather_workflow_orchestrator_enabled", True) or True),
+        "orchestrator_min_edge": _f("weather_workflow_orchestrator_min_edge", 10.0),
+        "orchestrator_max_age_minutes": _i("weather_workflow_orchestrator_max_age_minutes", 240),
+        "default_size_usd": _f("weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD),
+        "max_size_usd": _f("weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD),
         "model": getattr(db, "weather_workflow_model", None),
+        "temperature_unit": getattr(db, "weather_workflow_temperature_unit", None) or "F",
     }
 
 
@@ -638,6 +604,7 @@ async def update_weather_settings(
         "default_size_usd": "weather_workflow_default_size_usd",
         "max_size_usd": "weather_workflow_max_size_usd",
         "model": "weather_workflow_model",
+        "temperature_unit": "weather_workflow_temperature_unit",
     }
 
     for key, value in updates.items():

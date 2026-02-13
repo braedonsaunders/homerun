@@ -146,6 +146,7 @@ async def get_weather_opportunities(
     max_entry: Optional[float] = Query(None, ge=0.01, le=0.99),
     location: Optional[str] = Query(None),
     target_date: Optional[date] = None,
+    include_report_only: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -158,7 +159,7 @@ async def get_weather_opportunities(
         target_date=target_date,
         require_tradable_markets=True,
         exclude_near_resolution=True,
-        include_report_only=False,
+        include_report_only=include_report_only,
     )
 
     total = len(opps)
@@ -178,6 +179,7 @@ async def get_weather_opportunity_dates(
     direction: Optional[str] = Query(None),
     max_entry: Optional[float] = Query(None, ge=0.01, le=0.99),
     location: Optional[str] = Query(None),
+    include_report_only: bool = Query(True),
 ):
     date_counts = await shared_state.get_weather_target_date_counts_from_db(
         session,
@@ -187,7 +189,7 @@ async def get_weather_opportunity_dates(
         location_query=location,
         require_tradable_markets=True,
         exclude_near_resolution=True,
-        include_report_only=False,
+        include_report_only=include_report_only,
     )
     return {"total_dates": len(date_counts), "dates": date_counts}
 

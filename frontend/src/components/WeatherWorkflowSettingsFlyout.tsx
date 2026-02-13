@@ -9,6 +9,7 @@ import {
   CloudRain,
   Bot,
   Brain,
+  Thermometer,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
@@ -40,6 +41,7 @@ const DEFAULTS: WeatherWorkflowSettings = {
   default_size_usd: 10,
   max_size_usd: 50,
   model: null,
+  temperature_unit: 'F',
 }
 
 function NumericField({
@@ -138,7 +140,7 @@ export default function WeatherWorkflowSettingsFlyout({
       <div className="fixed top-0 right-0 bottom-0 w-full max-w-xl z-50 bg-background border-l border-border/40 shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300">
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
-            <SlidersHorizontal className="w-4 h-4 text-cyan-400" />
+            <SlidersHorizontal className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
             <h3 className="text-sm font-semibold">Weather Workflow Settings</h3>
           </div>
           <div className="flex items-center gap-2">
@@ -183,7 +185,7 @@ export default function WeatherWorkflowSettingsFlyout({
         <div className="p-3 space-y-3 pb-6">
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
-              <CloudRain className="w-3.5 h-3.5 text-cyan-400" />
+              <CloudRain className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
               <h4 className="text-[10px] uppercase tracking-widest font-semibold">Pipeline</h4>
             </div>
             <div className="flex items-center justify-between">
@@ -305,6 +307,44 @@ export default function WeatherWorkflowSettingsFlyout({
                 className="mt-1 h-8 text-xs font-mono"
                 disabled={!form.enabled}
               />
+            </div>
+          </Card>
+
+          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <Thermometer className="w-3.5 h-3.5 text-orange-400" />
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Display</h4>
+            </div>
+            <div>
+              <Label className="text-[11px] text-muted-foreground">Temperature Unit</Label>
+              <div className="flex gap-1 mt-1">
+                <Button
+                  variant={form.temperature_unit === 'F' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => set('temperature_unit', 'F')}
+                  className={cn(
+                    'h-8 px-4 text-xs',
+                    form.temperature_unit === 'F'
+                      ? 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                      : ''
+                  )}
+                >
+                  Fahrenheit
+                </Button>
+                <Button
+                  variant={form.temperature_unit === 'C' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => set('temperature_unit', 'C')}
+                  className={cn(
+                    'h-8 px-4 text-xs',
+                    form.temperature_unit === 'C'
+                      ? 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                      : ''
+                  )}
+                >
+                  Celsius
+                </Button>
+              </div>
             </div>
           </Card>
         </div>

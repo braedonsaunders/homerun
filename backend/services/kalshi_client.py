@@ -223,6 +223,27 @@ class KalshiClient:
         title = data.get("title", "") or data.get("subtitle", "")
         resolved_event_ticker = data.get("event_ticker", "") or event_ticker
 
+        # Extract the sub-market outcome label.
+        # Kalshi multi-outcome events (e.g. "What will X say?") have sub-markets
+        # where `title` is the shared event question but the specific outcome
+        # (e.g. "Trump", "FBI", "Shutdown") is in yes_sub_title / custom_strike.
+        sub_title = (
+            data.get("yes_sub_title", "")
+            or data.get("no_sub_title", "")
+            or ""
+        )
+        if not sub_title:
+            custom_strike = data.get("custom_strike")
+            if isinstance(custom_strike, dict) and custom_strike:
+                # custom_strike.Word contains the outcome label
+                sub_title = (
+                    custom_strike.get("Word", "")
+                    or custom_strike.get("word", "")
+                    or next(iter(custom_strike.values()), "")
+                )
+        if not sub_title:
+            sub_title = data.get("subtitle", "") or ""
+
         # Kalshi prices are in cents (0-100); normalise to 0.0-1.0
         yes_bid = (data.get("yes_bid", 0) or 0) / 100.0
         yes_ask = (data.get("yes_ask", 0) or 0) / 100.0
@@ -236,9 +257,11 @@ class KalshiClient:
 
         outcome_prices = [yes_price, no_price]
 
-        # Build Token objects using the ticker as the token id
-        yes_token = Token(token_id=f"{ticker}_yes", outcome="Yes", price=yes_price)
-        no_token = Token(token_id=f"{ticker}_no", outcome="No", price=no_price)
+        # Use sub-market label as token outcomes when available (e.g. "Trump Yes" / "Trump No")
+        yes_label = f"{sub_title}" if sub_title else "Yes"
+        no_label = f"Not {sub_title}" if sub_title else "No"
+        yes_token = Token(token_id=f"{ticker}_yes", outcome=yes_label, price=yes_price)
+        no_token = Token(token_id=f"{ticker}_no", outcome=no_label, price=no_price)
 
         # Determine active / closed from status
         status = (data.get("status", "") or "").lower()
@@ -260,11 +283,30 @@ class KalshiClient:
         volume_raw = data.get("volume", 0) or 0
         liquidity_raw = data.get("liquidity", 0) or data.get("open_interest", 0) or 0
 
+        # When a sub-market label exists and isn't already part of the title,
+        # prefix the question with it so strategies and cards display the
+        # specific outcome.  E.g. "Shutdown / Shut Down: What will Jeffries say..."
+        # Skip prefixing if the label is already contained in the title (common
+        # for sports markets: yes_sub_title="Kasnikowski", title="Will Kasnikowski win...")
+        display_question = title
+        if sub_title and title:
+            # Check if the sub_title (or its first word) is already in the title
+            sub_lower = sub_title.lower()
+            title_lower = title.lower()
+            # For multi-word labels, check first word (handles "Shutdown / Shut Down" in "...shutdown...")
+            first_word = sub_lower.split("/")[0].split()[0] if sub_lower else ""
+            already_in_title = sub_lower in title_lower or (first_word and first_word in title_lower)
+            if not already_in_title:
+                display_question = f"{sub_title}: {title}"
+        elif sub_title:
+            display_question = sub_title
+
         return Market(
             id=ticker,
             condition_id=ticker,
-            question=title,
+            question=display_question,
             slug=ticker,
+            group_item_title=sub_title,
             event_slug=resolved_event_ticker,
             tokens=[yes_token, no_token],
             clob_token_ids=[f"{ticker}_yes", f"{ticker}_no"],

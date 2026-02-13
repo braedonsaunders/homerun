@@ -592,7 +592,7 @@ export default function RecentTradesPanel({
     }
   }
 
-  const handleSaveTraderOpportunitySettings = (
+  const handleSaveTraderOpportunitySettings = async (
     next: TraderOpportunitiesSettingsForm,
   ) => {
     if (!discoverySettings) {
@@ -604,6 +604,7 @@ export default function RecentTradesPanel({
       return
     }
 
+    // Save signal filter settings (existing behavior)
     setSourceFilter(next.source_filter)
     setMinTier(next.min_tier)
     setSideFilter(next.side_filter)

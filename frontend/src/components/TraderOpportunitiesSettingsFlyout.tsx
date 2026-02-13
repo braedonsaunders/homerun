@@ -5,7 +5,6 @@ import {
   Filter,
   Save,
   Settings,
-  Target,
   Users,
   X,
 } from 'lucide-react'
@@ -106,7 +105,7 @@ export default function TraderOpportunitiesSettingsFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-orange-400" />
-            <h3 className="text-sm font-semibold">Trader Opportunities Settings</h3>
+            <h3 className="text-sm font-semibold">Trader Signal Display</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -148,10 +147,16 @@ export default function TraderOpportunitiesSettingsFlyout({
         )}
 
         <div className="p-3 space-y-3 pb-6">
+          <p className="text-[11px] text-muted-foreground/70">
+            These settings control which signals are displayed in the Traders opportunities feed.
+            Auto-trader and copy trading settings are configured in the Auto Trader flyout.
+          </p>
+
+          {/* ============ SIGNAL FILTERS ============ */}
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-1.5">
               <Filter className="w-3.5 h-3.5 text-orange-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Confluence + View Filters</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Signal Filters</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <div>
@@ -167,10 +172,9 @@ export default function TraderOpportunitiesSettingsFlyout({
                   className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
                 >
                   <option value="all">All sources</option>
-                  <option value="confluence">Confluence only</option>
-                  <option value="insider">Insider only</option>
+                  <option value="confluence">Tracked Traders</option>
+                  <option value="insider">Pool Traders</option>
                 </select>
-                <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">Merged feed source selector</p>
               </div>
 
               <div>
@@ -189,7 +193,6 @@ export default function TraderOpportunitiesSettingsFlyout({
                   <option value="HIGH">High (10+ wallets)</option>
                   <option value="EXTREME">Extreme (15+ wallets)</option>
                 </select>
-                <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">Applied to tracked-trader endpoint</p>
               </div>
 
               <div>
@@ -208,12 +211,11 @@ export default function TraderOpportunitiesSettingsFlyout({
                   <option value="BUY">Buy clusters</option>
                   <option value="SELL">Sell clusters</option>
                 </select>
-                <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">Maps to insider direction filter</p>
               </div>
 
               <NumericField
                 label="Confluence Fetch Limit"
-                help="Backend range: 1-200"
+                help="1-200"
                 value={form.confluence_limit}
                 onChange={(v) => setForm((prev) => ({ ...prev, confluence_limit: v }))}
                 min={1}
@@ -223,15 +225,16 @@ export default function TraderOpportunitiesSettingsFlyout({
             </div>
           </Card>
 
+          {/* ============ POOL SIGNAL FEED ============ */}
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-amber-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Insider Feed</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Pool Signal Feed</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Insider Fetch Limit"
-                help="Backend range: 1-500"
+                label="Pool Fetch Limit"
+                help="1-500"
                 value={form.insider_limit}
                 onChange={(v) => setForm((prev) => ({ ...prev, insider_limit: v }))}
                 min={1}
@@ -239,8 +242,8 @@ export default function TraderOpportunitiesSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Insider Min Confidence"
-                help="Backend range: 0.00-1.00"
+                label="Pool Min Confidence"
+                help="0.00-1.00"
                 value={form.insider_min_confidence}
                 onChange={(v) => setForm((prev) => ({ ...prev, insider_min_confidence: v }))}
                 min={0}
@@ -248,8 +251,8 @@ export default function TraderOpportunitiesSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Insider Max Age (min)"
-                help="Backend range: 1-1440"
+                label="Pool Max Age (min)"
+                help="1-1440"
                 value={form.insider_max_age_minutes}
                 onChange={(v) => setForm((prev) => ({ ...prev, insider_max_age_minutes: v }))}
                 min={1}
@@ -257,17 +260,6 @@ export default function TraderOpportunitiesSettingsFlyout({
                 step={1}
               />
             </div>
-          </Card>
-
-          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
-            <div className="flex items-center gap-1.5">
-              <Target className="w-3.5 h-3.5 text-cyan-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Backend Constants Applied</h4>
-            </div>
-            <p className="mt-2 text-[11px] text-muted-foreground/80">
-              Tier thresholds are WATCH=5+, HIGH=10+, EXTREME=15+ aligned to confluence detector constants.
-              API validation bounds are enforced on save for confluence limit, insider limit, confidence, and max age.
-            </p>
           </Card>
         </div>
       </div>

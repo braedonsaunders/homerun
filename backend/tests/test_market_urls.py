@@ -8,6 +8,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from utils.market_urls import (  # noqa: E402
     attach_market_links_to_opportunity_dict,
     build_kalshi_market_url,
+    build_market_url,
     build_polymarket_market_url,
 )
 
@@ -42,11 +43,38 @@ def test_build_polymarket_market_url_rejects_non_slug_ids():
     )
 
 
-def test_build_kalshi_market_url_uses_ticker_only_route():
-    assert build_kalshi_market_url(market_ticker="KXELONMARS-99") == "https://kalshi.com/markets/KXELONMARS-99"
-    assert build_kalshi_market_url(market_ticker="KXELONMARS-99_yes") == "https://kalshi.com/markets/KXELONMARS-99"
-    assert build_kalshi_market_url(event_ticker="KXELONMARS-99") == "https://kalshi.com/markets/KXELONMARS-99"
+def test_build_kalshi_market_url_uses_event_ticker_route():
+    # Prefer event_ticker when provided explicitly
+    assert build_kalshi_market_url(event_ticker="KXELONMARS") == "https://kalshi.com/markets/kxelonmars"
+    # Derive event ticker from market ticker (first segment before hyphen)
+    assert build_kalshi_market_url(market_ticker="KXELONMARS-99") == "https://kalshi.com/markets/kxelonmars"
+    assert build_kalshi_market_url(market_ticker="KXELONMARS-99_yes") == "https://kalshi.com/markets/kxelonmars"
+    # Multi-segment market tickers: event ticker is always the first segment
+    assert build_kalshi_market_url(market_ticker="KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS") == "https://kalshi.com/markets/kxatpchallengermatch"
+    assert build_kalshi_market_url(market_ticker="KXGOVTSHUTDOWN-26FEB14") == "https://kalshi.com/markets/kxgovtshutdown"
+    assert build_kalshi_market_url(market_ticker="KXLIGUE1GAME-26FEB13RENPSG") == "https://kalshi.com/markets/kxligue1game"
+    # Single-segment market ticker used as-is (it IS the event ticker)
+    assert build_kalshi_market_url(market_ticker="KXELONMARS") == "https://kalshi.com/markets/kxelonmars"
+    # Non-Kalshi ticker returns None
     assert build_kalshi_market_url(market_ticker="kasimpasa vs karagumruk winner?") is None
+
+
+def test_build_market_url_kalshi_slug_not_used_as_event():
+    # Kalshi markets have slug == full market ticker; build_market_url must
+    # NOT treat it as the event ticker.
+    url = build_market_url({
+        "id": "KXPOLITICSMENTION-26FEB15-SHUT",
+        "slug": "KXPOLITICSMENTION-26FEB15-SHUT",
+        "platform": "kalshi",
+    })
+    assert url == "https://kalshi.com/markets/kxpoliticsmention"
+
+    url2 = build_market_url({
+        "id": "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS",
+        "slug": "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS",
+        "platform": "kalshi",
+    })
+    assert url2 == "https://kalshi.com/markets/kxatpchallengermatch"
 
 
 def test_attach_market_links_keeps_api_url_and_fills_platform_links():
@@ -61,12 +89,13 @@ def test_attach_market_links_keeps_api_url_and_fills_platform_links():
             {
                 "platform": "kalshi",
                 "id": "KXELONMARS-99_yes",
+                "event_ticker": "KXELONMARS",
             },
         ],
     }
 
     enriched = attach_market_links_to_opportunity_dict(opportunity)
     assert enriched["polymarket_url"] == "https://polymarket.com/market/will-trump-deport-less-than-250000"
-    assert enriched["kalshi_url"] == "https://kalshi.com/markets/KXELONMARS-99"
+    assert enriched["kalshi_url"] == "https://kalshi.com/markets/kxelonmars"
     assert enriched["markets"][0]["url"] == enriched["polymarket_url"]
     assert enriched["markets"][1]["url"] == enriched["kalshi_url"]

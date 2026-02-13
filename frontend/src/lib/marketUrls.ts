@@ -34,9 +34,12 @@ export function deriveKalshiEventTicker(marketTicker: NullableString): string {
   const ticker = normalizeKalshiTicker(marketTicker)
   if (!ticker) return ''
 
+  // Kalshi event tickers are the first hyphen-separated segment of the
+  // market ticker (e.g. "KXBTCD" from "KXBTCD-26FEB1314",
+  // "KXATPCHALLENGERMATCH" from "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS").
   const parts = ticker.split('-').filter(Boolean)
   if (parts.length <= 1) return ticker
-  return parts.slice(0, -1).join('-')
+  return parts[0]
 }
 
 export function inferMarketPlatform(params: {
@@ -97,14 +100,15 @@ export function buildKalshiMarketUrl(params: {
   eventTicker?: NullableString
   eventSlug?: NullableString
 }): string | null {
-  const marketTicker = normalizeKalshiTicker(params.marketTicker)
-  if (isLikelyKalshiTicker(marketTicker)) {
-    return `${KALSHI_BASE_URL}/markets/${encodeSegment(marketTicker)}`
-  }
-
-  const eventTicker = cleanSegment(params.eventTicker) || deriveKalshiEventTicker(marketTicker)
+  // Kalshi website URLs resolve via the event ticker (lowercase), e.g.
+  // https://kalshi.com/markets/kxbtcmaxy — full market tickers 404.
+  // Prefer explicit event_ticker / event_slug, then derive from market ticker.
+  const eventTicker =
+    cleanSegment(params.eventTicker) ||
+    cleanSegment(params.eventSlug) ||
+    deriveKalshiEventTicker(params.marketTicker)
   if (isLikelyKalshiTicker(eventTicker)) {
-    return `${KALSHI_BASE_URL}/markets/${encodeSegment(eventTicker)}`
+    return `${KALSHI_BASE_URL}/markets/${encodeSegment(eventTicker.toLowerCase())}`
   }
 
   return null
@@ -171,8 +175,8 @@ export function getOpportunityPlatformLinks(opportunity: OpportunityForLinks | n
     const fallbackUrl = platform === 'kalshi'
       ? buildKalshiMarketUrl({
           marketTicker: market.id || market.market_id || market.ticker,
-          eventTicker: market.event_ticker || market.event_slug,
-          eventSlug: market.event_slug || market.slug || market.market_slug,
+          eventTicker: market.event_ticker,
+          eventSlug: market.event_slug,
         })
       : buildPolymarketMarketUrl({
           eventSlug: market.event_slug || eventSlug,

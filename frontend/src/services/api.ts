@@ -299,9 +299,12 @@ export interface SimulationTrade {
   copied_from?: string
 }
 
+export type CopySourceType = 'individual' | 'tracked_group' | 'pool'
+
 export interface CopyConfig {
   id: string
-  source_wallet: string
+  source_type: CopySourceType
+  source_wallet: string | null
   account_id: string
   enabled: boolean
   copy_mode: string
@@ -357,12 +360,38 @@ export interface CopyTradingStatus {
   tracked_wallets: string[]
   configs_summary: Array<{
     id: string
-    source_wallet: string
+    source_type: CopySourceType
+    source_wallet: string | null
     copy_mode: string
     enabled: boolean
     total_copied: number
     successful_copies: number
   }>
+}
+
+export interface ActiveCopyMode {
+  mode: CopySourceType | 'disabled'
+  config_id: string | null
+  source_wallet: string | null
+  account_id?: string
+  copy_mode?: string
+  settings?: {
+    min_roi_threshold: number
+    max_position_size: number
+    copy_delay_seconds: number
+    slippage_tolerance: number
+    proportional_sizing: boolean
+    proportional_multiplier: number
+    copy_buys: boolean
+    copy_sells: boolean
+    market_categories: string[]
+  }
+  stats?: {
+    total_copied: number
+    successful_copies: number
+    failed_copies: number
+    total_pnl: number
+  }
 }
 
 export interface WalletAnalysis {
@@ -572,6 +601,11 @@ export const evaluateSearchResults = async (conditionIds: string[]): Promise<{ s
 
 export const triggerScan = async () => {
   const { data } = await api.post('/scan')
+  return data
+}
+
+export const clearOpportunities = async () => {
+  const { data } = await api.delete('/opportunities')
   return data
 }
 
@@ -916,8 +950,9 @@ export const getCopyConfigs = async (accountId?: string): Promise<CopyConfig[]> 
 }
 
 export const createCopyConfig = async (params: {
-  source_wallet: string
+  source_wallet?: string | null
   account_id: string
+  source_type?: CopySourceType
   copy_mode?: string
   min_roi_threshold?: number
   max_position_size?: number
@@ -927,8 +962,13 @@ export const createCopyConfig = async (params: {
   proportional_multiplier?: number
   copy_buys?: boolean
   copy_sells?: boolean
-}): Promise<{ config_id: string; source_wallet: string; account_id: string; enabled: boolean; copy_mode: string; message: string }> => {
+}): Promise<{ config_id: string; source_type: CopySourceType; source_wallet: string | null; account_id: string; enabled: boolean; copy_mode: string; message: string }> => {
   const { data } = await api.post('/copy-trading/configs', params)
+  return data
+}
+
+export const getActiveCopyMode = async (): Promise<ActiveCopyMode> => {
+  const { data } = await api.get('/copy-trading/configs/active-mode')
   return data
 }
 
@@ -3014,6 +3054,7 @@ export interface WeatherWorkflowSettings {
   default_size_usd: number
   max_size_usd: number
   model: string | null
+  temperature_unit: 'F' | 'C'
 }
 
 export interface WeatherTradeIntent {

@@ -262,13 +262,22 @@ class BaseStrategy(ABC):
         # Build enriched market dicts with VWAP metadata
         market_dicts = []
         for m in markets:
+            # Extract outcome labels from tokens (supports multi-outcome markets)
+            outcome_labels = [t.outcome for t in m.tokens] if m.tokens else []
+            outcome_prices = list(m.outcome_prices) if m.outcome_prices else []
             entry: dict = {
                 "id": m.id,
                 "slug": m.slug,
                 "question": m.question,
+                "group_item_title": getattr(m, "group_item_title", ""),
+                "event_slug": getattr(m, "event_slug", ""),
+                "event_ticker": getattr(m, "event_slug", ""),
                 "yes_price": m.yes_price,
                 "no_price": m.no_price,
+                "outcome_labels": outcome_labels,
+                "outcome_prices": outcome_prices,
                 "liquidity": m.liquidity,
+                "volume": getattr(m, "volume", 0.0),
                 "platform": getattr(m, "platform", "polymarket"),
             }
             market_dicts.append(entry)

@@ -165,8 +165,9 @@ class CopyTradingConfig(Base):
     __tablename__ = "copy_trading_configs"
 
     id = Column(String, primary_key=True)
-    source_wallet = Column(String, nullable=False, index=True)
+    source_wallet = Column(String, nullable=True, index=True)  # nullable for pool/tracked_group modes
     account_id = Column(String, ForeignKey("simulation_accounts.id"), nullable=False)
+    source_type = Column(String, default="individual")  # individual | tracked_group | pool
 
     enabled = Column(Boolean, default=True)
     copy_mode = Column(SQLEnum(CopyTradingMode), default=CopyTradingMode.ALL_TRADES)
@@ -969,6 +970,7 @@ class AppSettings(Base):
     weather_workflow_default_size_usd = Column(Float, default=10.0)
     weather_workflow_max_size_usd = Column(Float, default=50.0)
     weather_workflow_model = Column(String, nullable=True)
+    weather_workflow_temperature_unit = Column(String, default="F")
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -2441,14 +2443,27 @@ def _sqlite_migration_lock():
 
     lock_path = Path(__file__).resolve().parents[1] / ".alembic.sqlite.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock_file:
-        lock_file.seek(0)
-        if lock_file.read(1) == "":
-            lock_file.seek(0)
-            lock_file.write("1")
-            lock_file.flush()
-        lock_file.seek(0)
 
+    # Delete stale lock file if it has grown unreasonably (>4 KB).
+    try:
+        if lock_path.exists() and lock_path.stat().st_size > 4096:
+            lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # Use "a" (append) so multiple processes can open the file without
+    # Windows blocking on a competing truncate ("w" causes PermissionError
+    # when 9 services race to open the same file).
+    lock_file = None
+    try:
+        lock_file = lock_path.open("a", encoding="utf-8")
+    except (PermissionError, OSError):
+        # Cannot even open the lock file — proceed without a lock.
+        logger.warning("Cannot open migration lock file, proceeding without lock")
+        yield
+        return
+
+    try:
         if os.name == "posix":
             import fcntl
 
@@ -2464,23 +2479,38 @@ def _sqlite_migration_lock():
             import time
 
             deadline = time.monotonic() + 30
+            locked = False
             while True:
                 try:
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
                     break
                 except (PermissionError, OSError):
                     if time.monotonic() >= deadline:
-                        raise
+                        logger.warning(
+                            "Could not acquire migration lock after 30s, "
+                            "proceeding without lock"
+                        )
+                        break
                     time.sleep(0.5)
             try:
                 yield
             finally:
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                if locked:
+                    try:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (PermissionError, OSError):
+                        pass
             return
 
         # Unknown platform: continue without an OS-level file lock.
         yield
+    finally:
+        try:
+            lock_file.close()
+        except (PermissionError, OSError):
+            pass
 
 
 async def init_database():

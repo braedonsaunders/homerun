@@ -128,6 +128,7 @@ class WeatherWorkflowOrchestrator:
                 intents_created += 1
 
         await session.commit()
+        all_opportunities = opportunities + report_only_findings
         await self._attach_market_price_history(opportunities)
 
         self._cycle_count += 1
@@ -152,7 +153,7 @@ class WeatherWorkflowOrchestrator:
 
         await shared_state.write_weather_snapshot(
             session,
-            opportunities=sorted(opportunities, key=lambda o: o.roi_percent, reverse=True),
+            opportunities=sorted(all_opportunities, key=lambda o: o.roi_percent, reverse=True),
             status={
                 "running": True,
                 "enabled": True,

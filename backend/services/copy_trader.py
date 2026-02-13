@@ -4,12 +4,13 @@ import uuid
 from datetime import datetime
 from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Optional
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 
 from models.database import (
     CopyTradingConfig,
     CopyTradingMode,
     CopiedTrade,
+    DiscoveredWallet,
     TrackedWallet,
     SimulationAccount,
     SimulationPosition,
@@ -65,13 +66,110 @@ class CopyTradingService:
         # Broadcast callback for pushing copy trade events to frontend via WS
         self._ws_broadcast_callback = None
 
+    # ==================== POOL / GROUP HELPERS ====================
+
+    async def _is_pool_wallet(self, wallet_address: str) -> bool:
+        """Check if a wallet is in the smart wallet pool."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(DiscoveredWallet.address).where(
+                    DiscoveredWallet.address == wallet_address.lower(),
+                    DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                )
+            )
+            return result.scalar() is not None
+
+    async def _is_tracked_wallet(self, wallet_address: str) -> bool:
+        """Check if a wallet is in the tracked wallets table."""
+        async with AsyncSessionLocal() as session:
+            result = await session.get(TrackedWallet, wallet_address.lower())
+            return result is not None
+
+    async def _get_pool_wallet_addresses(self) -> list[str]:
+        """Get all wallet addresses in the smart wallet pool."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(DiscoveredWallet.address).where(
+                    DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                )
+            )
+            return [row[0] for row in result.all()]
+
+    async def _get_tracked_wallet_addresses(self) -> list[str]:
+        """Get all tracked wallet addresses."""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(TrackedWallet.address))
+            return [row[0] for row in result.all()]
+
+    async def _sync_ws_wallets(self):
+        """Sync WebSocket monitor with all wallets needed by active copy configs."""
+        try:
+            from services.wallet_ws_monitor import wallet_ws_monitor
+
+            wallets: set[str] = set()
+            configs = await self.get_configs()
+
+            for config in configs:
+                if not config.enabled:
+                    continue
+                source_type = getattr(config, "source_type", "individual") or "individual"
+                if source_type == "individual" and config.source_wallet:
+                    wallets.add(config.source_wallet)
+                elif source_type == "pool":
+                    pool_addrs = await self._get_pool_wallet_addresses()
+                    wallets.update(pool_addrs)
+                elif source_type == "tracked_group":
+                    tracked_addrs = await self._get_tracked_wallet_addresses()
+                    wallets.update(tracked_addrs)
+
+            wallet_ws_monitor.set_wallets_for_source("copy_trader", list(wallets))
+            logger.info("Synced copy trader WS wallets", count=len(wallets))
+        except Exception as e:
+            logger.warning(f"Failed to sync WS wallets: {e}")
+
+    async def get_active_copy_mode(self) -> dict:
+        """Return the current active copy trading mode for the UI flyout."""
+        configs = await self.get_configs()
+        enabled = [c for c in configs if c.enabled]
+        if not enabled:
+            return {"mode": "disabled", "config_id": None, "source_wallet": None, "settings": {}}
+
+        # Return the first enabled config's mode info
+        config = enabled[0]
+        source_type = getattr(config, "source_type", "individual") or "individual"
+        return {
+            "mode": source_type,
+            "config_id": config.id,
+            "source_wallet": config.source_wallet,
+            "account_id": config.account_id,
+            "copy_mode": config.copy_mode.value,
+            "settings": {
+                "min_roi_threshold": config.min_roi_threshold,
+                "max_position_size": config.max_position_size,
+                "copy_delay_seconds": config.copy_delay_seconds,
+                "slippage_tolerance": config.slippage_tolerance,
+                "proportional_sizing": config.proportional_sizing,
+                "proportional_multiplier": config.proportional_multiplier,
+                "copy_buys": config.copy_buys,
+                "copy_sells": config.copy_sells,
+                "market_categories": config.market_categories,
+            },
+            "stats": {
+                "total_copied": config.total_copied,
+                "successful_copies": config.successful_copies,
+                "failed_copies": config.failed_copies,
+                "total_pnl": config.total_pnl,
+            },
+        }
+
     # ==================== CONFIG MANAGEMENT ====================
 
     async def add_copy_config(
         self,
-        source_wallet: str,
-        account_id: str,
+        source_wallet: Optional[str] = None,
+        account_id: str = "",
         copy_mode: str = "all_trades",
+        source_type: str = "individual",
         min_roi_threshold: float = 2.5,
         max_position_size: float = 1000.0,
         copy_delay_seconds: int = 5,
@@ -82,7 +180,18 @@ class CopyTradingService:
         copy_sells: bool = True,
         market_categories: list[str] = None,
     ) -> CopyTradingConfig:
-        """Add a wallet to copy trade"""
+        """Add a copy trading configuration.
+
+        source_type controls the mode:
+        - "individual": Copy from a specific source_wallet (required)
+        - "tracked_group": Copy from all tracked wallets
+        - "pool": Copy from the smart wallet pool
+        """
+        if source_type not in ("individual", "tracked_group", "pool"):
+            raise ValueError(f"Invalid source_type: {source_type}")
+        if source_type == "individual" and not source_wallet:
+            raise ValueError("source_wallet is required for individual mode")
+
         async with AsyncSessionLocal() as session:
             # Verify account exists
             account = await session.get(SimulationAccount, account_id)
@@ -93,8 +202,9 @@ class CopyTradingService:
 
             config = CopyTradingConfig(
                 id=str(uuid.uuid4()),
-                source_wallet=source_wallet.lower(),
+                source_wallet=source_wallet.lower() if source_wallet else None,
                 account_id=account_id,
+                source_type=source_type,
                 enabled=True,
                 copy_mode=mode,
                 min_roi_threshold=min_roi_threshold,
@@ -109,11 +219,12 @@ class CopyTradingService:
             )
             session.add(config)
 
-            # Also ensure wallet is tracked
-            wallet = await session.get(TrackedWallet, source_wallet.lower())
-            if not wallet:
-                wallet = TrackedWallet(address=source_wallet.lower(), label="Copy Target")
-                session.add(wallet)
+            # For individual mode, ensure wallet is tracked
+            if source_type == "individual" and source_wallet:
+                wallet = await session.get(TrackedWallet, source_wallet.lower())
+                if not wallet:
+                    wallet = TrackedWallet(address=source_wallet.lower(), label="Copy Target")
+                    session.add(wallet)
 
             await session.commit()
             await session.refresh(config)
@@ -122,16 +233,12 @@ class CopyTradingService:
 
             # Keep WS monitor membership in sync when running.
             if self._running:
-                try:
-                    from services.wallet_ws_monitor import wallet_ws_monitor
-
-                    wallet_ws_monitor.add_wallet(source_wallet, source="copy_trader")
-                except Exception:
-                    pass
+                await self._sync_ws_wallets()
 
             logger.info(
                 "Added copy trading config",
                 config_id=config.id,
+                source_type=source_type,
                 source_wallet=source_wallet,
                 account_id=account_id,
                 copy_mode=copy_mode,
@@ -1378,9 +1485,32 @@ class CopyTradingService:
     # ==================== MAIN POLL LOOP ====================
 
     async def _process_config(self, config: CopyTradingConfig):
-        """Process a single copy trading config: detect and copy new trades."""
+        """Process a single copy trading config: detect and copy new trades.
+
+        For pool/tracked_group configs, polls trades from all relevant wallets.
+        """
         try:
-            new_trades = await self._get_new_trades(config.source_wallet, config)
+            source_type = getattr(config, "source_type", "individual") or "individual"
+
+            # Determine which wallets to poll
+            if source_type == "individual":
+                if not config.source_wallet:
+                    return
+                wallet_addresses = [config.source_wallet]
+            elif source_type == "pool":
+                wallet_addresses = await self._get_pool_wallet_addresses()
+            elif source_type == "tracked_group":
+                wallet_addresses = await self._get_tracked_wallet_addresses()
+            else:
+                return
+
+            # Aggregate trades from all wallets
+            all_new_trades = []
+            for wallet_addr in wallet_addresses:
+                trades = await self._get_new_trades(wallet_addr, config)
+                if trades:
+                    all_new_trades.extend(trades)
+            new_trades = all_new_trades
 
             if not new_trades:
                 return
@@ -1388,7 +1518,9 @@ class CopyTradingService:
             logger.info(
                 "Found new trades to copy",
                 config_id=config.id,
+                source_type=source_type,
                 source_wallet=config.source_wallet,
+                wallets_polled=len(wallet_addresses),
                 count=len(new_trades),
             )
 
@@ -1492,20 +1624,41 @@ class CopyTradingService:
 
         Uses DIRECT event processing (no HTTP API re-fetch) for <500ms latency.
         The WalletTradeEvent already contains all trade data from on-chain parsing.
+        Supports individual, pool, and tracked_group source types.
         """
         if global_pause_state.is_paused:
             return
         try:
             wallet_address = event.wallet_address.lower()
-            # Find configs that track this wallet
+            # Find configs that track this wallet:
+            # 1. Individual configs matching this exact wallet
+            # 2. Pool configs (if wallet is in the pool)
+            # 3. Tracked group configs (if wallet is tracked)
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
                     select(CopyTradingConfig).where(
                         CopyTradingConfig.enabled,
-                        CopyTradingConfig.source_wallet == wallet_address,
+                        or_(
+                            CopyTradingConfig.source_wallet == wallet_address,
+                            CopyTradingConfig.source_type == "pool",
+                            CopyTradingConfig.source_type == "tracked_group",
+                        ),
                     )
                 )
-                configs = list(result.scalars().all())
+                all_configs = list(result.scalars().all())
+
+            # Filter pool/tracked_group configs to verify wallet eligibility
+            configs = []
+            for config in all_configs:
+                source_type = getattr(config, "source_type", "individual") or "individual"
+                if source_type == "individual":
+                    configs.append(config)
+                elif source_type == "pool":
+                    if await self._is_pool_wallet(wallet_address):
+                        configs.append(config)
+                elif source_type == "tracked_group":
+                    if await self._is_tracked_wallet(wallet_address):
+                        configs.append(config)
 
             if configs:
                 logger.info(
@@ -1558,10 +1711,8 @@ class CopyTradingService:
         try:
             from services.wallet_ws_monitor import wallet_ws_monitor
 
-            wallet_ws_monitor.set_wallets_for_source(
-                "copy_trader",
-                [config.source_wallet for config in configs if config.enabled],
-            )
+            # Sync all wallets (individual + pool + tracked_group)
+            await self._sync_ws_wallets()
             wallet_ws_monitor.add_callback(self._on_realtime_trade)
             asyncio.create_task(wallet_ws_monitor.start())
             logger.info("WebSocket wallet monitor started for copy trading")
@@ -1589,6 +1740,7 @@ class CopyTradingService:
 
             return {
                 "config_id": config.id,
+                "source_type": getattr(config, "source_type", "individual") or "individual",
                 "source_wallet": config.source_wallet,
                 "account_id": config.account_id,
                 "enabled": config.enabled,

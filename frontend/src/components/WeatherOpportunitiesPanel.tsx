@@ -276,7 +276,7 @@ export default function WeatherOpportunitiesPanel({
     <div className="space-y-3">
       <div className="rounded-xl border border-border/40 bg-card/40 p-3">
         <div className="flex flex-wrap items-center gap-1.5">
-          <CloudRain className="w-4 h-4 text-cyan-400 shrink-0" />
+          <CloudRain className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
           <Badge
             variant="outline"
             className={cn(
@@ -342,7 +342,7 @@ export default function WeatherOpportunitiesPanel({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 text-xs gap-1.5 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 hover:text-cyan-400"
+              className="h-8 text-xs gap-1.5 border-cyan-600/30 dark:border-cyan-500/30 text-cyan-700 dark:text-cyan-400 hover:bg-cyan-500/10 hover:text-cyan-700 dark:hover:text-cyan-400"
               onClick={() => refreshMutation.mutate()}
               disabled={refreshMutation.isPending}
             >
@@ -372,7 +372,7 @@ export default function WeatherOpportunitiesPanel({
         </div>
         <div className="mt-2 flex items-center gap-1.5">
           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0">
-            <CalendarDays className="w-3 h-3 text-cyan-400/80" />
+            <CalendarDays className="w-3 h-3 text-cyan-600/80 dark:text-cyan-400/80" />
             Date
           </span>
           <Button

@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Copy,
+  Filter,
   Loader2,
   Play,
   ShieldAlert,
@@ -40,6 +42,12 @@ import {
   type TraderOrder,
   type TraderSource,
   updateTrader,
+  getActiveCopyMode,
+  createCopyConfig,
+  updateCopyConfig,
+  deleteCopyConfig,
+  type ActiveCopyMode,
+  type CopySourceType,
 } from '../services/api'
 import { cn } from '../lib/utils'
 import { selectedAccountIdAtom } from '../store/atoms'
@@ -130,12 +138,56 @@ type TraderAdvancedConfig = {
   notes: string
 }
 
-type TraderSourceGroupKey = 'markets' | 'crypto' | 'pool_watched' | 'other'
+type CopyTradingMode = 'disabled' | CopySourceType
 
-type TraderSourceGroupMeta = {
-  key: TraderSourceGroupKey
-  label: string
-  subtitle: string
+type CopyTradingFormState = {
+  copy_mode_type: CopyTradingMode
+  individual_wallet: string
+  account_id: string
+  copy_trade_mode: 'all_trades' | 'arb_only'
+  max_position_size: number
+  proportional_sizing: boolean
+  proportional_multiplier: number
+  copy_buys: boolean
+  copy_sells: boolean
+  copy_delay_seconds: number
+  slippage_tolerance: number
+  min_roi_threshold: number
+}
+
+type TraderSignalFilters = {
+  source_filter: 'all' | 'confluence' | 'insider'
+  min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
+  side_filter: 'all' | 'BUY' | 'SELL'
+  confluence_limit: number
+  insider_limit: number
+  insider_min_confidence: number
+  insider_max_age_minutes: number
+}
+
+const DEFAULT_COPY_TRADING: CopyTradingFormState = {
+  copy_mode_type: 'disabled',
+  individual_wallet: '',
+  account_id: '',
+  copy_trade_mode: 'all_trades',
+  max_position_size: 1000,
+  proportional_sizing: false,
+  proportional_multiplier: 1.0,
+  copy_buys: true,
+  copy_sells: true,
+  copy_delay_seconds: 5,
+  slippage_tolerance: 1.0,
+  min_roi_threshold: 2.5,
+}
+
+const DEFAULT_SIGNAL_FILTERS: TraderSignalFilters = {
+  source_filter: 'all',
+  min_tier: 'WATCH',
+  side_filter: 'all',
+  confluence_limit: 50,
+  insider_limit: 40,
+  insider_min_confidence: 0.62,
+  insider_max_age_minutes: 180,
 }
 
 const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
@@ -149,13 +201,6 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     description: 'Crypto microstructure and 5m/15m market signals.',
     domains: ['crypto'],
     signal_types: ['crypto_market'],
-  },
-  {
-    key: 'insider',
-    label: 'Insider Signals',
-    description: 'Insider and smart-wallet behavior intents.',
-    domains: ['event_markets'],
-    signal_types: ['insider_intent'],
   },
   {
     key: 'news',
@@ -174,9 +219,16 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   {
     key: 'tracked_traders',
     label: 'Tracked Traders',
-    description: 'Signals synthesized from tracked trader activity.',
+    description: 'Copy trades from your individually tracked wallets.',
     domains: ['event_markets'],
     signal_types: ['tracked_trader'],
+  },
+  {
+    key: 'pool_traders',
+    label: 'Pool Traders',
+    description: 'Copy trades from smart wallet pool confluence signals.',
+    domains: ['event_markets'],
+    signal_types: ['pool_confluence'],
   },
   {
     key: 'weather',
@@ -194,28 +246,6 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   },
 ]
 
-const TRADER_SOURCE_GROUPS: TraderSourceGroupMeta[] = [
-  {
-    key: 'markets',
-    label: 'Markets',
-    subtitle: 'General event and workflow opportunities',
-  },
-  {
-    key: 'crypto',
-    label: 'Crypto',
-    subtitle: 'Fast crypto market signals',
-  },
-  {
-    key: 'pool_watched',
-    label: 'Pool / Watched Traders',
-    subtitle: 'Insider and tracked trader signal pools',
-  },
-  {
-    key: 'other',
-    label: 'Other',
-    subtitle: 'Custom or uncategorized adapters',
-  },
-]
 
 function toNumber(value: unknown): number {
   const parsed = Number(value)
@@ -421,30 +451,38 @@ function uniqueSourceList(values: string[]): string[] {
   return out
 }
 
-function classifyTraderSource(source: Pick<TraderSource, 'key' | 'domains'>): TraderSourceGroupKey {
-  const sourceKey = normalizeSourceKey(source.key)
-  const domains = (source.domains || []).map((item) => normalizeSourceKey(item))
-  if (sourceKey === 'crypto' || domains.some((item) => item.includes('crypto'))) {
-    return 'crypto'
+function isTraderSourceKey(key: string): boolean {
+  const k = normalizeSourceKey(key)
+  return k.includes('tracked') || k.includes('pool') || k.includes('watch')
+}
+
+function isCryptoSourceKey(key: string): boolean {
+  const k = normalizeSourceKey(key)
+  return k === 'crypto' || k.includes('crypto')
+}
+
+function copyTradingFromActiveMode(active: ActiveCopyMode): CopyTradingFormState {
+  if (active.mode === 'disabled' || !active.config_id) {
+    return DEFAULT_COPY_TRADING
   }
-  if (
-    sourceKey.includes('tracked') ||
-    sourceKey.includes('watch') ||
-    sourceKey.includes('pool') ||
-    sourceKey.includes('insider')
-  ) {
-    return 'pool_watched'
+  return {
+    copy_mode_type: active.mode as CopyTradingMode,
+    individual_wallet: active.source_wallet || '',
+    account_id: active.account_id || '',
+    copy_trade_mode: (active.copy_mode || 'all_trades') as 'all_trades' | 'arb_only',
+    max_position_size: active.settings?.max_position_size ?? 1000,
+    proportional_sizing: active.settings?.proportional_sizing ?? false,
+    proportional_multiplier: active.settings?.proportional_multiplier ?? 1.0,
+    copy_buys: active.settings?.copy_buys ?? true,
+    copy_sells: active.settings?.copy_sells ?? true,
+    copy_delay_seconds: active.settings?.copy_delay_seconds ?? 5,
+    slippage_tolerance: active.settings?.slippage_tolerance ?? 1.0,
+    min_roi_threshold: active.settings?.min_roi_threshold ?? 2.5,
   }
-  if (
-    domains.some((item) => item.includes('market')) ||
-    sourceKey.includes('scanner') ||
-    sourceKey.includes('news') ||
-    sourceKey.includes('weather') ||
-    sourceKey.includes('world')
-  ) {
-    return 'markets'
-  }
-  return 'other'
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
 }
 
 function defaultAdvancedConfig(): TraderAdvancedConfig {
@@ -802,6 +840,8 @@ export default function TradingPanel() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [deleteAction, setDeleteAction] = useState<'block' | 'disable' | 'force_delete'>('disable')
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [draftCopyTrading, setDraftCopyTrading] = useState<CopyTradingFormState>(DEFAULT_COPY_TRADING)
+  const [draftSignalFilters, setDraftSignalFilters] = useState<TraderSignalFilters>(DEFAULT_SIGNAL_FILTERS)
 
   const overviewQuery = useQuery({
     queryKey: ['trader-orchestrator-overview'],
@@ -833,6 +873,13 @@ export default function TradingPanel() {
     staleTime: 30000,
   })
 
+  const activeCopyModeQuery = useQuery({
+    queryKey: ['copy-trading-active-mode'],
+    queryFn: getActiveCopyMode,
+    staleTime: 15000,
+  })
+
+  const activeCopyMode = activeCopyModeQuery.data ?? null
   const traders = tradersQuery.data || []
   const templates = templatesQuery.data || []
   const sourceCatalog = traderSourcesQuery.data?.length ? traderSourcesQuery.data : FALLBACK_TRADER_SOURCES
@@ -933,19 +980,6 @@ export default function TradingPanel() {
     () => new Set(csvToList(draftSources).map((sourceKey) => normalizeSourceKey(sourceKey))),
     [draftSources]
   )
-
-  const sourceCardsByGroup = useMemo(() => {
-    const grouped: Record<TraderSourceGroupKey, Array<TraderSource & { isLegacy: boolean }>> = {
-      markets: [],
-      crypto: [],
-      pool_watched: [],
-      other: [],
-    }
-    for (const source of sourceCards) {
-      grouped[classifyTraderSource(source)].push(source)
-    }
-    return grouped
-  }, [sourceCards])
 
   const selectedSourceCount = useMemo(
     () => sourceCards.filter((source) => selectedSourceKeySet.has(normalizeSourceKey(source.key))).length,
@@ -1106,6 +1140,10 @@ export default function TradingPanel() {
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
+    setDraftCopyTrading(activeCopyMode && activeCopyMode.mode !== 'disabled'
+      ? copyTradingFromActiveMode(activeCopyMode)
+      : DEFAULT_COPY_TRADING)
+    setDraftSignalFilters(DEFAULT_SIGNAL_FILTERS)
     setTraderFlyoutOpen(true)
   }
 
@@ -1130,8 +1168,18 @@ export default function TradingPanel() {
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
+    setDraftCopyTrading(activeCopyMode && activeCopyMode.mode !== 'disabled'
+      ? copyTradingFromActiveMode(activeCopyMode)
+      : DEFAULT_COPY_TRADING)
+    setDraftSignalFilters(DEFAULT_SIGNAL_FILTERS)
     setTraderFlyoutOpen(true)
   }
+
+  const setCt = (partial: Partial<CopyTradingFormState>) =>
+    setDraftCopyTrading((prev) => ({ ...prev, ...partial }))
+
+  const setSf = (partial: Partial<TraderSignalFilters>) =>
+    setDraftSignalFilters((prev) => ({ ...prev, ...partial }))
 
   const setAdvancedValue = <K extends keyof TraderAdvancedConfig>(key: K, value: TraderAdvancedConfig[K]) => {
     setAdvancedConfig((current) => ({ ...current, [key]: value }))
@@ -1189,6 +1237,55 @@ export default function TradingPanel() {
     onSuccess: refreshAll,
   })
 
+  const saveCopyTradingConfig = async () => {
+    const ct = draftCopyTrading
+    try {
+      const currentMode = activeCopyMode
+      const currentConfigId = currentMode?.config_id
+
+      if (ct.copy_mode_type === 'disabled') {
+        if (currentConfigId) {
+          await deleteCopyConfig(currentConfigId)
+        }
+      } else if (currentConfigId && currentMode?.mode === ct.copy_mode_type) {
+        await updateCopyConfig(currentConfigId, {
+          copy_mode: ct.copy_trade_mode,
+          max_position_size: ct.max_position_size,
+          proportional_sizing: ct.proportional_sizing,
+          proportional_multiplier: ct.proportional_multiplier,
+          copy_buys: ct.copy_buys,
+          copy_sells: ct.copy_sells,
+          copy_delay_seconds: ct.copy_delay_seconds,
+          slippage_tolerance: ct.slippage_tolerance,
+          min_roi_threshold: ct.min_roi_threshold,
+        })
+      } else {
+        if (currentConfigId) {
+          await deleteCopyConfig(currentConfigId)
+        }
+        if (selectedAccountId) {
+          await createCopyConfig({
+            source_type: ct.copy_mode_type as CopySourceType,
+            source_wallet: ct.copy_mode_type === 'individual' ? ct.individual_wallet : undefined,
+            account_id: selectedAccountId,
+            copy_mode: ct.copy_trade_mode,
+            max_position_size: ct.max_position_size,
+            proportional_sizing: ct.proportional_sizing,
+            proportional_multiplier: ct.proportional_multiplier,
+            copy_buys: ct.copy_buys,
+            copy_sells: ct.copy_sells,
+            copy_delay_seconds: ct.copy_delay_seconds,
+            slippage_tolerance: ct.slippage_tolerance,
+            min_roi_threshold: ct.min_roi_threshold,
+          })
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ['copy-trading-active-mode'] })
+    } catch (err) {
+      console.error('Failed to save copy trading config', err)
+    }
+  }
+
   const createTraderMutation = useMutation({
     mutationFn: async () => {
       const parsedParams = parseJsonObject(draftParams || '{}')
@@ -1219,7 +1316,8 @@ export default function TradingPanel() {
         is_paused: draftPaused,
       })
     },
-    onSuccess: (trader) => {
+    onSuccess: async (trader) => {
+      await saveCopyTradingConfig()
       setSaveError(null)
       setTraderFlyoutOpen(false)
       setSelectedTraderId(trader.id)
@@ -1260,7 +1358,8 @@ export default function TradingPanel() {
         is_paused: draftPaused,
       })
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      await saveCopyTradingConfig()
       setSaveError(null)
       setTraderFlyoutOpen(false)
       refreshAll()
@@ -2969,97 +3068,341 @@ export default function TradingPanel() {
                   title="Signal Sources"
                   icon={Zap}
                   count={`${selectedSourceCount}/${sourceCards.length || sourceCatalog.length} enabled`}
-                  subtitle="Pick the signal sources this trader should consume."
+                  subtitle="Toggle signal sources this trader should consume."
                 >
-                  <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">
-                    <p className="text-[11px] font-medium">Source Controls</p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[11px]"
-                        onClick={enableAllSourceCards}
-                      >
-                        Enable all
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[11px]"
-                        onClick={() => setDraftSources(defaultSourceCsv)}
-                      >
-                        Use default
-                      </Button>
-                    </div>
-                    <p className="mt-1 text-[10px] text-muted-foreground/70">
-                      3-4 cards per row on desktop for quick source toggling.
-                    </p>
+                  <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={enableAllSourceCards}>
+                      Enable all
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setDraftSources(defaultSourceCsv)}>
+                      Use default
+                    </Button>
                   </div>
 
-                  {TRADER_SOURCE_GROUPS.map((group) => {
-                    const groupSources = sourceCardsByGroup[group.key]
-                    if (!groupSources || groupSources.length === 0) return null
-                    const enabledCount = groupSources.filter((source) => selectedSourceKeySet.has(normalizeSourceKey(source.key))).length
-                    return (
-                      <div key={group.key} className="rounded-lg border border-border/60 bg-muted/10 p-2.5 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
-                            <p className="text-[10px] text-muted-foreground/70">{group.subtitle}</p>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {sourceCards.map((source) => {
+                      const isEnabled = selectedSourceKeySet.has(normalizeSourceKey(source.key))
+                      return (
+                        <button
+                          key={source.key}
+                          type="button"
+                          onClick={() => toggleDraftSource(source.key)}
+                          className={cn(
+                            'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                            isEnabled
+                              ? 'border-emerald-500/40 bg-emerald-500/10'
+                              : 'border-border/70 bg-background hover:border-emerald-500/30 hover:bg-muted/40'
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs font-medium leading-tight">{source.label}</p>
+                            <span
+                              className={cn(
+                                'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
+                                isEnabled ? 'bg-emerald-500/20 text-emerald-600' : 'bg-muted text-muted-foreground'
+                              )}
+                            >
+                              {isEnabled ? 'ON' : 'OFF'}
+                            </span>
                           </div>
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/70 text-muted-foreground">
-                            {enabledCount}/{groupSources.length}
-                          </span>
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                          {groupSources.map((source) => {
-                            const isEnabled = selectedSourceKeySet.has(normalizeSourceKey(source.key))
-                            const descriptor = source.signal_types?.slice(0, 2).join(' • ') || source.key
-                            return (
-                              <button
-                                key={source.key}
-                                type="button"
-                                onClick={() => toggleDraftSource(source.key)}
-                                className={cn(
-                                  'rounded-lg border px-2.5 py-2 text-left transition-colors',
-                                  isEnabled
-                                    ? 'border-emerald-500/40 bg-emerald-500/10'
-                                    : 'border-border/70 bg-background hover:border-emerald-500/30 hover:bg-muted/40'
-                                )}
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-medium leading-tight">{source.label}</p>
-                                  <span
-                                    className={cn(
-                                      'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
-                                      isEnabled ? 'bg-emerald-500/20 text-emerald-600' : 'bg-muted text-muted-foreground'
-                                    )}
-                                  >
-                                    {isEnabled ? 'ON' : 'OFF'}
-                                  </span>
-                                </div>
-                                <p className="mt-1 text-[10px] leading-tight text-muted-foreground/75">
-                                  {source.description}
-                                </p>
-                                <p className="mt-1 text-[9px] uppercase tracking-wide text-muted-foreground/70">
-                                  {descriptor}
-                                </p>
-                              </button>
-                            )
-                          })}
+                          <p className="mt-1 text-[10px] leading-tight text-muted-foreground/75">
+                            {source.description}
+                          </p>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* Crypto inline config — shown when any crypto source is enabled */}
+                  {sourceCards.some((s) => isCryptoSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
+                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-2.5 space-y-2 mt-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-400">Crypto Settings</p>
+                        <Button type="button" size="sm" variant="outline" className="h-5 px-2 text-[10px]" onClick={enableAllCryptoTargets}>
+                          Use all
+                        </Button>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground/80">Assets</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {CRYPTO_ASSET_OPTIONS.map((asset) => (
+                            <Button
+                              key={asset}
+                              type="button"
+                              size="sm"
+                              variant={selectedCryptoAssets.has(asset) ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => toggleCryptoAssetTarget(asset)}
+                            >
+                              {asset}
+                            </Button>
+                          ))}
                         </div>
                       </div>
-                    )
-                  })}
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground/80">Timeframes</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {CRYPTO_TIMEFRAME_OPTIONS.map((tf) => (
+                            <Button
+                              key={tf}
+                              type="button"
+                              size="sm"
+                              variant={selectedCryptoTimeframes.has(tf) ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => toggleCryptoTimeframeTarget(tf)}
+                            >
+                              {tf}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-1">
+                        <Label className="text-[11px] text-muted-foreground">Strategy Mode</Label>
+                        <Select
+                          value={advancedConfig.strategyMode}
+                          onValueChange={(value) => setAdvancedValue('strategyMode', normalizeCryptoStrategyMode(value))}
+                        >
+                          <SelectTrigger className="h-7 text-xs mt-0.5">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CRYPTO_STRATEGY_MODES.map((mode) => (
+                              <SelectItem key={mode} value={mode} className="text-xs">{mode}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  )}
 
-                  <details className="rounded-md border border-border/60 bg-muted/10 p-2.5">
+                  {/* Traders inline config — shown when tracked_traders or pool_traders is enabled */}
+                  {sourceCards.some((s) => isTraderSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
+                    <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-2.5 space-y-3 mt-2">
+                      <div className="flex items-center gap-1.5">
+                        <Filter className="w-3.5 h-3.5 text-orange-400" />
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Trader Signal Filters</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Source Filter</Label>
+                          <select
+                            value={draftSignalFilters.source_filter}
+                            onChange={(e) => setSf({ source_filter: e.target.value as TraderSignalFilters['source_filter'] })}
+                            className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
+                          >
+                            <option value="all">All sources</option>
+                            <option value="confluence">Tracked Traders</option>
+                            <option value="insider">Pool Traders</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Min Confluence Tier</Label>
+                          <select
+                            value={draftSignalFilters.min_tier}
+                            onChange={(e) => setSf({ min_tier: e.target.value as TraderSignalFilters['min_tier'] })}
+                            className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
+                          >
+                            <option value="WATCH">Watch (5+)</option>
+                            <option value="HIGH">High (10+)</option>
+                            <option value="EXTREME">Extreme (15+)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Side Filter</Label>
+                          <select
+                            value={draftSignalFilters.side_filter}
+                            onChange={(e) => setSf({ side_filter: e.target.value as TraderSignalFilters['side_filter'] })}
+                            className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
+                          >
+                            <option value="all">All sides</option>
+                            <option value="BUY">Buy only</option>
+                            <option value="SELL">Sell only</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Confluence Limit</Label>
+                          <Input
+                            type="number"
+                            value={draftSignalFilters.confluence_limit}
+                            onChange={(e) => setSf({ confluence_limit: Math.round(clamp(Number(e.target.value) || 1, 1, 200)) })}
+                            min={1} max={200} className="mt-0.5 text-xs h-7"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Limit</Label>
+                          <Input
+                            type="number"
+                            value={draftSignalFilters.insider_limit}
+                            onChange={(e) => setSf({ insider_limit: Math.round(clamp(Number(e.target.value) || 1, 1, 500)) })}
+                            min={1} max={500} className="mt-0.5 text-xs h-7"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Min Conf</Label>
+                          <Input
+                            type="number"
+                            value={draftSignalFilters.insider_min_confidence}
+                            onChange={(e) => setSf({ insider_min_confidence: clamp(Number(e.target.value) || 0, 0, 1) })}
+                            min={0} max={1} step={0.01} className="mt-0.5 text-xs h-7"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Max Age (min)</Label>
+                          <Input
+                            type="number"
+                            value={draftSignalFilters.insider_max_age_minutes}
+                            onChange={(e) => setSf({ insider_max_age_minutes: Math.round(clamp(Number(e.target.value) || 1, 1, 1440)) })}
+                            min={1} max={1440} className="mt-0.5 text-xs h-7"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Copy Trading config */}
+                      <div className="border-t border-orange-500/20 pt-3 space-y-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <Copy className="w-3.5 h-3.5 text-green-400" />
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-green-400">Copy Trading</p>
+                          {draftCopyTrading.copy_mode_type !== 'disabled' && (
+                            <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">ACTIVE</span>
+                          )}
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Mode</Label>
+                          <select
+                            value={draftCopyTrading.copy_mode_type}
+                            onChange={(e) => setCt({ copy_mode_type: e.target.value as CopyTradingMode })}
+                            className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
+                          >
+                            <option value="disabled">Disabled (signals only)</option>
+                            <option value="pool">Pool Traders</option>
+                            <option value="tracked_group">Tracked Traders (all tracked)</option>
+                            <option value="individual">Individual Wallet</option>
+                          </select>
+                        </div>
+
+                        {draftCopyTrading.copy_mode_type === 'individual' && (
+                          <div>
+                            <Label className="text-[11px] text-muted-foreground leading-tight">Wallet Address</Label>
+                            <Input
+                              type="text"
+                              value={draftCopyTrading.individual_wallet}
+                              onChange={(e) => setCt({ individual_wallet: e.target.value })}
+                              placeholder="0x..."
+                              className="mt-0.5 text-xs h-7 font-mono"
+                            />
+                          </div>
+                        )}
+
+                        {draftCopyTrading.copy_mode_type !== 'disabled' && (
+                          <>
+                            <div className="grid grid-cols-2 gap-2.5">
+                              <div>
+                                <Label className="text-[11px] text-muted-foreground leading-tight">Copy Mode</Label>
+                                <select
+                                  value={draftCopyTrading.copy_trade_mode}
+                                  onChange={(e) => setCt({ copy_trade_mode: e.target.value as 'all_trades' | 'arb_only' })}
+                                  className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
+                                >
+                                  <option value="all_trades">All Trades</option>
+                                  <option value="arb_only">Arb-Matching Only</option>
+                                </select>
+                              </div>
+                              <div>
+                                <Label className="text-[11px] text-muted-foreground leading-tight">Max Position ($)</Label>
+                                <Input
+                                  type="number" value={draftCopyTrading.max_position_size}
+                                  onChange={(e) => setCt({ max_position_size: clamp(Number(e.target.value) || 10, 10, 1000000) })}
+                                  min={10} max={1000000} step={10} className="mt-0.5 text-xs h-7"
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-[11px] text-muted-foreground leading-tight">Copy Delay (sec)</Label>
+                                <Input
+                                  type="number" value={draftCopyTrading.copy_delay_seconds}
+                                  onChange={(e) => setCt({ copy_delay_seconds: Math.round(clamp(Number(e.target.value) || 0, 0, 300)) })}
+                                  min={0} max={300} className="mt-0.5 text-xs h-7"
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-[11px] text-muted-foreground leading-tight">Slippage (%)</Label>
+                                <Input
+                                  type="number" value={draftCopyTrading.slippage_tolerance}
+                                  onChange={(e) => setCt({ slippage_tolerance: clamp(Number(e.target.value) || 0, 0, 10) })}
+                                  min={0} max={10} step={0.1} className="mt-0.5 text-xs h-7"
+                                />
+                              </div>
+                              {draftCopyTrading.copy_trade_mode === 'arb_only' && (
+                                <div>
+                                  <Label className="text-[11px] text-muted-foreground leading-tight">Min ROI (%)</Label>
+                                  <Input
+                                    type="number" value={draftCopyTrading.min_roi_threshold}
+                                    onChange={(e) => setCt({ min_roi_threshold: clamp(Number(e.target.value) || 0, 0, 100) })}
+                                    min={0} max={100} step={0.5} className="mt-0.5 text-xs h-7"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                              <label className="flex items-center gap-1.5 text-[11px]">
+                                <input type="checkbox" checked={draftCopyTrading.copy_buys} onChange={(e) => setCt({ copy_buys: e.target.checked })} className="accent-green-500" />
+                                Copy Buys
+                              </label>
+                              <label className="flex items-center gap-1.5 text-[11px]">
+                                <input type="checkbox" checked={draftCopyTrading.copy_sells} onChange={(e) => setCt({ copy_sells: e.target.checked })} className="accent-green-500" />
+                                Copy Sells
+                              </label>
+                              <label className="flex items-center gap-1.5 text-[11px]">
+                                <input type="checkbox" checked={draftCopyTrading.proportional_sizing} onChange={(e) => setCt({ proportional_sizing: e.target.checked })} className="accent-green-500" />
+                                Proportional Sizing
+                              </label>
+                            </div>
+                            {draftCopyTrading.proportional_sizing && (
+                              <div className="ml-4">
+                                <Label className="text-[11px] text-muted-foreground leading-tight">Multiplier</Label>
+                                <Input
+                                  type="number" value={draftCopyTrading.proportional_multiplier}
+                                  onChange={(e) => setCt({ proportional_multiplier: clamp(Number(e.target.value) || 0.01, 0.01, 100) })}
+                                  min={0.01} max={100} step={0.1} className="mt-0.5 text-xs h-7 w-32"
+                                />
+                                <p className="text-[10px] text-muted-foreground/60 mt-0.5">0.1 = 10% of source size</p>
+                              </div>
+                            )}
+                            {activeCopyMode && activeCopyMode.stats && activeCopyMode.mode !== 'disabled' && (
+                              <div className="grid grid-cols-4 gap-2 pt-1">
+                                <div className="text-center">
+                                  <p className="text-[10px] text-muted-foreground">Copied</p>
+                                  <p className="text-xs font-medium">{activeCopyMode.stats.total_copied}</p>
+                                </div>
+                                <div className="text-center">
+                                  <p className="text-[10px] text-muted-foreground">Success</p>
+                                  <p className="text-xs font-medium text-green-400">{activeCopyMode.stats.successful_copies}</p>
+                                </div>
+                                <div className="text-center">
+                                  <p className="text-[10px] text-muted-foreground">Failed</p>
+                                  <p className="text-xs font-medium text-red-400">{activeCopyMode.stats.failed_copies}</p>
+                                </div>
+                                <div className="text-center">
+                                  <p className="text-[10px] text-muted-foreground">PnL</p>
+                                  <p className={cn('text-xs font-medium', activeCopyMode.stats.total_pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+                                    ${activeCopyMode.stats.total_pnl.toFixed(2)}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <details className="rounded-md border border-border/60 bg-muted/10 p-2.5 mt-2">
                     <summary className="cursor-pointer text-xs font-medium">Custom source keys (optional)</summary>
                     <div className="mt-2 space-y-1">
                       <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} className="h-8 font-mono text-xs" />
                       <p className="text-[10px] text-muted-foreground/70">
-                        Comma-separated keys are supported for legacy/custom source adapters.
+                        Comma-separated keys for legacy/custom source adapters.
                       </p>
                     </div>
                   </details>

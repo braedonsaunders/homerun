@@ -44,10 +44,13 @@ def derive_kalshi_event_ticker(market_ticker: Any) -> str:
     if not ticker:
         return ""
 
+    # Kalshi event tickers are the first hyphen-separated segment of the
+    # market ticker (e.g. "KXBTCD" from "KXBTCD-26FEB1314",
+    # "KXATPCHALLENGERMATCH" from "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS").
     parts = [p for p in ticker.split("-") if p]
     if len(parts) <= 1:
         return ticker
-    return "-".join(parts[:-1])
+    return parts[0]
 
 
 def infer_market_platform(market: Mapping[str, Any]) -> str:
@@ -106,13 +109,17 @@ def build_kalshi_market_url(
     event_ticker: Any = None,
     event_slug: Any = None,
 ) -> str | None:
-    market_ticker_text = _normalize_kalshi_ticker(market_ticker)
-    if _is_likely_kalshi_ticker(market_ticker_text):
-        return f"{KALSHI_BASE_URL}/markets/{quote(market_ticker_text, safe='')}"
-
-    event_ticker_text = _clean_segment(event_ticker) or derive_kalshi_event_ticker(market_ticker_text)
+    # Kalshi website URLs resolve via the event ticker (lowercase), e.g.
+    # https://kalshi.com/markets/kxbtcmaxy  — full market tickers 404.
+    # Prefer the explicit event_ticker / event_slug from the API, then
+    # fall back to deriving the event portion from the market ticker.
+    event_ticker_text = (
+        _clean_segment(event_ticker)
+        or _clean_segment(event_slug)
+        or derive_kalshi_event_ticker(_normalize_kalshi_ticker(market_ticker))
+    )
     if _is_likely_kalshi_ticker(event_ticker_text):
-        return f"{KALSHI_BASE_URL}/markets/{quote(event_ticker_text, safe='')}"
+        return f"{KALSHI_BASE_URL}/markets/{quote(event_ticker_text.lower(), safe='')}"
 
     return None
 
@@ -124,16 +131,18 @@ def build_market_url(
 ) -> str | None:
     platform = infer_market_platform(market)
     if platform == "kalshi":
+        # For Kalshi, "slug" / "market_slug" contain the full market ticker
+        # (e.g. "KXPOLITICSMENTION-26FEB15-SHUT"), NOT the event slug.
+        # Only pass explicitly event-scoped fields to avoid building URLs
+        # from the full market ticker.
         return build_kalshi_market_url(
             market_ticker=market.get("id") or market.get("market_id") or market.get("ticker"),
             event_ticker=(
                 market.get("event_ticker")
                 or market.get("eventTicker")
-                or market.get("event_slug")
-                or market.get("eventSlug")
             ),
             event_slug=(
-                market.get("event_slug") or market.get("eventSlug") or market.get("slug") or market.get("market_slug")
+                market.get("event_slug") or market.get("eventSlug")
             ),
         )
 
