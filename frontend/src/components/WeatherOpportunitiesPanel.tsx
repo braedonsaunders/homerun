@@ -85,11 +85,17 @@ export default function WeatherOpportunitiesPanel({
     refetchInterval: 30000,
   })
 
-  const runMutation = useMutation({
+  const refreshMutation = useMutation({
     mutationFn: runWeatherWorkflow,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['weather-workflow-status'] })
-      queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['weather-workflow-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] }),
+      ])
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['weather-workflow-status'] }),
+        queryClient.refetchQueries({ queryKey: ['weather-workflow-opportunities'] }),
+      ])
     },
   })
 
@@ -198,11 +204,11 @@ export default function WeatherOpportunitiesPanel({
               variant="outline"
               size="sm"
               className="h-8 text-xs gap-1.5 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 hover:text-cyan-400"
-              onClick={() => runMutation.mutate()}
-              disabled={runMutation.isPending}
+              onClick={() => refreshMutation.mutate()}
+              disabled={refreshMutation.isPending}
             >
-              {runMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-              Run
+              <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
+              Refresh
             </Button>
             <Button
               variant="outline"

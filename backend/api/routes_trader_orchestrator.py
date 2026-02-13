@@ -7,9 +7,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db_session
+from models.database import SimulationAccount, get_db_session
 from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
     arm_live_start,
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/trader-orchestrator", tags=["Trader Orchestrator"])
 
 class StartRequest(BaseModel):
     mode: Optional[str] = Field(default=None, description="paper | live")
+    paper_account_id: Optional[str] = None
     requested_by: Optional[str] = None
 
 
@@ -65,6 +67,15 @@ def _assert_not_globally_paused() -> None:
         )
 
 
+async def _paper_account_exists(session: AsyncSession, account_id: str) -> bool:
+    row = (
+        await session.execute(
+            select(SimulationAccount.id).where(SimulationAccount.id == account_id)
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
 @router.get("/overview")
 async def get_overview(session: AsyncSession = Depends(get_db_session)):
     return await get_orchestrator_overview(session)
@@ -92,12 +103,33 @@ async def start_orchestrator(
     if mode not in {"paper", "live"}:
         raise HTTPException(status_code=422, detail="mode must be paper or live")
 
+    control_before = await read_orchestrator_control(session)
+    settings_updates = {}
+    if mode == "paper":
+        requested_paper = str(request.paper_account_id or "").strip() or None
+        existing_paper = str(
+            (control_before.get("settings") or {}).get("paper_account_id") or ""
+        ).strip() or None
+        paper_account_id = requested_paper or existing_paper
+        if not paper_account_id:
+            raise HTTPException(
+                status_code=422,
+                detail="paper_account_id required for paper mode. Select a sandbox account.",
+            )
+        if not await _paper_account_exists(session, paper_account_id):
+            raise HTTPException(
+                status_code=422,
+                detail="Selected paper_account_id does not exist. Select a valid sandbox account.",
+            )
+        settings_updates["paper_account_id"] = paper_account_id
+
     control = await update_orchestrator_control(
         session,
         is_enabled=True,
         is_paused=False,
         mode=mode,
         requested_run_at=datetime.utcnow(),
+        settings_json=settings_updates,
     )
     await create_trader_event(
         session,
@@ -187,6 +219,14 @@ async def start_live(
     session: AsyncSession = Depends(get_db_session),
 ):
     _assert_not_globally_paused()
+    preflight = await create_live_preflight(
+        session,
+        requested_mode="live",
+        requested_by=request.requested_by,
+    )
+    if preflight.get("status") != "passed":
+        raise HTTPException(status_code=409, detail="Live preflight failed. Configure trading settings/credentials first.")
+
     ok = await consume_live_arm_token(session, request.arm_token)
     if not ok:
         raise HTTPException(status_code=409, detail="Invalid or expired arm token")

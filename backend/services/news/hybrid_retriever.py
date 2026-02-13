@@ -23,7 +23,6 @@ import numpy as np
 from services.news.event_extractor import ExtractedEvent
 from services.news.market_watcher_index import (
     MarketWatcherIndex,
-    SearchResult,
     _tokenize,
 )
 

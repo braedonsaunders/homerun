@@ -8,16 +8,13 @@ tension scoring and event taxonomy classification.
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 
-from config import settings
 from .tension_pair_catalog import tension_pair_catalog
 
 logger = logging.getLogger(__name__)

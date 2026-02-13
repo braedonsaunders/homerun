@@ -1,7 +1,6 @@
 import logging
 import sys
 import json
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Any
 from pathlib import Path

@@ -41,7 +41,7 @@ DEFAULT_STRATEGY_META = {
 STRATEGY_META_BY_TYPE: dict[str, dict[str, object]] = {
     StrategyType.BTC_ETH_HIGHFREQ.value: {
         "domain": "crypto",
-        "timeframe": "15m",
+        "timeframe": "5m/15m",
         "sources": ["crypto"],
     },
     StrategyType.NEWS_EDGE.value: {
@@ -100,7 +100,7 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(StrategyPlugin).where(
-                    StrategyPlugin.slug == slug, StrategyPlugin.enabled == True
+                    StrategyPlugin.slug == slug, StrategyPlugin.enabled
                 )
             )
             plugin = result.scalar_one_or_none()
@@ -239,7 +239,6 @@ async def search_polymarket_opportunities(
     price-fetching and full arbitrage-detection pipeline to keep the
     response time under a few seconds.
     """
-    import asyncio
 
     try:
         # Search Polymarket markets directly (fastest) and Kalshi concurrently
@@ -764,7 +763,7 @@ async def get_strategies():
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(StrategyPlugin)
-            .where(StrategyPlugin.enabled == True)
+            .where(StrategyPlugin.enabled)
             .order_by(StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc())
         )
         plugins = result.scalars().all()
@@ -797,8 +796,8 @@ async def get_strategies():
         },
         {
             "type": StrategyType.BTC_ETH_HIGHFREQ.value,
-            "name": "BTC/ETH 15m High-Frequency",
-            "description": "Crypto 15m directional strategy emitted by the dedicated crypto worker",
+            "name": "BTC/ETH High-Frequency",
+            "description": "Crypto 5m/15m directional strategy emitted by the dedicated crypto worker",
             "is_plugin": False,
         },
     ]

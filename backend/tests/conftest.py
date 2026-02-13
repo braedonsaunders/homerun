@@ -8,7 +8,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import timedelta
 from utils.utcnow import utcnow
 from unittest.mock import AsyncMock, MagicMock
 import json

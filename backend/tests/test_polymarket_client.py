@@ -252,3 +252,53 @@ def test_is_market_tradable_true_for_active_future_market():
         )
         is True
     )
+
+
+def test_is_market_tradable_false_when_order_book_disabled():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert (
+        PolymarketClient.is_market_tradable(
+            {
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "enable_order_book": False,
+                "end_date": (now + timedelta(hours=2)).isoformat(),
+            },
+            now=now,
+        )
+        is False
+    )
+
+
+def test_is_market_tradable_false_for_review_or_dispute_status():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert (
+        PolymarketClient.is_market_tradable(
+            {
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "status": "in review",
+                "end_date": (now + timedelta(hours=2)).isoformat(),
+            },
+            now=now,
+        )
+        is False
+    )
+    assert (
+        PolymarketClient.is_market_tradable(
+            {
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "status": "in dispute",
+                "end_date": (now + timedelta(hours=2)).isoformat(),
+            },
+            now=now,
+        )
+        is False
+    )

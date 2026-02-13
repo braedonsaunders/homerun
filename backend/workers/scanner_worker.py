@@ -224,15 +224,13 @@ async def _run_scan_loop() -> None:
     # order-book overlays in this process (scanner runs here, not in API).
     await _ensure_ws_feeds_running()
 
-    # Notifier and opportunity_recorder hook into scanner callbacks (same process)
+    # Opportunity recorder hooks into scanner callbacks in this process.
     try:
-        from services.notifier import notifier
         from services.opportunity_recorder import opportunity_recorder
-        await notifier.start()
         await opportunity_recorder.start()
-        logger.info("Notifier and opportunity recorder started")
+        logger.info("Opportunity recorder started")
     except Exception as e:
-        logger.warning("Notifier/opportunity_recorder start failed (non-critical): %s", e)
+        logger.warning("Opportunity recorder start failed (non-critical): %s", e)
 
     logger.info("Scanner worker started (interval from DB)")
 

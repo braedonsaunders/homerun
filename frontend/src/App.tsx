@@ -88,6 +88,7 @@ import LiveTickerTape from './components/LiveTickerTape'
 import AnimatedNumber, { FlashNumber } from './components/AnimatedNumber'
 import AccountSettingsFlyout from './components/AccountSettingsFlyout'
 import SearchFiltersFlyout from './components/SearchFiltersFlyout'
+import CryptoSettingsFlyout from './components/CryptoSettingsFlyout'
 import AccountModeSelector from './components/AccountModeSelector'
 import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
@@ -207,6 +208,7 @@ function App() {
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [searchFiltersOpen, setSearchFiltersOpen] = useState(false)
+  const [cryptoSettingsOpen, setCryptoSettingsOpen] = useState(false)
   const [scannerActivity, setScannerActivity] = useState<string>('Idle')
   const [headerSearchQuery, setHeaderSearchQuery] = useState('')
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false)
@@ -299,6 +301,12 @@ function App() {
   useEffect(() => {
     if (opportunitiesView !== 'arbitrage') {
       setSearchFiltersOpen(false)
+    }
+  }, [opportunitiesView])
+
+  useEffect(() => {
+    if (opportunitiesView !== 'crypto_markets') {
+      setCryptoSettingsOpen(false)
     }
   }, [opportunitiesView])
 
@@ -1211,6 +1219,7 @@ function App() {
                     <CryptoMarketsPanel
                       onExecute={setExecutingOpportunity}
                       onOpenCopilot={handleOpenCopilotForOpportunity}
+                      onOpenCryptoSettings={() => setCryptoSettingsOpen(true)}
                     />
                   ) : opportunitiesView === 'news' ? (
                     <NewsIntelligencePanel initialSearchQuery={newsSearchQuery} />
@@ -1698,6 +1707,12 @@ function App() {
             setActiveTab('settings')
             window.dispatchEvent(new CustomEvent('navigate-settings-section', { detail: 'plugins' }))
           }}
+        />
+
+        {/* Crypto Settings Flyout */}
+        <CryptoSettingsFlyout
+          isOpen={cryptoSettingsOpen}
+          onClose={() => setCryptoSettingsOpen(false)}
         />
       </div>
     </TooltipProvider>

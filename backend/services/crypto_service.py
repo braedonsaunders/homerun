@@ -1,13 +1,14 @@
 """Standalone crypto market service.
 
 Completely independent from the scanner/strategy pipeline.  Fetches live
-Polymarket 15-minute crypto markets directly from the Gamma series API
+Polymarket 5-minute and 15-minute crypto markets directly from the Gamma series API
 and returns structured data for the frontend Crypto tab.
 
-This service always returns the 4 live markets (BTC, ETH, SOL, XRP) with
+This service always returns live markets (BTC, ETH, SOL, XRP) across configured
+timeframes with
 real-time pricing, regardless of whether any arbitrage opportunity exists.
 
-Also runs a dedicated fast-scan loop (every 3-5s) for crypto strategy
+Also runs a dedicated fast-scan loop (every 2-5s) for crypto strategy
 evaluation, completely independent of the main scanner.
 """
 
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -31,7 +32,7 @@ logger = get_logger(__name__)
 
 
 class CryptoMarket:
-    """A live crypto 15-minute market with real-time data."""
+    """A live crypto market with real-time data."""
 
     __slots__ = (
         "id",
@@ -54,6 +55,8 @@ class CryptoMarket:
         "series_liquidity",
         "last_trade_price",
         "clob_token_ids",
+        "up_token_index",
+        "down_token_index",
         "fees_enabled",
         "event_slug",
         "event_title",
@@ -118,6 +121,8 @@ class CryptoMarket:
             "series_liquidity": self.series_liquidity or 0,
             "last_trade_price": self.last_trade_price,
             "clob_token_ids": self.clob_token_ids or [],
+            "up_token_index": self.up_token_index,
+            "down_token_index": self.down_token_index,
             "fees_enabled": self.fees_enabled,
             "event_slug": self.event_slug,
             "event_title": self.event_title,
@@ -137,6 +142,18 @@ def _get_series_configs() -> list[tuple[str, str, str]]:
         (_cfg.BTC_ETH_HF_SERIES_ETH_15M, "ETH", "15min"),
         (_cfg.BTC_ETH_HF_SERIES_SOL_15M, "SOL", "15min"),
         (_cfg.BTC_ETH_HF_SERIES_XRP_15M, "XRP", "15min"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_5M, "BTC", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_5M, "ETH", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_5M, "SOL", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_5M, "XRP", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_1H, "BTC", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_1H, "ETH", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_1H, "SOL", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_1H, "XRP", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_4H, "BTC", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_4H, "ETH", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_4H, "SOL", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_4H, "XRP", "4hr"),
     ]
 
 
@@ -162,6 +179,35 @@ def _parse_json_list(val) -> list:
     return []
 
 
+def _coerce_probability(val) -> Optional[float]:
+    parsed = _parse_float(val)
+    if parsed is None:
+        return None
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
+def _resolve_binary_outcome_indexes(outcomes: list[object]) -> tuple[int, int]:
+    """Return (up_idx, down_idx) for binary Up/Down or Yes/No markets."""
+    up_idx = None
+    down_idx = None
+    for i, label in enumerate(outcomes):
+        lbl = str(label or "").strip().lower()
+        if lbl in ("up", "yes"):
+            up_idx = i
+        elif lbl in ("down", "no"):
+            down_idx = i
+
+    if up_idx is None:
+        up_idx = 0
+    if down_idx is None:
+        down_idx = 1 if up_idx != 1 else 0
+    return up_idx, down_idx
+
+
 def _parse_outcome_prices(market_data: dict) -> tuple[Optional[float], Optional[float]]:
     """Extract Up/Down market prices from a Gamma market response.
 
@@ -173,29 +219,54 @@ def _parse_outcome_prices(market_data: dict) -> tuple[Optional[float], Optional[
     outcomes = _parse_json_list(market_data.get("outcomes"))
 
     if outcome_prices and len(outcome_prices) >= 2:
-        up_idx = None
-        down_idx = None
-        for i, label in enumerate(outcomes):
-            lbl = str(label).lower()
-            if lbl in ("up", "yes"):
-                up_idx = i
-            elif lbl in ("down", "no"):
-                down_idx = i
-
-        if up_idx is not None and down_idx is not None:
-            return _parse_float(outcome_prices[up_idx]), _parse_float(
+        up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
+        if up_idx < len(outcome_prices) and down_idx < len(outcome_prices):
+            return _coerce_probability(outcome_prices[up_idx]), _coerce_probability(
                 outcome_prices[down_idx]
             )
-        return _parse_float(outcome_prices[0]), _parse_float(outcome_prices[1])
+        return _coerce_probability(outcome_prices[0]), _coerce_probability(
+            outcome_prices[1]
+        )
 
     # Fallback: derive from bestBid/bestAsk midpoint
     best_bid = _parse_float(market_data.get("bestBid"))
     best_ask = _parse_float(market_data.get("bestAsk"))
     if best_bid is not None and best_ask is not None:
         up_mid = (best_bid + best_ask) / 2.0
-        return up_mid, 1.0 - up_mid
+        return _coerce_probability(up_mid), _coerce_probability(1.0 - up_mid)
 
     return None, None
+
+
+def _oracle_snapshot_payload(oracle: object | None) -> dict[str, float | str | None]:
+    """Normalize oracle snapshot payload for API responses."""
+    try:
+        from services.chainlink_feed import OraclePrice
+    except Exception:
+        class OraclePrice:
+            pass
+
+    if not isinstance(oracle, OraclePrice):
+        return {
+            "price": None,
+            "source": None,
+            "updated_at_ms": None,
+            "age_seconds": None,
+        }
+
+    updated_ms = getattr(oracle, "updated_at_ms", None)
+    age_seconds = (
+        round((time.time() * 1000 - int(updated_ms)) / 1000, 1)
+        if updated_ms
+        else None
+    )
+
+    return {
+        "price": float(getattr(oracle, "price")),
+        "source": str(getattr(oracle, "source", "")) or None,
+        "updated_at_ms": int(updated_ms),
+        "age_seconds": age_seconds,
+    }
 
 
 class CryptoService:
@@ -204,7 +275,7 @@ class CryptoService:
     Completely independent of the scanner and strategy pipeline.
     """
 
-    def __init__(self, gamma_url: str = "", ttl_seconds: float = 5.0):
+    def __init__(self, gamma_url: str = "", ttl_seconds: float = 2.0):
         self._gamma_url = gamma_url or _cfg.GAMMA_API_URL
         self._ttl = ttl_seconds
         self._cache: list[CryptoMarket] = []
@@ -229,6 +300,46 @@ class CryptoService:
                 logger.warning(f"CryptoService fetch failed: {e}")
         return self._cache
 
+    def _fetch_clob_midpoint(
+        self, client: httpx.Client, token_id: str
+    ) -> Optional[float]:
+        """Fetch token midpoint from CLOB and normalize to [0, 1]."""
+        token = str(token_id or "").strip()
+        if not token:
+            return None
+        try:
+            resp = client.get(f"{_cfg.CLOB_API_URL}/midpoint", params={"token_id": token})
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                return None
+            return _coerce_probability(payload.get("mid"))
+        except Exception:
+            return None
+
+    def _fetch_clob_price(
+        self, client: httpx.Client, token_id: str, side: str
+    ) -> Optional[float]:
+        """Fetch token best price from CLOB and normalize to [0, 1]."""
+        token = str(token_id or "").strip()
+        side_norm = str(side or "").strip().lower()
+        if not token or side_norm not in ("buy", "sell"):
+            return None
+        try:
+            resp = client.get(
+                f"{_cfg.CLOB_API_URL}/price",
+                params={"token_id": token, "side": side_norm},
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                return None
+            return _coerce_probability(payload.get("price"))
+        except Exception:
+            return None
+
     def _fetch_all(self) -> list[CryptoMarket]:
         """Fetch live + upcoming markets for all configured series.
 
@@ -238,9 +349,17 @@ class CryptoService:
         """
         series = _get_series_configs()
         all_markets: list[CryptoMarket] = []
+        now_iso = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
 
         with httpx.Client(timeout=10.0) as client:
             for series_id, asset, timeframe in series:
+                if not str(series_id or "").strip():
+                    continue
                 try:
                     resp = client.get(
                         f"{self._gamma_url}/events",
@@ -248,6 +367,11 @@ class CryptoService:
                             "series_id": series_id,
                             "active": "true",
                             "closed": "false",
+                            # Exclude stale unresolved history and walk forward from now
+                            # so the first row is live/nearest-upcoming.
+                            "end_date_min": now_iso,
+                            "order": "endDate",
+                            "ascending": "true",
                             "limit": 8,
                         },
                     )
@@ -286,7 +410,35 @@ class CryptoService:
                         continue
                     mkt = mkt_list[0]
                     up_price, down_price = _parse_outcome_prices(mkt)
-                    clob_ids = _parse_json_list(mkt.get("clobTokenIds"))
+                    outcomes = _parse_json_list(mkt.get("outcomes"))
+                    up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
+                    clob_ids = [
+                        str(token).strip()
+                        for token in _parse_json_list(mkt.get("clobTokenIds"))
+                        if str(token).strip()
+                    ]
+
+                    best_bid = _coerce_probability(mkt.get("bestBid"))
+                    best_ask = _coerce_probability(mkt.get("bestAsk"))
+
+                    # Gamma outcomePrices can lag on short windows. Overlay with
+                    # direct live CLOB token pricing whenever token IDs are present.
+                    up_token = clob_ids[up_idx] if up_idx < len(clob_ids) else None
+                    down_token = clob_ids[down_idx] if down_idx < len(clob_ids) else None
+                    if up_token:
+                        live_up = self._fetch_clob_midpoint(client, up_token)
+                        if live_up is not None:
+                            up_price = live_up
+                        live_bid = self._fetch_clob_price(client, up_token, "sell")
+                        live_ask = self._fetch_clob_price(client, up_token, "buy")
+                        if live_bid is not None:
+                            best_bid = live_bid
+                        if live_ask is not None:
+                            best_ask = live_ask
+                    if down_token:
+                        live_down = self._fetch_clob_midpoint(client, down_token)
+                        if live_down is not None:
+                            down_price = live_down
 
                     # Build upcoming market summaries
                     upcoming = []
@@ -326,8 +478,8 @@ class CryptoService:
                         end_time=mkt.get("endDate"),
                         up_price=up_price,
                         down_price=down_price,
-                        best_bid=_parse_float(mkt.get("bestBid")),
-                        best_ask=_parse_float(mkt.get("bestAsk")),
+                        best_bid=best_bid,
+                        best_ask=best_ask,
                         spread=_parse_float(mkt.get("spread")),
                         liquidity=_parse_float(mkt.get("liquidityNum"))
                         or _parse_float(mkt.get("liquidity"))
@@ -340,6 +492,8 @@ class CryptoService:
                         series_liquidity=series_liq,
                         last_trade_price=_parse_float(mkt.get("lastTradePrice")),
                         clob_token_ids=clob_ids,
+                        up_token_index=up_idx,
+                        down_token_index=down_idx,
                         fees_enabled=mkt.get("feesEnabled", False),
                         event_slug=current_event.get("slug", ""),
                         event_title=current_event.get("title", ""),
@@ -591,11 +745,14 @@ class CryptoService:
                 d = m.to_dict()
 
                 # Overlay CLOB WS prices (real-time) over Gamma prices (8s cache)
-                # Token 0 = Up/Yes, Token 1 = Down/No
                 tokens = m.clob_token_ids or []
-                if len(tokens) >= 2:
-                    ws_up = ws_prices.get(tokens[0])
-                    ws_down = ws_prices.get(tokens[1])
+                up_idx = int(m.up_token_index) if m.up_token_index is not None else 0
+                down_idx = int(m.down_token_index) if m.down_token_index is not None else 1
+                up_token = tokens[up_idx] if up_idx < len(tokens) else None
+                down_token = tokens[down_idx] if down_idx < len(tokens) else None
+                if up_token and down_token:
+                    ws_up = ws_prices.get(up_token)
+                    ws_down = ws_prices.get(down_token)
                     if ws_up is not None and ws_down is not None:
                         d["up_price"] = ws_up
                         d["down_price"] = ws_down
@@ -613,6 +770,7 @@ class CryptoService:
                 oracle = feed.get_price(m.asset)
                 if oracle:
                     d["oracle_price"] = oracle.price
+                    d["oracle_source"] = getattr(oracle, "source", None)
                     d["oracle_updated_at_ms"] = oracle.updated_at_ms
                     d["oracle_age_seconds"] = round(
                         (time.time() * 1000 - oracle.updated_at_ms) / 1000, 1
@@ -624,6 +782,12 @@ class CryptoService:
 
                 # Attach price to beat for this market
                 d["price_to_beat"] = self._price_to_beat.get(m.slug)
+
+                # Attach source-specific oracle snapshots for debugging and comparison.
+                source_snapshots: dict[str, dict[str, float | str | None]] = {}
+                for src, snap in feed.get_prices_by_source(m.asset).items():
+                    source_snapshots[str(src)] = _oracle_snapshot_payload(snap)
+                d["oracle_prices_by_source"] = source_snapshots
 
                 # Attach recent oracle price history for sparkline chart
                 history = feed._history.get(m.asset) if hasattr(feed, '_history') else None

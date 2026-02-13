@@ -326,6 +326,13 @@ class MarketMakingStrategy(BaseStrategy):
 
             # --- Enrich with event data ---
             event = event_by_market.get(market.id)
+            market_platform = str(getattr(market, "platform", "") or "").strip().lower()
+            if market_platform not in {"polymarket", "kalshi"}:
+                market_platform = (
+                    "kalshi"
+                    if str(getattr(market, "id", "")).upper().startswith("KX")
+                    else "polymarket"
+                )
 
             # --- Build the opportunity directly (like Miracle strategy) ---
             opp = ArbitrageOpportunity(
@@ -347,7 +354,10 @@ class MarketMakingStrategy(BaseStrategy):
                 markets=[
                     {
                         "id": market.id,
+                        "condition_id": market.condition_id,
                         "slug": market.slug,
+                        "event_slug": market.event_slug,
+                        "platform": market_platform,
                         "question": market.question,
                         "yes_price": yes_price,
                         "no_price": no_price,

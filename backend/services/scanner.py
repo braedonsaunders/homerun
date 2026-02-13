@@ -794,7 +794,7 @@ class ArbitrageScanner:
 
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(StrategyPluginModel).where(StrategyPluginModel.enabled == True)
+                    select(StrategyPluginModel).where(StrategyPluginModel.enabled)
                 )
                 plugins = result.scalars().all()
 

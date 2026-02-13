@@ -8,6 +8,7 @@ import {
   Activity,
   ChevronRight,
   ArrowUpDown,
+  Settings,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { buildPolymarketMarketUrl } from '../lib/marketUrls'
@@ -15,6 +16,7 @@ import { getCryptoMarkets, CryptoMarket } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Card } from './ui/card'
 import { Badge } from './ui/badge'
+import { Button } from './ui/button'
 import Sparkline from './Sparkline'
 
 // ─── Constants ────────────────────────────────────────────
@@ -53,6 +55,18 @@ function toFiniteNumber(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
+
+function normalizeTimeframe(value: string | null | undefined): string {
+  const raw = String(value || '').toLowerCase()
+  if (!raw) return ''
+  if (raw.includes('4h') || raw.includes('240') || raw.includes('4hr')) return '4h'
+  if (raw.includes('1h') || raw.includes('60')) return '1h'
+  if (raw.includes('15m') || raw.includes('15min') || raw.includes('15-min') || raw.includes('15 minute')) return '15m'
+  if (raw.includes('5m') || raw.includes('5min') || raw.includes('5-min') || raw.includes('5 minute') || (raw.startsWith('5') && !raw.includes('15'))) return '5m'
+  return raw
+}
+
+type TimeframeFilter = 'all' | '15m' | '5m' | '1h' | '4h'
 
 function extractCryptoMarketsFromInit(payload: any): CryptoMarket[] | null {
   const workers = payload?.workers_status
@@ -101,14 +115,55 @@ function LiveCountdown({ endTime }: { endTime: string | null }) {
 
 // ─── Oracle Price Display ─────────────────────────────────
 
-function OraclePriceDisplay({ price, priceToBeat }: { price: number | null; priceToBeat: number | null }) {
+function OraclePriceDisplay({
+  price,
+  priceToBeat,
+  source,
+  sourceMap,
+}: {
+  price: number | null
+  priceToBeat: number | null
+  source: string | null
+  sourceMap?: Record<
+    string,
+    {
+      source: string
+      price: number | null
+      updated_at_ms: number | null
+      age_seconds: number | null
+    }
+  >
+}) {
   if (price === null) return null
 
   const delta = (priceToBeat !== null && priceToBeat !== undefined) ? price - priceToBeat : null
   const isUp = delta !== null && delta >= 0
+  const sourceLabel = source
+    ? source.toLowerCase().includes('chainlink')
+      ? 'chainlink'
+      : source.toLowerCase().includes('binance')
+        ? 'binance'
+        : source
+    : 'chainlink'
+
+  const sourceRows = Object.values(sourceMap || {})
+    .filter((row) => row && typeof row.price === 'number')
+    .map((row) => ({
+      label: row.source,
+      price: row.price as number,
+      age: row.age_seconds,
+    }))
+
+  const chainlink = sourceRows.find((row) => row.label.includes('chainlink'))
+  const binance = sourceRows.find((row) => row.label.includes('binance'))
+  const sourceDelta = chainlink && binance ? (binance.price - chainlink.price) : null
 
   return (
     <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">oracle source</span>
+        <span className="text-[10px] font-medium text-muted-foreground">{sourceLabel}</span>
+      </div>
       {/* Price to beat */}
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">price to beat</span>
@@ -133,6 +188,29 @@ function OraclePriceDisplay({ price, priceToBeat }: { price: number | null; pric
           )}
         </div>
       </div>
+
+      {sourceRows.length > 0 && (
+        <div className="space-y-1 pt-1 border-t border-border/30">
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider pt-1.5">source view</div>
+          {sourceRows.map((row) => (
+            <div key={row.label} className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wide">{row.label}</span>
+              <span className="text-xs font-data text-muted-foreground">
+                {formatPrice(row.price, 2)}
+                {row.age !== null ? <span className="text-[10px] text-muted-foreground/60"> · {row.age}s</span> : null}
+              </span>
+            </div>
+          ))}
+          {sourceDelta !== null && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide">binance - chainlink</span>
+              <span className={cn("text-xs font-data", sourceDelta >= 0 ? 'text-green-400' : 'text-red-400')}>
+                {sourceDelta >= 0 ? '+' : ''}{formatPrice(sourceDelta, 2)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -155,10 +233,12 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
   }, [])
 
   const asset = market.asset
-  const upPrice = market.up_price ?? 0.5
-  const downPrice = market.down_price ?? 0.5
-  const combined = market.combined ?? (upPrice + downPrice)
-  const spread = 1 - combined
+  const upPrice = toFiniteNumber(market.up_price)
+  const downPrice = toFiniteNumber(market.down_price)
+  const combined = toFiniteNumber(market.combined) ?? (
+    upPrice !== null && downPrice !== null ? upPrice + downPrice : null
+  )
+  const spread = combined !== null ? 1 - combined : null
 
   const polyUrl = buildPolymarketMarketUrl({
     eventSlug: market.event_slug,
@@ -197,7 +277,10 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
             <img src={ASSET_ICONS[asset]} alt={asset} className="w-8 h-8 rounded-full" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-semibold text-foreground">{asset} Up or Down</h3>
+              <h3 className="text-base font-semibold text-foreground">{asset} Up or Down</h3>
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-muted-foreground border-muted-foreground/20">
+                {market.timeframe.toUpperCase()}
+              </Badge>
                 {market.is_live ? (
                   <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-bold text-green-400 bg-green-500/15 border-green-500/25">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse mr-1" />
@@ -219,7 +302,12 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
         </div>
 
         {/* Oracle price + Price to beat */}
-        <OraclePriceDisplay price={market.oracle_price} priceToBeat={market.price_to_beat} />
+        <OraclePriceDisplay
+          price={market.oracle_price}
+          priceToBeat={market.price_to_beat}
+          source={market.oracle_source}
+          sourceMap={market.oracle_prices_by_source}
+        />
 
         {/* Oracle price sparkline chart */}
         <div ref={chartRef} className="relative h-14 w-full bg-muted/10 rounded-lg overflow-hidden">
@@ -254,23 +342,37 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
 
         {/* Up / Down prices */}
         <div className="grid grid-cols-2 gap-2">
-          <div className={cn("rounded-lg p-2.5 text-center border", upPrice > downPrice ? 'bg-green-500/10 border-green-500/20' : 'bg-muted/20 border-border/30')}>
+          <div className={cn(
+            "rounded-lg p-2.5 text-center border",
+            upPrice !== null && downPrice !== null && upPrice > downPrice
+              ? 'bg-green-500/10 border-green-500/20'
+              : 'bg-muted/20 border-border/30',
+          )}>
             <div className="text-[10px] text-green-400 uppercase tracking-wider font-medium mb-1">
               <TrendingUp className="w-3 h-3 inline mr-1" />Up
             </div>
             <div className="text-lg font-bold font-data tabular-nums text-green-400">
-              {(upPrice * 100).toFixed(0)}%
+              {upPrice !== null ? `${(upPrice * 100).toFixed(0)}%` : '--'}
             </div>
-            <div className="text-[10px] text-muted-foreground font-data">${upPrice.toFixed(2)}</div>
+            <div className="text-[10px] text-muted-foreground font-data">
+              {upPrice !== null ? `$${upPrice.toFixed(2)}` : '--'}
+            </div>
           </div>
-          <div className={cn("rounded-lg p-2.5 text-center border", downPrice > upPrice ? 'bg-red-500/10 border-red-500/20' : 'bg-muted/20 border-border/30')}>
+          <div className={cn(
+            "rounded-lg p-2.5 text-center border",
+            upPrice !== null && downPrice !== null && downPrice > upPrice
+              ? 'bg-red-500/10 border-red-500/20'
+              : 'bg-muted/20 border-border/30',
+          )}>
             <div className="text-[10px] text-red-400 uppercase tracking-wider font-medium mb-1">
               <TrendingDown className="w-3 h-3 inline mr-1" />Down
             </div>
             <div className="text-lg font-bold font-data tabular-nums text-red-400">
-              {(downPrice * 100).toFixed(0)}%
+              {downPrice !== null ? `${(downPrice * 100).toFixed(0)}%` : '--'}
             </div>
-            <div className="text-[10px] text-muted-foreground font-data">${downPrice.toFixed(2)}</div>
+            <div className="text-[10px] text-muted-foreground font-data">
+              {downPrice !== null ? `$${downPrice.toFixed(2)}` : '--'}
+            </div>
           </div>
         </div>
 
@@ -279,8 +381,10 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
           <div className="flex items-center justify-between text-[10px]">
             <span className="text-muted-foreground">Combined Cost</span>
             <div className="flex items-center gap-2">
-              <span className="font-data font-bold text-foreground">${combined.toFixed(3)}</span>
-              {spread > 0.001 && (
+              <span className="font-data font-bold text-foreground">
+                {combined !== null ? `$${combined.toFixed(3)}` : '--'}
+              </span>
+              {spread !== null && spread > 0.001 && (
                 <span className={cn("font-data font-bold text-green-400")}>
                   ({(spread * 100).toFixed(1)}% spread)
                 </span>
@@ -348,9 +452,11 @@ function CryptoMarketCard({ market }: { market: CryptoMarket }) {
 interface Props {
   onExecute?: (opportunity: any) => void
   onOpenCopilot?: (opportunity: any) => void
+  onOpenCryptoSettings?: () => void
 }
 
-export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) {
+export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCryptoSettings }: Props) {
+  const [timeframeFilter, setTimeframeFilter] = useState<TimeframeFilter>('all')
   // Intentionally kept for interface parity with other panels and App wiring.
   void onExecute
   void onOpenCopilot
@@ -407,16 +513,39 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
     ? (wsMarkets || httpMarkets || [])
     : (httpMarkets || wsMarkets || [])
 
+  const timeframeCounts = useMemo(() => {
+    const counts: Record<'5m' | '15m' | '1h' | '4h', number> = {
+      '5m': 0,
+      '15m': 0,
+      '1h': 0,
+      '4h': 0,
+    }
+
+    for (const market of allMarkets) {
+      const normalized = normalizeTimeframe(market.timeframe)
+      if ((['5m', '15m', '1h', '4h'] as const).includes(normalized as any)) {
+        counts[normalized as '5m' | '15m' | '1h' | '4h'] += 1
+      }
+    }
+
+    return counts
+  }, [allMarkets])
+
+  const filteredMarkets = useMemo(() => {
+    if (timeframeFilter === 'all') return allMarkets
+    return allMarkets.filter((market) => normalizeTimeframe(market.timeframe) === timeframeFilter)
+  }, [timeframeFilter, allMarkets])
+
   // Stats from series data
   const stats = useMemo(() => {
-    const live = allMarkets.filter(m => m.is_live).length
-    const totalLiquidity = allMarkets.reduce((acc, m) => acc + (m.series_liquidity || m.liquidity || 0), 0)
-    const totalVolume24h = allMarkets.reduce((acc, m) => acc + (m.series_volume_24h || 0), 0)
-    const avgSpread = allMarkets.length > 0
-      ? allMarkets.reduce((acc, m) => acc + (1 - (m.combined ?? 1)), 0) / allMarkets.length
+    const live = filteredMarkets.filter(m => m.is_live).length
+    const totalLiquidity = filteredMarkets.reduce((acc, m) => acc + (m.series_liquidity || m.liquidity || 0), 0)
+    const totalVolume24h = filteredMarkets.reduce((acc, m) => acc + (m.series_volume_24h || 0), 0)
+    const avgSpread = filteredMarkets.length > 0
+      ? filteredMarkets.reduce((acc, m) => acc + (1 - (m.combined ?? 1)), 0) / filteredMarkets.length
       : 0
-    return { total: allMarkets.length, live, totalLiquidity, totalVolume24h, avgSpread }
-  }, [allMarkets])
+    return { total: filteredMarkets.length, live, totalLiquidity, totalVolume24h, avgSpread }
+  }, [filteredMarkets])
 
   return (
     <div className="space-y-4">
@@ -428,23 +557,54 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
               <ArrowUpDown className="w-4 h-4 text-orange-400" />
               <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
             </div>
-            <span className="text-sm font-semibold text-foreground">Crypto 15-Min Markets</span>
+              <span className="text-sm font-semibold text-foreground">Crypto 5m/15m/1h/4h Markets</span>
             <Badge variant="outline" className="text-[9px] text-orange-400 border-orange-500/20 bg-orange-500/10">
               LIVE
             </Badge>
           </div>
-          <div className="text-[11px] text-muted-foreground font-data flex items-center gap-1.5">
-            {isConnected ? (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                {hasFreshWsMarkets ? 'Real-time via WebSocket' : 'WebSocket connected'}
-              </>
-            ) : (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                Polling fallback (2s)
-              </>
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center rounded-lg border border-border/50 overflow-hidden p-0.5 bg-card/70">
+              {([
+                { label: 'All', value: 'all', count: allMarkets.length },
+                { label: '5m', value: '5m', count: timeframeCounts['5m'] },
+                { label: '15m', value: '15m', count: timeframeCounts['15m'] },
+                { label: '1h', value: '1h', count: timeframeCounts['1h'] },
+                { label: '4h', value: '4h', count: timeframeCounts['4h'] },
+              ] as Array<{ label: string; value: TimeframeFilter; count: number }>).map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => setTimeframeFilter(option.value)}
+                  type="button"
+                  className={cn(
+                    "px-2.5 py-1 text-xs font-medium transition-colors",
+                    timeframeFilter === option.value
+                      ? "bg-primary/20 text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                  )}
+                >
+                  {option.label} ({option.count})
+                </button>
+              ))}
+            </div>
+                {onOpenCryptoSettings && (
+                  <Button size="sm" variant="outline" onClick={onOpenCryptoSettings} className="h-7 px-2.5 text-xs gap-1.5">
+                <Settings className="w-3.5 h-3.5" />
+                Settings
+              </Button>
             )}
+            <div className="text-[11px] text-muted-foreground font-data flex items-center gap-1.5">
+              {isConnected ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                  {hasFreshWsMarkets ? 'Real-time via WebSocket' : 'WebSocket connected'}
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                  Polling fallback (2s)
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -472,17 +632,19 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot }: Props) 
           <RefreshCw className="w-8 h-8 animate-spin text-orange-400" />
           <span className="ml-3 text-muted-foreground">Loading crypto markets...</span>
         </div>
-      ) : allMarkets.length === 0 ? (
+      ) : filteredMarkets.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16">
           <Activity className="w-12 h-12 text-muted-foreground/30 mb-4" />
-          <p className="text-muted-foreground font-medium">No live crypto markets found</p>
+          <p className="text-muted-foreground font-medium">
+            No live crypto markets found for this timeframe
+          </p>
           <p className="text-sm text-muted-foreground/70 mt-1">
             Check that series IDs are configured correctly in Settings
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          {allMarkets.map((market) => (
+          {filteredMarkets.map((market) => (
             <CryptoMarketCard key={market.id} market={market} />
           ))}
         </div>

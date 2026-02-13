@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models.database import (
+    AppSettings,
     TradeSignal,
     Trader,
     TraderConfigRevision,
@@ -29,6 +30,7 @@ from services.trader_orchestrator.templates import (
     get_template,
 )
 from utils.utcnow import utcnow
+from utils.secrets import decrypt_secret
 
 ORCHESTRATOR_CONTROL_ID = "default"
 ORCHESTRATOR_SNAPSHOT_ID = "latest"
@@ -968,12 +970,44 @@ async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
         "traders": await list_traders(session),
     }
 
-def _build_preflight_checks(control: dict[str, Any], trader_count: int) -> list[dict[str, Any]]:
+async def _build_preflight_checks(
+    session: AsyncSession,
+    control: dict[str, Any],
+    trader_count: int,
+) -> list[dict[str, Any]]:
+    app_settings = await session.get(AppSettings, "default")
+    db_trading_enabled = bool(app_settings.trading_enabled) if app_settings is not None else False
+    polymarket_ready = bool(
+        app_settings is not None
+        and decrypt_secret(app_settings.polymarket_api_key)
+        and decrypt_secret(app_settings.polymarket_api_secret)
+        and decrypt_secret(app_settings.polymarket_api_passphrase)
+    )
+    kalshi_ready = bool(
+        app_settings is not None
+        and (app_settings.kalshi_email or "").strip()
+        and decrypt_secret(app_settings.kalshi_password)
+        and decrypt_secret(app_settings.kalshi_api_key)
+    )
+    live_creds_ready = polymarket_ready or kalshi_ready
+
     return [
         {
-            "id": "trading_enabled",
+            "id": "trading_enabled_env",
             "ok": bool(settings.TRADING_ENABLED),
-            "message": "TRADING_ENABLED must be true",
+            "message": "TRADING_ENABLED must be true in environment config",
+        },
+        {
+            "id": "trading_enabled_setting",
+            "ok": db_trading_enabled,
+            "message": "trading_enabled must be true in app settings",
+        },
+        {
+            "id": "live_credentials_configured",
+            "ok": live_creds_ready,
+            "message": "At least one live venue credential set must be configured",
+            "polymarket_ready": polymarket_ready,
+            "kalshi_ready": kalshi_ready,
         },
         {
             "id": "kill_switch_clear",
@@ -998,7 +1032,7 @@ async def create_live_preflight(
     control_row = await ensure_orchestrator_control(session)
     control = _serialize_control(control_row)
     trader_count = int((await session.execute(select(func.count(Trader.id)))).scalar() or 0)
-    checks = _build_preflight_checks(control, trader_count)
+    checks = await _build_preflight_checks(session, control, trader_count)
     failed = [check for check in checks if not check["ok"]]
     status = "passed" if not failed else "failed"
 

@@ -23,7 +23,7 @@ _SOURCE_ADAPTERS: dict[str, SourceAdapter] = {
     "crypto": SourceAdapter(
         key="crypto",
         label="Crypto Markets",
-        description="Crypto microstructure and 15m market signals.",
+        description="Crypto microstructure and 5m/15m market signals.",
         domains=["crypto"],
         signal_types=["crypto_market"],
     ),

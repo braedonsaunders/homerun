@@ -72,6 +72,30 @@ def test_parse_exact_temperature_contract_with_be_syntax():
     assert parsed.raw_unit == "C"
 
 
+def test_parse_postfix_or_higher_contract_is_threshold():
+    parsed = parse_weather_contract(
+        "Will the highest temperature in Dallas be 68°F or higher on February 13?"
+    )
+    assert parsed is not None
+    assert parsed.metric == "temp_max_threshold"
+    assert parsed.operator == "gt"
+    assert parsed.location == "Dallas"
+    assert parsed.raw_threshold == 68.0
+    assert parsed.raw_unit == "F"
+
+
+def test_parse_postfix_or_lower_contract_is_threshold():
+    parsed = parse_weather_contract(
+        "Will the lowest temperature in Dallas be 32°F or lower on February 13?"
+    )
+    assert parsed is not None
+    assert parsed.metric == "temp_min_threshold"
+    assert parsed.operator == "lt"
+    assert parsed.location == "Dallas"
+    assert parsed.raw_threshold == 32.0
+    assert parsed.raw_unit == "F"
+
+
 def test_parse_quantitative_precipitation_contract_returns_none():
     parsed = parse_weather_contract(
         "Will NYC have between 3 and 4 inches of precipitation in February?"

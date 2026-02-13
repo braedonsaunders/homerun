@@ -1,50 +1,44 @@
-"""
-Telegram Notification Service
+"""Telegram notification service focused on trader-orchestrator activity."""
 
-Sends formatted Telegram messages for key trading events:
-- High-ROI arbitrage opportunities
-- Trade executions and results
-- Circuit breaker triggers
-- Daily P&L summaries
-- Error/warning alerts
-
-Uses Telegram Bot API via httpx with rate limiting (20 msgs/min)
-to stay within Telegram's rate limits.
-"""
+from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from utils.utcnow import utcnow
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 
 from config import settings
-from models.database import AsyncSessionLocal, AppSettings
+from models.database import (
+    AppSettings,
+    AsyncSessionLocal,
+    Trader,
+    TraderDecision,
+    TraderEvent,
+    TraderOrder,
+    TraderOrchestratorControl,
+    TraderOrchestratorSnapshot,
+)
 from utils.logger import get_logger
 from utils.secrets import decrypt_secret
+from utils.utcnow import utcnow
 
 logger = get_logger("notifier")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 MAX_MESSAGES_PER_MINUTE = 20
-
-
-# ── MarkdownV2 helpers ──────────────────────────────────────────────
+MONITOR_POLL_SECONDS = 5
+SETTINGS_REFRESH_SECONDS = 30
+DEFAULT_SUMMARY_INTERVAL_MINUTES = 60
 
 
 def _escape_md(text: str) -> str:
-    """Escape special characters for Telegram MarkdownV2.
-
-    All of these characters must be escaped outside of code spans:
-    _ * [ ] ( ) ~ ` > # + - = | { } . !
-    """
+    """Escape special characters for Telegram MarkdownV2."""
     special = r"\_*[]()~`>#+=|{}.!-"
-    escaped = []
+    escaped: list[str] = []
     for ch in str(text):
         if ch in special:
             escaped.append(f"\\{ch}")
@@ -53,97 +47,71 @@ def _escape_md(text: str) -> str:
     return "".join(escaped)
 
 
-def _code(text: str) -> str:
-    """Wrap text in an inline code span (no escaping needed inside)."""
-    return f"`{text}`"
-
-
 def _bold(text: str) -> str:
-    """Wrap already-escaped text in bold markers."""
     return f"*{text}*"
 
 
-# ── Daily stats accumulator ─────────────────────────────────────────
+def _clamp_int(value: object, minimum: int, maximum: int, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = fallback
+    return max(minimum, min(maximum, parsed))
 
 
-@dataclass
-class DailyStats:
-    """Tracks daily activity for the summary notification."""
-
-    date: str = ""
-    opportunities_detected: int = 0
-    opportunities_acted_on: int = 0
-    trades_won: int = 0
-    trades_lost: int = 0
-    total_pnl: float = 0.0
-    best_trade_roi: Optional[float] = None
-    best_trade_strategy: Optional[str] = None
-    worst_trade_roi: Optional[float] = None
-    worst_trade_strategy: Optional[str] = None
-    strategy_breakdown: dict = field(default_factory=dict)
-
-    def reset(self):
-        today = utcnow().strftime("%Y-%m-%d")
-        self.date = today
-        self.opportunities_detected = 0
-        self.opportunities_acted_on = 0
-        self.trades_won = 0
-        self.trades_lost = 0
-        self.total_pnl = 0.0
-        self.best_trade_roi = None
-        self.best_trade_strategy = None
-        self.worst_trade_roi = None
-        self.worst_trade_strategy = None
-        self.strategy_breakdown = {}
+def _to_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
-# ── Notifier service ────────────────────────────────────────────────
+def _format_money(value: float) -> str:
+    return f"${value:,.2f}"
 
 
 class TelegramNotifier:
-    """
-    Singleton Telegram notification service.
+    """Telegram notifier that tracks autotrader-only runtime activity."""
 
-    Reads credentials from the AppSettings database table first, then
-    falls back to ``config.py`` environment variables.  All public
-    ``notify_*`` methods are fire-and-forget safe -- they silently
-    degrade when credentials are missing or the Telegram API is
-    unreachable.
-    """
-
-    def __init__(self):
+    def __init__(self) -> None:
         self._bot_token: Optional[str] = None
         self._chat_id: Optional[str] = None
         self._notifications_enabled: bool = False
-        self._notify_on_opportunity: bool = True
-        self._notify_on_trade: bool = True
-        self._notify_min_roi: float = 5.0
 
-        # Rate limiting: sliding window of send timestamps
+        self._notify_autotrader_orders: bool = False
+        self._notify_autotrader_issues: bool = True
+        self._notify_autotrader_timeline: bool = True
+        self._summary_interval_minutes: int = DEFAULT_SUMMARY_INTERVAL_MINUTES
+        self._summary_per_trader: bool = False
+
         self._send_timestamps: deque[float] = deque()
         self._message_queue: asyncio.Queue[str] = asyncio.Queue()
         self._queue_task: Optional[asyncio.Task] = None
+        self._monitor_task: Optional[asyncio.Task] = None
 
-        # Daily stats
-        self._daily_stats = DailyStats()
-        self._daily_summary_task: Optional[asyncio.Task] = None
-
-        # HTTP client (created lazily)
         self._http_client: Optional[httpx.AsyncClient] = None
 
-        # State
         self._running = False
         self._started = False
+        self._delivery_ready = False
 
-    # ── Lifecycle ────────────────────────────────────────────────
+        self._autotrader_active: bool = False
+        self._last_summary_at: Optional[datetime] = None
+        self._last_snapshot_error: Optional[str] = None
+        self._last_settings_reload_monotonic: float = 0.0
 
-    async def start(self):
-        """Initialise the notifier: load settings, start queue worker."""
+        self._last_order_cursor: Optional[tuple[datetime, str]] = None
+        self._last_event_cursor: Optional[tuple[datetime, str]] = None
+
+    async def start(self) -> None:
+        """Initialize notifier runtime and start background workers."""
         if self._started:
             logger.warning("Notifier already started")
             return
 
         await self._load_settings()
+        await self._prime_cursors()
 
         if not self._bot_token or not self._chat_id:
             logger.info(
@@ -156,338 +124,808 @@ class TelegramNotifier:
         self._http_client = httpx.AsyncClient(timeout=15.0)
         self._running = True
         self._started = True
+        self._last_settings_reload_monotonic = time.monotonic()
 
-        # Background worker drains the rate-limited queue
         self._queue_task = asyncio.create_task(self._queue_worker())
+        self._monitor_task = asyncio.create_task(self._autotrader_monitor_loop())
 
-        # Daily summary scheduler
-        self._daily_stats.reset()
-        self._daily_summary_task = asyncio.create_task(self._daily_summary_scheduler())
+        logger.info("Telegram notifier started (autotrader mode)")
 
-        # Register with scanner and trader orchestrator
-        self._register_callbacks()
-
-        logger.info("Telegram notifier started")
-
-    def stop(self):
-        """Gracefully stop the notifier."""
+    def stop(self) -> None:
+        """Stop notifier tasks."""
         self._running = False
-        if self._queue_task and not self._queue_task.done():
-            self._queue_task.cancel()
-        if self._daily_summary_task and not self._daily_summary_task.done():
-            self._daily_summary_task.cancel()
+        for task in (self._queue_task, self._monitor_task):
+            if task and not task.done():
+                task.cancel()
         logger.info("Telegram notifier stopped")
 
-    async def shutdown(self):
-        """Close the HTTP client (call during app shutdown)."""
+    async def shutdown(self) -> None:
+        """Stop and close network resources."""
         self.stop()
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
 
-    # ── Settings ─────────────────────────────────────────────────
-
-    async def _load_settings(self):
-        """Load Telegram settings from the database, falling back to config.py."""
+    async def _load_settings(self) -> None:
+        """Load notifier configuration from DB with environment fallback."""
+        row: Optional[AppSettings] = None
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
                     select(AppSettings).where(AppSettings.id == "default")
                 )
                 row = result.scalar_one_or_none()
-
-                if row:
-                    self._bot_token = (
-                        decrypt_secret(row.telegram_bot_token)
-                        or settings.TELEGRAM_BOT_TOKEN
-                    )
-                    self._chat_id = row.telegram_chat_id or settings.TELEGRAM_CHAT_ID
-                    self._notifications_enabled = bool(row.notifications_enabled)
-                    self._notify_on_opportunity = bool(row.notify_on_opportunity)
-                    self._notify_on_trade = bool(row.notify_on_trade)
-                    self._notify_min_roi = (
-                        float(row.notify_min_roi)
-                        if row.notify_min_roi is not None
-                        else 5.0
-                    )
-                    return
         except Exception as exc:
             logger.warning(
                 "Could not load notifier settings from DB, using config.py",
                 error=str(exc),
             )
 
-        # Fallback to config.py
-        self._bot_token = settings.TELEGRAM_BOT_TOKEN
-        self._chat_id = settings.TELEGRAM_CHAT_ID
-        self._notifications_enabled = bool(self._bot_token and self._chat_id)
+        if row is None:
+            self._bot_token = settings.TELEGRAM_BOT_TOKEN
+            self._chat_id = settings.TELEGRAM_CHAT_ID
+            self._notifications_enabled = bool(self._bot_token and self._chat_id)
+            self._notify_autotrader_orders = False
+            self._notify_autotrader_issues = True
+            self._notify_autotrader_timeline = True
+            self._summary_interval_minutes = DEFAULT_SUMMARY_INTERVAL_MINUTES
+            self._summary_per_trader = False
+            return
 
-    async def reload_settings(self):
-        """Public helper so the settings API can trigger a reload."""
+        self._bot_token = decrypt_secret(row.telegram_bot_token) or settings.TELEGRAM_BOT_TOKEN
+        self._chat_id = row.telegram_chat_id or settings.TELEGRAM_CHAT_ID
+        self._notifications_enabled = bool(row.notifications_enabled)
+
+        # Legacy bridge: if new toggles are missing for any reason, fall back to old flags.
+        self._notify_autotrader_orders = bool(
+            getattr(row, "notify_autotrader_orders", bool(row.notify_on_trade))
+        )
+        self._notify_autotrader_issues = bool(
+            getattr(row, "notify_autotrader_issues", True)
+        )
+        self._notify_autotrader_timeline = bool(
+            getattr(row, "notify_autotrader_timeline", bool(row.notify_on_opportunity))
+        )
+        self._summary_interval_minutes = _clamp_int(
+            getattr(
+                row,
+                "notify_autotrader_summary_interval_minutes",
+                DEFAULT_SUMMARY_INTERVAL_MINUTES,
+            ),
+            5,
+            1440,
+            DEFAULT_SUMMARY_INTERVAL_MINUTES,
+        )
+        self._summary_per_trader = bool(
+            getattr(row, "notify_autotrader_summary_per_trader", False)
+        )
+
+    async def reload_settings(self) -> None:
         await self._load_settings()
         logger.info("Notifier settings reloaded")
 
-    # ── Callback registration ────────────────────────────────────
+    async def _prime_cursors(self) -> None:
+        """Avoid replaying old DB records when notifier starts."""
+        try:
+            async with AsyncSessionLocal() as session:
+                latest_order = (
+                    await session.execute(
+                        select(TraderOrder.created_at, TraderOrder.id)
+                        .order_by(TraderOrder.created_at.desc(), TraderOrder.id.desc())
+                        .limit(1)
+                    )
+                ).first()
+                if latest_order and latest_order[0] is not None:
+                    self._last_order_cursor = (_to_utc(latest_order[0]), str(latest_order[1]))
 
-    def _register_callbacks(self):
-        """Hook into scanner callbacks.
+                latest_event = (
+                    await session.execute(
+                        select(TraderEvent.created_at, TraderEvent.id)
+                        .order_by(TraderEvent.created_at.desc(), TraderEvent.id.desc())
+                        .limit(1)
+                    )
+                ).first()
+                if latest_event and latest_event[0] is not None:
+                    self._last_event_cursor = (_to_utc(latest_event[0]), str(latest_event[1]))
 
-        Trader orchestrator runtime is worker-owned and DB-backed; notifier integration
-        should consume persisted trader decisions/orders instead of
-        in-process callback wiring.
-        """
-        from services.scanner import scanner
+                snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
+                if snapshot is not None:
+                    self._last_snapshot_error = (
+                        str(snapshot.last_error).strip() if snapshot.last_error else None
+                    )
 
-        scanner.add_callback(self._on_opportunities)
-        logger.info("Notifier callbacks registered with scanner")
+                control = await session.get(TraderOrchestratorControl, "default")
+                self._autotrader_active = bool(
+                    control is not None
+                    and bool(control.is_enabled)
+                    and not bool(control.is_paused)
+                )
+                if self._autotrader_active:
+                    self._last_summary_at = utcnow()
+        except Exception as exc:
+            logger.debug("Notifier cursor priming skipped", error=str(exc))
 
-    # ── Scanner callback ─────────────────────────────────────────
+    async def _autotrader_monitor_loop(self) -> None:
+        """Poll trader-orchestrator state and emit Telegram notifications."""
+        while self._running:
+            try:
+                now_monotonic = time.monotonic()
+                if (
+                    now_monotonic - self._last_settings_reload_monotonic
+                    >= SETTINGS_REFRESH_SECONDS
+                ):
+                    await self._load_settings()
+                    self._last_settings_reload_monotonic = now_monotonic
 
-    async def _on_opportunities(self, opportunities):
-        """Called by the scanner after each scan cycle."""
-        if not self._notifications_enabled or not self._notify_on_opportunity:
-            # Still count for daily stats
-            self._daily_stats.opportunities_detected += len(opportunities)
-            return
-
-        self._daily_stats.opportunities_detected += len(opportunities)
-
-        for opp in opportunities:
-            if opp.roi_percent >= self._notify_min_roi:
-                await self.notify_opportunity(opp)
-
-    # ── Trader orchestrator callback ─────────────────────────────────────
-
-    async def _on_trade_event(self, event: str, data: dict):
-        """Called by trader orchestrator on order lifecycle events."""
-        if event == "trade_executed":
-            trade = data.get("trade")
-            opp = data.get("opportunity")
-            if trade and opp:
-                self._daily_stats.opportunities_acted_on += 1
-
-                strategy_key = opp.strategy
-                breakdown = self._daily_stats.strategy_breakdown
-                if strategy_key not in breakdown:
-                    breakdown[strategy_key] = {"count": 0, "pnl": 0.0}
-                breakdown[strategy_key]["count"] += 1
-
-                if self._notifications_enabled and self._notify_on_trade:
-                    await self.notify_trade_executed(trade, opp)
-
-        elif event == "trade_resolved":
-            trade = data.get("trade")
-            if trade:
-                pnl = trade.actual_profit or 0.0
-                self._daily_stats.total_pnl += pnl
-
-                if pnl >= 0:
-                    self._daily_stats.trades_won += 1
-                else:
-                    self._daily_stats.trades_lost += 1
-
-                roi = (pnl / trade.total_cost * 100) if trade.total_cost else 0.0
-                strategy_name = (
-                    trade.strategy.value
-                    if hasattr(trade.strategy, "value")
-                    else str(trade.strategy)
+                delivery_ready = bool(
+                    self._notifications_enabled and self._bot_token and self._chat_id
                 )
 
-                if (
-                    self._daily_stats.best_trade_roi is None
-                    or roi > self._daily_stats.best_trade_roi
-                ):
-                    self._daily_stats.best_trade_roi = roi
-                    self._daily_stats.best_trade_strategy = strategy_name
-                if (
-                    self._daily_stats.worst_trade_roi is None
-                    or roi < self._daily_stats.worst_trade_roi
-                ):
-                    self._daily_stats.worst_trade_roi = roi
-                    self._daily_stats.worst_trade_strategy = strategy_name
+                if delivery_ready and not self._delivery_ready:
+                    # Avoid replaying stale history when notifications are
+                    # enabled after running with delivery disabled.
+                    await self._prime_cursors()
+                    self._delivery_ready = True
 
-                breakdown = self._daily_stats.strategy_breakdown
-                if strategy_name in breakdown:
-                    breakdown[strategy_name]["pnl"] += pnl
+                if not delivery_ready:
+                    self._delivery_ready = False
+                    await asyncio.sleep(MONITOR_POLL_SECONDS)
+                    continue
 
-        elif event == "circuit_breaker":
-            reason = data.get("reason", "Unknown trigger")
-            if self._notifications_enabled:
-                await self.notify_circuit_breaker(reason)
+                async with AsyncSessionLocal() as session:
+                    control = await session.get(TraderOrchestratorControl, "default")
+                    snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
 
-    # ── Public notification methods ──────────────────────────────
+                    active = bool(
+                        control is not None
+                        and bool(control.is_enabled)
+                        and not bool(control.is_paused)
+                    )
+                    mode = str(getattr(control, "mode", "paper") or "paper").upper()
 
-    async def notify_opportunity(self, opp) -> None:
-        """Send a notification for a high-ROI opportunity."""
-        signal = (
-            "\u2705" if opp.roi_percent >= 10 else "\U0001f7e1"
-        )  # green check / yellow circle
+                    traders_running = int(
+                        getattr(snapshot, "traders_running", 0) if snapshot else 0
+                    )
+                    traders_total = int(
+                        getattr(snapshot, "traders_total", 0) if snapshot else 0
+                    )
 
-        strategy = _escape_md(opp.strategy.replace("_", " ").title())
-        roi = _escape_md(f"{opp.roi_percent:.2f}%")
-        cost = _escape_md(f"${opp.total_cost:.2f}")
-        profit = _escape_md(f"${opp.net_profit:.4f}")
-        risk = _escape_md(f"{opp.risk_score:.2f}")
-        liquidity = _escape_md(f"${opp.min_liquidity:,.0f}")
-        title = _escape_md(opp.title[:120])
+                    if active and not self._autotrader_active:
+                        await self._enqueue(
+                            self._format_runtime_state_message(
+                                title="Autotrader Active",
+                                mode=mode,
+                                traders_running=traders_running,
+                                traders_total=traders_total,
+                            )
+                        )
+                        self._last_summary_at = utcnow()
+                    elif not active and self._autotrader_active:
+                        await self._enqueue(
+                            self._format_runtime_state_message(
+                                title="Autotrader Paused",
+                                mode=mode,
+                                traders_running=traders_running,
+                                traders_total=traders_total,
+                            )
+                        )
+                        self._last_summary_at = None
 
-        lines = [
-            f"{signal} {_bold('New Opportunity')}",
-            "",
-            f"{_bold('Strategy:')} {strategy}",
-            f"{_bold('ROI:')} {roi}",
-            f"{_bold('Cost:')} {cost}",
-            f"{_bold('Net Profit:')} {profit}",
-            f"{_bold('Risk Score:')} {risk}",
-            f"{_bold('Liquidity:')} {liquidity}",
-        ]
+                    self._autotrader_active = active
 
-        if opp.guaranteed_profit is not None:
-            gp = _escape_md(f"${opp.guaranteed_profit:.4f}")
-            lines.append(f"{_bold('Guaranteed:')} {gp}")
-        if opp.mispricing_type:
-            mt = _escape_md(opp.mispricing_type.value.replace("_", " ").title())
-            lines.append(f"{_bold('Type:')} {mt}")
+                    new_events = await self._load_new_trader_events(session)
+                    new_orders = await self._load_new_trader_orders(session)
 
-        lines.extend(["", title])
+                    if self._notify_autotrader_issues:
+                        await self._send_issue_alerts(
+                            session=session,
+                            events=new_events,
+                            orders=new_orders,
+                            snapshot=snapshot,
+                        )
 
-        await self._enqueue("\n".join(lines))
+                    if active and self._notify_autotrader_orders:
+                        await self._send_order_activity_alert(
+                            session=session,
+                            orders=new_orders,
+                            mode=mode,
+                        )
 
-    async def notify_trade_executed(self, trade, opp) -> None:
-        """Send a notification when a trade is executed."""
-        mode_label = (
-            trade.mode.value if hasattr(trade.mode, "value") else str(trade.mode)
+                    if active and self._notify_autotrader_timeline:
+                        await self._maybe_send_timeline_summary(
+                            session=session,
+                            control=control,
+                            snapshot=snapshot,
+                        )
+                    elif not active:
+                        self._last_summary_at = None
+
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error("Autotrader notifier monitor error", error=str(exc))
+
+            await asyncio.sleep(MONITOR_POLL_SECONDS)
+
+    async def _load_new_trader_orders(self, session) -> list[TraderOrder]:
+        query = select(TraderOrder).order_by(
+            TraderOrder.created_at.asc(),
+            TraderOrder.id.asc(),
         )
-        mode_upper = mode_label.upper()
-        signal = (
-            "\U0001f4b0" if mode_upper == "LIVE" else "\U0001f4dd"
-        )  # money bag / memo
 
-        strategy = _escape_md(
-            trade.strategy.value
-            if hasattr(trade.strategy, "value")
-            else str(trade.strategy)
+        if self._last_order_cursor is not None:
+            cursor_ts, cursor_id = self._last_order_cursor
+            query = query.where(
+                or_(
+                    TraderOrder.created_at > cursor_ts.replace(tzinfo=None),
+                    and_(
+                        TraderOrder.created_at == cursor_ts.replace(tzinfo=None),
+                        TraderOrder.id > cursor_id,
+                    ),
+                )
+            )
+
+        rows = (
+            (await session.execute(query.limit(200)))
+            .scalars()
+            .all()
         )
-        roi = _escape_md(f"{opp.roi_percent:.2f}%")
-        size = _escape_md(f"${trade.total_cost:.2f}")
-        expected = _escape_md(f"${trade.expected_profit:.4f}")
-        mode = _escape_md(mode_upper)
-        title = _escape_md(opp.title[:120])
+        if rows:
+            last = rows[-1]
+            if last.created_at is not None:
+                self._last_order_cursor = (_to_utc(last.created_at), str(last.id))
+        return rows
 
-        lines = [
-            f"{signal} {_bold('Trade Executed')} \\[{mode}\\]",
-            "",
-            f"{_bold('Strategy:')} {_escape_md(strategy)}",
-            f"{_bold('ROI:')} {roi}",
-            f"{_bold('Size:')} {size}",
-            f"{_bold('Expected Profit:')} {expected}",
-        ]
+    async def _load_new_trader_events(self, session) -> list[TraderEvent]:
+        query = select(TraderEvent).order_by(
+            TraderEvent.created_at.asc(),
+            TraderEvent.id.asc(),
+        )
 
-        if trade.guaranteed_profit is not None:
-            gp = _escape_md(f"${trade.guaranteed_profit:.4f}")
-            lines.append(f"{_bold('Guaranteed:')} {gp}")
-        if trade.mispricing_type:
-            mt = _escape_md(trade.mispricing_type.replace("_", " ").title())
-            lines.append(f"{_bold('Type:')} {mt}")
+        if self._last_event_cursor is not None:
+            cursor_ts, cursor_id = self._last_event_cursor
+            query = query.where(
+                or_(
+                    TraderEvent.created_at > cursor_ts.replace(tzinfo=None),
+                    and_(
+                        TraderEvent.created_at == cursor_ts.replace(tzinfo=None),
+                        TraderEvent.id > cursor_id,
+                    ),
+                )
+            )
 
-        lines.extend(["", title])
+        rows = (
+            (await session.execute(query.limit(200)))
+            .scalars()
+            .all()
+        )
+        if rows:
+            last = rows[-1]
+            if last.created_at is not None:
+                self._last_event_cursor = (_to_utc(last.created_at), str(last.id))
+        return rows
 
-        await self._enqueue("\n".join(lines))
+    @staticmethod
+    def _is_issue_event(event: TraderEvent) -> bool:
+        severity = str(event.severity or "").strip().lower()
+        if severity in {"warn", "warning", "error", "critical"}:
+            return True
 
-    async def notify_circuit_breaker(self, reason: str) -> None:
-        """Send an alert when the circuit breaker triggers."""
-        lines = [
-            f"\u26a0\ufe0f {_bold('Circuit Breaker Triggered')}",
-            "",
-            f"{_bold('Reason:')} {_escape_md(reason)}",
-            "",
-            _escape_md("Auto-trading paused. Manual review recommended."),
-        ]
-        await self._enqueue("\n".join(lines))
+        event_type = str(event.event_type or "").strip().lower()
+        payload = event.payload_json or {}
 
-    async def notify_error(self, component: str, message: str) -> None:
-        """Send an error/warning alert."""
-        if not self._notifications_enabled:
+        if event_type == "kill_switch":
+            return bool(payload.get("enabled", True))
+
+        if event_type == "live_preflight":
+            return str(payload.get("status") or "").lower() == "failed"
+
+        return False
+
+    @staticmethod
+    def _is_issue_order(order: TraderOrder) -> bool:
+        status = str(order.status or "").strip().lower()
+        if status in {"failed", "rejected", "cancelled", "error"}:
+            return True
+        if order.error_message:
+            return True
+        return False
+
+    async def _load_trader_name_map(
+        self,
+        session,
+        trader_ids: set[str],
+    ) -> dict[str, str]:
+        if not trader_ids:
+            return {}
+        rows = (
+            (
+                await session.execute(
+                    select(Trader.id, Trader.name).where(Trader.id.in_(tuple(trader_ids)))
+                )
+            )
+            .all()
+        )
+        return {str(row[0]): str(row[1]) for row in rows}
+
+    async def _send_issue_alerts(
+        self,
+        *,
+        session,
+        events: list[TraderEvent],
+        orders: list[TraderOrder],
+        snapshot: Optional[TraderOrchestratorSnapshot],
+    ) -> None:
+        trader_ids = {
+            str(item.trader_id)
+            for item in list(events) + list(orders)
+            if getattr(item, "trader_id", None)
+        }
+        trader_names = await self._load_trader_name_map(session, trader_ids)
+
+        for event in events:
+            if not self._is_issue_event(event):
+                continue
+            await self._enqueue(
+                self._format_issue_event_message(event=event, trader_names=trader_names)
+            )
+
+        for order in orders:
+            if not self._is_issue_order(order):
+                continue
+            await self._enqueue(
+                self._format_issue_order_message(order=order, trader_names=trader_names)
+            )
+
+        snapshot_error = None
+        if snapshot is not None and snapshot.last_error:
+            snapshot_error = str(snapshot.last_error).strip()
+
+        if snapshot_error != self._last_snapshot_error:
+            if snapshot_error:
+                await self._enqueue(
+                    self._format_worker_issue_message(snapshot_error)
+                )
+            self._last_snapshot_error = snapshot_error
+
+    async def _send_order_activity_alert(
+        self,
+        *,
+        session,
+        orders: list[TraderOrder],
+        mode: str,
+    ) -> None:
+        regular_orders = [row for row in orders if not self._is_issue_order(row)]
+        if not regular_orders:
             return
-        lines = [
-            f"\u274c {_bold('Error Alert')}",
-            "",
-            f"{_bold('Component:')} {_escape_md(component)}",
-            f"{_bold('Message:')} {_escape_md(message[:500])}",
-        ]
-        await self._enqueue("\n".join(lines))
 
-    async def notify_daily_summary(self) -> None:
-        """Send the daily P&L summary."""
-        stats = self._daily_stats
-        pnl_signal = (
-            "\U0001f4c8" if stats.total_pnl >= 0 else "\U0001f4c9"
-        )  # chart up / chart down
+        status_counts: dict[str, int] = defaultdict(int)
+        notional = 0.0
+        trader_counts: dict[str, int] = defaultdict(int)
+        trader_ids: set[str] = set()
 
-        lines = [
-            f"{pnl_signal} {_bold('Daily Summary')} \\- {_escape_md(stats.date)}",
-            "",
-            f"{_bold('Opportunities Detected:')} {_escape_md(str(stats.opportunities_detected))}",
-            f"{_bold('Opportunities Acted On:')} {_escape_md(str(stats.opportunities_acted_on))}",
-            f"{_bold('Trades Won:')} {_escape_md(str(stats.trades_won))}",
-            f"{_bold('Trades Lost:')} {_escape_md(str(stats.trades_lost))}",
-            f"{_bold('P&L:')} {_escape_md(f'${stats.total_pnl:+.2f}')}",
+        for row in regular_orders:
+            status_counts[str(row.status or "unknown").lower()] += 1
+            notional += float(row.notional_usd or 0.0)
+            if row.trader_id:
+                trader_id = str(row.trader_id)
+                trader_ids.add(trader_id)
+                trader_counts[trader_id] += 1
+
+        trader_names = await self._load_trader_name_map(session, trader_ids)
+
+        status_parts = [
+            f"{_escape_md(status)}: {_escape_md(str(count))}"
+            for status, count in sorted(status_counts.items())
         ]
 
-        if stats.best_trade_roi is not None:
-            lines.append(
-                f"{_bold('Best Trade:')} {_escape_md(f'{stats.best_trade_roi:+.2f}%')} "
-                f"\\({_escape_md(stats.best_trade_strategy or 'N/A')}\\)"
-            )
-        if stats.worst_trade_roi is not None:
-            lines.append(
-                f"{_bold('Worst Trade:')} {_escape_md(f'{stats.worst_trade_roi:+.2f}%')} "
-                f"\\({_escape_md(stats.worst_trade_strategy or 'N/A')}\\)"
-            )
+        top_traders = sorted(
+            trader_counts.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:3]
+        trader_parts = [
+            f"{_escape_md(trader_names.get(tid, tid[:8]))} {_escape_md(str(count))}"
+            for tid, count in top_traders
+        ]
 
-        if stats.strategy_breakdown:
-            lines.append("")
-            lines.append(_bold("Strategy Breakdown:"))
-            for strat, info in sorted(stats.strategy_breakdown.items()):
-                name = _escape_md(strat.replace("_", " ").title())
-                count = _escape_md(str(info["count"]))
-                pnl = _escape_md(f"${info['pnl']:+.2f}")
-                lines.append(f"  {name}: {count} trades, {pnl}")
+        lines = [
+            f"📈 {_bold('Autotrader Orders')}",
+            "",
+            f"{_bold('Mode:')} {_escape_md(mode)}",
+            f"{_bold('New Orders:')} {_escape_md(str(len(regular_orders)))}",
+            f"{_bold('Status Mix:')} {_escape_md(', '.join(status_parts) if status_parts else 'none')}",
+            f"{_bold('Notional:')} {_escape_md(_format_money(notional))}",
+        ]
+        if trader_parts:
+            lines.append(
+                f"{_bold('Top Traders:')} {_escape_md(', '.join(trader_parts))}"
+            )
 
         await self._enqueue("\n".join(lines))
 
-    # ── Rate limiting & queue ────────────────────────────────────
+    async def _maybe_send_timeline_summary(
+        self,
+        *,
+        session,
+        control: Optional[TraderOrchestratorControl],
+        snapshot: Optional[TraderOrchestratorSnapshot],
+    ) -> None:
+        now = utcnow()
+        interval = timedelta(minutes=self._summary_interval_minutes)
+
+        if self._last_summary_at is None:
+            self._last_summary_at = now
+            return
+
+        if now - self._last_summary_at < interval:
+            return
+
+        start = self._last_summary_at
+        end = now
+
+        summary_message = await self._build_timeline_summary(
+            session=session,
+            start=start,
+            end=end,
+            control=control,
+            snapshot=snapshot,
+        )
+        await self._enqueue(summary_message)
+        self._last_summary_at = now
+
+    async def _build_timeline_summary(
+        self,
+        *,
+        session,
+        start: datetime,
+        end: datetime,
+        control: Optional[TraderOrchestratorControl],
+        snapshot: Optional[TraderOrchestratorSnapshot],
+    ) -> str:
+        start_naive = _to_utc(start).replace(tzinfo=None)
+        end_naive = _to_utc(end).replace(tzinfo=None)
+
+        decision_rows = (
+            (
+                await session.execute(
+                    select(TraderDecision.decision, func.count(TraderDecision.id))
+                    .where(
+                        TraderDecision.created_at >= start_naive,
+                        TraderDecision.created_at < end_naive,
+                    )
+                    .group_by(TraderDecision.decision)
+                )
+            )
+            .all()
+        )
+        decision_counts = {
+            str(row[0] or "unknown").lower(): int(row[1] or 0)
+            for row in decision_rows
+        }
+
+        order_rows = (
+            (
+                await session.execute(
+                    select(
+                        TraderOrder.status,
+                        func.count(TraderOrder.id),
+                        func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
+                    )
+                    .where(
+                        TraderOrder.created_at >= start_naive,
+                        TraderOrder.created_at < end_naive,
+                    )
+                    .group_by(TraderOrder.status)
+                )
+            )
+            .all()
+        )
+        order_counts = {
+            str(row[0] or "unknown").lower(): int(row[1] or 0)
+            for row in order_rows
+        }
+        total_notional = float(sum(float(row[2] or 0.0) for row in order_rows))
+
+        resolved_pnl = float(
+            (
+                await session.execute(
+                    select(func.coalesce(func.sum(TraderOrder.actual_profit), 0.0)).where(
+                        TraderOrder.updated_at >= start_naive,
+                        TraderOrder.updated_at < end_naive,
+                        TraderOrder.status.in_(("resolved_win", "resolved_loss")),
+                    )
+                )
+            ).scalar()
+            or 0.0
+        )
+
+        issue_count = int(
+            (
+                await session.execute(
+                    select(func.count(TraderEvent.id)).where(
+                        TraderEvent.created_at >= start_naive,
+                        TraderEvent.created_at < end_naive,
+                        func.lower(TraderEvent.severity).in_(
+                            ("warn", "warning", "error", "critical")
+                        ),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+
+        mode = str(getattr(control, "mode", "paper") or "paper").upper()
+        traders_running = int(getattr(snapshot, "traders_running", 0) if snapshot else 0)
+        traders_total = int(getattr(snapshot, "traders_total", 0) if snapshot else 0)
+
+        lines = [
+            f"🕒 {_bold('Autotrader Timeline')}",
+            "",
+            f"{_bold('Window:')} {_escape_md(_to_utc(start).strftime('%Y-%m-%d %H:%M'))} -> {_escape_md(_to_utc(end).strftime('%Y-%m-%d %H:%M'))} UTC",
+            f"{_bold('Mode:')} {_escape_md(mode)}",
+            f"{_bold('Traders Running:')} {_escape_md(str(traders_running))}/{_escape_md(str(traders_total))}",
+            f"{_bold('Decisions:')} {_escape_md(self._format_counts(decision_counts))}",
+            f"{_bold('Orders:')} {_escape_md(self._format_counts(order_counts))}",
+            f"{_bold('Notional:')} {_escape_md(_format_money(total_notional))}",
+            f"{_bold('Resolved P&L:')} {_escape_md(f'{resolved_pnl:+.2f}')}",
+            f"{_bold('Issues:')} {_escape_md(str(issue_count))}",
+        ]
+
+        if self._summary_per_trader:
+            trader_lines = await self._build_per_trader_summary_lines(
+                session=session,
+                start_naive=start_naive,
+                end_naive=end_naive,
+            )
+            if trader_lines:
+                lines.append("")
+                lines.append(_bold("Per Trader:"))
+                lines.extend(trader_lines)
+
+        return "\n".join(lines)
+
+    async def _build_per_trader_summary_lines(
+        self,
+        *,
+        session,
+        start_naive: datetime,
+        end_naive: datetime,
+    ) -> list[str]:
+        order_rows = (
+            (
+                await session.execute(
+                    select(
+                        TraderOrder.trader_id,
+                        func.count(TraderOrder.id),
+                        func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
+                    )
+                    .where(
+                        TraderOrder.created_at >= start_naive,
+                        TraderOrder.created_at < end_naive,
+                    )
+                    .group_by(TraderOrder.trader_id)
+                )
+            )
+            .all()
+        )
+
+        decision_rows = (
+            (
+                await session.execute(
+                    select(
+                        TraderDecision.trader_id,
+                        TraderDecision.decision,
+                        func.count(TraderDecision.id),
+                    )
+                    .where(
+                        TraderDecision.created_at >= start_naive,
+                        TraderDecision.created_at < end_naive,
+                    )
+                    .group_by(TraderDecision.trader_id, TraderDecision.decision)
+                )
+            )
+            .all()
+        )
+
+        issue_rows = (
+            (
+                await session.execute(
+                    select(TraderEvent.trader_id, func.count(TraderEvent.id))
+                    .where(
+                        TraderEvent.created_at >= start_naive,
+                        TraderEvent.created_at < end_naive,
+                        func.lower(TraderEvent.severity).in_(
+                            ("warn", "warning", "error", "critical")
+                        ),
+                    )
+                    .group_by(TraderEvent.trader_id)
+                )
+            )
+            .all()
+        )
+
+        trader_ids: set[str] = set()
+        for row in order_rows:
+            if row[0]:
+                trader_ids.add(str(row[0]))
+        for row in decision_rows:
+            if row[0]:
+                trader_ids.add(str(row[0]))
+        for row in issue_rows:
+            if row[0]:
+                trader_ids.add(str(row[0]))
+
+        if not trader_ids:
+            return []
+
+        names = await self._load_trader_name_map(session, trader_ids)
+
+        decision_map: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for row in decision_rows:
+            trader_id = str(row[0]) if row[0] else "unknown"
+            decision = str(row[1] or "unknown").lower()
+            decision_map[trader_id][decision] += int(row[2] or 0)
+
+        issue_map = {
+            (str(row[0]) if row[0] else "unknown"): int(row[1] or 0)
+            for row in issue_rows
+        }
+
+        lines: list[str] = []
+        sorted_orders = sorted(order_rows, key=lambda row: int(row[1] or 0), reverse=True)
+
+        for row in sorted_orders[:12]:
+            trader_id = str(row[0]) if row[0] else "unknown"
+            order_count = int(row[1] or 0)
+            notional = float(row[2] or 0.0)
+            decision_counts = decision_map.get(trader_id, {})
+            selected_count = int(decision_counts.get("selected", 0))
+            blocked_count = int(decision_counts.get("blocked", 0))
+            skipped_count = int(decision_counts.get("skipped", 0))
+            issues = int(issue_map.get(trader_id, 0))
+
+            trader_name = names.get(trader_id, trader_id[:8])
+            line = (
+                f"- {_escape_md(trader_name)}: "
+                f"orders {_escape_md(str(order_count))}, "
+                f"notional {_escape_md(_format_money(notional))}, "
+                f"selected {_escape_md(str(selected_count))}, "
+                f"blocked {_escape_md(str(blocked_count))}, "
+                f"skipped {_escape_md(str(skipped_count))}, "
+                f"issues {_escape_md(str(issues))}"
+            )
+            lines.append(line)
+
+        return lines
+
+    @staticmethod
+    def _format_counts(counts: dict[str, int]) -> str:
+        if not counts:
+            return "none"
+        return ", ".join(
+            f"{key}={value}"
+            for key, value in sorted(counts.items(), key=lambda item: item[0])
+        )
+
+    def _format_runtime_state_message(
+        self,
+        *,
+        title: str,
+        mode: str,
+        traders_running: int,
+        traders_total: int,
+    ) -> str:
+        return "\n".join(
+            [
+                f"ℹ️ {_bold(_escape_md(title))}",
+                "",
+                f"{_bold('Mode:')} {_escape_md(mode)}",
+                f"{_bold('Traders Running:')} {_escape_md(str(traders_running))}/{_escape_md(str(traders_total))}",
+            ]
+        )
+
+    def _format_issue_event_message(
+        self,
+        *,
+        event: TraderEvent,
+        trader_names: dict[str, str],
+    ) -> str:
+        severity = str(event.severity or "warn").upper()
+        trader_name = "System"
+        if event.trader_id:
+            trader_name = trader_names.get(str(event.trader_id), str(event.trader_id)[:8])
+
+        created_at = _to_utc(event.created_at) or utcnow()
+        message = str(event.message or "No details provided")
+
+        lines = [
+            f"⚠️ {_bold('Autotrader Issue')}",
+            "",
+            f"{_bold('Severity:')} {_escape_md(severity)}",
+            f"{_bold('Type:')} {_escape_md(str(event.event_type or 'event'))}",
+            f"{_bold('Trader:')} {_escape_md(trader_name)}",
+            f"{_bold('Message:')} {_escape_md(message[:400])}",
+            f"{_bold('Time:')} {_escape_md(created_at.strftime('%Y-%m-%d %H:%M:%S'))} UTC",
+        ]
+        return "\n".join(lines)
+
+    def _format_issue_order_message(
+        self,
+        *,
+        order: TraderOrder,
+        trader_names: dict[str, str],
+    ) -> str:
+        trader_name = "Unknown"
+        if order.trader_id:
+            trader_name = trader_names.get(str(order.trader_id), str(order.trader_id)[:8])
+
+        status = str(order.status or "unknown").upper()
+        created_at = _to_utc(order.created_at) or utcnow()
+        reason = str(order.error_message or order.reason or "Order failure")
+        market_question = str(order.market_question or order.market_id or "unknown market")
+
+        lines = [
+            f"❌ {_bold('Autotrader Order Issue')}",
+            "",
+            f"{_bold('Trader:')} {_escape_md(trader_name)}",
+            f"{_bold('Status:')} {_escape_md(status)}",
+            f"{_bold('Market:')} {_escape_md(market_question[:180])}",
+            f"{_bold('Reason:')} {_escape_md(reason[:400])}",
+            f"{_bold('Time:')} {_escape_md(created_at.strftime('%Y-%m-%d %H:%M:%S'))} UTC",
+        ]
+        return "\n".join(lines)
+
+    def _format_worker_issue_message(self, error_text: str) -> str:
+        lines = [
+            f"❌ {_bold('Autotrader Worker Error')}",
+            "",
+            f"{_bold('Error:')} {_escape_md(error_text[:700])}",
+            f"{_bold('Time:')} {_escape_md(utcnow().strftime('%Y-%m-%d %H:%M:%S'))} UTC",
+        ]
+        return "\n".join(lines)
 
     def _can_send_now(self) -> bool:
-        """Check if we are within the rate limit window."""
         now = time.monotonic()
-        # Purge timestamps older than 60 s
         while self._send_timestamps and self._send_timestamps[0] < now - 60:
             self._send_timestamps.popleft()
         return len(self._send_timestamps) < MAX_MESSAGES_PER_MINUTE
 
-    def _record_send(self):
+    def _record_send(self) -> None:
         self._send_timestamps.append(time.monotonic())
 
-    async def _enqueue(self, text: str):
-        """Add a message to the send queue."""
+    async def _enqueue(self, text: str) -> None:
         if not self._bot_token or not self._chat_id:
             return
-        await self._message_queue.put(text)
+        if not text:
+            return
 
-    async def _queue_worker(self):
-        """Background task that drains the message queue respecting rate limits."""
+        body = text.strip()
+        if len(body) <= 3900:
+            await self._message_queue.put(body)
+            return
+
+        lines = body.splitlines()
+        chunk = ""
+        for line in lines:
+            candidate = f"{chunk}\n{line}" if chunk else line
+            if len(candidate) <= 3900:
+                chunk = candidate
+                continue
+            if chunk:
+                await self._message_queue.put(chunk)
+            chunk = line[:3900]
+        if chunk:
+            await self._message_queue.put(chunk)
+
+    async def _queue_worker(self) -> None:
         while self._running:
             try:
-                # Wait for a message (with timeout so we can check _running)
                 try:
-                    message = await asyncio.wait_for(
-                        self._message_queue.get(), timeout=2.0
-                    )
+                    message = await asyncio.wait_for(self._message_queue.get(), timeout=2.0)
                 except asyncio.TimeoutError:
                     continue
 
-                # Wait until rate limit allows sending
                 while not self._can_send_now():
                     await asyncio.sleep(1.0)
                     if not self._running:
@@ -502,10 +940,7 @@ class TelegramNotifier:
                 logger.error("Queue worker error", error=str(exc))
                 await asyncio.sleep(1.0)
 
-    # ── Telegram API ─────────────────────────────────────────────
-
     async def _send_telegram(self, text: str) -> bool:
-        """Send a single message via the Telegram Bot API."""
         if not self._bot_token or not self._chat_id:
             logger.debug("Telegram credentials not configured, skipping message")
             return False
@@ -527,7 +962,6 @@ class TelegramNotifier:
                 logger.debug("Telegram message sent successfully")
                 return True
 
-            # Telegram returns 429 for rate limiting
             if resp.status_code == 429:
                 body = resp.json()
                 retry_after = body.get("parameters", {}).get("retry_after", 5)
@@ -535,7 +969,6 @@ class TelegramNotifier:
                     "Telegram rate limited, will retry", retry_after=retry_after
                 )
                 await asyncio.sleep(retry_after)
-                # Re-queue the message
                 await self._message_queue.put(text)
                 return False
 
@@ -553,51 +986,18 @@ class TelegramNotifier:
             logger.error("Failed to send Telegram message", error=str(exc))
             return False
 
-    # ── Daily summary scheduler ──────────────────────────────────
-
-    async def _daily_summary_scheduler(self):
-        """Send a daily summary at ~00:00 UTC and reset counters."""
-        while self._running:
-            try:
-                now = utcnow()
-                # Next midnight UTC
-                tomorrow = (now + timedelta(days=1)).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                wait_seconds = (tomorrow - now).total_seconds()
-
-                await asyncio.sleep(wait_seconds)
-                if not self._running:
-                    return
-
-                if self._notifications_enabled:
-                    await self.notify_daily_summary()
-
-                self._daily_stats.reset()
-
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.error("Daily summary scheduler error", error=str(exc))
-                await asyncio.sleep(60)
-
-    # ── Utility ──────────────────────────────────────────────────
-
     async def send_test_message(self) -> bool:
-        """Send a test message to verify the Telegram configuration."""
+        """Send an immediate test message using currently stored settings."""
         await self._load_settings()
         if not self._bot_token or not self._chat_id:
             return False
 
         text = (
-            f"\u2705 {_bold('Homerun Notifier')}\n\n"
-            f"Test message received\\.\n"
-            f"Notifications are working correctly\\."
+            f"✅ {_bold('Homerun Autotrader Notifier')}\n\n"
+            "Test message received\\.\n"
+            "Autotrader Telegram alerts are configured correctly\\."
         )
         return await self._send_telegram(text)
 
 
-# Singleton instance
 notifier = TelegramNotifier()
-
-

@@ -2,7 +2,6 @@ import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime
 from utils.utcnow import utcnow
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -114,6 +113,39 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Load DB-backed country reference catalog into runtime cache so
+        # country normalization uses dynamic records instead of static files.
+        try:
+            from services.world_intelligence.country_reference_source import (
+                load_country_reference_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                loaded_country_rows = await load_country_reference_from_db(session)
+            logger.info(
+                "World country reference loaded",
+                rows=loaded_country_rows,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load world country reference catalog: {e}")
+
+        # Load DB-backed UCDP conflict lists for instability scoring floors.
+        try:
+            from services.world_intelligence.ucdp_conflict_source import (
+                load_ucdp_conflict_lists_from_db,
+            )
+
+            async with AsyncSessionLocal() as session:
+                ucdp_status = await load_ucdp_conflict_lists_from_db(session)
+            logger.info(
+                "World UCDP conflict lists loaded",
+                source=ucdp_status.get("source"),
+                active_wars=ucdp_status.get("active_wars"),
+                minor_conflicts=ucdp_status.get("minor_conflicts"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load UCDP conflict lists: {e}")
 
         # Restore global pause state from persisted worker controls.
         # This keeps API-owned loops (copy trader, wallet tracker, LLM/trading gates)
@@ -352,7 +384,12 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
 
-        await polymarket_client.close()
+        try:
+            from services.polymarket import polymarket_client
+
+            await polymarket_client.close()
+        except Exception:
+            pass
         cpu_executor.shutdown(wait=False)
         logger.info("Shutdown complete")
 

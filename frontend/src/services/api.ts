@@ -499,8 +499,15 @@ export interface CryptoMarket {
   upcoming_markets: CryptoMarketUpcoming[]
   // Attached by API
   oracle_price: number | null
+  oracle_source: string | null
   oracle_updated_at_ms: number | null
   oracle_age_seconds: number | null
+  oracle_prices_by_source?: Record<string, {
+    source: string
+    price: number | null
+    updated_at_ms: number | null
+    age_seconds: number | null
+  }>
   price_to_beat: number | null
   oracle_history: { t: number; p: number }[]
 }
@@ -1483,10 +1490,12 @@ export const getTraderOrchestratorStatus = async (): Promise<TraderOrchestratorS
 
 export const startTraderOrchestrator = async (payload?: {
   mode?: string
+  paper_account_id?: string
   requested_by?: string
 }): Promise<{ status: string; mode: string; message: string }> => {
   const { data } = await api.post('/trader-orchestrator/start', {
     mode: payload?.mode || 'paper',
+    paper_account_id: payload?.paper_account_id,
     requested_by: payload?.requested_by,
   })
   return {
@@ -1901,6 +1910,11 @@ export interface NotificationSettings {
   notify_on_opportunity: boolean
   notify_on_trade: boolean
   notify_min_roi: number
+  notify_autotrader_orders: boolean
+  notify_autotrader_issues: boolean
+  notify_autotrader_timeline: boolean
+  notify_autotrader_summary_interval_minutes: number
+  notify_autotrader_summary_per_trader: boolean
 }
 
 export interface ScannerSettings {
@@ -1908,6 +1922,20 @@ export interface ScannerSettings {
   min_profit_threshold: number
   max_markets_to_scan: number
   min_liquidity: number
+}
+
+export interface DiscoverySettings {
+  max_discovered_wallets: number
+  maintenance_enabled: boolean
+  keep_recent_trade_days: number
+  keep_new_discoveries_days: number
+  maintenance_batch: number
+  stale_analysis_hours: number
+  analysis_priority_batch_limit: number
+  delay_between_markets: number
+  delay_between_wallets: number
+  max_markets_per_run: number
+  max_wallets_per_market: number
 }
 
 export interface TradingSettingsConfig {
@@ -1972,6 +2000,18 @@ export interface SearchFilterSettings {
   btc_eth_hf_series_eth_15m: string
   btc_eth_hf_series_sol_15m: string
   btc_eth_hf_series_xrp_15m: string
+  btc_eth_hf_series_btc_5m: string
+  btc_eth_hf_series_eth_5m: string
+  btc_eth_hf_series_sol_5m: string
+  btc_eth_hf_series_xrp_5m: string
+  btc_eth_hf_series_btc_1h: string
+  btc_eth_hf_series_eth_1h: string
+  btc_eth_hf_series_sol_1h: string
+  btc_eth_hf_series_xrp_1h: string
+  btc_eth_hf_series_btc_4h: string
+  btc_eth_hf_series_eth_4h: string
+  btc_eth_hf_series_sol_4h: string
+  btc_eth_hf_series_xrp_4h: string
   btc_eth_pure_arb_max_combined: number
   btc_eth_dump_hedge_drop_pct: number
   btc_eth_thin_liquidity_usd: number
@@ -2020,6 +2060,7 @@ export interface AllSettings {
   scanner: ScannerSettings
   trading: TradingSettingsConfig
   maintenance: MaintenanceSettings
+  discovery: DiscoverySettings
   trading_proxy: TradingProxySettings
   search_filters: SearchFilterSettings
   updated_at: string | null
@@ -2033,6 +2074,7 @@ export interface UpdateSettingsRequest {
   scanner?: Partial<ScannerSettings>
   trading?: Partial<TradingSettingsConfig>
   maintenance?: Partial<MaintenanceSettings>
+  discovery?: Partial<DiscoverySettings>
   trading_proxy?: Partial<TradingProxySettings>
   search_filters?: Partial<SearchFilterSettings>
 }
@@ -2074,6 +2116,16 @@ export const updateTradingSettings = async (settings: Partial<TradingSettingsCon
 
 export const updateMaintenanceSettings = async (settings: Partial<MaintenanceSettings>): Promise<{ status: string; message: string }> => {
   const { data } = await api.put('/settings/maintenance', settings)
+  return data
+}
+
+export const getDiscoverySettings = async (): Promise<DiscoverySettings> => {
+  const { data } = await api.get('/settings/discovery')
+  return data
+}
+
+export const updateDiscoverySettings = async (settings: Partial<DiscoverySettings>): Promise<{ status: string; message: string }> => {
+  const { data } = await api.put('/settings/discovery', settings)
   return data
 }
 
@@ -2927,4 +2979,3 @@ export const getWeatherWorkflowPerformance = async (
 }
 
 export default api
-

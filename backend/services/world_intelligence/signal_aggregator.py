@@ -9,7 +9,6 @@ strategies consume.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import hashlib
 from dataclasses import dataclass, field
@@ -385,7 +384,7 @@ class WorldSignalAggregator:
             9. Normalise all outputs into WorldSignal format
             10. Return unified signal list sorted by severity desc
         """
-        cycle_started = datetime.now(timezone.utc)
+        datetime.now(timezone.utc)
         signals: list[WorldSignal] = []
         source_status: dict[str, dict[str, Any]] = {}
         errors: list[str] = []

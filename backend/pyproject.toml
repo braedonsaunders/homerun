@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+per-file-ignores = {
+    "api/websocket.py" = ["E402"],
+    "tests/*.py" = ["E402"],
+    "tests/**/*.py" = ["E402"],
+    "workers/*.py" = ["E402"],
+    "workers/**/*.py" = ["E402"],
+}

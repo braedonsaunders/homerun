@@ -13,8 +13,8 @@ DEFAULT_GLOBAL_RISK = {
 TRADER_TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "btc_15m",
-        "name": "BTC 15m Trader",
-        "description": "Crypto 15-minute market specialist.",
+        "name": "Crypto HF Trader",
+        "description": "Crypto directional high-frequency specialist (5m/15m/1h/4h).",
         "strategy_key": "crypto_15m",
         "sources": ["crypto"],
         "interval_seconds": 60,

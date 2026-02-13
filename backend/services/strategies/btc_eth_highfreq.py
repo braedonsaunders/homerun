@@ -24,7 +24,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -91,6 +91,24 @@ _TIMEFRAME_PATTERNS: dict[str, list[str]] = {
         "hourly",
         "next hour",
     ],
+    "4hr": [
+        "updown-4h",  # actual Polymarket slug pattern
+        "updown-4h-",  # with trailing timestamp
+        "4 hour",
+        "4-hour",
+        "4hr",
+        "4h-",  # short form in slugs
+        "4h",  # bare short form
+        "four hour",
+        "four-hour",
+        "240 min",
+        "240-min",
+        "240m",  # short form
+        "240 minute",
+        "240-minute",
+        "240 minutes",
+        "240-minutes",
+    ],
 }
 
 _DIRECTION_KEYWORDS: list[str] = [
@@ -118,6 +136,8 @@ _SLUG_REGEX = re.compile(
     r"(5[\s_-]?m(?:in(?:ute)?s?)?"
     r"|15[\s_-]?m(?:in(?:ute)?s?)?"  # "15m", "15min", "15-minute", …
     r"|1[\s_-]?h(?:(?:ou)?r)?"  # "1h", "1hr", "1hour", "1-h", …
+    r"|4[\s_-]?h(?:(?:ou)?r)?"  # "4h", "4hr", "4hour", "4-h", …
+    r"|240[\s_-]?m(?:in(?:ute)?s?)?"  # "240m", "240min", "240 minutes", etc.
     r"|60[\s_-]?m(?:in(?:ute)?s?)?"
     r"|quarter[\s_-]?hour|hourly)",
     re.IGNORECASE,
@@ -136,6 +156,18 @@ def _get_crypto_series() -> list[tuple[str, str, str]]:
         (_cfg.BTC_ETH_HF_SERIES_ETH_15M, "ETH", "15min"),
         (_cfg.BTC_ETH_HF_SERIES_SOL_15M, "SOL", "15min"),
         (_cfg.BTC_ETH_HF_SERIES_XRP_15M, "XRP", "15min"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_5M, "BTC", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_5M, "ETH", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_5M, "SOL", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_5M, "XRP", "5min"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_1H, "BTC", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_1H, "ETH", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_1H, "SOL", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_1H, "XRP", "1hr"),
+        (_cfg.BTC_ETH_HF_SERIES_BTC_4H, "BTC", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_ETH_4H, "ETH", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_SOL_4H, "SOL", "4hr"),
+        (_cfg.BTC_ETH_HF_SERIES_XRP_4H, "XRP", "4hr"),
     ]
 
 
@@ -190,6 +222,7 @@ _NEW_MARKET_VOLUME_THRESHOLD = 5000.0  # Markets with volume below this are "new
 # Price history defaults
 _DEFAULT_HISTORY_WINDOW_SEC = 300  # 5 minutes for 15-min markets
 _1HR_HISTORY_WINDOW_SEC = 600  # 10 minutes for 1-hr markets
+_4HR_HISTORY_WINDOW_SEC = 1800  # 30 minutes for 4-hr markets
 _MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
 
 
@@ -375,6 +408,12 @@ class _CryptoMarketFetcher:
 
         try:
             series = _get_crypto_series()
+            now_iso = (
+                datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             with httpx.Client(timeout=10.0) as client:
                 for series_id, asset, timeframe in series:
                     try:
@@ -384,6 +423,11 @@ class _CryptoMarketFetcher:
                                 "series_id": series_id,
                                 "active": "true",
                                 "closed": "false",
+                                # Exclude stale unresolved history and walk forward
+                                # from now for live/nearest-upcoming selection.
+                                "end_date_min": now_iso,
+                                "order": "endDate",
+                                "ascending": "true",
                                 "limit": 10,
                             },
                         )
@@ -545,7 +589,7 @@ class HighFreqCandidate:
 
     market: Market
     asset: str  # "BTC", "ETH", "SOL", or "XRP"
-    timeframe: str  # "5min", "15min", or "1hr"
+    timeframe: str  # "5min", "15min", "1hr", or "4hr"
     yes_price: float
     no_price: float
 
@@ -767,7 +811,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
     @staticmethod
     def _detect_timeframe(market: Market) -> Optional[str]:
-        """Return '15min' or '1hr' if a matching timeframe is detected."""
+        """Return a supported timeframe if a match is detected."""
         text = f"{market.question} {market.slug}".lower()
 
         # Try slug regex first — now allows words between asset and timeframe
@@ -778,6 +822,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             # Check 15m before 5m (15m contains "5m" substring)
             if "15" in raw_tf or "quarter" in raw_tf:
                 return "15min"
+            if "4h" in raw_tf or "240" in raw_tf:
+                return "4hr"
             if "5m" in raw_tf or (raw_tf.startswith("5") and "15" not in raw_tf):
                 return "5min"
             if "1h" in raw_tf or "60" in raw_tf or "hourly" in raw_tf:
@@ -785,7 +831,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         # Fallback: question-text keyword matching (broadened patterns)
         # Check 15m before 5m (15m contains "5m" substring)
-        for tf_key in ("15min", "5min", "1hr"):
+        for tf_key in ("15min", "5min", "1hr", "4hr"):
             patterns = _TIMEFRAME_PATTERNS.get(tf_key, [])
             if any(p in text for p in patterns):
                 return tf_key
@@ -827,7 +873,9 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         """Record the latest prices into the rolling window for this market."""
         mid = candidate.market.id
         if mid not in self._price_histories:
-            if candidate.timeframe == "1hr":
+            if candidate.timeframe == "4hr":
+                window = _4HR_HISTORY_WINDOW_SEC
+            elif candidate.timeframe == "1hr":
                 window = _1HR_HISTORY_WINDOW_SEC
             elif candidate.timeframe == "5min":
                 window = 120  # 2 min for 5-min markets
@@ -1434,8 +1482,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             params["yes_price"] if dumped_side == "YES" else params["no_price"],
         )
         ev_profit = params.get("ev_profit", 0)
-        yes_price = params["yes_price"]
-        no_price = params["no_price"]
+        params["yes_price"]
+        params["no_price"]
         combined = params["combined_cost"]
 
         # Build position for the dumped side only (directional bet).

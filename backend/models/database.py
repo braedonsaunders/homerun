@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 import enum
+import json
 import logging
 
 from config import settings
@@ -714,12 +715,30 @@ class AppSettings(Base):
     notify_on_opportunity = Column(Boolean, default=True)
     notify_on_trade = Column(Boolean, default=True)
     notify_min_roi = Column(Float, default=5.0)
+    notify_autotrader_orders = Column(Boolean, default=False)
+    notify_autotrader_issues = Column(Boolean, default=True)
+    notify_autotrader_timeline = Column(Boolean, default=True)
+    notify_autotrader_summary_interval_minutes = Column(Integer, default=60)
+    notify_autotrader_summary_per_trader = Column(Boolean, default=False)
 
     # Scanner Settings
     scan_interval_seconds = Column(Integer, default=60)
     min_profit_threshold = Column(Float, default=2.5)
     max_markets_to_scan = Column(Integer, default=500)
     min_liquidity = Column(Float, default=1000.0)
+
+    # Discovery Engine Settings
+    discovery_max_discovered_wallets = Column(Integer, default=20_000)
+    discovery_maintenance_enabled = Column(Boolean, default=True)
+    discovery_keep_recent_trade_days = Column(Integer, default=7)
+    discovery_keep_new_discoveries_days = Column(Integer, default=30)
+    discovery_maintenance_batch = Column(Integer, default=900)
+    discovery_stale_analysis_hours = Column(Integer, default=12)
+    discovery_analysis_priority_batch_limit = Column(Integer, default=2500)
+    discovery_delay_between_markets = Column(Float, default=0.25)
+    discovery_delay_between_wallets = Column(Float, default=0.15)
+    discovery_max_markets_per_run = Column(Integer, default=100)
+    discovery_max_wallets_per_market = Column(Integer, default=50)
 
     # Trading Safety Settings
     trading_enabled = Column(Boolean, default=False)
@@ -763,11 +782,23 @@ class AppSettings(Base):
     btc_eth_pure_arb_max_combined = Column(Float, default=0.98)
     btc_eth_dump_hedge_drop_pct = Column(Float, default=0.05)
     btc_eth_thin_liquidity_usd = Column(Float, default=500.0)
-    # Polymarket series IDs for crypto 15-min markets
+    # Polymarket series IDs for crypto up-or-down markets
     btc_eth_hf_series_btc_15m = Column(String, default="10192")
     btc_eth_hf_series_eth_15m = Column(String, default="10191")
     btc_eth_hf_series_sol_15m = Column(String, default="10423")
     btc_eth_hf_series_xrp_15m = Column(String, default="10422")
+    btc_eth_hf_series_btc_5m = Column(String, default="")
+    btc_eth_hf_series_eth_5m = Column(String, default="")
+    btc_eth_hf_series_sol_5m = Column(String, default="")
+    btc_eth_hf_series_xrp_5m = Column(String, default="")
+    btc_eth_hf_series_btc_1h = Column(String, default="10114")
+    btc_eth_hf_series_eth_1h = Column(String, default="10117")
+    btc_eth_hf_series_sol_1h = Column(String, default="10122")
+    btc_eth_hf_series_xrp_1h = Column(String, default="10123")
+    btc_eth_hf_series_btc_4h = Column(String, default="10331")
+    btc_eth_hf_series_eth_4h = Column(String, default="10332")
+    btc_eth_hf_series_sol_4h = Column(String, default="10326")
+    btc_eth_hf_series_xrp_4h = Column(String, default="10327")
 
     # Miracle Strategy
     miracle_min_no_price = Column(Float, default=0.90)
@@ -878,6 +909,14 @@ class AppSettings(Base):
     news_rss_feeds_json = Column(JSON, default=list)
     news_gov_rss_enabled = Column(Boolean, default=True)
     news_gov_rss_feeds_json = Column(JSON, default=list)
+    world_intel_country_reference_json = Column(JSON, default=list)
+    world_intel_country_reference_source = Column(String, nullable=True)
+    world_intel_country_reference_synced_at = Column(DateTime, nullable=True)
+    world_intel_ucdp_active_wars_json = Column(JSON, default=list)
+    world_intel_ucdp_minor_conflicts_json = Column(JSON, default=list)
+    world_intel_ucdp_source = Column(String, nullable=True)
+    world_intel_ucdp_year = Column(Integer, nullable=True)
+    world_intel_ucdp_synced_at = Column(DateTime, nullable=True)
 
     # Independent Weather Workflow (forecast consensus -> opportunities/intents)
     weather_workflow_enabled = Column(Boolean, default=True)
@@ -2501,6 +2540,38 @@ def _migrate_schema(connection):
 
     # Backfill new news workflow precision guard settings for legacy rows.
     if "app_settings" in existing_tables:
+        default_gov_feeds_payload = "[]"
+        try:
+            from services.news.rss_config import default_gov_rss_feeds
+
+            default_gov_feeds_payload = json.dumps(default_gov_rss_feeds())
+        except Exception as e:
+            logger.debug("default gov RSS seed fallback to empty list: %s", e)
+        default_country_payload = "[]"
+        try:
+            from services.world_intelligence.country_catalog import country_catalog
+
+            payload = country_catalog.payload()
+            countries = payload if isinstance(payload, list) else payload.get("countries", [])
+            if isinstance(countries, list):
+                default_country_payload = json.dumps(countries)
+        except Exception as e:
+            logger.debug("default country reference seed fallback to empty list: %s", e)
+        default_ucdp_active_payload = "[]"
+        default_ucdp_minor_payload = "[]"
+        try:
+            from services.world_intelligence.instability_catalog import instability_catalog
+
+            payload = instability_catalog.payload()
+            active_rows = payload.get("ucdp_active_wars") or []
+            minor_rows = payload.get("ucdp_minor_conflicts") or []
+            if isinstance(active_rows, list):
+                default_ucdp_active_payload = json.dumps(active_rows)
+            if isinstance(minor_rows, list):
+                default_ucdp_minor_payload = json.dumps(minor_rows)
+        except Exception as e:
+            logger.debug("default UCDP seed fallback to empty lists: %s", e)
+
         try:
             connection.execute(
                 text(
@@ -2519,9 +2590,34 @@ def _migrate_schema(connection):
                         news_workflow_min_semantic_signal = COALESCE(news_workflow_min_semantic_signal, 0.22),
                         news_gov_rss_enabled = COALESCE(news_gov_rss_enabled, 1),
                         news_rss_feeds_json = COALESCE(news_rss_feeds_json, '[]'),
-                        news_gov_rss_feeds_json = COALESCE(news_gov_rss_feeds_json, '[]')
+                        news_gov_rss_feeds_json = CASE
+                            WHEN news_gov_rss_feeds_json IS NULL THEN :default_gov_feeds
+                            WHEN TRIM(CAST(news_gov_rss_feeds_json AS TEXT)) IN ('', '[]', 'null') THEN :default_gov_feeds
+                            ELSE news_gov_rss_feeds_json
+                        END,
+                        world_intel_country_reference_json = CASE
+                            WHEN world_intel_country_reference_json IS NULL THEN :default_country_reference
+                            WHEN TRIM(CAST(world_intel_country_reference_json AS TEXT)) IN ('', '[]', 'null') THEN :default_country_reference
+                            ELSE world_intel_country_reference_json
+                        END,
+                        world_intel_ucdp_active_wars_json = CASE
+                            WHEN world_intel_ucdp_active_wars_json IS NULL THEN :default_ucdp_active_wars
+                            WHEN TRIM(CAST(world_intel_ucdp_active_wars_json AS TEXT)) IN ('', '[]', 'null') THEN :default_ucdp_active_wars
+                            ELSE world_intel_ucdp_active_wars_json
+                        END,
+                        world_intel_ucdp_minor_conflicts_json = CASE
+                            WHEN world_intel_ucdp_minor_conflicts_json IS NULL THEN :default_ucdp_minor_conflicts
+                            WHEN TRIM(CAST(world_intel_ucdp_minor_conflicts_json AS TEXT)) IN ('', '[]', 'null') THEN :default_ucdp_minor_conflicts
+                            ELSE world_intel_ucdp_minor_conflicts_json
+                        END
                     """
-                )
+                ),
+                {
+                    "default_gov_feeds": default_gov_feeds_payload,
+                    "default_country_reference": default_country_payload,
+                    "default_ucdp_active_wars": default_ucdp_active_payload,
+                    "default_ucdp_minor_conflicts": default_ucdp_minor_payload,
+                },
             )
         except Exception as e:
             logger.debug("app_settings news precision backfill skipped: %s", e)

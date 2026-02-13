@@ -5,7 +5,7 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from utils.utcnow import utcnow
 from typing import Optional
 from sqlalchemy import select, delete, func, and_

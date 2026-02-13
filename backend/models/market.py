@@ -47,6 +47,13 @@ class Market(BaseModel):
     outcome_prices: list[float] = []
     active: bool = True
     closed: bool = False
+    archived: Optional[bool] = None
+    accepting_orders: Optional[bool] = None
+    resolved: Optional[bool] = None
+    winner: Optional[str] = None
+    winning_outcome: Optional[str] = None
+    enable_order_book: Optional[bool] = None
+    status: Optional[str] = None
     neg_risk: bool = False
     volume: float = 0.0
     liquidity: float = 0.0
@@ -144,6 +151,13 @@ class Market(BaseModel):
             outcome_prices=outcome_prices,
             active=data.get("active", True),
             closed=data.get("closed", False),
+            archived=data.get("archived"),
+            accepting_orders=data.get("acceptingOrders", data.get("accepting_orders")),
+            resolved=data.get("resolved", data.get("isResolved", data.get("is_resolved"))),
+            winner=data.get("winner"),
+            winning_outcome=data.get("winningOutcome", data.get("winning_outcome")),
+            enable_order_book=data.get("enableOrderBook", data.get("enable_order_book")),
+            status=data.get("status", data.get("marketStatus", data.get("market_status"))),
             neg_risk=data.get("negRisk", data.get("neg_risk", False)),
             volume=float(
                 data.get("volume") or data.get("volumeNum") or 0

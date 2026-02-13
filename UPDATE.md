@@ -49,7 +49,7 @@ The app now detects missing columns and adds them on startup.
 If you want a clean start:
 
 ```bash
-rm -f data/arbitrage.db backend/arbitrage.db
+rm -f data/arbitrage.db
 ./run.sh
 ```
 
@@ -89,7 +89,6 @@ If you need to reset the database on Windows:
 
 ```powershell
 Remove-Item data\arbitrage.db -ErrorAction SilentlyContinue
-Remove-Item backend\arbitrage.db -ErrorAction SilentlyContinue
 ```
 
 ---

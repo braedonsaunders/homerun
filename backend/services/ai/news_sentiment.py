@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import urllib.parse
 import uuid
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Any, Optional
 from xml.etree import ElementTree

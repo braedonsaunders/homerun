@@ -645,7 +645,7 @@ async def emit_crypto_market_signals(
     session: AsyncSession,
     markets: list[dict[str, Any]],
 ) -> int:
-    """Emit BTC 15m high-frequency signals from the crypto worker market view."""
+    """Emit high-frequency crypto directional signals from the dedicated crypto worker."""
     emitted = 0
     now = _utc_now()
 
@@ -715,7 +715,7 @@ async def emit_crypto_market_signals(
             session,
             source="crypto",
             source_item_id=str(market.get("slug") or market_id),
-            signal_type="btc_15m_hf",
+            signal_type="crypto_5m_15m_hf",
             strategy_type="btc_eth_highfreq",
             market_id=market_id,
             market_question=market.get("question"),

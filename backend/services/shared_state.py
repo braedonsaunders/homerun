@@ -58,6 +58,11 @@ def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
     return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
+def _normalize_weather_edge_title(title: str) -> str:
+    prefix = "weather edge:"
+    return title[len(prefix) :].lstrip() if title.lower().startswith(prefix) else title
+
+
 async def write_scanner_snapshot(
     session: AsyncSession,
     opportunities: list[ArbitrageOpportunity],
@@ -432,6 +437,9 @@ async def get_opportunities_from_db(
 ) -> list[ArbitrageOpportunity]:
     """Get current opportunities from DB with optional filter (API use)."""
     opportunities, _ = await read_scanner_snapshot(session)
+    for opp in opportunities:
+        opp.title = _normalize_weather_edge_title(opp.title)
+
     if opportunities:
         by_index: dict[int, list[str]] = {}
         all_market_ids: set[str] = set()

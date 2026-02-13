@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -37,6 +36,18 @@ SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
     "btc_eth_hf_series_eth_15m": "10191",
     "btc_eth_hf_series_sol_15m": "10423",
     "btc_eth_hf_series_xrp_15m": "10422",
+    "btc_eth_hf_series_btc_5m": "10684",
+    "btc_eth_hf_series_eth_5m": "",
+    "btc_eth_hf_series_sol_5m": "",
+    "btc_eth_hf_series_xrp_5m": "",
+    "btc_eth_hf_series_btc_1h": "10114",
+    "btc_eth_hf_series_eth_1h": "10117",
+    "btc_eth_hf_series_sol_1h": "10122",
+    "btc_eth_hf_series_xrp_1h": "10123",
+    "btc_eth_hf_series_btc_4h": "10331",
+    "btc_eth_hf_series_eth_4h": "10332",
+    "btc_eth_hf_series_sol_4h": "10326",
+    "btc_eth_hf_series_xrp_4h": "10327",
     "btc_eth_pure_arb_max_combined": 0.98,
     "btc_eth_dump_hedge_drop_pct": 0.05,
     "btc_eth_thin_liquidity_usd": 500.0,
@@ -67,8 +78,24 @@ SEARCH_FILTER_DEFAULTS: dict[str, Any] = {
     "stat_arb_min_edge": 0.05,
 }
 
+DISCOVERY_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "max_discovered_wallets": 20_000,
+    "maintenance_enabled": True,
+    "keep_recent_trade_days": 7,
+    "keep_new_discoveries_days": 30,
+    "maintenance_batch": 900,
+    "stale_analysis_hours": 12,
+    "analysis_priority_batch_limit": 2500,
+    "delay_between_markets": 0.25,
+    "delay_between_wallets": 0.15,
+    "max_markets_per_run": 100,
+    "max_wallets_per_market": 50,
+}
+
 
 def _with_default(value: Any, default: Any) -> Any:
+    if isinstance(value, str) and value == "":
+        return default
     return default if value is None else value
 
 
@@ -133,6 +160,21 @@ def notifications_payload(settings: AppSettings) -> dict[str, Any]:
         "notify_on_opportunity": settings.notify_on_opportunity,
         "notify_on_trade": settings.notify_on_trade,
         "notify_min_roi": settings.notify_min_roi,
+        "notify_autotrader_orders": bool(
+            getattr(settings, "notify_autotrader_orders", False)
+        ),
+        "notify_autotrader_issues": bool(
+            getattr(settings, "notify_autotrader_issues", True)
+        ),
+        "notify_autotrader_timeline": bool(
+            getattr(settings, "notify_autotrader_timeline", True)
+        ),
+        "notify_autotrader_summary_interval_minutes": int(
+            getattr(settings, "notify_autotrader_summary_interval_minutes", 60) or 60
+        ),
+        "notify_autotrader_summary_per_trader": bool(
+            getattr(settings, "notify_autotrader_summary_per_trader", False)
+        ),
     }
 
 
@@ -152,6 +194,22 @@ def trading_payload(settings: AppSettings) -> dict[str, Any]:
         "max_daily_trade_volume": settings.max_daily_trade_volume,
         "max_open_positions": settings.max_open_positions,
         "max_slippage_percent": settings.max_slippage_percent,
+        "btc_eth_hf_series_btc_15m": settings.btc_eth_hf_series_btc_15m,
+        "btc_eth_hf_series_eth_15m": settings.btc_eth_hf_series_eth_15m,
+        "btc_eth_hf_series_sol_15m": settings.btc_eth_hf_series_sol_15m,
+        "btc_eth_hf_series_xrp_15m": settings.btc_eth_hf_series_xrp_15m,
+        "btc_eth_hf_series_btc_5m": settings.btc_eth_hf_series_btc_5m,
+        "btc_eth_hf_series_eth_5m": settings.btc_eth_hf_series_eth_5m,
+        "btc_eth_hf_series_sol_5m": settings.btc_eth_hf_series_sol_5m,
+        "btc_eth_hf_series_xrp_5m": settings.btc_eth_hf_series_xrp_5m,
+        "btc_eth_hf_series_btc_1h": settings.btc_eth_hf_series_btc_1h,
+        "btc_eth_hf_series_eth_1h": settings.btc_eth_hf_series_eth_1h,
+        "btc_eth_hf_series_sol_1h": settings.btc_eth_hf_series_sol_1h,
+        "btc_eth_hf_series_xrp_1h": settings.btc_eth_hf_series_xrp_1h,
+        "btc_eth_hf_series_btc_4h": settings.btc_eth_hf_series_btc_4h,
+        "btc_eth_hf_series_eth_4h": settings.btc_eth_hf_series_eth_4h,
+        "btc_eth_hf_series_sol_4h": settings.btc_eth_hf_series_sol_4h,
+        "btc_eth_hf_series_xrp_4h": settings.btc_eth_hf_series_xrp_4h,
     }
 
 
@@ -188,6 +246,55 @@ def trading_proxy_payload(settings: AppSettings) -> dict[str, Any]:
         "verify_ssl": _with_default(settings.trading_proxy_verify_ssl, True),
         "timeout": settings.trading_proxy_timeout or 30.0,
         "require_vpn": _with_default(settings.trading_proxy_require_vpn, True),
+    }
+
+
+def discovery_payload(settings: AppSettings) -> dict[str, Any]:
+    return {
+        "max_discovered_wallets": _with_default(
+            settings.discovery_max_discovered_wallets,
+            DISCOVERY_SETTINGS_DEFAULTS["max_discovered_wallets"],
+        ),
+        "maintenance_enabled": _with_default(
+            settings.discovery_maintenance_enabled,
+            DISCOVERY_SETTINGS_DEFAULTS["maintenance_enabled"],
+        ),
+        "keep_recent_trade_days": _with_default(
+            settings.discovery_keep_recent_trade_days,
+            DISCOVERY_SETTINGS_DEFAULTS["keep_recent_trade_days"],
+        ),
+        "keep_new_discoveries_days": _with_default(
+            settings.discovery_keep_new_discoveries_days,
+            DISCOVERY_SETTINGS_DEFAULTS["keep_new_discoveries_days"],
+        ),
+        "maintenance_batch": _with_default(
+            settings.discovery_maintenance_batch,
+            DISCOVERY_SETTINGS_DEFAULTS["maintenance_batch"],
+        ),
+        "stale_analysis_hours": _with_default(
+            settings.discovery_stale_analysis_hours,
+            DISCOVERY_SETTINGS_DEFAULTS["stale_analysis_hours"],
+        ),
+        "analysis_priority_batch_limit": _with_default(
+            settings.discovery_analysis_priority_batch_limit,
+            DISCOVERY_SETTINGS_DEFAULTS["analysis_priority_batch_limit"],
+        ),
+        "delay_between_markets": _with_default(
+            settings.discovery_delay_between_markets,
+            DISCOVERY_SETTINGS_DEFAULTS["delay_between_markets"],
+        ),
+        "delay_between_wallets": _with_default(
+            settings.discovery_delay_between_wallets,
+            DISCOVERY_SETTINGS_DEFAULTS["delay_between_wallets"],
+        ),
+        "max_markets_per_run": _with_default(
+            settings.discovery_max_markets_per_run,
+            DISCOVERY_SETTINGS_DEFAULTS["max_markets_per_run"],
+        ),
+        "max_wallets_per_market": _with_default(
+            settings.discovery_max_wallets_per_market,
+            DISCOVERY_SETTINGS_DEFAULTS["max_wallets_per_market"],
+        ),
     }
 
 
@@ -260,6 +367,33 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.notify_on_opportunity = notif.notify_on_opportunity
         settings.notify_on_trade = notif.notify_on_trade
         settings.notify_min_roi = notif.notify_min_roi
+        settings.notify_autotrader_orders = bool(
+            getattr(notif, "notify_autotrader_orders", False)
+        )
+        settings.notify_autotrader_issues = bool(
+            getattr(notif, "notify_autotrader_issues", True)
+        )
+        settings.notify_autotrader_timeline = bool(
+            getattr(notif, "notify_autotrader_timeline", True)
+        )
+        interval_minutes = int(
+            max(
+                5,
+                min(
+                    1440,
+                    int(
+                        getattr(
+                            notif, "notify_autotrader_summary_interval_minutes", 60
+                        )
+                        or 60
+                    ),
+                ),
+            )
+        )
+        settings.notify_autotrader_summary_interval_minutes = interval_minutes
+        settings.notify_autotrader_summary_per_trader = bool(
+            getattr(notif, "notify_autotrader_summary_per_trader", False)
+        )
 
     if request.scanner:
         scan = request.scanner
@@ -275,6 +409,22 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.max_daily_trade_volume = trade.max_daily_trade_volume
         settings.max_open_positions = trade.max_open_positions
         settings.max_slippage_percent = trade.max_slippage_percent
+        settings.btc_eth_hf_series_btc_15m = trade.btc_eth_hf_series_btc_15m
+        settings.btc_eth_hf_series_eth_15m = trade.btc_eth_hf_series_eth_15m
+        settings.btc_eth_hf_series_sol_15m = trade.btc_eth_hf_series_sol_15m
+        settings.btc_eth_hf_series_xrp_15m = trade.btc_eth_hf_series_xrp_15m
+        settings.btc_eth_hf_series_btc_5m = trade.btc_eth_hf_series_btc_5m
+        settings.btc_eth_hf_series_eth_5m = trade.btc_eth_hf_series_eth_5m
+        settings.btc_eth_hf_series_sol_5m = trade.btc_eth_hf_series_sol_5m
+        settings.btc_eth_hf_series_xrp_5m = trade.btc_eth_hf_series_xrp_5m
+        settings.btc_eth_hf_series_btc_1h = trade.btc_eth_hf_series_btc_1h
+        settings.btc_eth_hf_series_eth_1h = trade.btc_eth_hf_series_eth_1h
+        settings.btc_eth_hf_series_sol_1h = trade.btc_eth_hf_series_sol_1h
+        settings.btc_eth_hf_series_xrp_1h = trade.btc_eth_hf_series_xrp_1h
+        settings.btc_eth_hf_series_btc_4h = trade.btc_eth_hf_series_btc_4h
+        settings.btc_eth_hf_series_eth_4h = trade.btc_eth_hf_series_eth_4h
+        settings.btc_eth_hf_series_sol_4h = trade.btc_eth_hf_series_sol_4h
+        settings.btc_eth_hf_series_xrp_4h = trade.btc_eth_hf_series_xrp_4h
 
     if request.maintenance:
         maint = request.maintenance
@@ -295,6 +445,24 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.market_cache_max_entries_per_slug = (
             maint.market_cache_max_entries_per_slug
         )
+
+    if request.discovery:
+        discovery = request.discovery
+        settings.discovery_max_discovered_wallets = discovery.max_discovered_wallets
+        settings.discovery_maintenance_enabled = discovery.maintenance_enabled
+        settings.discovery_keep_recent_trade_days = discovery.keep_recent_trade_days
+        settings.discovery_keep_new_discoveries_days = (
+            discovery.keep_new_discoveries_days
+        )
+        settings.discovery_maintenance_batch = discovery.maintenance_batch
+        settings.discovery_stale_analysis_hours = discovery.stale_analysis_hours
+        settings.discovery_analysis_priority_batch_limit = (
+            discovery.analysis_priority_batch_limit
+        )
+        settings.discovery_delay_between_markets = discovery.delay_between_markets
+        settings.discovery_delay_between_wallets = discovery.delay_between_wallets
+        settings.discovery_max_markets_per_run = discovery.max_markets_per_run
+        settings.discovery_max_wallets_per_market = discovery.max_wallets_per_market
 
     if request.search_filters:
         sf = request.search_filters

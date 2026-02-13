@@ -14,8 +14,8 @@ import logging
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Optional
 
 import httpx
 

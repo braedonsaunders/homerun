@@ -10,7 +10,6 @@ import asyncio
 import logging
 import os
 import sys
-import uuid
 from datetime import datetime, timedelta, timezone
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -319,6 +318,14 @@ async def _run_loop() -> None:
 
     # Import intelligence modules
     from services.world_intelligence import signal_aggregator
+    from services.world_intelligence.country_reference_source import (
+        load_country_reference_from_db,
+        sync_country_reference_from_world_bank,
+    )
+    from services.world_intelligence.ucdp_conflict_source import (
+        load_ucdp_conflict_lists_from_db,
+        sync_ucdp_conflict_lists,
+    )
 
     try:
         async with AsyncSessionLocal() as session:
@@ -331,6 +338,27 @@ async def _run_loop() -> None:
             logger.info("World Intelligence runtime state restored from snapshot")
     except Exception as exc:
         logger.debug("Failed restoring world-intelligence runtime state: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            loaded_country_rows = await load_country_reference_from_db(session)
+        logger.info(
+            "Loaded world country reference catalog from DB (%d rows)",
+            loaded_country_rows,
+        )
+    except Exception as exc:
+        logger.warning("Failed loading world country reference catalog: %s", exc)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            ucdp_status = await load_ucdp_conflict_lists_from_db(session)
+        logger.info(
+            "Loaded UCDP conflict lists from DB (active=%s, minor=%s)",
+            ucdp_status.get("active_wars"),
+            ucdp_status.get("minor_conflicts"),
+        )
+    except Exception as exc:
+        logger.warning("Failed loading UCDP conflict lists: %s", exc)
 
     next_scheduled_run_at: datetime | None = None
 
@@ -419,6 +447,26 @@ async def _run_loop() -> None:
                 preserve_existing=True,
             )
 
+            country_reference_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    country_reference_sync = await sync_country_reference_from_world_bank(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("Country reference sync check failed: %s", exc)
+
+            ucdp_sync: dict | None = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    ucdp_sync = await sync_ucdp_conflict_lists(
+                        session,
+                        force=False,
+                    )
+            except Exception as exc:
+                logger.debug("UCDP conflict sync check failed: %s", exc)
+
             # Run collection cycle
             cycle_start = datetime.now(timezone.utc)
             signals = await signal_aggregator.run_collection_cycle()
@@ -480,6 +528,8 @@ async def _run_loop() -> None:
                 "signal_breakdown": summary.get("by_type", {}),
                 "source_status": source_status,
                 "source_errors": source_errors,
+                "country_reference": country_reference_sync or {},
+                "ucdp_conflicts": ucdp_sync or {},
                 "runtime_state": signal_aggregator.export_runtime_state(),
             }
 

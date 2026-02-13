@@ -21,7 +21,7 @@ class StrategyType(str, Enum):
         "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
     )
     BTC_ETH_HIGHFREQ = (
-        "btc_eth_highfreq"  # High-frequency BTC/ETH 15min/1hr binary market arbitrage
+        "btc_eth_highfreq"  # High-frequency BTC/ETH/SOL/XRP 5m/15m/1hr binary market arbitrage
     )
     NEWS_EDGE = (
         "news_edge"  # News-driven informational edge via LLM probability estimation

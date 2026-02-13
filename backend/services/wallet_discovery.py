@@ -25,10 +25,11 @@ from datetime import datetime, timedelta
 from utils.utcnow import utcnow, utcfromtimestamp
 from typing import Any, Optional
 
-from sqlalchemy import select, func, update, desc, asc, cast, String, or_
+from sqlalchemy import delete, select, func, update, desc, asc, cast, String, or_
 
-from models.database import DiscoveredWallet, AsyncSessionLocal
+from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
 from services.polymarket import polymarket_client
+from services.smart_wallet_pool import smart_wallet_pool
 from services.pause_state import global_pause_state
 from utils.logger import get_logger
 
@@ -50,14 +51,24 @@ ROLLING_WINDOWS = {
 MIN_TRADES_FOR_ANALYSIS = 5
 MIN_TRADES_FOR_RISK_METRICS = 3
 
-# Rate-limiting delays (seconds)
-DELAY_BETWEEN_MARKETS = 0.25
-DELAY_BETWEEN_WALLETS = 0.15
-
-# Staleness threshold: re-analyze wallets older than this
-STALE_ANALYSIS_HOURS = 12
-ANALYSIS_PRIORITY_BATCH_LIMIT = 2500
 METRICS_SOURCE_VERSION = "accuracy_v2_closed_positions"
+
+# Discovery behavior defaults (can be overridden at runtime from AppSettings)
+DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS = 20_000
+DISCOVERY_DEFAULT_MAINTENANCE_ENABLED = True
+DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS = 7
+DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS = 30
+DISCOVERY_DEFAULT_MAINTENANCE_BATCH = 900
+DISCOVERY_DEFAULT_STALE_ANALYSIS_HOURS = 12
+DISCOVERY_DEFAULT_ANALYSIS_PRIORITY_BATCH_LIMIT = 2500
+DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS = 0.25
+DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS = 0.15
+DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN = 100
+DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET = 50
+
+POOL_FLAG_MANUAL_INCLUDE = "pool_manual_include"
+POOL_FLAG_MANUAL_EXCLUDE = "pool_manual_exclude"
+POOL_FLAG_BLACKLISTED = "pool_blacklisted"
 
 
 class WalletDiscoveryEngine:
@@ -76,6 +87,127 @@ class WalletDiscoveryEngine:
         self._last_run_at: Optional[datetime] = None
         self._wallets_discovered_last_run: int = 0
         self._wallets_analyzed_last_run: int = 0
+        self._wallets_seeded_last_run: int = 0
+        self._wallets_pruned_last_run: int = 0
+        self._runtime_discovery_settings: dict[str, Any] | None = None
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int, minimum: Optional[int] = None) -> int:
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            return default
+        if minimum is not None and value_int < minimum:
+            return minimum
+        return value_int
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float, minimum: Optional[float] = None) -> float:
+        try:
+            value_float = float(value)
+        except (TypeError, ValueError):
+            return default
+        if minimum is not None and value_float < minimum:
+            return minimum
+        return value_float
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        return bool(value)
+
+    @staticmethod
+    def _discovery_settings_defaults() -> dict[str, Any]:
+        return {
+            "max_discovered_wallets": DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
+            "maintenance_enabled": DISCOVERY_DEFAULT_MAINTENANCE_ENABLED,
+            "keep_recent_trade_days": DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS,
+            "keep_new_discoveries_days": DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS,
+            "maintenance_batch": DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+            "stale_analysis_hours": DISCOVERY_DEFAULT_STALE_ANALYSIS_HOURS,
+            "analysis_priority_batch_limit": DISCOVERY_DEFAULT_ANALYSIS_PRIORITY_BATCH_LIMIT,
+            "delay_between_markets": DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS,
+            "delay_between_wallets": DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS,
+            "max_markets_per_run": DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN,
+            "max_wallets_per_market": DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET,
+        }
+
+    def _discovery_setting(self, key: str, default: Any) -> Any:
+        return (self._runtime_discovery_settings or {}).get(
+            key, self._discovery_settings_defaults().get(key, default)
+        )
+
+    async def _load_discovery_settings(self) -> dict[str, Any]:
+        settings = self._discovery_settings_defaults()
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(AppSettings).where(AppSettings.id == "default")
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return settings
+
+                settings["max_discovered_wallets"] = self._coerce_int(
+                    row.discovery_max_discovered_wallets,
+                    DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
+                    minimum=10,
+                )
+                settings["maintenance_enabled"] = self._coerce_bool(
+                    row.discovery_maintenance_enabled,
+                    DISCOVERY_DEFAULT_MAINTENANCE_ENABLED,
+                )
+                settings["keep_recent_trade_days"] = self._coerce_int(
+                    row.discovery_keep_recent_trade_days,
+                    DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS,
+                    minimum=1,
+                )
+                settings["keep_new_discoveries_days"] = self._coerce_int(
+                    row.discovery_keep_new_discoveries_days,
+                    DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS,
+                    minimum=1,
+                )
+                settings["maintenance_batch"] = self._coerce_int(
+                    row.discovery_maintenance_batch,
+                    DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+                    minimum=10,
+                )
+                settings["stale_analysis_hours"] = self._coerce_int(
+                    row.discovery_stale_analysis_hours,
+                    DISCOVERY_DEFAULT_STALE_ANALYSIS_HOURS,
+                    minimum=1,
+                )
+                settings["analysis_priority_batch_limit"] = self._coerce_int(
+                    row.discovery_analysis_priority_batch_limit,
+                    DISCOVERY_DEFAULT_ANALYSIS_PRIORITY_BATCH_LIMIT,
+                    minimum=100,
+                )
+                settings["delay_between_markets"] = self._coerce_float(
+                    row.discovery_delay_between_markets,
+                    DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS,
+                    minimum=0.0,
+                )
+                settings["delay_between_wallets"] = self._coerce_float(
+                    row.discovery_delay_between_wallets,
+                    DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS,
+                    minimum=0.0,
+                )
+                settings["max_markets_per_run"] = self._coerce_int(
+                    row.discovery_max_markets_per_run,
+                    DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN,
+                    minimum=1,
+                )
+                settings["max_wallets_per_market"] = self._coerce_int(
+                    row.discovery_max_wallets_per_market,
+                    DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET,
+                    minimum=1,
+                )
+        except Exception:
+            logger.exception("Failed to load discovery settings from DB; using defaults")
+
+        self._runtime_discovery_settings = settings
+        return settings
 
     # ------------------------------------------------------------------
     # 1. Trade Statistics (mirrors anomaly_detector pattern)
@@ -970,6 +1102,203 @@ class WalletDiscoveryEngine:
     # 8. Database Persistence
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _coerce_source_flags(raw_flags: Any) -> dict[str, Any]:
+        if isinstance(raw_flags, dict):
+            return raw_flags
+        return {}
+
+    @staticmethod
+    def _is_pool_protected(flags: dict[str, Any]) -> bool:
+        return bool(
+            flags.get(POOL_FLAG_MANUAL_INCLUDE)
+            or flags.get(POOL_FLAG_MANUAL_EXCLUDE)
+            or flags.get(POOL_FLAG_BLACKLISTED)
+        )
+
+    def _is_wallet_discovery_protected(self, wallet: DiscoveredWallet) -> bool:
+        if wallet.in_top_pool:
+            return True
+
+        source = str(wallet.discovery_source or "").strip().lower()
+        if source in {"manual", "manual_pool", "referral"}:
+            return True
+
+        flags = self._coerce_source_flags(wallet.source_flags)
+        return self._is_pool_protected(flags)
+
+    def _discovery_curation_score(self, wallet: DiscoveredWallet, now: datetime) -> float:
+        score = float(wallet.rank_score or 0.0)
+        score += min(float(wallet.total_trades or 0), 2500) / 2500.0
+        if wallet.last_analyzed_at is not None:
+            score += max(
+                0.0,
+                1.0 - (now - wallet.last_analyzed_at).total_seconds() / 2_592_000.0,
+            )
+        if wallet.total_pnl and wallet.total_pnl > 0:
+            score += 0.3
+        if str(wallet.recommendation or "").strip().lower() == "copy_candidate":
+            score += 0.5
+        if bool(wallet.is_profitable):
+            score += 0.2
+        return score
+
+    @staticmethod
+    def _chunked(addresses: list[str], size: int) -> list[list[str]]:
+        if size <= 0:
+            return [addresses]
+        return [addresses[i : i + size] for i in range(0, len(addresses), size)]
+
+    async def _upsert_discovered_placeholders(
+        self,
+        addresses: set[str],
+        discovery_source: str = "scan",
+    ) -> int:
+        """Insert discovered addresses as seed rows even before full analysis."""
+        normalized = {
+            str(address).strip().lower()
+            for address in addresses
+            if isinstance(address, str) and str(address).strip()
+        }
+        if not normalized:
+            return 0
+
+        now = utcnow()
+        normalized_list = sorted(normalized)
+        async with AsyncSessionLocal() as session:
+            existing: set[str] = set()
+            maintenance_batch = self._coerce_int(
+                self._discovery_setting("maintenance_batch", 900),
+                DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+                minimum=10,
+            )
+            for chunk in self._chunked(normalized_list, maintenance_batch):
+                rows = await session.execute(
+                    select(DiscoveredWallet.address).where(
+                        DiscoveredWallet.address.in_(chunk)
+                    )
+                )
+                existing.update({str(row.address).lower() for row in rows.all() if row.address})
+
+            created = 0
+            for address in normalized_list:
+                if address in existing:
+                    continue
+                session.add(
+                    DiscoveredWallet(
+                        address=address,
+                        discovered_at=now,
+                        discovery_source=discovery_source,
+                    )
+                )
+                created += 1
+
+            if created:
+                await session.commit()
+            return created
+
+    async def _cleanup_discovered_wallet_catalog(self, now: datetime | None = None) -> int:
+        """
+        Keep the discovered-wallet catalog bounded by removing weak non-critical rows.
+        """
+        max_discovered_wallets = self._coerce_int(
+            self._discovery_setting("max_discovered_wallets", 20000),
+            DISCOVERY_DEFAULT_MAX_DISCOVERED_WALLETS,
+            minimum=10,
+        )
+        maintenance_enabled = self._coerce_bool(
+            self._discovery_setting("maintenance_enabled", True),
+            DISCOVERY_DEFAULT_MAINTENANCE_ENABLED,
+        )
+        if not maintenance_enabled:
+            return 0
+
+        now = now or utcnow()
+        async with AsyncSessionLocal() as session:
+            total_result = await session.execute(
+                select(func.count(DiscoveredWallet.address))
+            )
+            total_wallets = int(total_result.scalar() or 0)
+            if total_wallets <= max_discovered_wallets:
+                return 0
+
+            cutoff_trade = now - timedelta(
+                days=max(
+                    1,
+                    self._coerce_int(
+                        self._discovery_setting("keep_recent_trade_days", 7),
+                        DISCOVERY_DEFAULT_KEEP_RECENT_TRADE_DAYS,
+                        minimum=1,
+                    ),
+                )
+            )
+            cutoff_discovered = now - timedelta(
+                days=max(
+                    1,
+                    self._coerce_int(
+                        self._discovery_setting("keep_new_discoveries_days", 30),
+                        DISCOVERY_DEFAULT_KEEP_NEW_DISCOVERIES_DAYS,
+                        minimum=1,
+                    ),
+                )
+            )
+
+            rows = await session.execute(select(DiscoveredWallet))
+            wallets = list(rows.scalars().all())
+
+            candidates: list[DiscoveredWallet] = []
+            non_protected: list[DiscoveredWallet] = []
+
+            for wallet in wallets:
+                if self._is_wallet_discovery_protected(wallet):
+                    continue
+                non_protected.append(wallet)
+                if (
+                    wallet.last_trade_at is not None
+                    and wallet.last_trade_at >= cutoff_trade
+                ):
+                    continue
+                if (
+                    wallet.discovered_at is not None
+                    and wallet.discovered_at >= cutoff_discovered
+                ):
+                    continue
+                candidates.append(wallet)
+
+            # Prefer removing non-recent/non-essential rows first.
+            removable = candidates if candidates else non_protected
+
+            removable.sort(
+                key=lambda wallet: self._discovery_curation_score(wallet, now)
+            )
+            remove_count = total_wallets - max_discovered_wallets
+            if remove_count <= 0:
+                return 0
+
+            # If recent/preserved rows prevent hitting the target size, fall back
+            # to all non-protected rows.
+            if len(removable) < remove_count:
+                removable = non_protected
+
+            if not removable:
+                return 0
+
+            to_remove = [wallet.address for wallet in removable[:remove_count]]
+            removed = 0
+            maintenance_batch = self._coerce_int(
+                self._discovery_setting("maintenance_batch", 900),
+                DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+                minimum=10,
+            )
+            for chunk in self._chunked(to_remove, maintenance_batch):
+                result = await session.execute(
+                    delete(DiscoveredWallet).where(DiscoveredWallet.address.in_(chunk))
+                )
+                removed += int(result.rowcount or 0)
+
+            await session.commit()
+            return removed
+
     async def _upsert_wallet(self, data: dict):
         """Insert or update a DiscoveredWallet record."""
         address = data["address"]
@@ -1008,7 +1337,12 @@ class WalletDiscoveryEngine:
             if wallet.last_analyzed_at is None:
                 return True
             age = utcnow() - wallet.last_analyzed_at
-            return age.total_seconds() > STALE_ANALYSIS_HOURS * 3600
+            stale_analysis_hours = self._coerce_int(
+                self._discovery_setting("stale_analysis_hours", 12),
+                DISCOVERY_DEFAULT_STALE_ANALYSIS_HOURS,
+                minimum=1,
+            )
+            return age.total_seconds() > stale_analysis_hours * 3600
 
     # ------------------------------------------------------------------
     # 9. Leaderboard Refresh
@@ -1056,11 +1390,16 @@ class WalletDiscoveryEngine:
 
     async def _priority_analysis_queue(
         self,
-        limit: int = ANALYSIS_PRIORITY_BATCH_LIMIT,
+        limit: int | None = None,
     ) -> tuple[list[str], dict[str, int]]:
         """Build priority addresses: in-pool unanalyzed, smart-pool unanalyzed, metrics backfill."""
-        priority_limit = max(50, min(limit, ANALYSIS_PRIORITY_BATCH_LIMIT))
-        backfill_limit = max(100, min(priority_limit, ANALYSIS_PRIORITY_BATCH_LIMIT))
+        default_limit = self._coerce_int(
+            self._discovery_setting("analysis_priority_batch_limit", 2500),
+            DISCOVERY_DEFAULT_ANALYSIS_PRIORITY_BATCH_LIMIT,
+            minimum=100,
+        )
+        priority_limit = max(50, min(limit or default_limit, default_limit))
+        backfill_limit = max(100, min(priority_limit, default_limit))
 
         async with AsyncSessionLocal() as session:
             top_pool_rows = await session.execute(
@@ -1166,8 +1505,8 @@ class WalletDiscoveryEngine:
 
     async def run_discovery(
         self,
-        max_markets: int = 100,
-        max_wallets_per_market: int = 50,
+        max_markets: int | None = None,
+        max_wallets_per_market: int | None = None,
     ):
         """
         Full discovery pipeline:
@@ -1184,7 +1523,40 @@ class WalletDiscoveryEngine:
             return
 
         self._running = True
+        self._runtime_discovery_settings = None
         run_start = utcnow()
+        try:
+            runtime_settings = await self._load_discovery_settings()
+            max_markets = self._coerce_int(
+                max_markets,
+                runtime_settings["max_markets_per_run"],
+                minimum=1,
+            )
+            max_wallets_per_market = self._coerce_int(
+                max_wallets_per_market,
+                runtime_settings["max_wallets_per_market"],
+                minimum=1,
+            )
+            delay_between_markets = self._coerce_float(
+                runtime_settings["delay_between_markets"],
+                DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS,
+                minimum=0.0,
+            )
+            delay_between_wallets = self._coerce_float(
+                runtime_settings["delay_between_wallets"],
+                DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS,
+                minimum=0.0,
+            )
+        except Exception:
+            max_markets = self._coerce_int(max_markets, DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN, minimum=1)
+            max_wallets_per_market = self._coerce_int(
+                max_wallets_per_market,
+                DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET,
+                minimum=1,
+            )
+            delay_between_markets = DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS
+            delay_between_wallets = DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS
+
         logger.info(
             "Starting discovery run",
             max_markets=max_markets,
@@ -1215,7 +1587,7 @@ class WalletDiscoveryEngine:
                             break
                         markets.extend(page)
                         offset += len(page)
-                        await asyncio.sleep(DELAY_BETWEEN_MARKETS)
+                        await asyncio.sleep(delay_between_markets)
                     except Exception:
                         break
 
@@ -1232,7 +1604,7 @@ class WalletDiscoveryEngine:
                     addrs = await self._discover_wallets_from_market(
                         market, max_wallets=max_wallets_per_market
                     )
-                    await asyncio.sleep(DELAY_BETWEEN_MARKETS)
+                    await asyncio.sleep(delay_between_markets)
                     return addrs
 
             market_tasks = [discover_from_market(m) for m in markets]
@@ -1248,6 +1620,12 @@ class WalletDiscoveryEngine:
             )
             all_addresses.update(leaderboard_addrs)
 
+            seeded = await self._upsert_discovered_placeholders(
+                all_addresses,
+                discovery_source="scan",
+            )
+            self._wallets_seeded_last_run = seeded
+
             self._wallets_discovered_last_run = len(all_addresses)
             logger.info(
                 "Wallet addresses discovered",
@@ -1261,15 +1639,35 @@ class WalletDiscoveryEngine:
             # one query per wallet, which was blocking the event loop for
             # hundreds/thousands of sequential DB round-trips.
             stale_addresses: list[str] = []
-            stale_cutoff = utcnow() - timedelta(hours=STALE_ANALYSIS_HOURS)
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(
-                        DiscoveredWallet.address,
-                        DiscoveredWallet.last_analyzed_at,
-                    ).where(DiscoveredWallet.address.in_(list(all_addresses)))
+            stale_cutoff = utcnow() - timedelta(
+                hours=self._coerce_int(
+                    self._discovery_setting("stale_analysis_hours", 12),
+                    DISCOVERY_DEFAULT_STALE_ANALYSIS_HOURS,
+                    minimum=1,
                 )
-                existing = {row.address: row.last_analyzed_at for row in result.all()}
+            )
+            async with AsyncSessionLocal() as session:
+                existing = {}
+                address_list = sorted(all_addresses)
+                maintenance_batch = self._coerce_int(
+                    self._discovery_setting("maintenance_batch", 900),
+                    DISCOVERY_DEFAULT_MAINTENANCE_BATCH,
+                    minimum=10,
+                )
+                for chunk in self._chunked(address_list, maintenance_batch):
+                    result = await session.execute(
+                        select(
+                            DiscoveredWallet.address,
+                            DiscoveredWallet.last_analyzed_at,
+                        ).where(DiscoveredWallet.address.in_(chunk))
+                    )
+                    existing.update(
+                        {
+                            row.address: row.last_analyzed_at
+                            for row in result.all()
+                            if row.address
+                        }
+                    )
 
             for addr in all_addresses:
                 last_analyzed = existing.get(addr)
@@ -1309,7 +1707,7 @@ class WalletDiscoveryEngine:
                         if profile is not None:
                             await self._upsert_wallet(profile)
                             analyzed_count += 1
-                        await asyncio.sleep(DELAY_BETWEEN_WALLETS)
+                        await asyncio.sleep(delay_between_wallets)
                     except Exception as e:
                         logger.warning(
                             "Wallet analysis failed",
@@ -1336,6 +1734,17 @@ class WalletDiscoveryEngine:
             # --- Step 7: Refresh leaderboard ---
             await self.refresh_leaderboard()
 
+            wallets_pruned = await self._cleanup_discovered_wallet_catalog()
+            self._wallets_pruned_last_run = wallets_pruned
+
+            try:
+                await smart_wallet_pool.recompute_pool()
+            except Exception as e:
+                logger.warning(
+                    "Smart pool recompute after discovery failed",
+                    error=str(e),
+                )
+
             # --- Record run metadata ---
             self._last_run_at = utcnow()
             self._wallets_analyzed_last_run = analyzed_count
@@ -1345,10 +1754,13 @@ class WalletDiscoveryEngine:
                 "Discovery run complete",
                 wallets_discovered=self._wallets_discovered_last_run,
                 wallets_analyzed=analyzed_count,
+                wallets_seeded=seeded,
+                wallets_pruned=wallets_pruned,
                 duration_seconds=round(duration, 1),
             )
         finally:
             self._running = False
+            self._runtime_discovery_settings = None
 
     # ------------------------------------------------------------------
     # 11. Background Scheduler
@@ -1636,6 +2048,8 @@ class WalletDiscoveryEngine:
             "last_run_at": self._last_run_at.isoformat() if self._last_run_at else None,
             "wallets_discovered_last_run": self._wallets_discovered_last_run,
             "wallets_analyzed_last_run": self._wallets_analyzed_last_run,
+            "wallets_seeded_last_run": self._wallets_seeded_last_run,
+            "wallets_pruned_last_run": self._wallets_pruned_last_run,
             "is_running": self._running,
         }
 

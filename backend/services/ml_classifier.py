@@ -10,7 +10,6 @@ On cold start (no training data), returns neutral predictions (probability=0.5).
 """
 
 import uuid
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Optional
 

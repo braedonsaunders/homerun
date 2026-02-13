@@ -99,6 +99,8 @@ class ChainlinkFeed:
     def __init__(self, ws_url: str = WS_URL):
         self._ws_url = ws_url
         self._prices: dict[str, OraclePrice] = {}
+        # Latest price seen per canonical symbol per source.
+        self._prices_by_source: dict[str, dict[str, OraclePrice]] = {}
         self._task: Optional[asyncio.Task] = None
         self._stopped = False
         self._on_update: Optional[Callable[[OraclePrice], None]] = None
@@ -116,6 +118,13 @@ class ChainlinkFeed:
     def get_all_prices(self) -> dict[str, OraclePrice]:
         """Get all latest oracle prices."""
         return dict(self._prices)
+
+    def get_prices_by_source(self, asset: str) -> dict[str, OraclePrice]:
+        """Get latest prices grouped by source for a canonical asset.
+
+        Keys are source IDs (e.g. ``chainlink`` / ``binance``).
+        """
+        return dict(self._prices_by_source.get(asset.upper(), {}))
 
     def get_price_at_time(self, asset: str, timestamp_s: float) -> Optional[float]:
         """Get the oracle price closest to a given Unix timestamp (seconds).
@@ -301,14 +310,19 @@ class ChainlinkFeed:
         source = "chainlink" if is_chainlink else "binance"
 
         # Update latest price (Chainlink takes priority over Binance)
+        oracle = OraclePrice(
+            asset=asset,
+            price=price,
+            updated_at_ms=updated_at_ms,
+        )
+        oracle.source = source
+
+        if asset not in self._prices_by_source:
+            self._prices_by_source[asset] = {}
+        self._prices_by_source[asset][source] = oracle
+
         existing = self._prices.get(asset)
         if existing is None or is_chainlink or source == existing.source:
-            oracle = OraclePrice(
-                asset=asset,
-                price=price,
-                updated_at_ms=updated_at_ms,
-            )
-            oracle.source = source
             self._prices[asset] = oracle
 
             if self._on_update:
@@ -328,6 +342,7 @@ class ChainlinkFeed:
             cutoff = int(time.time() * 1000) - HISTORY_MAX_AGE_MS
             while self._history[asset] and self._history[asset][0][0] < cutoff:
                 self._history[asset].popleft()
+
 
 
 # ---------------------------------------------------------------------------

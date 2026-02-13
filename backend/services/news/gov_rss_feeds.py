@@ -66,21 +66,29 @@ class GovRSSFeedService:
                     select(AppSettings).where(AppSettings.id == "default")
                 )
                 row = result.scalar_one_or_none()
+                if row is None:
+                    row = AppSettings(
+                        id="default",
+                        news_gov_rss_enabled=default_enabled,
+                        news_gov_rss_feeds_json=default_feeds,
+                    )
+                    session.add(row)
+                    await session.commit()
+                    await session.refresh(row)
+
+                raw_enabled = getattr(row, "news_gov_rss_enabled", None)
+                enabled = default_enabled if raw_enabled is None else bool(raw_enabled)
+                raw_rows = getattr(row, "news_gov_rss_feeds_json", None)
+                rows = normalize_gov_rss_feeds(raw_rows) if raw_rows else []
+                if not rows:
+                    rows = default_feeds
+                    row.news_gov_rss_feeds_json = rows
+                    await session.commit()
         except Exception as exc:
             logger.debug("Gov RSS config DB read failed, using defaults: %s", exc)
             self._enabled = default_enabled
             self._configured_feeds_count = len(default_feeds)
             return self._enabled, default_feeds
-
-        if row is None:
-            self._enabled = default_enabled
-            self._configured_feeds_count = len(default_feeds)
-            return self._enabled, default_feeds
-
-        raw_enabled = getattr(row, "news_gov_rss_enabled", None)
-        enabled = default_enabled if raw_enabled is None else bool(raw_enabled)
-        raw_rows = getattr(row, "news_gov_rss_feeds_json", None)
-        rows = normalize_gov_rss_feeds(raw_rows) if raw_rows else default_feeds
 
         self._enabled = enabled
         self._configured_feeds_count = len(rows)

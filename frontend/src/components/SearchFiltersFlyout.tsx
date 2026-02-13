@@ -7,7 +7,6 @@ import {
   CheckCircle,
   AlertCircle,
   Shield,
-  Zap,
   TrendingUp,
   BarChart3,
   GitBranch,
@@ -75,6 +74,18 @@ const DEFAULTS = {
   btc_eth_hf_series_eth_15m: '10191',
   btc_eth_hf_series_sol_15m: '10423',
   btc_eth_hf_series_xrp_15m: '10422',
+  btc_eth_hf_series_btc_5m: '10684',
+  btc_eth_hf_series_eth_5m: '',
+  btc_eth_hf_series_sol_5m: '',
+  btc_eth_hf_series_xrp_5m: '',
+  btc_eth_hf_series_btc_1h: '10114',
+  btc_eth_hf_series_eth_1h: '10117',
+  btc_eth_hf_series_sol_1h: '10122',
+  btc_eth_hf_series_xrp_1h: '10123',
+  btc_eth_hf_series_btc_4h: '10331',
+  btc_eth_hf_series_eth_4h: '10332',
+  btc_eth_hf_series_sol_4h: '10326',
+  btc_eth_hf_series_xrp_4h: '10327',
   btc_eth_pure_arb_max_combined: 0.98,
   btc_eth_dump_hedge_drop_pct: 0.05,
   btc_eth_thin_liquidity_usd: 500,
@@ -148,37 +159,6 @@ function NumericField({
         step={step}
         disabled={disabled}
         className="mt-0.5 text-xs h-7"
-      />
-      <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">{help}</p>
-    </div>
-  )
-}
-
-function TextField({
-  label,
-  help,
-  value,
-  onChange,
-  disabled,
-  placeholder,
-}: {
-  label: string
-  help: string
-  value: string
-  onChange: (v: string) => void
-  disabled?: boolean
-  placeholder?: string
-}) {
-  return (
-    <div className={cn(disabled && 'opacity-40 pointer-events-none')}>
-      <Label className="text-[11px] text-muted-foreground leading-tight">{label}</Label>
-      <Input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        placeholder={placeholder}
-        className="mt-0.5 text-xs h-7 font-mono"
       />
       <p className="text-[10px] text-muted-foreground/60 mt-0.5 leading-tight">{help}</p>
     </div>
@@ -534,39 +514,7 @@ export default function SearchFiltersFlyout({
           </CollapsibleSection>
 
           {/* ============================================================ */}
-          {/* SECTION 5: CRYPTO HIGH-FREQUENCY (Method 9) */}
-          {/* ============================================================ */}
-          <CollapsibleSection title="Crypto High-Frequency" icon={Zap} color="text-yellow-500" count={1}>
-            {/* Method 9: BTC/ETH HighFreq */}
-            <div className="space-y-2">
-              <StrategyToggle
-                label="BTC/ETH High-Frequency"
-                enabled={form.btc_eth_hf_enabled}
-                onToggle={(v) => set('btc_eth_hf_enabled', v)}
-                icon={Zap}
-                color="text-yellow-400"
-                badge="hybrid"
-              />
-              <p className="text-[10px] text-muted-foreground/60">
-                Dynamic sub-strategy selection for crypto 15-min/1-hr binary markets (BTC, ETH, SOL, XRP). Includes pure arb, dump-hedge, and pre-placed limits.
-              </p>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-                <NumericField label="Pure Arb Max Combined" help="Pure arb when YES+NO < this" value={form.btc_eth_pure_arb_max_combined} onChange={(v) => set('btc_eth_pure_arb_max_combined', v)} min={0.5} max={1} step={0.01} disabled={!form.btc_eth_hf_enabled} />
-                <NumericField label="Dump-Hedge Drop %" help="Min drop to trigger hedge" value={form.btc_eth_dump_hedge_drop_pct} onChange={(v) => set('btc_eth_dump_hedge_drop_pct', v)} min={0.01} max={0.5} step={0.01} disabled={!form.btc_eth_hf_enabled} />
-                <NumericField label="Thin Liquidity ($)" help="Below = thin order book" value={form.btc_eth_thin_liquidity_usd} onChange={(v) => set('btc_eth_thin_liquidity_usd', v)} min={0} disabled={!form.btc_eth_hf_enabled} />
-              </div>
-              <p className="text-[10px] text-muted-foreground/60 mt-2 font-medium">Polymarket Series IDs</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                <TextField label="BTC 15m" help="Series ID" value={form.btc_eth_hf_series_btc_15m} onChange={(v) => set('btc_eth_hf_series_btc_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10192" />
-                <TextField label="ETH 15m" help="Series ID" value={form.btc_eth_hf_series_eth_15m} onChange={(v) => set('btc_eth_hf_series_eth_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10191" />
-                <TextField label="SOL 15m" help="Series ID" value={form.btc_eth_hf_series_sol_15m} onChange={(v) => set('btc_eth_hf_series_sol_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10423" />
-                <TextField label="XRP 15m" help="Series ID" value={form.btc_eth_hf_series_xrp_15m} onChange={(v) => set('btc_eth_hf_series_xrp_15m', v)} disabled={!form.btc_eth_hf_enabled} placeholder="10422" />
-              </div>
-            </div>
-          </CollapsibleSection>
-
-          {/* ============================================================ */}
-          {/* SECTION 6: MIRACLE STRATEGY (Method 6) */}
+          {/* SECTION 5: MIRACLE STRATEGY (Method 6) */}
           {/* ============================================================ */}
           <CollapsibleSection title="Miracle Strategy" icon={Target} color="text-emerald-500" count={1}>
             {/* Method 6: Miracle */}

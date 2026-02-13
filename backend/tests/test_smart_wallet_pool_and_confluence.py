@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]

@@ -8,7 +8,6 @@ and panel close/open cycles.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Optional
 

@@ -7,9 +7,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
 
-from models.database import AsyncSessionLocal, Trader
+from config import settings
+from models.database import (
+    AppSettings,
+    AsyncSessionLocal,
+    SimulationAccount,
+    Trader,
+    init_database,
+)
 from services.trader_orchestrator.order_manager import submit_order
 from services.trader_orchestrator.risk_manager import evaluate_risk
 from services.trader_orchestrator.strategies.registry import get_strategy
@@ -30,6 +36,7 @@ from services.trader_orchestrator_state import (
     record_signal_consumption,
 )
 from services.signal_bus import expire_stale_signals
+from utils.secrets import decrypt_secret
 
 logger = logging.getLogger("trader_orchestrator_worker")
 
@@ -72,6 +79,23 @@ def _checks_to_payload(checks: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _is_live_credentials_configured(app_settings: AppSettings | None) -> bool:
+    if app_settings is None:
+        return False
+
+    polymarket_ready = bool(
+        decrypt_secret(app_settings.polymarket_api_key)
+        and decrypt_secret(app_settings.polymarket_api_secret)
+        and decrypt_secret(app_settings.polymarket_api_passphrase)
+    )
+    kalshi_ready = bool(
+        (app_settings.kalshi_email or "").strip()
+        and decrypt_secret(app_settings.kalshi_password)
+        and decrypt_secret(app_settings.kalshi_api_key)
+    )
+    return polymarket_ready or kalshi_ready
 
 
 async def _run_trader_once(
@@ -260,6 +284,67 @@ async def run_worker_loop() -> None:
                     await asyncio.sleep(interval)
                     continue
 
+                mode = str(control.get("mode") or "paper").strip().lower()
+                control_settings = control.get("settings") or {}
+
+                if mode == "paper":
+                    paper_account_id = str(control_settings.get("paper_account_id") or "").strip()
+                    if not paper_account_id:
+                        await write_orchestrator_snapshot(
+                            session,
+                            running=False,
+                            enabled=True,
+                            current_activity="Blocked: select a sandbox account for paper mode",
+                            interval_seconds=interval,
+                            last_error=None,
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                        await asyncio.sleep(interval)
+                        continue
+                    paper_account = await session.get(SimulationAccount, paper_account_id)
+                    if paper_account is None:
+                        await write_orchestrator_snapshot(
+                            session,
+                            running=False,
+                            enabled=True,
+                            current_activity="Blocked: selected sandbox account no longer exists",
+                            interval_seconds=interval,
+                            last_error=None,
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                        await asyncio.sleep(interval)
+                        continue
+
+                if mode == "live":
+                    app_settings = await session.get(AppSettings, "default")
+                    trading_enabled = bool(settings.TRADING_ENABLED) and bool(
+                        app_settings.trading_enabled if app_settings is not None else False
+                    )
+                    if not trading_enabled:
+                        await write_orchestrator_snapshot(
+                            session,
+                            running=False,
+                            enabled=True,
+                            current_activity="Blocked: live trading disabled in config/settings",
+                            interval_seconds=interval,
+                            last_error=None,
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                        await asyncio.sleep(interval)
+                        continue
+                    if not _is_live_credentials_configured(app_settings):
+                        await write_orchestrator_snapshot(
+                            session,
+                            running=False,
+                            enabled=True,
+                            current_activity="Blocked: live credentials missing",
+                            interval_seconds=interval,
+                            last_error=None,
+                            stats=await compute_orchestrator_metrics(session),
+                        )
+                        await asyncio.sleep(interval)
+                        continue
+
                 traders = await list_traders(session)
 
             total_decisions = 0
@@ -305,5 +390,32 @@ async def run_worker_loop() -> None:
             await asyncio.sleep(2)
 
 
+async def main() -> None:
+    """Initialize DB schema before entering orchestrator loop."""
+    await init_database()
+    logger.info("Database initialized")
+
+    notifier = None
+    try:
+        from services.notifier import notifier as notifier_service
+
+        notifier = notifier_service
+        await notifier.start()
+        logger.info("Autotrader notifier started")
+    except Exception as exc:
+        logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
+
+    try:
+        await run_worker_loop()
+    except asyncio.CancelledError:
+        logger.info("Trader orchestrator worker shutting down")
+    finally:
+        if notifier is not None:
+            try:
+                await notifier.shutdown()
+            except Exception as exc:
+                logger.debug("Notifier shutdown skipped: %s", exc)
+
+
 if __name__ == "__main__":
-    asyncio.run(run_worker_loop())
+    asyncio.run(main())

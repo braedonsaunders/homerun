@@ -166,10 +166,7 @@ async def _run_loop() -> None:
                     },
                 )
 
-            await wallet_discovery.run_discovery(
-                max_markets=settings.DISCOVERY_MAX_MARKETS_PER_RUN,
-                max_wallets_per_market=settings.DISCOVERY_MAX_WALLETS_PER_MARKET,
-            )
+            await wallet_discovery.run_discovery()
 
             async with AsyncSessionLocal() as session:
                 await clear_discovery_run_request(session)

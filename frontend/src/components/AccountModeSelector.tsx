@@ -12,7 +12,7 @@ export default function AccountModeSelector() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  const { data: sandboxAccounts = [] } = useQuery({
+  const { data: sandboxAccounts = [], isFetched: sandboxAccountsFetched } = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
   })
@@ -24,6 +24,23 @@ export default function AccountModeSelector() {
       setMode('sandbox')
     }
   }, [sandboxAccounts, selectedAccountId, setSelectedAccountId, setMode])
+
+  // If a stale sandbox id is persisted, clear it once accounts are fetched.
+  useEffect(() => {
+    if (!sandboxAccountsFetched || !selectedAccountId) return
+    if (selectedAccountId.startsWith('live:')) return
+
+    const exists = sandboxAccounts.some((account) => account.id === selectedAccountId)
+    if (exists) return
+
+    if (sandboxAccounts.length > 0) {
+      setSelectedAccountId(sandboxAccounts[0].id)
+      setMode('sandbox')
+      return
+    }
+
+    setSelectedAccountId(null)
+  }, [sandboxAccountsFetched, sandboxAccounts, selectedAccountId, setSelectedAccountId, setMode])
 
   // Close dropdown on outside click
   useEffect(() => {

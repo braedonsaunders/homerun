@@ -14,6 +14,7 @@ from utils.logger import get_logger
 from utils.secrets import decrypt_secret
 from api.settings_helpers import (
     apply_update_request,
+    discovery_payload,
     kalshi_payload,
     llm_payload,
     maintenance_payload,
@@ -108,6 +109,27 @@ class NotificationSettings(BaseModel):
     notify_min_roi: float = Field(
         default=5.0, ge=0, description="Minimum ROI % to notify"
     )
+    notify_autotrader_orders: bool = Field(
+        default=False, description="Notify immediately when orchestrator creates orders"
+    )
+    notify_autotrader_issues: bool = Field(
+        default=True,
+        description="Notify on orchestrator warnings/errors and failed orders",
+    )
+    notify_autotrader_timeline: bool = Field(
+        default=True,
+        description="Send timeline summaries while orchestrator is actively running",
+    )
+    notify_autotrader_summary_interval_minutes: int = Field(
+        default=60,
+        ge=5,
+        le=1440,
+        description="Minutes between autotrader timeline summaries",
+    )
+    notify_autotrader_summary_per_trader: bool = Field(
+        default=False,
+        description="Break timeline summaries out per trader instead of only overall totals",
+    )
 
 
 class ScannerSettingsModel(BaseModel):
@@ -142,6 +164,69 @@ class TradingSettings(BaseModel):
     )
     max_slippage_percent: float = Field(
         default=2.0, ge=0.1, le=10, description="Maximum acceptable slippage %"
+    )
+
+
+class DiscoverySettings(BaseModel):
+    """Wallet discovery settings"""
+
+    max_discovered_wallets: int = Field(
+        default=20_000, ge=10, le=1_000_000, description="Cap for discovered wallet catalog"
+    )
+    maintenance_enabled: bool = Field(
+        default=True,
+        description="Enable periodic cleanup of weak/disused discovered wallets",
+    )
+    keep_recent_trade_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description="Keep wallets with recent trades within this many days",
+    )
+    keep_new_discoveries_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Keep newly discovered wallets within this window",
+    )
+    maintenance_batch: int = Field(
+        default=900, ge=10, le=5000, description="Cleanup insert/chunk batch size"
+    )
+    stale_analysis_hours: int = Field(
+        default=12,
+        ge=1,
+        le=720,
+        description="Re-analyze wallets when last analysis is older than this many hours",
+    )
+    analysis_priority_batch_limit: int = Field(
+        default=2500,
+        ge=100,
+        le=10_000,
+        description="Maximum size of priority analysis queue",
+    )
+    delay_between_markets: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=10.0,
+        description="Delay in seconds between market trade scans",
+    )
+    delay_between_wallets: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=10.0,
+        description="Delay in seconds between wallet analysis calls",
+    )
+    max_markets_per_run: int = Field(
+        default=100,
+        ge=1,
+        le=1_000,
+        description="Maximum active markets sampled per discovery run",
+    )
+    max_wallets_per_market: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Max wallets to extract from each market",
     )
 
 
@@ -336,6 +421,42 @@ class SearchFilterSettings(BaseModel):
     btc_eth_hf_series_xrp_15m: str = Field(
         default="10422", description="Polymarket series ID for XRP 15-min markets"
     )
+    btc_eth_hf_series_btc_5m: str = Field(
+        default="10684", description="Polymarket series ID for BTC 5-min markets"
+    )
+    btc_eth_hf_series_eth_5m: str = Field(
+        default="", description="Polymarket series ID for ETH 5-min markets"
+    )
+    btc_eth_hf_series_sol_5m: str = Field(
+        default="", description="Polymarket series ID for SOL 5-min markets"
+    )
+    btc_eth_hf_series_xrp_5m: str = Field(
+        default="", description="Polymarket series ID for XRP 5-min markets"
+    )
+    btc_eth_hf_series_btc_1h: str = Field(
+        default="10114", description="Polymarket series ID for BTC hourly markets"
+    )
+    btc_eth_hf_series_eth_1h: str = Field(
+        default="10117", description="Polymarket series ID for ETH hourly markets"
+    )
+    btc_eth_hf_series_sol_1h: str = Field(
+        default="10122", description="Polymarket series ID for SOL hourly markets"
+    )
+    btc_eth_hf_series_xrp_1h: str = Field(
+        default="10123", description="Polymarket series ID for XRP hourly markets"
+    )
+    btc_eth_hf_series_btc_4h: str = Field(
+        default="10331", description="Polymarket series ID for BTC 4-hour markets"
+    )
+    btc_eth_hf_series_eth_4h: str = Field(
+        default="10332", description="Polymarket series ID for ETH 4-hour markets"
+    )
+    btc_eth_hf_series_sol_4h: str = Field(
+        default="10326", description="Polymarket series ID for SOL 4-hour markets"
+    )
+    btc_eth_hf_series_xrp_4h: str = Field(
+        default="10327", description="Polymarket series ID for XRP 4-hour markets"
+    )
     btc_eth_pure_arb_max_combined: float = Field(
         default=0.98, ge=0.5, le=1.0, description="Use pure arb when YES+NO < this"
     )
@@ -493,6 +614,7 @@ class AllSettings(BaseModel):
     scanner: ScannerSettingsModel
     trading: TradingSettings
     maintenance: MaintenanceSettings
+    discovery: DiscoverySettings
     trading_proxy: TradingProxySettings
     search_filters: SearchFilterSettings
     updated_at: Optional[str] = None
@@ -508,6 +630,7 @@ class UpdateSettingsRequest(BaseModel):
     scanner: Optional[ScannerSettingsModel] = None
     trading: Optional[TradingSettings] = None
     maintenance: Optional[MaintenanceSettings] = None
+    discovery: Optional[DiscoverySettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
     search_filters: Optional[SearchFilterSettings] = None
 
@@ -550,6 +673,7 @@ async def get_settings():
             scanner=ScannerSettingsModel(**scanner_payload(settings)),
             trading=TradingSettings(**trading_payload(settings)),
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
+            discovery=DiscoverySettings(**discovery_payload(settings)),
             trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
             search_filters=SearchFilterSettings(**search_filters_payload(settings)),
             updated_at=settings.updated_at.isoformat() if settings.updated_at else None,
@@ -734,6 +858,19 @@ async def update_maintenance_settings(request: MaintenanceSettings):
     return await update_settings(UpdateSettingsRequest(maintenance=request))
 
 
+@router.get("/discovery")
+async def get_discovery_settings():
+    """Get wallet discovery settings"""
+    settings = await get_or_create_settings()
+    return DiscoverySettings(**discovery_payload(settings))
+
+
+@router.put("/discovery")
+async def update_discovery_settings(request: DiscoverySettings):
+    """Update wallet discovery settings"""
+    return await update_settings(UpdateSettingsRequest(discovery=request))
+
+
 @router.get("/trading-proxy")
 async def get_trading_proxy_settings():
     """Get trading VPN/proxy settings only"""
@@ -793,10 +930,17 @@ async def test_telegram_connection():
                 "message": "Telegram bot token or chat ID not configured",
             }
 
-        # TODO: Implement actual bot test (send test message)
+        from services.notifier import notifier
+
+        sent = await notifier.send_test_message()
+        if sent:
+            return {
+                "status": "success",
+                "message": "Test message sent to Telegram successfully",
+            }
         return {
-            "status": "success",
-            "message": "Telegram credentials are configured (connection test not implemented)",
+            "status": "error",
+            "message": "Telegram API request failed; check bot token/chat ID and bot permissions",
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}

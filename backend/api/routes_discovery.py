@@ -147,6 +147,21 @@ def _market_categories_from_flags(source_flags: dict) -> list[str]:
     return sorted(set(categories))
 
 
+def _normalize_win_rate_ratio(value: object) -> float:
+    """Normalize win-rate values to ratio scale [0, 1].
+
+    Discovery historically stores ratios (0.0-1.0), but legacy payloads may
+    contain percent values (0.0-100.0). Keep API sorting/filtering resilient.
+    """
+    try:
+        wr = float(value or 0.0)
+    except Exception:
+        return 0.0
+    if wr > 1.0:
+        wr = wr / 100.0
+    return max(0.0, min(wr, 1.0))
+
+
 def _normalize_market_id(value: object) -> str:
     return str(value or "").strip().lower()
 
@@ -821,9 +836,19 @@ async def get_pool_members(
     include_blacklisted: bool = Query(default=True),
     tier: Optional[str] = Query(default=None, description="core or rising"),
     search: Optional[str] = Query(default=None),
+    min_win_rate: float = Query(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Minimum win rate threshold (percent 0-100 or ratio 0-1).",
+    ),
     sort_by: str = Query(
         default="composite_score",
-        description="selection_score, composite_score, quality_score, activity_score, trades_24h, trades_1h, last_trade_at, rank_score",
+        description=(
+            "selection_score, composite_score, quality_score, activity_score, "
+            "trades_24h, trades_1h, total_trades, total_pnl, win_rate, "
+            "last_trade_at, rank_score"
+        ),
     ),
     sort_dir: str = Query(default="desc", description="asc or desc"),
     session: AsyncSession = Depends(get_db_session),
@@ -839,6 +864,9 @@ async def get_pool_members(
             "activity_score": lambda row: float(row.get("activity_score") or 0.0),
             "trades_24h": lambda row: int(row.get("trades_24h") or 0),
             "trades_1h": lambda row: int(row.get("trades_1h") or 0),
+            "total_trades": lambda row: int(row.get("total_trades") or 0),
+            "total_pnl": lambda row: float(row.get("total_pnl") or 0.0),
+            "win_rate": lambda row: float(row.get("win_rate") or 0.0),
             "last_trade_at": lambda row: row.get("last_trade_at") or "",
             "rank_score": lambda row: float(row.get("rank_score") or 0.0),
         }
@@ -849,6 +877,8 @@ async def get_pool_members(
             )
         if sort_dir not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="sort_dir must be asc or desc")
+
+        min_win_rate_ratio = _normalize_win_rate_ratio(min_win_rate)
 
         wallets_result = await session.execute(select(DiscoveredWallet))
         wallets = list(wallets_result.scalars().all())
@@ -1009,6 +1039,9 @@ async def get_pool_members(
                 continue
             if tier and (wallet.pool_tier or "").lower() != tier.lower():
                 continue
+            normalized_win_rate = _normalize_win_rate_ratio(wallet.win_rate)
+            if normalized_win_rate < min_win_rate_ratio:
+                continue
 
             tag_text = " ".join(wallet.tags or [])
             strategy_text = " ".join(wallet.strategies_detected or [])
@@ -1061,7 +1094,7 @@ async def get_pool_members(
                 else None,
                 "total_trades": wallet.total_trades or 0,
                 "total_pnl": wallet.total_pnl or 0.0,
-                "win_rate": wallet.win_rate or 0.0,
+                "win_rate": normalized_win_rate,
                 "tags": wallet.tags or [],
                 "strategies_detected": wallet.strategies_detected or [],
                 "market_categories": categories,

@@ -17,7 +17,9 @@ from models.database import (
     get_db_session,
 )
 from services.pause_state import global_pause_state
+from services.signal_bus import emit_weather_intent_signals
 from services.weather import shared_state
+from services.weather.workflow_orchestrator import weather_workflow_orchestrator
 
 router = APIRouter()
 
@@ -69,12 +71,38 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
     if global_pause_state.is_paused:
         raise HTTPException(
             status_code=409,
-            detail="Global pause is active. Resume all workers before queueing runs.",
+            detail="Global pause is active. Resume all workers before refreshing weather workflow.",
         )
-    await shared_state.request_one_weather_scan(session)
+    try:
+        wf_settings = await shared_state.get_weather_settings(session)
+        result = await weather_workflow_orchestrator.run_cycle(session)
+        pending_rows = await shared_state.list_weather_intents(
+            session, status_filter="pending", limit=2000
+        )
+        emitted = await emit_weather_intent_signals(
+            session,
+            pending_rows,
+            max_age_minutes=int(
+                max(
+                    1,
+                    wf_settings.get("orchestrator_max_age_minutes", 240) or 240,
+                )
+            ),
+        )
+        # Clear any previously queued manual run requests to avoid duplicate
+        # immediate reruns by the background weather worker loop.
+        await shared_state.clear_weather_scan_request(session)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Weather refresh failed: {exc}") from exc
+
     return {
-        "status": "queued",
-        "message": "Weather scan requested; worker will run on next cycle.",
+        "status": "completed",
+        "message": "Weather workflow refreshed.",
+        "cycle": result,
+        "signals_emitted": int(emitted),
+        **await _build_status_payload(session),
     }
 
 
@@ -133,6 +161,8 @@ async def get_weather_opportunities(
         direction=direction,
         max_entry_price=max_entry,
         location_query=location,
+        require_tradable_markets=True,
+        exclude_near_resolution=True,
     )
 
     total = len(opps)

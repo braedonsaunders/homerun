@@ -54,9 +54,35 @@ import {
   runWorkerOnce,
   type DatabaseFlushTarget,
   type LLMModelOption,
+  type DiscoverySettings,
 } from '../services/api'
 
-type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'plugins' | 'maintenance'
+type SettingsSection = 'llm' | 'notifications' | 'scanner' | 'trading' | 'vpn' | 'discovery' | 'plugins' | 'maintenance'
+
+const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
+  max_discovered_wallets: 20_000,
+  maintenance_enabled: true,
+  keep_recent_trade_days: 7,
+  keep_new_discoveries_days: 30,
+  maintenance_batch: 900,
+  stale_analysis_hours: 12,
+  analysis_priority_batch_limit: 2500,
+  delay_between_markets: 0.25,
+  delay_between_wallets: 0.15,
+  max_markets_per_run: 100,
+  max_wallets_per_market: 50,
+}
+
+const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefined): DiscoverySettings => {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_DISCOVERY_SETTINGS
+  }
+
+  return {
+    ...DEFAULT_DISCOVERY_SETTINGS,
+    ...value,
+  }
+}
 
 function SecretInput({
   label,
@@ -132,7 +158,12 @@ export default function SettingsPanel() {
     telegram_chat_id: '',
     notify_on_opportunity: true,
     notify_on_trade: true,
-    notify_min_roi: 5.0
+    notify_min_roi: 5.0,
+    notify_autotrader_orders: false,
+    notify_autotrader_issues: true,
+    notify_autotrader_timeline: true,
+    notify_autotrader_summary_interval_minutes: 60,
+    notify_autotrader_summary_per_trader: false,
   })
 
   const [scannerForm, setScannerForm] = useState({
@@ -140,6 +171,20 @@ export default function SettingsPanel() {
     min_profit_threshold: 2.5,
     max_markets_to_scan: 500,
     min_liquidity: 1000
+  })
+
+  const [discoveryForm, setDiscoveryForm] = useState<DiscoverySettings>({
+    max_discovered_wallets: 20_000,
+    maintenance_enabled: true,
+    keep_recent_trade_days: 7,
+    keep_new_discoveries_days: 30,
+    maintenance_batch: 900,
+    stale_analysis_hours: 12,
+    analysis_priority_batch_limit: 2500,
+    delay_between_markets: 0.25,
+    delay_between_wallets: 0.15,
+    max_markets_per_run: 100,
+    max_wallets_per_market: 50,
   })
 
   const [tradingForm, setTradingForm] = useState({
@@ -222,63 +267,83 @@ export default function SettingsPanel() {
   useEffect(() => {
     if (settings) {
       setLlmForm({
-        provider: settings.llm.provider || 'none',
+        provider: settings.llm?.provider || 'none',
         openai_api_key: '',
         anthropic_api_key: '',
         google_api_key: '',
         xai_api_key: '',
         deepseek_api_key: '',
         ollama_api_key: '',
-        ollama_base_url: settings.llm.ollama_base_url || '',
+        ollama_base_url: settings.llm?.ollama_base_url || '',
         lmstudio_api_key: '',
-        lmstudio_base_url: settings.llm.lmstudio_base_url || '',
-        model: settings.llm.model || '',
-        max_monthly_spend: settings.llm.max_monthly_spend ?? 50.0
+        lmstudio_base_url: settings.llm?.lmstudio_base_url || '',
+        model: settings.llm?.model || '',
+        max_monthly_spend: settings.llm?.max_monthly_spend ?? 50.0
       })
 
       setNotificationsForm({
-        enabled: settings.notifications.enabled,
+        enabled: settings.notifications?.enabled ?? false,
         telegram_bot_token: '',
-        telegram_chat_id: settings.notifications.telegram_chat_id || '',
-        notify_on_opportunity: settings.notifications.notify_on_opportunity,
-        notify_on_trade: settings.notifications.notify_on_trade,
-        notify_min_roi: settings.notifications.notify_min_roi
+        telegram_chat_id: settings.notifications?.telegram_chat_id || '',
+        notify_on_opportunity: settings.notifications?.notify_on_opportunity ?? true,
+        notify_on_trade: settings.notifications?.notify_on_trade ?? true,
+        notify_min_roi: settings.notifications?.notify_min_roi ?? 5.0,
+        notify_autotrader_orders: settings.notifications?.notify_autotrader_orders ?? false,
+        notify_autotrader_issues: settings.notifications?.notify_autotrader_issues ?? true,
+        notify_autotrader_timeline: settings.notifications?.notify_autotrader_timeline ?? true,
+        notify_autotrader_summary_interval_minutes: settings.notifications?.notify_autotrader_summary_interval_minutes ?? 60,
+        notify_autotrader_summary_per_trader: settings.notifications?.notify_autotrader_summary_per_trader ?? false,
       })
 
       setScannerForm({
-        scan_interval_seconds: settings.scanner.scan_interval_seconds,
-        min_profit_threshold: settings.scanner.min_profit_threshold,
-        max_markets_to_scan: settings.scanner.max_markets_to_scan,
-        min_liquidity: settings.scanner.min_liquidity
+        scan_interval_seconds: settings.scanner?.scan_interval_seconds ?? 60,
+        min_profit_threshold: settings.scanner?.min_profit_threshold ?? 2.5,
+        max_markets_to_scan: settings.scanner?.max_markets_to_scan ?? 500,
+        min_liquidity: settings.scanner?.min_liquidity ?? 1000
+      })
+
+      const discoverySettings = getDiscoverySettings(settings.discovery)
+      setDiscoveryForm({
+        max_discovered_wallets: discoverySettings.max_discovered_wallets,
+        maintenance_enabled: discoverySettings.maintenance_enabled,
+        keep_recent_trade_days: discoverySettings.keep_recent_trade_days,
+        keep_new_discoveries_days: discoverySettings.keep_new_discoveries_days,
+        maintenance_batch: discoverySettings.maintenance_batch,
+        stale_analysis_hours: discoverySettings.stale_analysis_hours,
+        analysis_priority_batch_limit: discoverySettings.analysis_priority_batch_limit,
+        delay_between_markets: discoverySettings.delay_between_markets,
+        delay_between_wallets: discoverySettings.delay_between_wallets,
+        max_markets_per_run: discoverySettings.max_markets_per_run,
+        max_wallets_per_market: discoverySettings.max_wallets_per_market,
       })
 
       setTradingForm({
-        trading_enabled: settings.trading.trading_enabled,
-        max_trade_size_usd: settings.trading.max_trade_size_usd,
-        max_daily_trade_volume: settings.trading.max_daily_trade_volume,
-        max_open_positions: settings.trading.max_open_positions,
-        max_slippage_percent: settings.trading.max_slippage_percent
+        trading_enabled: settings.trading?.trading_enabled ?? false,
+        max_trade_size_usd: settings.trading?.max_trade_size_usd ?? 100,
+        max_daily_trade_volume: settings.trading?.max_daily_trade_volume ?? 1000,
+        max_open_positions: settings.trading?.max_open_positions ?? 10,
+        max_slippage_percent: settings.trading?.max_slippage_percent ?? 2.0
       })
 
       setMaintenanceForm({
-        auto_cleanup_enabled: settings.maintenance.auto_cleanup_enabled,
-        cleanup_interval_hours: settings.maintenance.cleanup_interval_hours,
-        cleanup_resolved_trade_days: settings.maintenance.cleanup_resolved_trade_days,
-        market_cache_hygiene_enabled: settings.maintenance.market_cache_hygiene_enabled,
-        market_cache_hygiene_interval_hours: settings.maintenance.market_cache_hygiene_interval_hours,
-        market_cache_retention_days: settings.maintenance.market_cache_retention_days,
-        market_cache_reference_lookback_days: settings.maintenance.market_cache_reference_lookback_days,
-        market_cache_weak_entry_grace_days: settings.maintenance.market_cache_weak_entry_grace_days,
-        market_cache_max_entries_per_slug: settings.maintenance.market_cache_max_entries_per_slug,
+        auto_cleanup_enabled: settings.maintenance?.auto_cleanup_enabled ?? false,
+        cleanup_interval_hours: settings.maintenance?.cleanup_interval_hours ?? 24,
+        cleanup_resolved_trade_days: settings.maintenance?.cleanup_resolved_trade_days ?? 30,
+        market_cache_hygiene_enabled: settings.maintenance?.market_cache_hygiene_enabled ?? true,
+        market_cache_hygiene_interval_hours: settings.maintenance?.market_cache_hygiene_interval_hours ?? 6,
+        market_cache_retention_days: settings.maintenance?.market_cache_retention_days ?? 120,
+        market_cache_reference_lookback_days: settings.maintenance?.market_cache_reference_lookback_days ?? 45,
+        market_cache_weak_entry_grace_days: settings.maintenance?.market_cache_weak_entry_grace_days ?? 7,
+        market_cache_max_entries_per_slug: settings.maintenance?.market_cache_max_entries_per_slug ?? 3,
       })
 
       if (settings.trading_proxy) {
         setVpnForm({
-          enabled: settings.trading_proxy.enabled,
+          enabled: settings.trading_proxy?.enabled ?? false,
           proxy_url: '',  // Don't pre-fill masked URL
-          verify_ssl: settings.trading_proxy.verify_ssl,
-          timeout: settings.trading_proxy.timeout,
-          require_vpn: settings.trading_proxy.require_vpn
+          verify_ssl: settings.trading_proxy?.verify_ssl ?? true,
+          timeout: settings.trading_proxy?.timeout ?? 30,
+          require_vpn: settings.trading_proxy?.require_vpn ?? true
         })
       }
 
@@ -487,7 +552,12 @@ export default function SettingsPanel() {
           notify_on_opportunity: notificationsForm.notify_on_opportunity,
           notify_on_trade: notificationsForm.notify_on_trade,
           notify_min_roi: notificationsForm.notify_min_roi,
-          telegram_chat_id: notificationsForm.telegram_chat_id || null
+          telegram_chat_id: notificationsForm.telegram_chat_id || null,
+          notify_autotrader_orders: notificationsForm.notify_autotrader_orders,
+          notify_autotrader_issues: notificationsForm.notify_autotrader_issues,
+          notify_autotrader_timeline: notificationsForm.notify_autotrader_timeline,
+          notify_autotrader_summary_interval_minutes: notificationsForm.notify_autotrader_summary_interval_minutes,
+          notify_autotrader_summary_per_trader: notificationsForm.notify_autotrader_summary_per_trader,
         }
         if (notificationsForm.telegram_bot_token) {
           updates.notifications.telegram_bot_token = notificationsForm.telegram_bot_token
@@ -498,6 +568,9 @@ export default function SettingsPanel() {
         break
       case 'trading':
         updates.trading = tradingForm
+        break
+      case 'discovery':
+        updates.discovery = discoveryForm
         break
       case 'vpn':
         updates.trading_proxy = {
@@ -573,6 +646,10 @@ export default function SettingsPanel() {
         return `${scannerForm.scan_interval_seconds}s interval`
       case 'trading':
         return tradingForm.trading_enabled ? 'Live' : 'Disabled'
+      case 'discovery':
+        return discoveryForm.maintenance_enabled
+          ? `${discoveryForm.max_discovered_wallets.toLocaleString()} cap`
+          : 'Disabled'
       case 'vpn':
         return vpnForm.enabled ? 'Active' : 'Disabled'
       case 'maintenance':
@@ -594,6 +671,10 @@ export default function SettingsPanel() {
         return 'text-cyan-400 bg-cyan-500/10'
       case 'trading':
         return tradingForm.trading_enabled ? 'text-yellow-400 bg-yellow-500/10' : 'text-muted-foreground bg-muted'
+      case 'discovery':
+        return discoveryForm.maintenance_enabled
+          ? 'text-green-400 bg-green-500/10'
+          : 'text-muted-foreground bg-muted'
       case 'vpn':
         return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
       case 'maintenance':
@@ -611,6 +692,7 @@ export default function SettingsPanel() {
     { id: 'scanner', icon: Scan, label: 'Scanner', description: 'Market scanning settings' },
     { id: 'trading', icon: TrendingUp, label: 'Trading Safety', description: 'Trading limits & safety' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
+    { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
     { id: 'plugins', icon: Puzzle, label: 'Strategy Plugins', description: 'Custom strategy code' },
     { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
   ]
@@ -931,12 +1013,12 @@ export default function SettingsPanel() {
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">New Opportunities</p>
-                                <p className="text-xs text-muted-foreground">Alert when new opportunities are found</p>
+                                <p className="text-sm">Autotrader Timeline</p>
+                                <p className="text-xs text-muted-foreground">Periodic timeline summaries while orchestrator is running</p>
                               </div>
                               <Switch
-                                checked={notificationsForm.notify_on_opportunity}
-                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_opportunity: checked }))}
+                                checked={notificationsForm.notify_autotrader_timeline}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_autotrader_timeline: checked }))}
                               />
                             </CardContent>
                           </Card>
@@ -944,27 +1026,55 @@ export default function SettingsPanel() {
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Trade Executions</p>
-                                <p className="text-xs text-muted-foreground">Alert when trades are executed</p>
+                                <p className="text-sm">Autotrader Issue Alerts</p>
+                                <p className="text-xs text-muted-foreground">Immediate alerts for kill switch, preflight failure, order failures, and worker errors</p>
                               </div>
                               <Switch
-                                checked={notificationsForm.notify_on_trade}
-                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_on_trade: checked }))}
+                                checked={notificationsForm.notify_autotrader_issues}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_autotrader_issues: checked }))}
+                              />
+                            </CardContent>
+                          </Card>
+
+                          <Card className="bg-muted">
+                            <CardContent className="flex items-center justify-between p-3">
+                              <div>
+                                <p className="text-sm">Autotrader Order Alerts</p>
+                                <p className="text-xs text-muted-foreground">Immediate order activity summaries per cycle</p>
+                              </div>
+                              <Switch
+                                checked={notificationsForm.notify_autotrader_orders}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_autotrader_orders: checked }))}
+                              />
+                            </CardContent>
+                          </Card>
+
+                          <Card className="bg-muted">
+                            <CardContent className="flex items-center justify-between p-3">
+                              <div>
+                                <p className="text-sm">Per-Trader Timeline Breakdown</p>
+                                <p className="text-xs text-muted-foreground">Include trader-level lines in timeline summaries</p>
+                              </div>
+                              <Switch
+                                checked={notificationsForm.notify_autotrader_summary_per_trader}
+                                onCheckedChange={(checked) => setNotificationsForm(p => ({ ...p, notify_autotrader_summary_per_trader: checked }))}
                               />
                             </CardContent>
                           </Card>
 
                           <div>
-                            <Label className="text-xs text-muted-foreground">Minimum ROI for Alerts (%)</Label>
+                            <Label className="text-xs text-muted-foreground">Autotrader Summary Interval (minutes)</Label>
                             <Input
                               type="number"
-                              value={notificationsForm.notify_min_roi}
-                              onChange={(e) => setNotificationsForm(p => ({ ...p, notify_min_roi: parseFloat(e.target.value) || 0 }))}
-                              step="0.5"
-                              min="0"
+                              value={notificationsForm.notify_autotrader_summary_interval_minutes}
+                              onChange={(e) => setNotificationsForm(p => ({ ...p, notify_autotrader_summary_interval_minutes: parseInt(e.target.value) || 60 }))}
+                              step="5"
+                              min="5"
+                              max="1440"
                               className="mt-1 text-sm"
                             />
                           </div>
+
                         </div>
                       </div>
 
@@ -1056,6 +1166,169 @@ export default function SettingsPanel() {
 
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Discovery Settings */}
+                  {section.id === 'discovery' && (
+                    <div className="space-y-4">
+                      <Card className="bg-muted border-green-500/30">
+                        <CardContent className="flex items-center justify-between p-3">
+                          <div>
+                            <p className="font-medium text-sm">Discovery Catalog Maintenance</p>
+                            <p className="text-xs text-muted-foreground">
+                              Control catalog growth, cleanup cadence, and retention policy
+                            </p>
+                          </div>
+                          <Switch
+                            checked={discoveryForm.maintenance_enabled}
+                            onCheckedChange={(checked) => setDiscoveryForm(p => ({ ...p, maintenance_enabled: checked }))}
+                          />
+                        </CardContent>
+                      </Card>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Discovered Wallets</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.max_discovered_wallets}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, max_discovered_wallets: parseInt(e.target.value) || 20_000 }))}
+                            min={10}
+                            max={1_000_000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Max rows kept in wallet catalog</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Discovery Maintenance Batch</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.maintenance_batch}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, maintenance_batch: parseInt(e.target.value) || 900 }))}
+                            min={10}
+                            max={5000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Chunk size for remove/insert operations</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Keep Wallets w/ Recent Trades (days)</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.keep_recent_trade_days}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, keep_recent_trade_days: parseInt(e.target.value) || 7 }))}
+                            min={1}
+                            max={365}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Protect wallets that traded recently</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Keep Newly Discovered Wallets (days)</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.keep_new_discoveries_days}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, keep_new_discoveries_days: parseInt(e.target.value) || 30 }))}
+                            min={1}
+                            max={365}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Protect wallets found in this window</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Stale Analysis Threshold (hours)</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.stale_analysis_hours}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, stale_analysis_hours: parseInt(e.target.value) || 12 }))}
+                            min={1}
+                            max={720}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Re-analyze wallets older than this age</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Priority Queue Limit</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.analysis_priority_batch_limit}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, analysis_priority_batch_limit: parseInt(e.target.value) || 2500 }))}
+                            min={100}
+                            max={10_000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">High-priority queue cap for new/stale wallets</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Delay Between Markets (s)</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.delay_between_markets}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, delay_between_markets: parseFloat(e.target.value) || 0 }))}
+                            min={0}
+                            max={10}
+                            step={0.05}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Throttling between market scans</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Delay Between Wallet Analysis (s)</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.delay_between_wallets}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, delay_between_wallets: parseFloat(e.target.value) || 0 }))}
+                            min={0}
+                            max={10}
+                            step={0.05}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Throttle wallet analysis loop</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Markets Per Discovery Run</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.max_markets_per_run}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, max_markets_per_run: parseInt(e.target.value) || 100 }))}
+                            min={1}
+                            max={1_000}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">How many active markets to sample</p>
+                        </div>
+
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Max Wallets Per Market</Label>
+                          <Input
+                            type="number"
+                            value={discoveryForm.max_wallets_per_market}
+                            onChange={(e) => setDiscoveryForm(p => ({ ...p, max_wallets_per_market: parseInt(e.target.value) || 50 }))}
+                            min={1}
+                            max={500}
+                            className="mt-1 text-sm"
+                          />
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">Wallets extracted per sampled market</p>
+                        </div>
+                      </div>
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('discovery')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
                           Save
                         </Button>

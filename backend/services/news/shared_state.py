@@ -342,9 +342,19 @@ async def expire_stale_news_intents(
 async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
     result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
     db = result.scalar_one_or_none()
+    mutated = False
     if db is None:
         db = AppSettings(id="default")
+        db.news_gov_rss_feeds_json = default_gov_rss_feeds()
         session.add(db)
+        mutated = True
+    else:
+        raw_gov_feeds = getattr(db, "news_gov_rss_feeds_json", None)
+        normalized_gov_feeds = normalize_gov_rss_feeds(raw_gov_feeds)
+        if not normalized_gov_feeds:
+            db.news_gov_rss_feeds_json = default_gov_rss_feeds()
+            mutated = True
+    if mutated:
         await session.commit()
         await session.refresh(db)
     return db

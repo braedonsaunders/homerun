@@ -178,6 +178,8 @@ class WeatherWorkflowOrchestrator:
         liquidity = float(getattr(market, "liquidity", 0.0) or 0.0)
         if liquidity < min_liquidity:
             return {"contracts_parsed": 0, "signals_generated": 0, "opportunity": None, "intent": None}
+        if not self._is_market_candidate_tradable(market):
+            return {"contracts_parsed": 0, "signals_generated": 0, "opportunity": None, "intent": None}
 
         resolution_dt = getattr(market, "end_date", None)
         if isinstance(resolution_dt, str):
@@ -314,7 +316,7 @@ class WeatherWorkflowOrchestrator:
 
             for ev in events:
                 for m in ev.markets:
-                    if m.closed or not m.active:
+                    if not self._is_market_candidate_tradable(m):
                         continue
                     cid = m.condition_id or m.id
                     if cid in seen:
@@ -375,7 +377,7 @@ class WeatherWorkflowOrchestrator:
                 query, limit=min(max(limit * 2, 50), 300)
             )
             for m in searched:
-                if not m.active or m.closed:
+                if not self._is_market_candidate_tradable(m):
                     continue
                 cid = m.condition_id or m.id
                 if cid in seen:
@@ -440,6 +442,31 @@ class WeatherWorkflowOrchestrator:
             used_fallback=True,
         )
         return markets
+
+    @staticmethod
+    def _market_tradability_payload(market) -> dict[str, Any]:
+        return {
+            "active": getattr(market, "active", None),
+            "closed": getattr(market, "closed", None),
+            "archived": getattr(market, "archived", None),
+            "accepting_orders": getattr(market, "accepting_orders", None),
+            "enable_order_book": getattr(market, "enable_order_book", None),
+            "resolved": getattr(market, "resolved", None),
+            "end_date": getattr(market, "end_date", None),
+            "winner": getattr(market, "winner", None),
+            "winning_outcome": getattr(market, "winning_outcome", None),
+            "status": getattr(market, "status", None),
+        }
+
+    def _is_market_candidate_tradable(self, market) -> bool:
+        """Fast local tradability guard using market metadata already in feed rows."""
+        info = self._market_tradability_payload(market)
+        try:
+            return bool(polymarket_client.is_market_tradable(info))
+        except Exception:
+            return bool(getattr(market, "active", True)) and not bool(
+                getattr(market, "closed", False)
+            )
 
     async def _attach_market_price_history(
         self, opportunities: list[ArbitrageOpportunity]
@@ -541,7 +568,7 @@ class WeatherWorkflowOrchestrator:
         roi_percent = (net_profit / total_cost) * 100 if total_cost > 0 else 0.0
 
         now = datetime.now(timezone.utc)
-        title = f"Weather Edge: {market.question[:110]}"
+        title = market.question[:110]
         consensus_temp_f = self._c_to_f(signal.consensus_temperature_c)
         market_temp_f = self._c_to_f(signal.market_implied_temperature_c)
         temp_segment = ""

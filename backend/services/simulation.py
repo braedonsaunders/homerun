@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 from utils.utcnow import utcnow
 from typing import Optional
 from sqlalchemy import select

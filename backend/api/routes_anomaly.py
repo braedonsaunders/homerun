@@ -1,4 +1,3 @@
-from datetime import datetime
 from utils.utcnow import utcfromtimestamp
 
 from fastapi import APIRouter, HTTPException, Query

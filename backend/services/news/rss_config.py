@@ -3,19 +3,112 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import logging
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from config import settings
 
-logger = logging.getLogger(__name__)
-
-_NEWS_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "news"
-_DEFAULT_GOV_FEED_FILE = _NEWS_DATA_DIR / "gov_rss_feeds.json"
 _PRIORITY_VALUES = {"critical", "high", "medium", "low"}
+_DEFAULT_GOV_RSS_FEEDS: tuple[dict[str, str], ...] = (
+    {
+        "agency": "white_house",
+        "url": "https://www.whitehouse.gov/feed/",
+        "name": "White House Blog",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "white_house",
+        "url": "https://www.whitehouse.gov/briefing-room/statements-releases/feed/",
+        "name": "WH Statements",
+        "priority": "critical",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "white_house",
+        "url": "https://www.whitehouse.gov/briefing-room/presidential-actions/feed/",
+        "name": "Presidential Actions",
+        "priority": "critical",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "state_department",
+        "url": "https://www.state.gov/rss-feed/press-releases/feed/",
+        "name": "State Dept Press",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "state_department",
+        "url": "https://www.state.gov/rss-feed/travel-advisories/feed/",
+        "name": "Travel Advisories",
+        "priority": "medium",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "defense",
+        "url": "https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945",
+        "name": "DoD News",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "treasury",
+        "url": "https://home.treasury.gov/system/files/136/treasury-rss.xml",
+        "name": "Treasury",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "federal_reserve",
+        "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+        "name": "Fed Press Releases",
+        "priority": "critical",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "federal_reserve",
+        "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        "name": "Fed Monetary Policy",
+        "priority": "critical",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "sec",
+        "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&dateb=&owner=include&count=20&search_text=&start=0&output=atom",
+        "name": "SEC EDGAR Filings",
+        "priority": "medium",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "sec",
+        "url": "https://www.sec.gov/news/pressreleases.rss",
+        "name": "SEC Press Releases",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "justice",
+        "url": "https://www.justice.gov/feeds/opa/justice-news.xml",
+        "name": "DOJ News",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "cdc",
+        "url": "https://tools.cdc.gov/api/v2/resources/media/rss?topic=outbreaks",
+        "name": "CDC Outbreaks",
+        "priority": "high",
+        "country_iso3": "USA",
+    },
+    {
+        "agency": "faa",
+        "url": "https://www.faa.gov/rss/all",
+        "name": "FAA Notices",
+        "priority": "medium",
+        "country_iso3": "USA",
+    },
+)
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -98,32 +191,6 @@ def default_custom_rss_feeds() -> list[dict[str, Any]]:
     return normalize_custom_rss_feeds(list(getattr(settings, "NEWS_RSS_FEEDS", []) or []))
 
 
-def _gov_rows_from_default_file() -> list[dict[str, Any]]:
-    if not _DEFAULT_GOV_FEED_FILE.exists():
-        return []
-    try:
-        payload = json.loads(_DEFAULT_GOV_FEED_FILE.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("Failed reading default gov RSS feed file %s: %s", _DEFAULT_GOV_FEED_FILE, exc)
-        return []
-
-    feeds = payload.get("feeds")
-    if not isinstance(feeds, dict):
-        return []
-
-    flattened: list[dict[str, Any]] = []
-    for agency, rows in feeds.items():
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_copy = dict(row)
-            row_copy["agency"] = str(row_copy.get("agency") or agency).strip().lower()
-            flattened.append(row_copy)
-    return flattened
-
-
 def normalize_gov_rss_feeds(rows: Any) -> list[dict[str, Any]]:
     """Return normalized government RSS feed rows."""
     raw_rows: list[Any]
@@ -173,5 +240,4 @@ def normalize_gov_rss_feeds(rows: Any) -> list[dict[str, Any]]:
 
 
 def default_gov_rss_feeds() -> list[dict[str, Any]]:
-    return normalize_gov_rss_feeds(_gov_rows_from_default_file())
-
+    return normalize_gov_rss_feeds(list(_DEFAULT_GOV_RSS_FEEDS))

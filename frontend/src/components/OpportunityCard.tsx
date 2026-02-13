@@ -16,7 +16,7 @@ import {
   Newspaper,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl, inferMarketPlatform } from '../lib/marketUrls'
 import { buildYesNoSparklineSeries } from '../lib/priceHistory'
 import { Opportunity, WeatherForecastSource, judgeOpportunity } from '../services/api'
 import { Card } from './ui/card'
@@ -256,11 +256,21 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
     return fallback
   }, [weather])
 
-  const consensusProbability = (weather?.consensus_probability ?? opportunity.expected_payout) ?? null
-  const marketProbability = (weather?.market_probability ?? market?.yes_price) ?? null
+  const primaryOutcome = String(opportunity.positions_to_take?.[0]?.outcome ?? '').toUpperCase()
+  const isBuyNoWeather = primaryOutcome === 'NO'
+  const consensusYesProbability = (weather?.consensus_probability ?? opportunity.expected_payout) ?? null
+  const modelProbability = (
+    consensusYesProbability != null
+      ? Math.max(0, Math.min(1, isBuyNoWeather ? 1 - consensusYesProbability : consensusYesProbability))
+      : null
+  )
+  const marketProbability = (
+    weather?.market_probability
+    ?? (market ? (isBuyNoWeather ? market.no_price : market.yes_price) : null)
+  ) ?? null
   const signalEdgePercent = (
-    consensusProbability != null && marketProbability != null
-      ? (consensusProbability - marketProbability) * 100
+    modelProbability != null && marketProbability != null
+      ? (modelProbability - marketProbability) * 100
       : null
   )
   const consensusTempF = weather?.consensus_temp_f
@@ -302,16 +312,33 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || 'bg-border') : 'bg-border/50'
   const bgGradient = recommendation ? (CARD_BG_GRADIENT[recommendation] || '') : ''
 
-  // Platform URLs — prefer event_slug (correct Polymarket URL), fall back to market slug
-  const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
+  // Platform URLs
+  const polyMarket = opportunity.markets.find(
+    (m: any) =>
+      inferMarketPlatform({
+        platform: m.platform,
+        marketId: m.id,
+        marketSlug: m.slug,
+        conditionId: (m as any).condition_id ?? (m as any).conditionId,
+      }) === 'polymarket'
+  )
   const polyUrl = polyMarket
     ? buildPolymarketMarketUrl({
         eventSlug: opportunity.event_slug || (polyMarket as any)?.event_slug,
         marketSlug: (polyMarket as any)?.slug,
         marketId: (polyMarket as any)?.id,
+        conditionId: (polyMarket as any)?.condition_id ?? (polyMarket as any)?.conditionId,
       })
     : null
-  const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
+  const kalshiMarket = opportunity.markets.find(
+    (m: any) =>
+      inferMarketPlatform({
+        platform: m.platform,
+        marketId: m.id,
+        marketSlug: m.slug,
+        conditionId: (m as any).condition_id ?? (m as any).conditionId,
+      }) === 'kalshi'
+  )
   const kalshiUrl = kalshiMarket
     ? buildKalshiMarketUrl({
         marketTicker: kalshiMarket.id,
@@ -445,7 +472,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                 />
                 <MiniMetric
                   label="Model Px"
-                  value={consensusProbability != null ? `${safeFixed(consensusProbability * 100, 1)}¢` : '—'}
+                  value={modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}¢` : '—'}
                 />
                 <MiniMetric
                   label="Temp Delta"
@@ -696,7 +723,12 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
                 {/* Market link */}
                 {opportunity.markets.map((mkt, idx) => {
-                  const isKalshi = (mkt as any).platform === 'kalshi'
+                  const isKalshi = inferMarketPlatform({
+                    platform: (mkt as any).platform,
+                    marketId: (mkt as any).id,
+                    marketSlug: (mkt as any).slug,
+                    conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
+                  }) === 'kalshi'
                   const url = isKalshi
                     ? buildKalshiMarketUrl({
                         marketTicker: mkt.id,
@@ -707,6 +739,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                         eventSlug: (mkt as any).event_slug || opportunity.event_slug,
                         marketSlug: mkt.slug,
                         marketId: mkt.id,
+                        conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
                       })
                   return (
                     <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">
@@ -755,7 +788,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Model</p>
-                        <p className="font-data text-cyan-300">{consensusProbability != null ? `${safeFixed(consensusProbability * 100, 1)}%` : '—'}</p>
+                        <p className="font-data text-cyan-300">{modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}%` : '—'}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground">Edge</p>
@@ -806,12 +839,12 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                 {/* Positions to Take */}
                 <div>
                   <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Positions</h4>
-                  <div className="space-y-1.5">
-                    {opportunity.positions_to_take.map((pos, idx) => {
-                      const platform = (pos as any).platform
-                      return (
-                        <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5">
-                          <div className="flex items-center gap-1.5">
+                    <div className="space-y-1.5">
+                      {opportunity.positions_to_take.map((pos, idx) => {
+                        const platform = (pos as any).platform
+                        return (
+                          <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
                             <Badge variant="outline" className={cn(
                               "text-[10px] px-1.5 py-0",
                               pos.outcome === 'YES' ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
@@ -826,9 +859,9 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                                 {platform === 'kalshi' ? 'KL' : 'PM'}
                               </Badge>
                             )}
-                            <span className="text-[11px] text-foreground/70 truncate">{pos.market}</span>
+                            <span className="text-[11px] text-foreground/70 truncate min-w-0 flex-1">{pos.market}</span>
                           </div>
-                          <span className="font-data text-xs text-foreground">${safeFixed(pos.price, 4)}</span>
+                          <span className="font-data text-xs text-foreground shrink-0">${safeFixed(pos.price, 4)}</span>
                         </div>
                       )
                     })}
@@ -871,7 +904,12 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Markets ({opportunity.markets.length})</h4>
                   <div className="space-y-1.5">
                     {opportunity.markets.map((mkt, idx) => {
-                      const isKalshi = (mkt as any).platform === 'kalshi'
+                      const isKalshi = inferMarketPlatform({
+                        platform: (mkt as any).platform,
+                        marketId: (mkt as any).id,
+                        marketSlug: (mkt as any).slug,
+                        conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
+                      }) === 'kalshi'
                       const url = isKalshi
                         ? buildKalshiMarketUrl({
                             marketTicker: mkt.id,
@@ -882,6 +920,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                             eventSlug: (mkt as any).event_slug || opportunity.event_slug,
                             marketSlug: mkt.slug,
                             marketId: mkt.id,
+                            conditionId: (mkt as any).condition_id ?? (mkt as any).conditionId,
                           })
                       return (
                         <div key={idx} className="flex items-center justify-between bg-muted/50 rounded-md px-2.5 py-1.5 gap-2">

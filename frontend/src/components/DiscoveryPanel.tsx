@@ -20,6 +20,7 @@ import {
   UserCheck,
   UserX,
   Trash2,
+  X,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -84,6 +85,9 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 }
 
 const ITEMS_PER_PAGE = 25
+const FILTER_LABEL_CLASS = 'text-[10px] uppercase tracking-wide text-muted-foreground/80'
+const FILTER_INPUT_CLASS = 'h-8 text-xs bg-card border-border'
+const FILTER_SELECT_CLASS = 'w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8'
 
 function formatPnl(value: number): string {
   if (value == null) return '0.00'
@@ -96,6 +100,15 @@ function formatPnl(value: number): string {
 function formatPercent(value: number): string {
   if (value == null) return '0.0%'
   return `${value.toFixed(1)}%`
+}
+
+function normalizePercentRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.abs(value) <= 1 ? value * 100 : value
+}
+
+function formatWinRate(value: number): string {
+  return `${normalizePercentRatio(value).toFixed(1)}%`
 }
 
 function formatNumber(value: number): string {
@@ -122,6 +135,287 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`
 }
 
+type SelectionReason = {
+  code: string
+  label: string
+  detail?: string
+}
+
+const POOL_SELECTION_REASON_LIBRARY: Record<string, SelectionReason> = {
+  manual_include: {
+    code: 'manual_include',
+    label: 'Manual include override',
+    detail: 'Manually added to the pool.',
+  },
+  manual_exclude: {
+    code: 'manual_exclude',
+    label: 'Manual exclude',
+    detail: 'Manually excluded from the pool.',
+  },
+  blacklisted: {
+    code: 'blacklisted',
+    label: 'Blacklisted',
+    detail: 'Blacklisted from pool actions.',
+  },
+  tracked: {
+    code: 'tracked',
+    label: 'Tracked wallet',
+    detail: 'Included from tracked-wallet workflows.',
+  },
+  core_quality_gate: {
+    code: 'core_quality_gate',
+    label: 'Core quality tier',
+    detail: 'Passed core quality gates.',
+  },
+  rising_quality_gate: {
+    code: 'rising_quality_gate',
+    label: 'Rising quality tier',
+    detail: 'Passed rising-tier quality and activity gates.',
+  },
+  churn_guard_retained: {
+    code: 'churn_guard_retained',
+    label: 'Churn guard retention',
+    detail: 'Kept to limit hourly churn.',
+  },
+  elite_composite: {
+    code: 'elite_composite',
+    label: 'Elite composite profile',
+    detail: 'Strong quality, activity, and stability profile.',
+  },
+  active_momentum: {
+    code: 'active_momentum',
+    label: 'Active momentum',
+    detail: 'Recent trade velocity met the threshold.',
+  },
+  active_recent: {
+    code: 'active_recent',
+    label: 'Recent activity',
+    detail: 'Traded within the active window.',
+  },
+  insider_alignment: {
+    code: 'insider_alignment',
+    label: 'Insider-aligned signal',
+    detail: 'High insider score with recent activity.',
+  },
+  cluster_capped: {
+    code: 'cluster_capped',
+    label: 'Cluster-capped slot',
+    detail: 'Included within cluster concentration limits.',
+  },
+  quality_gate_pass: {
+    code: 'quality_gate_pass',
+    label: 'Quality gate pass',
+    detail: 'Passed quality eligibility checks.',
+  },
+  below_selection_cutoff: {
+    code: 'below_selection_cutoff',
+    label: 'Below pool cutoff',
+    detail: 'Did not clear current selection cutoff.',
+  },
+  tier_thresholds_not_met: {
+    code: 'tier_thresholds_not_met',
+    label: 'Tier thresholds not met',
+    detail: 'Core and rising thresholds were not met.',
+  },
+  non_positive_pnl: {
+    code: 'non_positive_pnl',
+    label: 'Non-positive PnL',
+    detail: 'Total PnL must be positive.',
+  },
+  insufficient_trades: {
+    code: 'insufficient_trades',
+    label: 'Insufficient trade sample',
+    detail: 'Needs more trade history.',
+  },
+  anomaly_too_high: {
+    code: 'anomaly_too_high',
+    label: 'Anomaly score too high',
+    detail: 'Anomaly score exceeded the limit.',
+  },
+  recommendation_blocked: {
+    code: 'recommendation_blocked',
+    label: 'Recommendation blocked',
+    detail: 'Recommendation is not pool-eligible.',
+  },
+  not_analyzed: {
+    code: 'not_analyzed',
+    label: 'Analysis missing',
+    detail: 'No completed discovery analysis yet.',
+  },
+}
+
+const FALLBACK_REASON: SelectionReason = {
+  code: 'selection_reason_unknown',
+  label: 'Selection reason unavailable',
+  detail: 'Reason metadata missing for this recompute cycle.',
+}
+
+function getReasonDefinition(code: string): SelectionReason | null {
+  const normalized = code.trim().toLowerCase()
+  if (!normalized) return null
+  const exact = POOL_SELECTION_REASON_LIBRARY[normalized]
+  if (exact) return exact
+  const dashed = normalized.replace(/[^a-z0-9]+/g, '_')
+  return POOL_SELECTION_REASON_LIBRARY[dashed] || null
+}
+
+function formatReasonLabel(rawCode: string): string {
+  const clean = rawCode.trim()
+  if (!clean) return 'Pool membership detail'
+  return clean
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function normalizeSelectionReason(raw: unknown): SelectionReason | null {
+  if (typeof raw === 'string') {
+    const code = raw.trim()
+    if (!code) return null
+    const def = getReasonDefinition(code)
+    return {
+      code,
+      label: def?.label ?? formatReasonLabel(code),
+      detail: def?.detail,
+    }
+  }
+
+  if (!raw || typeof raw !== 'object') return null
+  const reason = raw as { code?: unknown; label?: unknown; detail?: unknown }
+  const providedCode = typeof reason.code === 'string' && reason.code.trim()
+    ? reason.code.trim()
+    : ''
+  const labelFromObj =
+    typeof reason.label === 'string' && reason.label.trim() ? reason.label.trim() : ''
+  const code = providedCode || (labelFromObj ? `reason_${labelFromObj.toLowerCase().replace(/[^a-z0-9]+/g, '_')}` : '')
+  if (!code) return null
+  const def = getReasonDefinition(code)
+  const label =
+    labelFromObj
+      ? labelFromObj
+    : def?.label ?? formatReasonLabel(code)
+  const detail =
+    typeof reason.detail === 'string' && reason.detail.trim()
+      ? reason.detail.trim()
+      : def?.detail
+  return { code, label, detail }
+}
+
+function enrichMissingReasonSignals(member: PoolMember): SelectionReason[] {
+  const inferred: SelectionReason[] = []
+  const seen = new Set<string>()
+  const seenPush = (reason: SelectionReason | null) => {
+    if (!reason) return
+    const key = reason.code.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    inferred.push(reason)
+  }
+
+  const breakdown: Record<string, number> | undefined = member.selection_breakdown
+  const qualityScore = Number(breakdown?.quality_score || 0)
+  const activityScore = Number(breakdown?.activity_score || 0)
+  const stabilityScore = Number(breakdown?.stability_score || 0)
+  const insiderScore = Number(breakdown?.insider_score || 0)
+
+  if (insiderScore >= 0.62) {
+    seenPush(POOL_SELECTION_REASON_LIBRARY.insider_alignment)
+  }
+  if (qualityScore >= 0.70 || member.total_pnl > 50_000) {
+    seenPush({
+      ...POOL_SELECTION_REASON_LIBRARY.quality_gate_pass,
+      detail: `Quality score ${(qualityScore * 100).toFixed(1)}% met threshold.`,
+    })
+  }
+  if (activityScore >= 0.55 || member.trades_24h >= 6 || member.trades_1h > 0) {
+    seenPush(POOL_SELECTION_REASON_LIBRARY.active_momentum)
+  }
+  if (stabilityScore >= 0.65) {
+    seenPush({
+      ...POOL_SELECTION_REASON_LIBRARY.quality_gate_pass,
+      label: 'Stable risk-adjusted profile',
+      detail: 'Drawdown and returns were relatively stable.',
+    })
+  }
+
+  return inferred
+}
+
+function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
+  const out: SelectionReason[] = []
+  const seen = new Set<string>()
+  const normalized = Array.isArray(member.selection_reasons)
+    ? member.selection_reasons.map(normalizeSelectionReason).filter((reason): reason is SelectionReason => !!reason)
+    : []
+
+  for (const reason of normalized) {
+    const key = reason.code.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(reason)
+  }
+
+  if (out.length > 0) {
+    return out
+  }
+
+  const manualReason: SelectionReason | null =
+    member.pool_flags?.manual_include
+      ? { code: 'manual_include', label: 'Manual include', detail: 'Manually included in the pool.' }
+      : null
+  const blacklistedReason: SelectionReason | null =
+    member.pool_flags?.blacklisted
+      ? { code: 'blacklisted', label: 'Blacklisted', detail: 'Wallet is blacklisted from pool membership.' }
+      : null
+  const trackedReason: SelectionReason | null =
+    member.tracked_wallet
+      ? { code: 'tracked', label: 'Tracked wallet', detail: 'Included from tracked-wallet updates.' }
+      : null
+
+  const fallbackReason: SelectionReason | null = (() => {
+    const reason = (member.pool_membership_reason || '').trim()
+    if (!reason) return null
+    const def = getReasonDefinition(reason)
+    return {
+      code: reason,
+      label: def?.label ?? formatReasonLabel(reason),
+      detail: def?.detail ?? FALLBACK_REASON.detail,
+    }
+  })()
+
+  const candidates = [manualReason, blacklistedReason, trackedReason, fallbackReason].filter(
+    (reason): reason is SelectionReason => !!reason
+  )
+
+  for (const reason of candidates) {
+    const key = reason.code.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(reason)
+  }
+
+  for (const inferred of enrichMissingReasonSignals(member)) {
+    const key = inferred.code.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(inferred)
+  }
+
+  if (!out.length) {
+    const statusLabel = member.in_top_pool
+      ? 'Top-pool candidate'
+      : 'Pool membership pending'
+    out.push({
+      code: member.in_top_pool ? 'top_pool_member' : 'pool_pending',
+      label: statusLabel,
+      detail: member.in_top_pool
+        ? FALLBACK_REASON.detail
+        : 'Wallet is not currently in the active pool.',
+    })
+  }
+
+  return out
+}
+
 interface DiscoveryPanelProps {
   onAnalyzeWallet?: (address: string, username?: string) => void
   view?: 'discovery' | 'pool'
@@ -137,7 +431,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
   const [marketCategoryFilter, setMarketCategoryFilter] = useState<'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather'>('all')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('24h')
-  const [insiderOnly, setInsiderOnly] = useState(false)
   const [minInsiderScore, setMinInsiderScore] = useState(0)
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null)
   const [selectedTags, setSelectedTags] = useState<string[]>([])
@@ -145,9 +438,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const [tagPicker, setTagPicker] = useState('')
   const [poolSearch, setPoolSearch] = useState('')
   const [poolTierFilter, setPoolTierFilter] = useState<'all' | 'core' | 'rising'>('all')
-  const [poolSortBy, setPoolSortBy] = useState<'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'last_trade_at'>('composite_score')
+  const [minPoolWinRate, setMinPoolWinRate] = useState(0)
+  const [poolSortBy, setPoolSortBy] = useState<'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'trades_1h' | 'total_trades' | 'total_pnl' | 'win_rate' | 'last_trade_at'>('composite_score')
   const [poolSortDir, setPoolSortDir] = useState<'asc' | 'desc'>('desc')
-  const [poolOnly, setPoolOnly] = useState(true)
   const [includeBlacklisted, setIncludeBlacklisted] = useState(true)
   const [manualPoolAddress, setManualPoolAddress] = useState('')
 
@@ -164,7 +457,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     marketCategoryFilter,
     timePeriod,
     selectedTags,
-    insiderOnly,
     minInsiderScore,
   ])
 
@@ -186,18 +478,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       'discovery-pool-members',
       poolSearch,
       poolTierFilter,
+      minPoolWinRate,
       poolSortBy,
       poolSortDir,
-      poolOnly,
       includeBlacklisted,
     ],
     queryFn: async () => {
       const params = {
         limit: 300,
         offset: 0,
-        pool_only: poolOnly,
+        pool_only: true,
         include_blacklisted: includeBlacklisted,
         tier: poolTierFilter === 'all' ? undefined : poolTierFilter,
+        min_win_rate: minPoolWinRate > 0 ? minPoolWinRate : undefined,
         search: poolSearch.trim() || undefined,
         sort_by: poolSortBy,
         sort_dir: poolSortDir,
@@ -207,11 +500,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       } catch (error: any) {
         const status = error?.response?.status
         const detail = String(error?.response?.data?.detail || '')
-        const unsupportedSelectionSort =
-          poolSortBy === 'selection_score'
-          && status === 400
+        const unsupportedSortBy =
+          status === 400
           && detail.toLowerCase().includes('invalid sort_by')
-        if (unsupportedSelectionSort) {
+        if (unsupportedSortBy && poolSortBy !== 'composite_score') {
           return discoveryApi.getPoolMembers({
             ...params,
             sort_by: 'composite_score',
@@ -245,7 +537,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       marketCategoryFilter,
       selectedTagString,
       timePeriod,
-      insiderOnly,
       minInsiderScore,
     ],
     queryFn: () =>
@@ -256,7 +547,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         offset: currentPage * ITEMS_PER_PAGE,
         min_trades: minTrades,
         min_pnl: minPnl || undefined,
-        insider_only: insiderOnly || undefined,
         min_insider_score: minInsiderScore > 0 ? minInsiderScore : undefined,
         recommendation: recommendationFilter || undefined,
         market_category: marketCategoryFilter !== 'all' ? marketCategoryFilter : undefined,
@@ -361,7 +651,84 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     })
   }, [tags, tagSearch])
 
-  const poolMembers: PoolMember[] = poolMembersData?.members || []
+  const poolMembersRaw: PoolMember[] = poolMembersData?.members || []
+  const poolMembers: PoolMember[] = useMemo(() => {
+    const query = poolSearch.trim().toLowerCase()
+    const minWr = Math.max(0, minPoolWinRate)
+    const filtered = poolMembersRaw.filter(member => {
+      const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
+      if (!includeBlacklisted && flags.blacklisted) return false
+      if (poolTierFilter !== 'all' && (member.pool_tier || '').toLowerCase() !== poolTierFilter) return false
+      if (minWr > 0 && normalizePercentRatio(member.win_rate || 0) < minWr) return false
+      if (!query) return true
+
+      const haystack = [
+        member.address,
+        member.username || '',
+        member.display_name || '',
+        member.tracked_label || '',
+        member.cluster_label || '',
+        member.pool_tier || '',
+        ...(member.tags || []),
+        ...(member.strategies_detected || []),
+        ...(member.market_categories || []),
+      ]
+        .join(' ')
+        .toLowerCase()
+
+      return haystack.includes(query)
+    })
+
+    const sorted = [...filtered].sort((a, b) => {
+      const valueOf = (member: PoolMember): number => {
+        switch (poolSortBy) {
+          case 'selection_score':
+            return Number(member.selection_score ?? member.composite_score ?? 0)
+          case 'composite_score':
+            return Number(member.composite_score ?? 0)
+          case 'activity_score':
+            return Number(member.activity_score ?? 0)
+          case 'quality_score':
+            return Number(member.quality_score ?? 0)
+          case 'win_rate':
+            return normalizePercentRatio(member.win_rate || 0)
+          case 'total_pnl':
+            return Number(member.total_pnl ?? 0)
+          case 'total_trades':
+            return Number(member.total_trades ?? 0)
+          case 'trades_24h':
+            return Number(member.trades_24h ?? 0)
+          case 'trades_1h':
+            return Number(member.trades_1h ?? 0)
+          case 'last_trade_at':
+            return member.last_trade_at ? new Date(member.last_trade_at).getTime() : 0
+          default:
+            return Number(member.composite_score ?? 0)
+        }
+      }
+
+      const av = valueOf(a)
+      const bv = valueOf(b)
+      if (av !== bv) {
+        return poolSortDir === 'asc' ? av - bv : bv - av
+      }
+
+      const aTie = Number(a.composite_score ?? 0)
+      const bTie = Number(b.composite_score ?? 0)
+      if (aTie !== bTie) return bTie - aTie
+      return String(a.address).localeCompare(String(b.address))
+    })
+
+    return sorted
+  }, [
+    poolMembersRaw,
+    poolSearch,
+    poolTierFilter,
+    minPoolWinRate,
+    poolSortBy,
+    poolSortDir,
+    includeBlacklisted,
+  ])
   const poolMemberStats = poolMembersData?.stats
   const poolMembersErrorMessage = useMemo(() => {
     if (!poolMembersError) return null
@@ -411,114 +778,140 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         {stats?.last_run_at && <span>Last run: {timeAgo(stats.last_run_at)}</span>}
       </div>
 
-      <div className={cn('grid gap-2', isPoolView ? 'grid-cols-2 lg:grid-cols-5' : 'grid-cols-2 lg:grid-cols-4')}>
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="p-2 bg-blue-500/10 rounded-lg">
-              <Users className="w-5 h-5 text-blue-500" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Discovered</p>
-              <p className="text-lg font-semibold">{formatNumber(stats?.total_discovered || 0)}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="p-2 bg-green-500/10 rounded-lg">
-              <TrendingUp className="w-5 h-5 text-green-500" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Profitable</p>
-              <p className="text-lg font-semibold">{formatNumber(stats?.total_profitable || 0)}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="p-2 bg-yellow-500/10 rounded-lg">
-              <Target className="w-5 h-5 text-yellow-500" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Copy Candidates</p>
-              <p className="text-lg font-semibold">{formatNumber(stats?.total_copy_candidates || 0)}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="p-2 bg-purple-500/10 rounded-lg">
-              <Trophy className="w-5 h-5 text-purple-500" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Analyzed (last run)</p>
-              <p className="text-lg font-semibold">{formatNumber(stats?.wallets_analyzed_last_run || 0)}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {isPoolView && (
+      {isPoolView ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
           <Card className="border-border">
-            <CardContent className="flex items-center gap-3 p-4">
+            <CardContent className="flex items-center gap-3 p-3">
               <div className="p-2 bg-cyan-500/10 rounded-lg">
                 <Users className="w-5 h-5 text-cyan-500" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Top Pool</p>
                 <p className="text-lg font-semibold">
-                  {formatNumber(poolStats?.pool_size || 0)}
+                  {formatNumber(poolStats?.pool_size || poolMemberStats?.pool_members || 0)}
                   <span className="text-[11px] text-muted-foreground ml-1">/ {poolStats?.target_pool_size || 500}</span>
                 </p>
               </div>
             </CardContent>
           </Card>
-        )}
-      </div>
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-3">
+              <div className="p-2 bg-emerald-500/10 rounded-lg">
+                <Activity className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
+                <p className="text-sm font-semibold">
+                  {poolStats?.active_1h ?? 0} ({(poolStats?.active_1h_pct ?? 0).toFixed(1)}%)
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <TrendingUp className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
+                <p className="text-sm font-semibold">
+                  {poolStats?.active_24h ?? 0} ({(poolStats?.active_24h_pct ?? 0).toFixed(1)}%)
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-3">
+              <div className="p-2 bg-amber-500/10 rounded-lg">
+                <RefreshCw className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Hourly Churn</p>
+                <p className="text-sm font-semibold">{((poolStats?.churn_rate || 0) * 100).toFixed(2)}%</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-3">
+              <div className="p-2 bg-violet-500/10 rounded-lg">
+                <Target className="w-5 h-5 text-violet-400" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Members</p>
+                <p className="text-sm font-semibold">
+                  <span>{poolMemberStats?.pool_members ?? 0}</span>
+                  <span className="ml-1 text-[11px] text-muted-foreground">
+                    Tracked {poolMemberStats?.tracked_in_pool ?? 0}/{poolMemberStats?.tracked_total ?? 0}
+                  </span>
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className={cn('grid gap-2', isPoolView ? 'grid-cols-2 lg:grid-cols-5' : 'grid-cols-2 lg:grid-cols-4')}>
+          <Card className="border-border">
+            <CardContent className="flex items-center gap-3 p-4">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Users className="w-5 h-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Discovered</p>
+                <p className="text-lg font-semibold">{formatNumber(stats?.total_discovered || 0)}</p>
+              </div>
+            </CardContent>
+          </Card>
 
-      {isPoolView && poolStats && (
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
           <Card className="border-border">
-            <CardContent className="p-2.5">
-              <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
-              <p className="text-sm font-semibold">{poolStats.active_1h ?? 0} ({(poolStats.active_1h_pct ?? 0).toFixed(1)}%)</p>
+            <CardContent className="flex items-center gap-3 p-4">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <TrendingUp className="w-5 h-5 text-green-500" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Profitable</p>
+                <p className="text-lg font-semibold">{formatNumber(stats?.total_profitable || 0)}</p>
+              </div>
             </CardContent>
           </Card>
+
           <Card className="border-border">
-            <CardContent className="p-2.5">
-              <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
-              <p className="text-sm font-semibold">{poolStats.active_24h ?? 0} ({(poolStats.active_24h_pct ?? 0).toFixed(1)}%)</p>
+            <CardContent className="flex items-center gap-3 p-4">
+              <div className="p-2 bg-yellow-500/10 rounded-lg">
+                <Target className="w-5 h-5 text-yellow-500" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Copy Candidates</p>
+                <p className="text-lg font-semibold">{formatNumber(stats?.total_copy_candidates || 0)}</p>
+              </div>
             </CardContent>
           </Card>
+
           <Card className="border-border">
-            <CardContent className="p-2.5">
-              <p className="text-xs text-muted-foreground">Hourly Churn</p>
-              <p className="text-sm font-semibold">{((poolStats.churn_rate ?? 0) * 100).toFixed(2)}%</p>
-            </CardContent>
-          </Card>
-          <Card className="border-border">
-            <CardContent className="p-2.5">
-              <p className="text-xs text-muted-foreground">Pool Recompute</p>
-              <p className="text-sm font-semibold">{timeAgo(poolStats.last_pool_recompute_at)}</p>
+            <CardContent className="flex items-center gap-3 p-4">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Trophy className="w-5 h-5 text-purple-500" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Analyzed (last run)</p>
+                <p className="text-lg font-semibold">{formatNumber(stats?.wallets_analyzed_last_run || 0)}</p>
+              </div>
             </CardContent>
           </Card>
         </div>
       )}
 
       {isPoolView && (
-      <Card className="border-border overflow-hidden">
+      <Card className="border-border">
         <CardContent className="p-3 space-y-2.5">
           <div className="overflow-x-auto pb-1">
             <div className="flex min-w-max items-end gap-2">
               <div className="flex w-[190px] flex-col gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Manual add</span>
+                <span className={FILTER_LABEL_CLASS}>Manual add</span>
                 <Input
                   value={manualPoolAddress}
                   onChange={e => setManualPoolAddress(e.target.value)}
                   placeholder="0x... add to pool"
-                  className="h-8 text-xs bg-card border-border"
+                  className={FILTER_INPUT_CLASS}
                 />
               </div>
               <Button
@@ -546,81 +939,87 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               </Button>
               <div className="h-6 w-px bg-border/70 mb-1" />
               <div className="flex w-[210px] flex-col gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Search</span>
+                <span className={FILTER_LABEL_CLASS}>Search</span>
                 <Input
                   value={poolSearch}
                   onChange={e => setPoolSearch(e.target.value)}
                   placeholder="Wallet / username"
-                  className="h-8 text-xs bg-card border-border"
+                  className={FILTER_INPUT_CLASS}
                 />
               </div>
               <div className="flex w-[116px] flex-col gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Tier</span>
+                <span className={FILTER_LABEL_CLASS}>Tier</span>
                 <select
                   value={poolTierFilter}
                   onChange={e => setPoolTierFilter(e.target.value as 'all' | 'core' | 'rising')}
-                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  className={FILTER_SELECT_CLASS}
                 >
                   <option value="all">All tiers</option>
                   <option value="core">Core</option>
                   <option value="rising">Rising</option>
                 </select>
               </div>
+              <div className="flex w-[98px] flex-col gap-1">
+                <span className={FILTER_LABEL_CLASS}>Min WR %</span>
+                <Input
+                  type="number"
+                  value={minPoolWinRate}
+                  onChange={e => setMinPoolWinRate(Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)))}
+                  min={0}
+                  max={100}
+                  step={1}
+                  className={FILTER_INPUT_CLASS}
+                />
+              </div>
               <div className="flex w-[152px] flex-col gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Sort by</span>
+                <span className={FILTER_LABEL_CLASS}>Sort by</span>
                 <select
                   value={poolSortBy}
-                  onChange={e => setPoolSortBy(e.target.value as 'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'last_trade_at')}
-                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  onChange={e => setPoolSortBy(e.target.value as 'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'trades_1h' | 'total_trades' | 'total_pnl' | 'win_rate' | 'last_trade_at')}
+                  className={FILTER_SELECT_CLASS}
                 >
                   <option value="selection_score">Selection</option>
                   <option value="composite_score">Composite</option>
                   <option value="activity_score">Activity</option>
                   <option value="quality_score">Quality</option>
+                  <option value="win_rate">Win rate</option>
+                  <option value="total_pnl">PnL</option>
+                  <option value="total_trades">Trades</option>
                   <option value="trades_24h">Trades 24h</option>
+                  <option value="trades_1h">Trades 1h</option>
                   <option value="last_trade_at">Last trade</option>
                 </select>
               </div>
               <div className="flex w-[94px] flex-col gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Direction</span>
+                <span className={FILTER_LABEL_CLASS}>Direction</span>
                 <select
                   value={poolSortDir}
                   onChange={e => setPoolSortDir(e.target.value as 'asc' | 'desc')}
-                  className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                  className={FILTER_SELECT_CLASS}
                 >
                   <option value="desc">Desc</option>
                   <option value="asc">Asc</option>
                 </select>
               </div>
               <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground">
-                <input type="checkbox" checked={poolOnly} onChange={e => setPoolOnly(e.target.checked)} className="h-3.5 w-3.5" />
-                Pool only
-              </label>
-              <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground">
                 <input type="checkbox" checked={includeBlacklisted} onChange={e => setIncludeBlacklisted(e.target.checked)} className="h-3.5 w-3.5" />
                 Show blacklisted
               </label>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 text-[11px]">
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Pool: <span className="font-semibold">{poolMemberStats?.pool_members ?? 0}</span>
-            </div>
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Tracked in Pool: <span className="font-semibold">{poolMemberStats?.tracked_in_pool ?? 0}</span>
-            </div>
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Tracked Total: <span className="font-semibold">{poolMemberStats?.tracked_total ?? 0}</span>
-            </div>
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Manual+ : <span className="font-semibold">{poolMemberStats?.manual_included ?? 0}</span>
-            </div>
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Manual- : <span className="font-semibold">{poolMemberStats?.manual_excluded ?? 0}</span>
-            </div>
-            <div className="rounded border border-border bg-background/30 px-2 py-1.5">
-              Blacklisted: <span className="font-semibold">{poolMemberStats?.blacklisted ?? 0}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5 mb-0.5"
+                onClick={() => {
+                  setPoolSearch('')
+                  setPoolTierFilter('all')
+                  setMinPoolWinRate(0)
+                  setPoolSortBy('composite_score')
+                  setPoolSortDir('desc')
+                  setIncludeBlacklisted(true)
+                }}
+              >
+                Reset
+              </Button>
             </div>
           </div>
 
@@ -637,28 +1036,29 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               No pool members match current filters.
             </div>
           ) : (
-            <div className="max-h-[360px] overflow-auto rounded border border-border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Trader</TableHead>
+            <div className="overflow-auto rounded border border-border bg-background/20 grow min-h-[72vh]">
+              <Table className="text-[12px]">
+                <TableHeader className="sticky top-0 z-10 bg-background/80">
+                  <TableRow className="bg-muted/50 border-b border-border/80">
+                    <TableHead className="min-w-[210px]">Trader</TableHead>
                     <TableHead>Tier</TableHead>
-                    <TableHead>Activity</TableHead>
-                    <TableHead>Selection</TableHead>
-                    <TableHead>Why Selected</TableHead>
-                    <TableHead>Flags</TableHead>
-                    <TableHead>Actions</TableHead>
+                    <TableHead className="min-w-[160px]">Performance</TableHead>
+                    <TableHead className="min-w-[110px]">Selection</TableHead>
+                    <TableHead className="min-w-[260px]">Why Selected</TableHead>
+                    <TableHead className="min-w-[110px]">Flags</TableHead>
+                    <TableHead className="min-w-[140px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {poolMembers.map(member => {
-                    const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
-                    const canAnalyze = !!onAnalyzeWallet
-                    const reasons = member.selection_reasons || []
-                    const displayName = member.display_name || member.username || 'Unknown Trader'
-                    return (
-                      <TableRow key={member.address}>
-                        <TableCell>
+                  {poolMembers.map((member, rowIndex) => {
+                      const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
+                      const canAnalyze = !!onAnalyzeWallet
+                      const reasons = getPoolSelectionReasons(member)
+                      const displayName = member.display_name || member.username || 'Unknown Trader'
+                      const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
+                      return (
+                      <TableRow key={member.address} className={cn('border-border/70 align-top transition-colors hover:bg-muted/40', rowHighlight)}>
+                        <TableCell className="align-top">
                           <div className="text-sm font-medium">{displayName}</div>
                           {member.username && member.display_name !== member.username && (
                             <div className="text-[11px] text-muted-foreground">@{member.username}</div>
@@ -668,17 +1068,22 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                           )}
                           <div className="text-[11px] text-muted-foreground font-mono">{truncateAddress(member.address)}</div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <Badge variant="outline" className="text-[10px]">
                             {(member.pool_tier || 'out').toUpperCase()}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-xs">
-                          <div>1h: {member.trades_1h || 0}</div>
-                          <div>24h: {member.trades_24h || 0}</div>
-                          <div className="text-muted-foreground">{timeAgo(member.last_trade_at || null)}</div>
+                        <TableCell className="text-xs align-top">
+                          <div className="space-y-0.5">
+                            <PnlDisplay value={member.total_pnl || 0} />
+                            <div className="text-muted-foreground">
+                              WR {formatWinRate(member.win_rate || 0)} · Trades {member.total_trades || 0}
+                            </div>
+                            <div className="text-muted-foreground">24h: {member.trades_24h || 0} · 1h: {member.trades_1h || 0}</div>
+                            <div className="text-muted-foreground">{timeAgo(member.last_trade_at || null)}</div>
+                          </div>
                         </TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell className="text-xs align-top">
                           <div className="font-mono">
                             Sel: {(Number(member.selection_score ?? member.composite_score ?? 0) * 100).toFixed(1)}
                           </div>
@@ -691,23 +1096,26 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs max-w-[280px]">
-                          {reasons.length === 0 ? (
-                            <span className="text-muted-foreground">No reason metadata</span>
-                          ) : (
-                            <div className="space-y-1">
-                              {reasons.slice(0, 3).map((reason, i) => (
-                                <div key={`${member.address}-${reason.code}-${i}`}>
-                                  <div className="font-medium">{reason.label}</div>
-                                  {reason.detail && (
-                                    <div className="text-[11px] text-muted-foreground">{reason.detail}</div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                        <TableCell className="align-top">
+                          <div className="flex flex-wrap gap-1">
+                            {reasons.slice(0, 3).map(reason => (
+                              <Tooltip key={`${member.address}-${reason.code}`}>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="outline" className="max-w-[220px] truncate text-[10px] font-medium">
+                                    {reason.label}
+                                  </Badge>
+                                </TooltipTrigger>
+                                {reason.detail && (
+                                  <TooltipContent>{reason.detail}</TooltipContent>
+                                )}
+                              </Tooltip>
+                            ))}
+                            {reasons.length > 3 && (
+                              <span className="text-[10px] text-muted-foreground">+{reasons.length - 3} more</span>
+                            )}
+                          </div>
                         </TableCell>
-                        <TableCell className="text-xs">
+                        <TableCell className="text-xs align-top">
                           <div className="flex gap-1 flex-wrap">
                             {member.tracked_wallet && <Badge variant="outline" className="text-[9px]">Tracked</Badge>}
                             {flags.manual_include && <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-300 border-emerald-500/20">Manual+</Badge>}
@@ -715,98 +1123,130 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                             {flags.blacklisted && <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-300 border-red-500/20">Blacklisted</Badge>}
                           </div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top">
                           <div className="flex gap-1 flex-wrap">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-[10px]"
-                              disabled={!canAnalyze || poolActionBusy}
-                              onClick={() => onAnalyzeWallet?.(member.address, member.username || member.display_name || undefined)}
-                            >
-                              <Activity className="w-3 h-3 mr-1" />
-                              Analyze
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={() => onAnalyzeWallet?.(member.address, member.username || member.display_name || undefined)}
+                                  disabled={!canAnalyze || poolActionBusy}
+                                  className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
+                                >
+                                  <Activity className="w-3.5 h-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>Analyze wallet</TooltipContent>
+                            </Tooltip>
                             {!flags.manual_include ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px]"
-                                disabled={poolActionBusy}
-                                onClick={() => manualIncludeMutation.mutate(member.address)}
-                              >
-                                <UserCheck className="w-3 h-3 mr-1" />
-                                Include
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => manualIncludeMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <UserCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Manual include</TooltipContent>
+                              </Tooltip>
                             ) : (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px]"
-                                disabled={poolActionBusy}
-                                onClick={() => clearManualIncludeMutation.mutate(member.address)}
-                              >
-                                Clear+
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => clearManualIncludeMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <UserCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Clear manual include</TooltipContent>
+                              </Tooltip>
                             )}
                             {!flags.manual_exclude ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px]"
-                                disabled={poolActionBusy}
-                                onClick={() => manualExcludeMutation.mutate(member.address)}
-                              >
-                                <UserX className="w-3 h-3 mr-1" />
-                                Exclude
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => manualExcludeMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <UserX className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Manual exclude</TooltipContent>
+                              </Tooltip>
                             ) : (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px]"
-                                disabled={poolActionBusy}
-                                onClick={() => clearManualExcludeMutation.mutate(member.address)}
-                              >
-                                Clear-
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => clearManualExcludeMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <UserX className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Clear manual exclude</TooltipContent>
+                              </Tooltip>
                             )}
                             {!flags.blacklisted ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px] text-red-300 border-red-500/30"
-                                disabled={poolActionBusy}
-                                onClick={() => blacklistMutation.mutate(member.address)}
-                              >
-                                <Ban className="w-3 h-3 mr-1" />
-                                Blacklist
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => blacklistMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Blacklist</TooltipContent>
+                              </Tooltip>
                             ) : (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2 text-[10px]"
-                                disabled={poolActionBusy}
-                                onClick={() => unblacklistMutation.mutate(member.address)}
-                              >
-                                Unblacklist
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => unblacklistMutation.mutate(member.address)}
+                                    disabled={poolActionBusy}
+                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <Ban className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Unblacklist</TooltipContent>
+                              </Tooltip>
                             )}
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-[10px] text-red-300 border-red-500/30"
-                              disabled={poolActionBusy}
-                              onClick={() => {
-                                if (window.confirm(`Delete ${member.address} from discovery/pool/tracking datasets?`)) {
-                                  deletePoolWalletMutation.mutate(member.address)
-                                }
-                              }}
-                            >
-                              <Trash2 className="w-3 h-3 mr-1" />
-                              Delete
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={() => {
+                                    if (window.confirm(`Delete ${member.address} from discovery/pool/tracking datasets?`)) {
+                                      deletePoolWalletMutation.mutate(member.address)
+                                    }
+                                  }}
+                                  disabled={poolActionBusy}
+                                  className="p-1.5 rounded bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>Delete wallet</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <a
+                                  href={`https://polymarket.com/profile/${member.address}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              </TooltipTrigger>
+                              <TooltipContent>View on Polymarket</TooltipContent>
+                            </Tooltip>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -823,11 +1263,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       {!isPoolView && (
       <div className="space-y-3">
         <Card className="border-border">
-          <CardContent className="p-3">
+          <CardContent className="p-3 space-y-2.5">
             <div className="overflow-x-auto pb-1">
               <div className="flex min-w-max items-end gap-2">
                 <div className="flex flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Period</span>
+                  <span className={FILTER_LABEL_CLASS}>Period</span>
                   <div className="flex h-8 items-center bg-muted/50 rounded-lg p-0.5 border border-border">
                     {TIME_PERIODS.map(tp => (
                       <button
@@ -846,97 +1286,73 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                   </div>
                 </div>
 
-                <div className="flex w-[170px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Search tag</span>
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-                    <Input
-                      type="text"
-                      value={tagSearch}
-                      onChange={e => setTagSearch(e.target.value)}
-                      placeholder="Tag keyword"
-                      className="bg-card border-border h-8 text-xs pl-8"
-                    />
-                  </div>
-                </div>
+                <div className="h-6 w-px bg-border/70 mb-1" />
 
-                <div className="flex w-[190px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Add tag</span>
-                  <select
-                    value={tagPicker}
-                    onChange={(e) => {
-                      const value = e.target.value
-                      if (value) {
-                        toggleTagFilter(value)
-                      }
-                      setTagPicker('')
-                    }}
-                    disabled={tagsLoading || filteredTags.length === 0}
-                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
-                  >
-                    <option value="">
-                      {tagsLoading ? 'Loading...' : filteredTags.length === 0 ? 'No matching tags' : 'Select tag'}
-                    </option>
-                    {filteredTags.map((tag) => (
-                      <option key={tag.name} value={tag.name}>
-                        {tag.display_name || tag.name} ({tag.wallet_count})
+                <div className="flex w-[350px] flex-col gap-1">
+                  <span className={FILTER_LABEL_CLASS}>Tags</span>
+                  <div className="flex gap-1">
+                    <div className="relative flex-1 min-w-[170px]">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                      <Input
+                        type="text"
+                        value={tagSearch}
+                        onChange={e => setTagSearch(e.target.value)}
+                        placeholder="Filter tags"
+                        className={cn(FILTER_INPUT_CLASS, 'pl-8')}
+                      />
+                    </div>
+                    <select
+                      value={tagPicker}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (value) {
+                          toggleTagFilter(value)
+                        }
+                        setTagPicker('')
+                      }}
+                      disabled={tagsLoading || filteredTags.length === 0}
+                      className={cn(FILTER_SELECT_CLASS, 'w-[170px]')}
+                    >
+                      <option value="">
+                        {tagsLoading ? 'Loading...' : filteredTags.length === 0 ? 'No matching tags' : 'Select tag'}
                       </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex w-[250px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Selected tags</span>
-                  <div className="flex h-8 items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 overflow-x-auto">
-                    {selectedTags.length === 0 ? (
-                      <span className="text-xs text-muted-foreground/80">None</span>
-                    ) : (
-                      selectedTags.map((name) => {
-                        const tagMeta = tags.find((tag) => tag.name === name)
-                        return (
-                          <button
-                            key={name}
-                            onClick={() => toggleTagFilter(name)}
-                            className="inline-flex h-6 items-center rounded-full border border-border bg-background/70 px-2 text-[10px] text-muted-foreground hover:text-foreground whitespace-nowrap"
-                            title="Remove tag filter"
-                          >
-                            {tagMeta?.display_name || name}
-                            <span className="ml-1 text-muted-foreground/70">x</span>
-                          </button>
-                        )
-                      })
-                    )}
+                      {filteredTags.map((tag) => (
+                        <option key={tag.name} value={tag.name}>
+                          {tag.display_name || tag.name} ({tag.wallet_count})
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
                 <div className="flex w-[112px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min trades</span>
+                  <span className={FILTER_LABEL_CLASS}>Min trades</span>
                   <Input
                     type="number"
                     value={minTrades}
                     onChange={e => setMinTrades(parseInt(e.target.value) || 0)}
                     min={0}
-                    className="bg-card border-border h-8 text-xs"
+                    className={FILTER_INPUT_CLASS}
                   />
                 </div>
 
                 <div className="flex w-[120px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min pnl ($)</span>
+                  <span className={FILTER_LABEL_CLASS}>Min pnl ($)</span>
                   <Input
                     type="number"
                     value={minPnl}
                     onChange={e => setMinPnl(parseFloat(e.target.value) || 0)}
                     step={100}
-                    className="bg-card border-border h-8 text-xs"
+                    className={FILTER_INPUT_CLASS}
                   />
                 </div>
 
                 <div className="flex w-[148px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Recommendation</span>
+                  <span className={FILTER_LABEL_CLASS}>Recommendation</span>
                   <select
                     value={recommendationFilter}
                     onChange={e => setRecommendationFilter(e.target.value as RecommendationFilter)}
-                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                    className={FILTER_SELECT_CLASS}
                   >
                     <option value="">All</option>
                     <option value="copy_candidate">Copy candidate</option>
@@ -946,11 +1362,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </div>
 
                 <div className="flex w-[140px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Category</span>
+                  <span className={FILTER_LABEL_CLASS}>Category</span>
                   <select
                     value={marketCategoryFilter}
                     onChange={e => setMarketCategoryFilter(e.target.value as 'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather')}
-                    className="w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8"
+                    className={FILTER_SELECT_CLASS}
                   >
                     <option value="all">All</option>
                     <option value="politics">Politics</option>
@@ -965,7 +1381,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </div>
 
                 <div className="flex w-[138px] flex-col gap-1">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/80">Min insider</span>
+                  <span className={FILTER_LABEL_CLASS}>Min insider</span>
                   <Input
                     type="number"
                     value={minInsiderScore}
@@ -973,24 +1389,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     step={0.05}
                     min={0}
                     max={1}
-                    className="bg-card border-border h-8 text-xs"
+                    className={FILTER_INPUT_CLASS}
                   />
                 </div>
 
-                <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground whitespace-nowrap">
-                  <input
-                    type="checkbox"
-                    checked={insiderOnly}
-                    onChange={e => setInsiderOnly(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-border"
-                  />
-                  Insider only
-                </label>
-
                 <Button
-                  variant="ghost"
+                  variant="outline"
                   size="sm"
-                  className="h-8 px-2 text-xs mb-0.5 text-muted-foreground"
+                  className="h-8 text-xs gap-1.5 mb-0.5"
                   onClick={() => {
                     setTimePeriod('24h')
                     setTagSearch('')
@@ -1001,13 +1407,31 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     setRecommendationFilter('')
                     setMarketCategoryFilter('all')
                     setMinInsiderScore(0)
-                    setInsiderOnly(false)
                   }}
                 >
                   Reset
                 </Button>
               </div>
             </div>
+
+            {selectedTags.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {selectedTags.map((name) => {
+                  const tagMeta = tags.find((tag) => tag.name === name)
+                  return (
+                    <button
+                      key={name}
+                      onClick={() => toggleTagFilter(name)}
+                      className="inline-flex h-6 items-center gap-1 rounded-full border border-border bg-background/70 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+                      title="Remove tag filter"
+                    >
+                      <span className="max-w-[120px] truncate">{tagMeta?.display_name || name}</span>
+                      <X className="w-3 h-3" />
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1028,9 +1452,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         ) : (
           <>
             <Card className="border-border overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
+              <div className="max-h-[620px] overflow-auto bg-background/20">
+                <Table className="text-xs">
+                <TableHeader className="sticky top-0 z-10 bg-background/80">
+                  <TableRow className="bg-muted/50 border-b border-border/80">
                     <TableHead className="w-12">#</TableHead>
                     <TableHead className="min-w-[220px]">Trader</TableHead>
                     <TableHead>
@@ -1129,10 +1554,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </TableHeader>
                 <TableBody>
                   {wallets.map((wallet, idx) => (
-                    <LeaderboardRow
+                  <LeaderboardRow
                       key={wallet.address}
                       wallet={wallet}
                       rank={currentPage * ITEMS_PER_PAGE + idx + 1}
+                      rowIndex={idx}
                       copiedAddress={copiedAddress}
                       onCopyAddress={handleCopyAddress}
                       onAnalyze={onAnalyzeWallet}
@@ -1145,6 +1571,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </Card>
 
             {totalPages > 1 && (
@@ -1287,6 +1714,7 @@ function RecommendationBadge({ recommendation }: { recommendation: string }) {
 function LeaderboardRow({
   wallet,
   rank,
+  rowIndex,
   copiedAddress,
   onCopyAddress,
   onAnalyze,
@@ -1296,6 +1724,7 @@ function LeaderboardRow({
 }: {
   wallet: DiscoveredWallet
   rank: number
+  rowIndex: number
   copiedAddress: string | null
   onCopyAddress: (address: string) => void
   onAnalyze?: (address: string, username?: string) => void
@@ -1313,6 +1742,7 @@ function LeaderboardRow({
     useWindowMetrics && wallet.period_win_rate != null
       ? wallet.period_win_rate
       : (wallet.win_rate ?? 0)
+  const winRatePct = normalizePercentRatio(winRate)
   const sharpe = useWindowMetrics
     ? wallet.period_sharpe ?? wallet.sharpe_ratio
     : wallet.sharpe_ratio
@@ -1331,7 +1761,9 @@ function LeaderboardRow({
   const pills = [...tagPills, ...categoryPills]
 
   return (
-    <TableRow>
+    <TableRow
+      className={cn(rowIndex % 2 === 0 ? 'bg-background/40' : '', 'transition-colors hover:bg-muted/40')}
+    >
       <TableCell className="font-medium text-muted-foreground">
         <span
           className={cn(
@@ -1474,14 +1906,14 @@ function LeaderboardRow({
           <span
             className={cn(
               'font-medium text-sm',
-              winRate >= 60
+              winRatePct >= 60
                 ? 'text-green-400'
-                : winRate >= 45
+                : winRatePct >= 45
                   ? 'text-yellow-400'
                   : 'text-red-400'
             )}
           >
-            {formatPercent(winRate)}
+            {formatWinRate(winRate)}
           </span>
           {!useWindowMetrics && (
             <span className="text-[10px] text-muted-foreground">

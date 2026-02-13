@@ -573,7 +573,7 @@ async def reload_plugin(plugin_id: str):
             )
 
         try:
-            loaded = plugin_loader.load_plugin(
+            plugin_loader.load_plugin(
                 plugin.slug, plugin.source_code, plugin.config or None
             )
             plugin.status = "loaded"

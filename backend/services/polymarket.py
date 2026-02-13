@@ -599,12 +599,26 @@ class PolymarketClient:
             "accepting_orders": market_data.get("acceptingOrders")
             if market_data.get("acceptingOrders") is not None
             else market_data.get("accepting_orders"),
+            "enable_order_book": market_data.get("enableOrderBook")
+            if market_data.get("enableOrderBook") is not None
+            else market_data.get("enable_order_book"),
             "resolved": market_data.get("resolved")
             if market_data.get("resolved") is not None
             else market_data.get("isResolved"),
             "end_date": market_data.get("endDate")
             if market_data.get("endDate") is not None
             else market_data.get("end_date"),
+            "winner": market_data.get("winner"),
+            "winning_outcome": market_data.get("winningOutcome")
+            if market_data.get("winningOutcome") is not None
+            else market_data.get("winning_outcome"),
+            "status": market_data.get("status")
+            if market_data.get("status") is not None
+            else (
+                market_data.get("marketStatus")
+                if market_data.get("marketStatus") is not None
+                else market_data.get("market_status")
+            ),
             "liquidity": market_data.get("liquidity")
             if market_data.get("liquidity") is not None
             else market_data.get("liquidityNum"),
@@ -703,10 +717,12 @@ class PolymarketClient:
                 "active",
                 "archived",
                 "accepting_orders",
+                "enable_order_book",
                 "resolved",
                 "end_date",
                 "winner",
                 "winning_outcome",
+                "status",
             )
         )
 
@@ -792,6 +808,14 @@ class PolymarketClient:
         if accepting_orders is False:
             return False
 
+        enable_order_book = PolymarketClient._coerce_bool(
+            market_info.get("enable_order_book")
+            if market_info.get("enable_order_book") is not None
+            else market_info.get("enableOrderBook")
+        )
+        if enable_order_book is False:
+            return False
+
         resolved = PolymarketClient._coerce_bool(
             market_info.get("resolved")
             if market_info.get("resolved") is not None
@@ -823,6 +847,37 @@ class PolymarketClient:
         )
         if winning_outcome not in (None, ""):
             return False
+
+        raw_status = (
+            market_info.get("status")
+            if market_info.get("status") is not None
+            else (
+                market_info.get("market_status")
+                if market_info.get("market_status") is not None
+                else market_info.get("marketStatus")
+            )
+        )
+        status_text = str(raw_status or "").strip().lower()
+        if status_text:
+            normalized = status_text.replace("_", " ").replace("-", " ")
+            blocked = (
+                "in review",
+                "review",
+                "in dispute",
+                "dispute",
+                "final",
+                "resolved",
+                "settled",
+                "closed",
+                "expired",
+                "cancelled",
+                "canceled",
+                "suspend",
+                "halt",
+                "paused",
+            )
+            if any(term in normalized for term in blocked):
+                return False
 
         return True
 

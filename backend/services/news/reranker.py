@@ -10,7 +10,6 @@ Pattern from: Polymarket Agents (RAG reranking pipeline).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional

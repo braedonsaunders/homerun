@@ -12,7 +12,7 @@ SQLite for proper persistence and queryability.
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from utils.utcnow import utcnow
 from typing import Optional
 

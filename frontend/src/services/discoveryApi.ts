@@ -426,7 +426,8 @@ export const discoveryApi = {
     include_blacklisted?: boolean
     tier?: 'core' | 'rising'
     search?: string
-    sort_by?: 'selection_score' | 'composite_score' | 'quality_score' | 'activity_score' | 'trades_24h' | 'trades_1h' | 'last_trade_at' | 'rank_score'
+    min_win_rate?: number
+    sort_by?: 'selection_score' | 'composite_score' | 'quality_score' | 'activity_score' | 'trades_24h' | 'trades_1h' | 'total_trades' | 'total_pnl' | 'win_rate' | 'last_trade_at' | 'rank_score'
     sort_dir?: 'asc' | 'desc'
   } = {}): Promise<PoolMembersResponse> => {
     const { data } = await discoveryHttp.get(`${API_BASE}/pool/members`, { params })

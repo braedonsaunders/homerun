@@ -1,17 +1,78 @@
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
-# Get the directory where this config file is located (backend/)
+# Get the directory where this config file is located.
 _BACKEND_DIR = Path(__file__).parent.resolve()
-_PROJECT_ROOT = _BACKEND_DIR.parent.resolve()
-_DEFAULT_DB_PATH = _BACKEND_DIR / "arbitrage.db"
+
+
+def _detect_project_root(backend_dir: Path) -> Path:
+    """Resolve project root for both monorepo and backend-only container layouts."""
+    monorepo_backend = (backend_dir.parent / "backend" / "config.py").resolve()
+    if monorepo_backend == (backend_dir / "config.py").resolve():
+        return backend_dir.parent.resolve()
+    return backend_dir.resolve()
+
+
+_PROJECT_ROOT = _detect_project_root(_BACKEND_DIR)
+_DEFAULT_DB_PATH = (_PROJECT_ROOT / "data" / "arbitrage.db").resolve()
+_LEGACY_DB_PATH = (_BACKEND_DIR / "arbitrage.db").resolve()
 _SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
 _SQLITE_SYNC_PREFIX = "sqlite:///"
 _LOGGER = logging.getLogger(__name__)
+
+
+def _safe_file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.exists() else 0
+    except OSError:
+        return 0
+
+
+def _bootstrap_legacy_sqlite_db(target_path: Path) -> None:
+    """One-time copy from legacy backend DB into canonical configured path."""
+    if target_path == _LEGACY_DB_PATH:
+        return
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if _safe_file_size(target_path) > 0:
+        return
+
+    legacy_size = _safe_file_size(_LEGACY_DB_PATH)
+    if legacy_size <= 0:
+        return
+
+    try:
+        if not target_path.exists():
+            shutil.copy2(_LEGACY_DB_PATH, target_path)
+        else:
+            temp_copy = target_path.with_suffix(target_path.suffix + ".migrating")
+            shutil.copy2(_LEGACY_DB_PATH, temp_copy)
+            if _safe_file_size(target_path) == 0:
+                temp_copy.replace(target_path)
+            else:
+                temp_copy.unlink(missing_ok=True)
+                return
+        _LOGGER.warning(
+            "Bootstrapped canonical SQLite DB from legacy backend path",
+            extra={
+                "legacy_path": str(_LEGACY_DB_PATH),
+                "target_path": str(target_path),
+            },
+        )
+    except Exception as exc:
+        _LOGGER.warning(
+            "Failed to bootstrap canonical SQLite DB from legacy path",
+            extra={
+                "legacy_path": str(_LEGACY_DB_PATH),
+                "target_path": str(target_path),
+                "error": str(exc),
+            },
+        )
 
 
 class Settings(BaseSettings):
@@ -90,7 +151,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[str] = None
 
-    # Database - use absolute path based on backend directory
+    # Database - canonical path under project-root data directory
     DATABASE_URL: str = f"sqlite+aiosqlite:///{_DEFAULT_DB_PATH}"
 
     # Production Settings
@@ -176,11 +237,24 @@ class Settings(BaseSettings):
     BTC_ETH_HF_PURE_ARB_MAX_COMBINED: float = 0.98  # Max combined for pure arb
     BTC_ETH_HF_DUMP_THRESHOLD: float = 0.05  # Min drop for dump-hedge trigger
     BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
-    # Polymarket series IDs for crypto up-or-down markets (editable in Settings)
+    # Polymarket series IDs for crypto up-or-down markets (editable in Settings).
+    # 15m, 5m, hourly, and 4-hour market series are independently configurable.
     BTC_ETH_HF_SERIES_BTC_15M: str = "10192"
     BTC_ETH_HF_SERIES_ETH_15M: str = "10191"
     BTC_ETH_HF_SERIES_SOL_15M: str = "10423"
     BTC_ETH_HF_SERIES_XRP_15M: str = "10422"
+    BTC_ETH_HF_SERIES_BTC_5M: str = "10684"
+    BTC_ETH_HF_SERIES_ETH_5M: str = ""
+    BTC_ETH_HF_SERIES_SOL_5M: str = ""
+    BTC_ETH_HF_SERIES_XRP_5M: str = ""
+    BTC_ETH_HF_SERIES_BTC_1H: str = "10114"
+    BTC_ETH_HF_SERIES_ETH_1H: str = "10117"
+    BTC_ETH_HF_SERIES_SOL_1H: str = "10122"
+    BTC_ETH_HF_SERIES_XRP_1H: str = "10123"
+    BTC_ETH_HF_SERIES_BTC_4H: str = "10331"
+    BTC_ETH_HF_SERIES_ETH_4H: str = "10332"
+    BTC_ETH_HF_SERIES_SOL_4H: str = "10326"
+    BTC_ETH_HF_SERIES_XRP_4H: str = "10327"
     BTC_ETH_HF_MAKER_MODE: bool = True  # Place maker (limit) orders to avoid fees & earn rebates
 
     # Miracle Strategy Thresholds
@@ -315,6 +389,14 @@ class Settings(BaseSettings):
     WORLD_INTEL_AIRPLANES_LIVE_TIMEOUT_SECONDS: float = 20.0
     WORLD_INTEL_AIRPLANES_LIVE_MAX_RECORDS: int = 1500
     WORLD_INTEL_MILITARY_DEDUPE_RADIUS_KM: float = 45.0
+    WORLD_INTEL_COUNTRY_REFERENCE_SYNC_ENABLED: bool = True
+    WORLD_INTEL_COUNTRY_REFERENCE_SYNC_HOURS: int = 24
+    WORLD_INTEL_COUNTRY_REFERENCE_REQUEST_TIMEOUT_SECONDS: float = 20.0
+    WORLD_INTEL_UCDP_SYNC_ENABLED: bool = True
+    WORLD_INTEL_UCDP_SYNC_HOURS: int = 24
+    WORLD_INTEL_UCDP_LOOKBACK_YEARS: int = 8
+    WORLD_INTEL_UCDP_MAX_PAGES: int = 100
+    WORLD_INTEL_UCDP_REQUEST_TIMEOUT_SECONDS: float = 25.0
     WORLD_INTEL_CHOKEPOINTS_ENABLED: bool = True
     WORLD_INTEL_CHOKEPOINTS_REFRESH_SECONDS: int = 1800
     WORLD_INTEL_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS: float = 20.0
@@ -394,34 +476,14 @@ class Settings(BaseSettings):
             path_part = text[len(prefix) :]
             if not path_part:
                 return text
-            # Already absolute (sqlite:///<absolute> => path starts with '/').
-            if path_part.startswith("/"):
-                return f"{prefix}{path_part}"
-            absolute = (_PROJECT_ROOT / path_part).resolve()
-
-            # Back-compat: if an env-relative DB path points to an empty/new file
-            # but the legacy backend DB is populated, prefer the populated file so
-            # API + workers stay on a single DB without manual env edits.
-            legacy_db = _DEFAULT_DB_PATH.resolve()
-            try:
-                absolute_size = absolute.stat().st_size if absolute.exists() else 0
-            except OSError:
-                absolute_size = 0
-            try:
-                legacy_size = legacy_db.stat().st_size if legacy_db.exists() else 0
-            except OSError:
-                legacy_size = 0
-
-            if absolute != legacy_db and absolute_size == 0 and legacy_size > 0:
-                _LOGGER.warning(
-                    "DATABASE_URL points to empty SQLite file; using populated legacy DB",
-                    extra={
-                        "configured_path": str(absolute),
-                        "legacy_path": str(legacy_db),
-                    },
-                )
-                return f"{prefix}{legacy_db}"
-
+            if path_part in {":memory:", "/:memory:"}:
+                return f"{prefix}:memory:"
+            absolute = (
+                Path(path_part).resolve()
+                if path_part.startswith("/")
+                else (_PROJECT_ROOT / path_part).resolve()
+            )
+            _bootstrap_legacy_sqlite_db(absolute)
             return f"{prefix}{absolute}"
 
         return text
@@ -484,6 +546,18 @@ async def apply_search_filters():
         ("BTC_ETH_HF_SERIES_ETH_15M", "btc_eth_hf_series_eth_15m", "10191"),
         ("BTC_ETH_HF_SERIES_SOL_15M", "btc_eth_hf_series_sol_15m", "10423"),
         ("BTC_ETH_HF_SERIES_XRP_15M", "btc_eth_hf_series_xrp_15m", "10422"),
+        ("BTC_ETH_HF_SERIES_BTC_5M", "btc_eth_hf_series_btc_5m", "10684"),
+        ("BTC_ETH_HF_SERIES_ETH_5M", "btc_eth_hf_series_eth_5m", ""),
+        ("BTC_ETH_HF_SERIES_SOL_5M", "btc_eth_hf_series_sol_5m", ""),
+        ("BTC_ETH_HF_SERIES_XRP_5M", "btc_eth_hf_series_xrp_5m", ""),
+        ("BTC_ETH_HF_SERIES_BTC_1H", "btc_eth_hf_series_btc_1h", "10114"),
+        ("BTC_ETH_HF_SERIES_ETH_1H", "btc_eth_hf_series_eth_1h", "10117"),
+        ("BTC_ETH_HF_SERIES_SOL_1H", "btc_eth_hf_series_sol_1h", "10122"),
+        ("BTC_ETH_HF_SERIES_XRP_1H", "btc_eth_hf_series_xrp_1h", "10123"),
+        ("BTC_ETH_HF_SERIES_BTC_4H", "btc_eth_hf_series_btc_4h", "10331"),
+        ("BTC_ETH_HF_SERIES_ETH_4H", "btc_eth_hf_series_eth_4h", "10332"),
+        ("BTC_ETH_HF_SERIES_SOL_4H", "btc_eth_hf_series_sol_4h", "10326"),
+        ("BTC_ETH_HF_SERIES_XRP_4H", "btc_eth_hf_series_xrp_4h", "10327"),
         # Miracle strategy
         ("MIRACLE_MIN_NO_PRICE", "miracle_min_no_price", 0.90),
         ("MIRACLE_MAX_NO_PRICE", "miracle_max_no_price", 0.999),
@@ -534,6 +608,9 @@ async def apply_search_filters():
     for config_attr, db_attr, default in _apply:
         db_val = getattr(db, db_attr, None)
         if db_val is not None:
+            if isinstance(db_val, str) and not str(db_val).strip():
+                if default is not None:
+                    db_val = default
             # min_profit_threshold is stored as percentage in DB, fraction in config
             if db_attr == "min_profit_threshold":
                 db_val = db_val / 100.0

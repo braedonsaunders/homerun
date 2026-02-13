@@ -23,9 +23,31 @@ _DEFAULT = {
 class InstabilityCatalog:
     def __init__(self) -> None:
         self._catalog = WorldIntelJsonCatalog("instability_priors.json", _DEFAULT)
+        self._runtime_active_wars: set[str] | None = None
+        self._runtime_minor_conflicts: set[str] | None = None
+        self._runtime_source: str | None = None
+        self._runtime_year: int | None = None
 
     def payload(self) -> dict[str, Any]:
         return self._catalog.payload()
+
+    def set_runtime_conflict_lists(
+        self,
+        *,
+        active_wars: list[str] | set[str] | None,
+        minor_conflicts: list[str] | set[str] | None,
+        source: str | None = None,
+        year: int | None = None,
+    ) -> None:
+        active = {str(v).upper().strip() for v in (active_wars or []) if str(v).strip()}
+        minor = {str(v).upper().strip() for v in (minor_conflicts or []) if str(v).strip()}
+        self._runtime_active_wars = active or None
+        self._runtime_minor_conflicts = minor or None
+        self._runtime_source = str(source or "").strip() or None
+        try:
+            self._runtime_year = int(year) if year is not None else None
+        except Exception:
+            self._runtime_year = None
 
     def default_regime_multiplier(self) -> float:
         try:
@@ -76,12 +98,22 @@ class InstabilityCatalog:
         return out
 
     def active_wars(self) -> set[str]:
+        if self._runtime_active_wars is not None:
+            return set(self._runtime_active_wars)
         raw = self.payload().get("ucdp_active_wars") or []
         return {str(v).upper().strip() for v in raw if str(v).strip()}
 
     def minor_conflicts(self) -> set[str]:
+        if self._runtime_minor_conflicts is not None:
+            return set(self._runtime_minor_conflicts)
         raw = self.payload().get("ucdp_minor_conflicts") or []
         return {str(v).upper().strip() for v in raw if str(v).strip()}
+
+    def runtime_source(self) -> str | None:
+        return self._runtime_source
+
+    def runtime_year(self) -> int | None:
+        return self._runtime_year
 
 
 instability_catalog = InstabilityCatalog()

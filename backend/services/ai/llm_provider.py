@@ -41,7 +41,6 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from utils.utcnow import utcnow
 from enum import Enum
 from typing import Any, Optional
@@ -2366,28 +2365,28 @@ class LLMManager:
                     select(
                         func.coalesce(
                             func.sum(
-                                case((LLMUsageLog.success == True, LLMUsageLog.cost_usd), else_=0)
+                                case((LLMUsageLog.success, LLMUsageLog.cost_usd), else_=0)
                             ),
                             0.0,
                         ),
                         func.coalesce(
                             func.sum(
-                                case((LLMUsageLog.success == True, LLMUsageLog.input_tokens), else_=0)
+                                case((LLMUsageLog.success, LLMUsageLog.input_tokens), else_=0)
                             ),
                             0,
                         ),
                         func.coalesce(
                             func.sum(
-                                case((LLMUsageLog.success == True, LLMUsageLog.output_tokens), else_=0)
+                                case((LLMUsageLog.success, LLMUsageLog.output_tokens), else_=0)
                             ),
                             0,
                         ),
-                        func.count(case((LLMUsageLog.success == True, 1), else_=None)),
+                        func.count(case((LLMUsageLog.success, 1), else_=None)),
                         func.coalesce(
-                            func.avg(case((LLMUsageLog.success == True, LLMUsageLog.latency_ms), else_=None)),
+                            func.avg(case((LLMUsageLog.success, LLMUsageLog.latency_ms), else_=None)),
                             0.0,
                         ),
-                        func.count(case((LLMUsageLog.success == False, 1), else_=None)),
+                        func.count(case((not LLMUsageLog.success, 1), else_=None)),
                     ).where(LLMUsageLog.requested_at >= month_start)
                 )
                 tot = totals_result.one()

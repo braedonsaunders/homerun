@@ -55,6 +55,33 @@ class TestMarketFromGammaResponse:
         assert market.tokens[1].outcome == "No"
         assert market.tokens[1].price == 0.35
 
+    def test_tradability_metadata_fields_are_preserved(self):
+        """Tradability-related flags should survive Gamma -> Market normalization."""
+        data = {
+            "id": "m1",
+            "conditionId": "0xmeta",
+            "question": "Will test market resolve?",
+            "slug": "test-market-resolve",
+            "active": True,
+            "closed": False,
+            "archived": False,
+            "acceptingOrders": False,
+            "enableOrderBook": False,
+            "isResolved": False,
+            "winner": "yes",
+            "winningOutcome": "Yes",
+            "status": "in review",
+        }
+        market = Market.from_gamma_response(data)
+
+        assert market.archived is False
+        assert market.accepting_orders is False
+        assert market.enable_order_book is False
+        assert market.resolved is False
+        assert market.winner == "yes"
+        assert market.winning_outcome == "Yes"
+        assert market.status == "in review"
+
     def test_missing_fields_uses_defaults(self):
         """Missing optional fields fall back to defaults gracefully."""
         data = {

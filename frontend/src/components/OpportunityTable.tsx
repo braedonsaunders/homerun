@@ -22,7 +22,7 @@ import {
   timeAgo,
   formatCompact,
 } from './OpportunityCard'
-import { buildKalshiMarketUrl, buildPolymarketMarketUrl } from '../lib/marketUrls'
+import { buildKalshiMarketUrl, buildPolymarketMarketUrl, inferMarketPlatform } from '../lib/marketUrls'
 
 interface Props {
   opportunities: Opportunity[]
@@ -110,15 +110,32 @@ function TableRow({
   const accentColor = recommendation ? (ACCENT_BAR_COLORS[recommendation] || '') : ''
 
   // Platform URLs
-  const polyMarket = opportunity.markets.find((m: any) => !m.platform || m.platform === 'polymarket')
+  const polyMarket = opportunity.markets.find(
+    (m: any) =>
+      inferMarketPlatform({
+        platform: m.platform,
+        marketId: m.id,
+        marketSlug: m.slug,
+        conditionId: (m as any).condition_id ?? (m as any).conditionId,
+      }) === 'polymarket'
+  )
   const polyUrl = polyMarket
     ? buildPolymarketMarketUrl({
         eventSlug: opportunity.event_slug || (polyMarket as any).event_slug,
         marketSlug: (polyMarket as any).slug,
         marketId: (polyMarket as any).id,
+        conditionId: (polyMarket as any).condition_id ?? (polyMarket as any).conditionId,
       })
     : null
-  const kalshiMarket = opportunity.markets.find((m: any) => m.platform === 'kalshi')
+  const kalshiMarket = opportunity.markets.find(
+    (m: any) =>
+      inferMarketPlatform({
+        platform: m.platform,
+        marketId: m.id,
+        marketSlug: m.slug,
+        conditionId: (m as any).condition_id ?? (m as any).conditionId,
+      }) === 'kalshi'
+  )
   const kalshiUrl = kalshiMarket
     ? buildKalshiMarketUrl({
         marketTicker: kalshiMarket.id,

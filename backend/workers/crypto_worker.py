@@ -1,4 +1,4 @@
-"""Crypto worker: owns BTC 15-minute high-frequency data + signal loop.
+"""Crypto worker: owns BTC/ETH/SOL/XRP 5m/15m high-frequency data + signal loop.
 
 Runs as a dedicated process and persists worker snapshot + normalized crypto signals.
 """
@@ -130,6 +130,7 @@ def _build_crypto_market_payload() -> list[dict]:
         oracle = feed.get_price(market.asset)
         if oracle:
             row["oracle_price"] = oracle.price
+            row["oracle_source"] = getattr(oracle, "source", None)
             row["oracle_updated_at_ms"] = oracle.updated_at_ms
             row["oracle_age_seconds"] = (
                 round((now_ms - oracle.updated_at_ms) / 1000, 1)
@@ -142,6 +143,20 @@ def _build_crypto_market_payload() -> list[dict]:
             row["oracle_price"] = None
             row["oracle_updated_at_ms"] = None
             row["oracle_age_seconds"] = None
+
+        row["oracle_prices_by_source"] = {}
+        for source_name, source_oracle in feed.get_prices_by_source(market.asset).items():
+            if not source_oracle:
+                continue
+            updated_at = getattr(source_oracle, "updated_at_ms", None)
+            row["oracle_prices_by_source"][str(source_name)] = {
+                "source": source_oracle.source,
+                "price": float(source_oracle.price),
+                "updated_at_ms": int(updated_at) if updated_at else None,
+                "age_seconds": (
+                    round((now_ms - int(updated_at)) / 1000, 1) if updated_at else None
+                ),
+            }
 
         row["price_to_beat"] = svc._price_to_beat.get(market.slug)
         row["oracle_history"] = _oracle_history_payload(market.asset)

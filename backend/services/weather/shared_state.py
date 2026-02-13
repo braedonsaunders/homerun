@@ -46,6 +46,11 @@ def _format_iso_utc_z(dt: Optional[datetime]) -> Optional[str]:
     return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
+def _normalize_weather_edge_title(title: str) -> str:
+    prefix = "weather edge:"
+    return title[len(prefix) :].lstrip() if title.lower().startswith(prefix) else title
+
+
 def _default_status() -> dict[str, Any]:
     return {
         "running": False,
@@ -140,6 +145,8 @@ async def get_weather_opportunities_from_db(
     exclude_near_resolution: bool = False,
 ) -> list[ArbitrageOpportunity]:
     opportunities, _ = await read_weather_snapshot(session)
+    for opp in opportunities:
+        opp.title = _normalize_weather_edge_title(opp.title)
 
     if opportunities and exclude_near_resolution:
         now = datetime.now(timezone.utc)

@@ -16,7 +16,12 @@ from api import routes_crypto
 @pytest.mark.asyncio
 async def test_get_crypto_markets_uses_fresh_worker_snapshot(monkeypatch):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    snapshot_markets = [{"id": "m1", "asset": "BTC"}]
+    near_future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    snapshot_markets = [
+        {"id": "m1", "asset": "BTC", "timeframe": "15min", "end_time": near_future}
+    ]
 
     monkeypatch.setattr(
         routes_crypto,
@@ -30,6 +35,7 @@ async def test_get_crypto_markets_uses_fresh_worker_snapshot(monkeypatch):
     )
     fallback_mock = AsyncMock(return_value=[{"id": "live"}])
     monkeypatch.setattr(routes_crypto, "_build_live_markets_from_source", fallback_mock)
+    monkeypatch.setattr(routes_crypto, "_configured_timeframes", lambda: {"15m"})
 
     out = await routes_crypto.get_crypto_markets(object())
     assert out == snapshot_markets
@@ -54,6 +60,37 @@ async def test_get_crypto_markets_falls_back_when_snapshot_stale(monkeypatch):
             }
         ),
     )
+    fallback_mock = AsyncMock(return_value=live_markets)
+    monkeypatch.setattr(routes_crypto, "_build_live_markets_from_source", fallback_mock)
+
+    out = await routes_crypto.get_crypto_markets(object())
+    assert out == live_markets
+    fallback_mock.assert_awaited_once_with(snapshot_markets)
+
+
+@pytest.mark.asyncio
+async def test_get_crypto_markets_falls_back_when_snapshot_only_far_future(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Nearest expiry ~22h out should fail the snapshot sanity check.
+    far_future = (datetime.now(timezone.utc) + timedelta(hours=22)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    snapshot_markets = [
+        {"id": "future-market", "asset": "BTC", "timeframe": "15min", "end_time": far_future}
+    ]
+    live_markets = [{"id": "live-market", "asset": "BTC", "timeframe": "15min"}]
+
+    monkeypatch.setattr(
+        routes_crypto,
+        "read_worker_snapshot",
+        AsyncMock(
+            return_value={
+                "updated_at": now,
+                "stats": {"markets": snapshot_markets},
+            }
+        ),
+    )
+    monkeypatch.setattr(routes_crypto, "_configured_timeframes", lambda: {"15m"})
     fallback_mock = AsyncMock(return_value=live_markets)
     monkeypatch.setattr(routes_crypto, "_build_live_markets_from_source", fallback_mock)
 

@@ -291,6 +291,31 @@ def parse_weather_contract(
             metric=_metric_for_context("threshold", temp_context),
         )
 
+    # Postfix threshold contracts:
+    # "Will the highest temperature in Dallas be 68°F or higher on February 13?"
+    postfix_threshold_match = re.search(
+        r"\b(?:be|is|was|will(?:\s+be)?|reach(?:es)?|hit(?:s)?)\s*(-?\d+(?:\.\d+)?)\s*°?\s*([FC])\s*(?:\+|(?:or|and)\s+(?:higher|above|lower|below))\b",
+        q,
+        flags=re.IGNORECASE,
+    )
+    if postfix_threshold_match and temp_context is not None:
+        raw_val = float(postfix_threshold_match.group(1))
+        unit = postfix_threshold_match.group(2).upper()
+        suffix = postfix_threshold_match.group(0).lower()
+        op_text = (
+            "above"
+            if ("+" in suffix or "higher" in suffix or "above" in suffix)
+            else "below"
+        )
+        return _build_temp_threshold_contract(
+            location=location,
+            target_time=target_time,
+            op_text=op_text,
+            raw_value=raw_val,
+            unit=unit,
+            metric=_metric_for_context("threshold", temp_context),
+        )
+
     # Exact value contracts (common in daily high/low markets):
     # "Will the highest temperature in London be 13°C on February 11?"
     exact_match = re.search(

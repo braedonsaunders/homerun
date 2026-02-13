@@ -25,6 +25,14 @@ from services.world_intelligence.country_catalog import country_catalog
 from services.world_intelligence.chokepoint_feed import chokepoint_feed
 from services.world_intelligence.region_catalog import region_catalog
 from services.world_intelligence.resolver import resolve_world_signal_opportunities
+from services.world_intelligence.country_reference_source import (
+    get_country_reference_source_status,
+    sync_country_reference_from_world_bank,
+)
+from services.world_intelligence.ucdp_conflict_source import (
+    get_ucdp_conflict_source_status,
+    sync_ucdp_conflict_lists,
+)
 
 router = APIRouter(tags=["world-intelligence"])
 logger = logging.getLogger(__name__)
@@ -1192,11 +1200,47 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     errors = stats.get("source_errors") or worker_stats.get("source_errors") or []
     merged_sources = dict(sources) if isinstance(sources, dict) else {}
     merged_sources["chokepoints"] = chokepoint_feed.get_health()
+    merged_sources["country_reference"] = await get_country_reference_source_status(session)
+    merged_sources["ucdp_conflicts"] = await get_ucdp_conflict_source_status(session)
     return {
         "sources": merged_sources,
         "errors": errors,
         "updated_at": _to_iso(snapshot.updated_at) if snapshot else worker.get("updated_at"),
     }
+
+
+@router.get("/world-intelligence/reference/countries/status")
+async def get_world_country_reference_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    status = await get_country_reference_source_status(session)
+    status["runtime_source"] = country_catalog.runtime_source() or status.get("source")
+    return status
+
+
+@router.post("/world-intelligence/reference/countries/sync")
+async def sync_world_country_reference(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    result = await sync_country_reference_from_world_bank(session, force=bool(force))
+    result["runtime_source"] = country_catalog.runtime_source() or result.get("source")
+    return result
+
+
+@router.get("/world-intelligence/reference/ucdp/status")
+async def get_world_ucdp_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await get_ucdp_conflict_source_status(session)
+
+
+@router.post("/world-intelligence/reference/ucdp/sync")
+async def sync_world_ucdp_conflicts(
+    force: bool = Query(False),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await sync_ucdp_conflict_lists(session, force=bool(force))
 
 
 @router.get("/world-intelligence/summary")

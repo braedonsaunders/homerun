@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy import select
 
 _BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -84,3 +84,85 @@ async def test_update_settings_syncs_control_interval(monkeypatch):
     assert out["status"] == "success"
     update_mock.assert_awaited_once()
     set_interval_mock.assert_awaited_once_with(fake_session, 7200)
+
+
+@pytest.mark.asyncio
+async def test_run_weather_workflow_executes_immediately(monkeypatch):
+    fake_session = object()
+    monkeypatch.setattr(routes_weather_workflow.global_pause_state, "_paused", False)
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "get_weather_settings",
+        AsyncMock(return_value={"orchestrator_max_age_minutes": 240}),
+    )
+    run_cycle_mock = AsyncMock(
+        return_value={"status": "completed", "markets": 5, "opportunities": 2, "intents": 1}
+    )
+    monkeypatch.setattr(
+        routes_weather_workflow.weather_workflow_orchestrator,
+        "run_cycle",
+        run_cycle_mock,
+    )
+    list_intents_mock = AsyncMock(return_value=[object(), object()])
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "list_weather_intents",
+        list_intents_mock,
+    )
+    emit_mock = AsyncMock(return_value=2)
+    monkeypatch.setattr(routes_weather_workflow, "emit_weather_intent_signals", emit_mock)
+    clear_request_mock = AsyncMock()
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "clear_weather_scan_request",
+        clear_request_mock,
+    )
+    monkeypatch.setattr(
+        routes_weather_workflow,
+        "_build_status_payload",
+        AsyncMock(return_value={"running": True, "paused": False}),
+    )
+
+    out = await routes_weather_workflow.run_weather_workflow_once(fake_session)
+    assert out["status"] == "completed"
+    assert out["signals_emitted"] == 2
+    assert out["cycle"]["status"] == "completed"
+    run_cycle_mock.assert_awaited_once_with(fake_session)
+    list_intents_mock.assert_awaited_once_with(
+        fake_session, status_filter="pending", limit=2000
+    )
+    emit_mock.assert_awaited_once()
+    clear_request_mock.assert_awaited_once_with(fake_session)
+
+
+@pytest.mark.asyncio
+async def test_get_weather_opportunities_enforces_tradability_filters(monkeypatch):
+    fake_session = object()
+    get_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "get_weather_opportunities_from_db",
+        get_mock,
+    )
+
+    out = await routes_weather_workflow.get_weather_opportunities(
+        session=fake_session,
+        min_edge=12.0,
+        direction="buy_no",
+        max_entry=0.2,
+        location="Wellington",
+        limit=20,
+        offset=0,
+    )
+
+    assert out["total"] == 0
+    assert out["opportunities"] == []
+    get_mock.assert_awaited_once_with(
+        fake_session,
+        min_edge_percent=12.0,
+        direction="buy_no",
+        max_entry_price=0.2,
+        location_query="Wellington",
+        require_tradable_markets=True,
+        exclude_near_resolution=True,
+    )

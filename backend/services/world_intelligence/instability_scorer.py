@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from config import settings
 from .instability_catalog import instability_catalog
 from .military_catalog import military_catalog
 
