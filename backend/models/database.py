@@ -2461,8 +2461,17 @@ def _sqlite_migration_lock():
 
         if os.name == "nt":
             import msvcrt
+            import time
 
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except (PermissionError, OSError):
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.5)
             try:
                 yield
             finally:
