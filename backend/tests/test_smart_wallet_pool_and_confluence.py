@@ -265,14 +265,8 @@ class TestSmartWalletPoolChurnGuard:
 
     def test_cluster_diversity_limits_single_cluster_domination(self):
         svc = SmartWalletPoolService()
-        crowded = [
-            SimpleNamespace(address=f"cluster_{i}", cluster_id="entity_a")
-            for i in range(80)
-        ]
-        independent = [
-            SimpleNamespace(address=f"ind_{i}", cluster_id=None)
-            for i in range(120)
-        ]
+        crowded = [SimpleNamespace(address=f"cluster_{i}", cluster_id="entity_a") for i in range(80)]
+        independent = [SimpleNamespace(address=f"ind_{i}", cluster_id=None) for i in range(120)]
         ranked = crowded + independent
         target_size = 100
         diversified = svc._rank_with_cluster_diversity(ranked, target_size=target_size)

@@ -248,9 +248,7 @@ class SmartWalletPoolService:
             await self._collect_wallet_trade_candidates(
                 candidate_sources,
                 events,
-                wallet_addresses=list(candidate_sources.keys())[
-                    :LEADERBOARD_WALLET_TRADE_SAMPLE
-                ],
+                wallet_addresses=list(candidate_sources.keys())[:LEADERBOARD_WALLET_TRADE_SAMPLE],
                 per_wallet_limit=80,
             )
             markets = await self._collect_market_trade_candidates(
@@ -305,9 +303,7 @@ class SmartWalletPoolService:
             await self._collect_wallet_trade_candidates(
                 candidate_sources,
                 events,
-                wallet_addresses=list(candidate_sources.keys())[
-                    :INCREMENTAL_WALLET_TRADE_SAMPLE
-                ],
+                wallet_addresses=list(candidate_sources.keys())[:INCREMENTAL_WALLET_TRADE_SAMPLE],
                 per_wallet_limit=50,
             )
             await self._collect_market_trade_candidates(
@@ -406,63 +402,43 @@ class SmartWalletPoolService:
         """Return aggregate pool health and freshness stats."""
         async with AsyncSessionLocal() as session:
             pool_size = (
-                (
-                    await session.execute(
-                        select(func.count(DiscoveredWallet.address)).where(
-                            DiscoveredWallet.in_top_pool == True  # noqa: E712
-                        )
+                await session.execute(
+                    select(func.count(DiscoveredWallet.address)).where(
+                        DiscoveredWallet.in_top_pool == True  # noqa: E712
                     )
                 )
-                .scalar()
-                or 0
-            )
+            ).scalar() or 0
             active_1h = (
-                (
-                    await session.execute(
-                        select(func.count(DiscoveredWallet.address)).where(
-                            DiscoveredWallet.in_top_pool == True,  # noqa: E712
-                            DiscoveredWallet.trades_1h > 0,
-                        )
+                await session.execute(
+                    select(func.count(DiscoveredWallet.address)).where(
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                        DiscoveredWallet.trades_1h > 0,
                     )
                 )
-                .scalar()
-                or 0
-            )
+            ).scalar() or 0
             active_24h = (
-                (
-                    await session.execute(
-                        select(func.count(DiscoveredWallet.address)).where(
-                            DiscoveredWallet.in_top_pool == True,  # noqa: E712
-                            DiscoveredWallet.trades_24h > 0,
-                        )
+                await session.execute(
+                    select(func.count(DiscoveredWallet.address)).where(
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                        DiscoveredWallet.trades_24h > 0,
                     )
                 )
-                .scalar()
-                or 0
-            )
+            ).scalar() or 0
             newest = (
-                (
-                    await session.execute(
-                        select(func.max(DiscoveredWallet.last_trade_at)).where(
-                            DiscoveredWallet.in_top_pool == True  # noqa: E712
-                        )
+                await session.execute(
+                    select(func.max(DiscoveredWallet.last_trade_at)).where(
+                        DiscoveredWallet.in_top_pool == True  # noqa: E712
                     )
                 )
-                .scalar()
-                or None
-            )
+            ).scalar() or None
             oldest = (
-                (
-                    await session.execute(
-                        select(func.min(DiscoveredWallet.last_trade_at)).where(
-                            DiscoveredWallet.in_top_pool == True,  # noqa: E712
-                            DiscoveredWallet.last_trade_at.is_not(None),
-                        )
+                await session.execute(
+                    select(func.min(DiscoveredWallet.last_trade_at)).where(
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                        DiscoveredWallet.last_trade_at.is_not(None),
                     )
                 )
-                .scalar()
-                or None
-            )
+            ).scalar() or None
 
         return {
             **self._stats,
@@ -500,11 +476,7 @@ class SmartWalletPoolService:
             )
             raw = list(result.scalars().all())
 
-            signals = [
-                s
-                for s in raw
-                if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank
-            ]
+            signals = [s for s in raw if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank]
 
             signals = await self._prune_non_tradable_signals(
                 session=session,
@@ -514,12 +486,7 @@ class SmartWalletPoolService:
 
             await self._refresh_signal_market_metadata(session=session, signals=signals)
 
-            addresses = {
-                addr.lower()
-                for s in signals
-                for addr in (s.wallets or [])
-                if isinstance(addr, str)
-            }
+            addresses = {addr.lower() for s in signals for addr in (s.wallets or []) if isinstance(addr, str)}
 
             profile_rows = await session.execute(
                 select(DiscoveredWallet).where(DiscoveredWallet.address.in_(list(addresses)))
@@ -554,10 +521,7 @@ class SmartWalletPoolService:
                 market_question = str(s.market_question or "").strip()
                 question_norm = market_question.lower()
                 distinct_market_count = len(question_market_ids.get(question_norm, set()))
-                if (
-                    market_question
-                    and distinct_market_count >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD
-                ):
+                if market_question and distinct_market_count >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD:
                     # Safety fallback: avoid displaying clearly poisoned duplicate metadata.
                     market_question = f"Market {s.market_id}"
                 if not market_question:
@@ -575,8 +539,7 @@ class SmartWalletPoolService:
                         "conviction_score": s.conviction_score or 0.0,
                         "strength": s.strength or 0.0,
                         "wallet_count": s.wallet_count or 0,
-                        "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count
-                        or 0,
+                        "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count or 0,
                         "unique_core_wallets": s.unique_core_wallets or 0,
                         "weighted_wallet_score": s.weighted_wallet_score or 0.0,
                         "window_minutes": s.window_minutes or 60,
@@ -586,20 +549,12 @@ class SmartWalletPoolService:
                         "conflicting_notional": s.conflicting_notional,
                         "market_liquidity": s.market_liquidity,
                         "market_volume_24h": s.market_volume_24h,
-                        "first_seen_at": s.first_seen_at.isoformat()
-                        if s.first_seen_at
-                        else None,
-                        "last_seen_at": s.last_seen_at.isoformat()
-                        if s.last_seen_at
-                        else None,
+                        "first_seen_at": s.first_seen_at.isoformat() if s.first_seen_at else None,
+                        "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
                         "detected_at": (
                             s.detected_at.isoformat()
                             if s.detected_at
-                            else (
-                                s.last_seen_at.isoformat()
-                                if s.last_seen_at
-                                else utcnow().isoformat()
-                            )
+                            else (s.last_seen_at.isoformat() if s.last_seen_at else utcnow().isoformat())
                         ),
                         "is_active": bool(s.is_active),
                         "wallets": s.wallets or [],
@@ -688,9 +643,7 @@ class SmartWalletPoolService:
 
         now = utcnow()
         question_counts = Counter(
-            str(s.market_question or "").strip().lower()
-            for s in signals
-            if str(s.market_question or "").strip()
+            str(s.market_question or "").strip().lower() for s in signals if str(s.market_question or "").strip()
         )
         candidates: list[MarketConfluenceSignal] = []
         for signal in signals:
@@ -705,9 +658,7 @@ class SmartWalletPoolService:
             question = str(signal.market_question or "").strip()
             question_norm = question.lower()
             duplicate_question = (
-                bool(question_norm)
-                and question_counts.get(question_norm, 0)
-                >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD
+                bool(question_norm) and question_counts.get(question_norm, 0) >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD
             )
             missing_metadata = not question or not str(signal.market_slug or "").strip()
             if not duplicate_question and not missing_metadata:
@@ -727,9 +678,7 @@ class SmartWalletPoolService:
             question_before = str(signal.market_question or "").strip()
             question_norm = question_before.lower()
             duplicate_question = (
-                bool(question_norm)
-                and question_counts.get(question_norm, 0)
-                >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD
+                bool(question_norm) and question_counts.get(question_norm, 0) >= SIGNAL_DUPLICATE_QUESTION_THRESHOLD
             )
             try:
                 if market_id.startswith("0x"):
@@ -740,9 +689,7 @@ class SmartWalletPoolService:
                 info = None
 
             if not info:
-                if duplicate_question and (
-                    signal.market_question is not None or signal.market_slug is not None
-                ):
+                if duplicate_question and (signal.market_question is not None or signal.market_slug is not None):
                     # Clear obviously poisoned metadata so fallback rendering can kick in.
                     signal.market_question = None
                     signal.market_slug = None
@@ -803,12 +750,7 @@ class SmartWalletPoolService:
                         address = (row.get("proxyWallet", "") or "").lower()
                         if not address:
                             continue
-                        username = (
-                            row.get("userName")
-                            or row.get("username")
-                            or row.get("name")
-                            or ""
-                        )
+                        username = row.get("userName") or row.get("username") or row.get("name") or ""
                         username = str(username).strip()
                         if candidate_usernames is not None and username:
                             candidate_usernames[address] = username
@@ -895,8 +837,7 @@ class SmartWalletPoolService:
                             price=price,
                             traded_at=traded_at,
                             source="wallet_trades_api",
-                            tx_hash=trade.get("transactionHash")
-                            or trade.get("tx_hash"),
+                            tx_hash=trade.get("transactionHash") or trade.get("tx_hash"),
                         )
                     )
                     inserted += 1
@@ -1049,13 +990,7 @@ class SmartWalletPoolService:
             if not address:
                 continue
 
-            market_id = (
-                row.get("market")
-                or row.get("condition_id")
-                or row.get("asset")
-                or row.get("token_id")
-                or ""
-            )
+            market_id = row.get("market") or row.get("condition_id") or row.get("asset") or row.get("token_id") or ""
             if not market_id:
                 continue
 
@@ -1157,9 +1092,7 @@ class SmartWalletPoolService:
 
             for address, flags in candidates.items():
                 wallet = existing.get(address)
-                discovered_username = (
-                    str((candidate_usernames or {}).get(address) or "").strip() or None
-                )
+                discovered_username = str((candidate_usernames or {}).get(address) or "").strip() or None
                 if wallet is None:
                     wallet = DiscoveredWallet(
                         address=address,
@@ -1219,9 +1152,7 @@ class SmartWalletPoolService:
                 }
                 for event in inserts
             ]
-            stmt = sqlite_insert(WalletActivityRollup).values(rows).prefix_with(
-                "OR IGNORE"
-            )
+            stmt = sqlite_insert(WalletActivityRollup).values(rows).prefix_with("OR IGNORE")
             result = await session.execute(stmt)
             await session.commit()
             if result is None or result.rowcount is None:
@@ -1258,9 +1189,7 @@ class SmartWalletPoolService:
                 select(
                     WalletActivityRollup.wallet_address,
                     func.count(WalletActivityRollup.id).label("trades_24h"),
-                    func.count(func.distinct(WalletActivityRollup.market_id)).label(
-                        "unique_markets_24h"
-                    ),
+                    func.count(func.distinct(WalletActivityRollup.market_id)).label("unique_markets_24h"),
                     func.max(WalletActivityRollup.traded_at).label("last_trade_at"),
                 )
                 .where(WalletActivityRollup.traded_at >= cutoff_24h)
@@ -1331,9 +1260,7 @@ class SmartWalletPoolService:
                 selection_scores[wallet.address] = selection_score
                 insider_scores[wallet.address] = insider
                 source_confidence_scores[wallet.address] = source_confidence
-                is_recent = bool(
-                    last_trade_at is not None and last_trade_at >= cutoff_72h
-                )
+                is_recent = bool(last_trade_at is not None and last_trade_at >= cutoff_72h)
                 active_recently[wallet.address] = is_recent
 
                 blockers = self._eligibility_blockers(wallet)
@@ -1352,10 +1279,7 @@ class SmartWalletPoolService:
                             {
                                 "code": "tier_thresholds_not_met",
                                 "label": "Tier thresholds not met",
-                                "detail": (
-                                    "Wallet did not satisfy core or rising quality tier "
-                                    "thresholds."
-                                ),
+                                "detail": ("Wallet did not satisfy core or rising quality tier thresholds."),
                             }
                         ]
                 eligibility_blockers[wallet.address] = blockers
@@ -1382,24 +1306,12 @@ class SmartWalletPoolService:
                 reverse=True,
             )
             wallet_by_address = {w.address: w for w in wallets}
-            eligible_ranked = [
-                w for w in ranked_wallets if w.address in eligible_addresses
-            ]
+            eligible_ranked = [w for w in ranked_wallets if w.address in eligible_addresses]
             manual_includes = [
-                w.address
-                for w in ranked_wallets
-                if self._is_pool_manually_included(w) and not self._is_pool_blocked(w)
+                w.address for w in ranked_wallets if self._is_pool_manually_included(w) and not self._is_pool_blocked(w)
             ]
-            core_candidates = [
-                w.address
-                for w in eligible_ranked
-                if tier_hint.get(w.address) == "core"
-            ]
-            rising_candidates = [
-                w.address
-                for w in eligible_ranked
-                if tier_hint.get(w.address) == "rising"
-            ]
+            core_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "core"]
+            rising_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "rising"]
             diversified_ranked = self._rank_with_cluster_diversity(
                 eligible_ranked,
                 target_size=TARGET_POOL_SIZE,
@@ -1435,11 +1347,7 @@ class SmartWalletPoolService:
                 self._append_unique_inplace(
                     desired,
                     desired_set,
-                    [
-                        w.address
-                        for w in diversified_ranked
-                        if active_recently.get(w.address, False)
-                    ],
+                    [w.address for w in diversified_ranked if active_recently.get(w.address, False)],
                     TARGET_POOL_SIZE,
                 )
 
@@ -1448,10 +1356,7 @@ class SmartWalletPoolService:
                 for w in wallets
                 if w.in_top_pool
                 and not self._is_pool_blocked(w)
-                and (
-                    w.address in eligible_addresses
-                    or self._is_pool_manually_included(w)
-                )
+                and (w.address in eligible_addresses or self._is_pool_manually_included(w))
             ]
             final_pool, churn_rate = self._apply_churn_guard(
                 desired=desired,
@@ -1473,33 +1378,19 @@ class SmartWalletPoolService:
             current_set = set(current_pool)
             cluster_counts = self._count_clusters(final_pool, wallet_by_address)
             cluster_cap = max(3, int(TARGET_POOL_SIZE * MAX_CLUSTER_SHARE))
-            final_wallets = [
-                wallet_by_address[address]
-                for address in final_pool
-                if address in wallet_by_address
-            ]
+            final_wallets = [wallet_by_address[address] for address in final_pool if address in wallet_by_address]
             analyzed_pool_count = sum(1 for w in final_wallets if w.last_analyzed_at is not None)
             profitable_pool_count = sum(1 for w in final_wallets if bool(w.is_profitable))
             copy_candidate_pool_count = sum(
-                1
-                for w in final_wallets
-                if str(w.recommendation or "").strip().lower() == "copy_candidate"
+                1 for w in final_wallets if str(w.recommendation or "").strip().lower() == "copy_candidate"
             )
             pool_size = len(final_wallets)
-            analyzed_pool_pct = (
-                round((analyzed_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            )
-            profitable_pool_pct = (
-                round((profitable_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            )
-            copy_candidate_pool_pct = (
-                round((copy_candidate_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
-            )
+            analyzed_pool_pct = round((analyzed_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
+            profitable_pool_pct = round((profitable_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
+            copy_candidate_pool_pct = round((copy_candidate_pool_count / pool_size) * 100.0, 2) if pool_size else 0.0
             previous_copy_pct = self._last_copy_candidate_pct
             copy_pct_delta = (
-                round(copy_candidate_pool_pct - previous_copy_pct, 2)
-                if previous_copy_pct is not None
-                else 0.0
+                round(copy_candidate_pool_pct - previous_copy_pct, 2) if previous_copy_pct is not None else 0.0
             )
             self._last_copy_candidate_pct = copy_candidate_pool_pct
 
@@ -1668,10 +1559,7 @@ class SmartWalletPoolService:
                 {
                     "code": "recommendation_blocked",
                     "label": "Recommendation blocked",
-                    "detail": (
-                        "Wallet recommendation must be copy_candidate or monitor "
-                        "for pool eligibility."
-                    ),
+                    "detail": ("Wallet recommendation must be copy_candidate or monitor for pool eligibility."),
                 }
             )
         if total_trades < MIN_ELIGIBLE_TRADES:
@@ -1687,10 +1575,7 @@ class SmartWalletPoolService:
                 {
                     "code": "anomaly_too_high",
                     "label": "Anomaly score too high",
-                    "detail": (
-                        f"Wallet anomaly score must be <= {MAX_ELIGIBLE_ANOMALY:.2f} "
-                        "to enter the pool."
-                    ),
+                    "detail": (f"Wallet anomaly score must be <= {MAX_ELIGIBLE_ANOMALY:.2f} to enter the pool."),
                 }
             )
         if total_pnl <= 0:
@@ -1717,9 +1602,7 @@ class SmartWalletPoolService:
         profit_factor = wallet.profit_factor
         sharpe_ok = sharpe is not None and math.isfinite(sharpe) and sharpe >= CORE_MIN_SHARPE
         profit_factor_ok = (
-            profit_factor is not None
-            and math.isfinite(profit_factor)
-            and profit_factor >= CORE_MIN_PROFIT_FACTOR
+            profit_factor is not None and math.isfinite(profit_factor) and profit_factor >= CORE_MIN_PROFIT_FACTOR
         )
 
         core_eligible = recommendation == "copy_candidate" or (
@@ -1927,10 +1810,7 @@ class SmartWalletPoolService:
                 {
                     "code": "core_quality_gate",
                     "label": "Core quality tier",
-                    "detail": (
-                        "Wallet passed hard quality gates and core-tier strategy "
-                        "requirements."
-                    ),
+                    "detail": ("Wallet passed hard quality gates and core-tier strategy requirements."),
                 }
             )
         elif pool_tier == "rising":
@@ -1938,10 +1818,7 @@ class SmartWalletPoolService:
                 {
                     "code": "rising_quality_gate",
                     "label": "Rising quality tier",
-                    "detail": (
-                        "Wallet passed hard quality gates and rising-tier activity "
-                        "requirements."
-                    ),
+                    "detail": ("Wallet passed hard quality gates and rising-tier activity requirements."),
                 }
             )
 
@@ -2014,18 +1891,10 @@ class SmartWalletPoolService:
         win = _clamp(float(wallet.win_rate or 0.0))
 
         sharpe = wallet.sharpe_ratio
-        sharpe_norm = (
-            0.0
-            if sharpe is None or not math.isfinite(sharpe)
-            else _clamp(sharpe / 3.0)
-        )
+        sharpe_norm = 0.0 if sharpe is None or not math.isfinite(sharpe) else _clamp(sharpe / 3.0)
 
         pf = wallet.profit_factor
-        pf_norm = (
-            0.0
-            if pf is None or not math.isfinite(pf)
-            else _clamp(pf / 5.0)
-        )
+        pf_norm = 0.0 if pf is None or not math.isfinite(pf) else _clamp(pf / 5.0)
 
         pnl = float(wallet.total_pnl or 0.0)
         pnl_norm = _clamp((math.tanh(pnl / 25000.0) + 1.0) / 2.0)
@@ -2038,12 +1907,7 @@ class SmartWalletPoolService:
             recommendation_boost = 0.02
 
         return _clamp(
-            0.35 * rank
-            + 0.25 * win
-            + 0.15 * sharpe_norm
-            + 0.15 * pf_norm
-            + 0.10 * pnl_norm
-            + recommendation_boost
+            0.35 * rank + 0.25 * win + 0.15 * sharpe_norm + 0.15 * pf_norm + 0.10 * pnl_norm + recommendation_boost
         )
 
     def _score_activity(
@@ -2069,10 +1933,7 @@ class SmartWalletPoolService:
 
         # Downweight activity for wallets with unverified/legacy analysis profiles.
         source_version = str(wallet.metrics_source_version or "").strip()
-        analysis_verified = (
-            wallet.last_analyzed_at is not None
-            and source_version == QUALITY_METRICS_SOURCE_VERSION
-        )
+        analysis_verified = wallet.last_analyzed_at is not None and source_version == QUALITY_METRICS_SOURCE_VERSION
         if analysis_verified:
             return base_score
         return _clamp(base_score * 0.35)
@@ -2108,9 +1969,7 @@ class SmartWalletPoolService:
             final_set = set(final)
             if not current_set:
                 return final, 0.0
-            churn = len(current_set.symmetric_difference(final_set)) / max(
-                len(current_set), 1
-            )
+            churn = len(current_set.symmetric_difference(final_set)) / max(len(current_set), 1)
             return final, churn
 
         # If no existing pool, initialize directly from desired.
@@ -2123,9 +1982,7 @@ class SmartWalletPoolService:
 
         # Trim if current pool is larger than target.
         if len(pool_set) > TARGET_POOL_SIZE:
-            keep = sorted(list(pool_set), key=lambda a: scores.get(a, 0.0), reverse=True)[
-                :TARGET_POOL_SIZE
-            ]
+            keep = sorted(list(pool_set), key=lambda a: scores.get(a, 0.0), reverse=True)[:TARGET_POOL_SIZE]
             pool_set = set(keep)
 
         desired_set = set(desired)
@@ -2312,9 +2169,7 @@ class SmartWalletPoolService:
                     if ts > 10_000_000_000:  # likely milliseconds
                         ts /= 1000.0
                     return utcfromtimestamp(ts)
-                return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
             except (OSError, ValueError, TypeError):
                 return None
         return None

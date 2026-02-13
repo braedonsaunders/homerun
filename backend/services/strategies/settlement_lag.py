@@ -56,33 +56,21 @@ class SettlementLagStrategy(BaseStrategy):
     # $0.04 on the longshot side; resolved markets are typically $0.001-$0.01.
     @property
     def NEAR_ZERO_THRESHOLD(self):
-        return (
-            settings.SETTLEMENT_LAG_NEAR_ZERO
-            if hasattr(settings, "SETTLEMENT_LAG_NEAR_ZERO")
-            else 0.02
-        )
+        return settings.SETTLEMENT_LAG_NEAR_ZERO if hasattr(settings, "SETTLEMENT_LAG_NEAR_ZERO") else 0.02
 
     @property
     def NEAR_ONE_THRESHOLD(self):
-        return (
-            settings.SETTLEMENT_LAG_NEAR_ONE
-            if hasattr(settings, "SETTLEMENT_LAG_NEAR_ONE")
-            else 0.95
-        )
+        return settings.SETTLEMENT_LAG_NEAR_ONE if hasattr(settings, "SETTLEMENT_LAG_NEAR_ONE") else 0.95
 
     @property
     def MIN_SUM_DEVIATION(self):
         return (
-            settings.SETTLEMENT_LAG_MIN_SUM_DEVIATION
-            if hasattr(settings, "SETTLEMENT_LAG_MIN_SUM_DEVIATION")
-            else 0.03
+            settings.SETTLEMENT_LAG_MIN_SUM_DEVIATION if hasattr(settings, "SETTLEMENT_LAG_MIN_SUM_DEVIATION") else 0.03
         )
 
     OVERDUE_RESOLUTION_DAYS = 0  # Market past resolution date
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         for market in markets:
@@ -237,14 +225,10 @@ class SettlementLagStrategy(BaseStrategy):
 
             opp.risk_factors.append(f"Settlement urgency: {urgency}")
             if urgency == "LOW":
-                opp.risk_factors.append(
-                    "WARNING: Opportunity may already be captured by faster bots"
-                )
+                opp.risk_factors.append("WARNING: Opportunity may already be captured by faster bots")
         return opp
 
-    def _check_negrisk_settlement(
-        self, event: Event, prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def _check_negrisk_settlement(self, event: Event, prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Check NegRisk events for settlement lag in multi-outcome markets.
 
         NegRisk events are especially vulnerable to settlement lag because
@@ -362,9 +346,7 @@ class SettlementLagStrategy(BaseStrategy):
             if any_overdue:
                 signals.append("past resolution date")
             if likely_winner and likely_winner_price > self.NEAR_ONE_THRESHOLD:
-                signals.append(
-                    f"likely winner: {likely_winner} (${likely_winner_price:.3f})"
-                )
+                signals.append(f"likely winner: {likely_winner} (${likely_winner_price:.3f})")
 
             opp = self.create_opportunity(
                 title=f"Settlement Lag (NegRisk): {event.title[:50]}",

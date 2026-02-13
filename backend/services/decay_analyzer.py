@@ -132,9 +132,7 @@ class DecayAnalyzer:
         async with self._lock:
             now = utcnow()
             incoming_ids: Set[str] = {opp.id for opp in opportunities}
-            incoming_map: Dict[str, ArbitrageOpportunity] = {
-                opp.id: opp for opp in opportunities
-            }
+            incoming_map: Dict[str, ArbitrageOpportunity] = {opp.id: opp for opp in opportunities}
 
             # --- Detect newly-appeared opportunities ---
             new_ids = incoming_ids - set(self._active.keys())
@@ -167,9 +165,7 @@ class DecayAnalyzer:
 
             # Bulk-update last_seen in DB for still-present entries
             if still_present_ids:
-                await self._bulk_update_last_seen(
-                    [self._active[oid] for oid in still_present_ids], now
-                )
+                await self._bulk_update_last_seen([self._active[oid] for oid in still_present_ids], now)
 
             # Invalidate cache whenever we record closures
             if disappeared_ids:
@@ -327,9 +323,7 @@ class DecayAnalyzer:
         async with self._lock:
             now = utcnow()
             cutoff = now - timedelta(seconds=max_age_seconds)
-            expired_ids = [
-                oid for oid, t in self._active.items() if t.first_seen < cutoff
-            ]
+            expired_ids = [oid for oid, t in self._active.items() if t.first_seen < cutoff]
             for oid in expired_ids:
                 tracked = self._active.pop(oid)
                 lifetime = (now - tracked.first_seen).total_seconds()
@@ -440,9 +434,7 @@ class DecayAnalyzer:
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(OpportunityLifetime).where(
-                        OpportunityLifetime.id == tracked.db_record_id
-                    )
+                    select(OpportunityLifetime).where(OpportunityLifetime.id == tracked.db_record_id)
                 )
                 record = result.scalar_one_or_none()
                 if record:
@@ -472,9 +464,7 @@ class DecayAnalyzer:
         try:
             async with AsyncSessionLocal() as session:
                 ids = [t.db_record_id for t in tracked_list]
-                result = await session.execute(
-                    select(OpportunityLifetime).where(OpportunityLifetime.id.in_(ids))
-                )
+                result = await session.execute(select(OpportunityLifetime).where(OpportunityLifetime.id.in_(ids)))
                 records = result.scalars().all()
                 for record in records:
                     record.last_seen = now

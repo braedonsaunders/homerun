@@ -120,9 +120,7 @@ class ChatMemoryService:
         )
         async with AsyncSessionLocal() as session:
             session.add(msg)
-            result = await session.execute(
-                select(AIChatSession).where(AIChatSession.id == session_id)
-            )
+            result = await session.execute(select(AIChatSession).where(AIChatSession.id == session_id))
             s = result.scalar_one_or_none()
             if s is not None:
                 s.updated_at = utcnow()
@@ -132,9 +130,7 @@ class ChatMemoryService:
 
     async def archive_session(self, session_id: str) -> bool:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(AIChatSession).where(AIChatSession.id == session_id)
-            )
+            result = await session.execute(select(AIChatSession).where(AIChatSession.id == session_id))
             row = result.scalar_one_or_none()
             if row is None:
                 return False

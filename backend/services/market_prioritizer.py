@@ -127,9 +127,7 @@ class MarketPrioritizer:
     # Tier classification
     # ------------------------------------------------------------------
 
-    def classify_market(
-        self, market: Market, now: Optional[datetime] = None
-    ) -> MarketTier:
+    def classify_market(self, market: Market, now: Optional[datetime] = None) -> MarketTier:
         """Classify a single market into a priority tier.
 
         Classification is based on multiple signals:
@@ -153,9 +151,7 @@ class MarketPrioritizer:
         warm_signals = 0
 
         # Signal 1: Age — new markets are the highest priority
-        age_seconds = (
-            (now - state.first_seen_at).total_seconds() if state.first_seen_at else 0
-        )
+        age_seconds = (now - state.first_seen_at).total_seconds() if state.first_seen_at else 0
         if age_seconds <= settings.HOT_TIER_MAX_AGE_SECONDS:
             hot_signals += 2  # Strong signal
         elif age_seconds <= settings.WARM_TIER_MAX_AGE_SECONDS:
@@ -428,9 +424,7 @@ class MarketPrioritizer:
 
     def get_hot_market_ids(self) -> set[str]:
         """Return IDs of all markets currently in the HOT tier."""
-        return {
-            mid for mid, state in self._states.items() if state.tier == MarketTier.HOT
-        }
+        return {mid for mid, state in self._states.items() if state.tier == MarketTier.HOT}
 
     def get_markets_needing_eval(
         self,
@@ -447,9 +441,7 @@ class MarketPrioritizer:
         result = []
 
         tier_rank = {MarketTier.HOT: 0, MarketTier.WARM: 1, MarketTier.COLD: 2}
-        filter_rank = (
-            tier_rank.get(current_tier_filter, 2) if current_tier_filter else 2
-        )
+        filter_rank = tier_rank.get(current_tier_filter, 2) if current_tier_filter else 2
 
         for market in markets:
             state = self._states.get(market.id)
@@ -497,11 +489,7 @@ class MarketPrioritizer:
                 pass
 
         # Check if many HOT markets with alerts
-        hot_alert_count = sum(
-            1
-            for s in self._states.values()
-            if s.tier == MarketTier.HOT and s.has_monitor_alert
-        )
+        hot_alert_count = sum(1 for s in self._states.values() if s.tier == MarketTier.HOT and s.has_monitor_alert)
         if hot_alert_count >= 3:
             return True
 
@@ -515,9 +503,7 @@ class MarketPrioritizer:
         """Remove states for markets not seen in max_age_hours."""
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         stale = [
-            mid
-            for mid, state in self._states.items()
-            if state.last_evaluated_at and state.last_evaluated_at < cutoff
+            mid for mid, state in self._states.items() if state.last_evaluated_at and state.last_evaluated_at < cutoff
         ]
         for mid in stale:
             del self._states[mid]
@@ -528,9 +514,7 @@ class MarketPrioritizer:
 
     def get_stats(self) -> dict:
         """Return current prioritizer statistics."""
-        hot_ids = [
-            s.market_id for s in self._states.values() if s.tier == MarketTier.HOT
-        ]
+        hot_ids = [s.market_id for s in self._states.values() if s.tier == MarketTier.HOT]
         return {
             "total_tracked": len(self._states),
             "hot_count": self._stats.hot_count,
@@ -538,11 +522,7 @@ class MarketPrioritizer:
             "cold_count": self._stats.cold_count,
             "markets_skipped_unchanged": self._stats.markets_skipped_unchanged,
             "hot_market_ids": hot_ids[:20],  # Cap for API response size
-            "last_full_classify": (
-                self._last_full_classify.isoformat()
-                if self._last_full_classify
-                else None
-            ),
+            "last_full_classify": (self._last_full_classify.isoformat() if self._last_full_classify else None),
         }
 
 

@@ -45,9 +45,7 @@ class MustHappenStrategy(BaseStrategy):
 
     strategy_type = StrategyType.MUST_HAPPEN
     name = "Must-Happen"
-    description = (
-        "Buy YES on all outcomes - REQUIRES MANUAL VERIFICATION of exhaustiveness"
-    )
+    description = "Buy YES on all outcomes - REQUIRES MANUAL VERIFICATION of exhaustiveness"
 
     # Keywords indicating POTENTIALLY exhaustive outcome sets
     # WARNING: These are HEURISTICS, not guarantees!
@@ -78,9 +76,7 @@ class MustHappenStrategy(BaseStrategy):
         "finals winner",
     ]
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         for event in events:
@@ -199,15 +195,11 @@ class MustHappenStrategy(BaseStrategy):
             "by 2027",
             "before ",
         ]
-        date_count = sum(
-            1 for q in questions if any(pattern in q for pattern in date_patterns)
-        )
+        date_count = sum(1 for q in questions if any(pattern in q for pattern in date_patterns))
         # If more than half the markets are date-based, reject the whole event
         return date_count > len(questions) * 0.5
 
-    def _detect_must_happen(
-        self, event: Event, prices: dict[str, dict]
-    ) -> ArbitrageOpportunity | None:
+    def _detect_must_happen(self, event: Event, prices: dict[str, dict]) -> ArbitrageOpportunity | None:
         """Detect must-happen arbitrage opportunity"""
         active_markets = [m for m in event.markets if m.active and not m.closed]
 
@@ -240,9 +232,7 @@ class MustHappenStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market.question[:50],
                     "price": yes_price,
-                    "token_id": market.clob_token_ids[0]
-                    if market.clob_token_ids
-                    else None,
+                    "token_id": market.clob_token_ids[0] if market.clob_token_ids else None,
                 }
             )
 
@@ -265,12 +255,8 @@ class MustHappenStrategy(BaseStrategy):
 
         # Add extra risk factor for must-happen strategy
         if opp:
-            opp.risk_factors.insert(
-                0, "⚠️ REQUIRES MANUAL VERIFICATION - may have hidden outcomes"
-            )
+            opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may have hidden outcomes")
             if total_yes < 0.90:
-                opp.risk_factors.insert(
-                    1, f"Low total ({total_yes:.0%}) suggests possible missing outcomes"
-                )
+                opp.risk_factors.insert(1, f"Low total ({total_yes:.0%}) suggests possible missing outcomes")
 
         return opp

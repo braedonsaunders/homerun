@@ -124,9 +124,7 @@ class StatArbStrategy(BaseStrategy):
     # ------------------------------------------------------------------
     # Signal 2: Category Base Rate
     # ------------------------------------------------------------------
-    def _signal_category_base_rate(
-        self, yes_price: float, category: Optional[str]
-    ) -> float:
+    def _signal_category_base_rate(self, yes_price: float, category: Optional[str]) -> float:
         """Compare market price to category base rate.
 
         If the market price is significantly above the category's
@@ -223,9 +221,7 @@ class StatArbStrategy(BaseStrategy):
     # ------------------------------------------------------------------
     # Signal 5: Volume-Price Divergence
     # ------------------------------------------------------------------
-    def _signal_volume_price(
-        self, yes_price: float, volume: float, liquidity: float
-    ) -> float:
+    def _signal_volume_price(self, yes_price: float, volume: float, liquidity: float) -> float:
         """Detect volume-price divergence.
 
         High volume with small price change away from 0.50 = informed
@@ -337,9 +333,7 @@ class StatArbStrategy(BaseStrategy):
                     return event.category
         return None
 
-    def _get_event_for_market(
-        self, market: Market, events: list[Event]
-    ) -> Optional[Event]:
+    def _get_event_for_market(self, market: Market, events: list[Event]) -> Optional[Event]:
         """Find the parent event for a given market."""
         for event in events:
             for em in event.markets:
@@ -384,9 +378,7 @@ class StatArbStrategy(BaseStrategy):
         signals["momentum"] = momentum
 
         # Signal 5: Volume-price divergence
-        vol_price = self._signal_volume_price(
-            yes_price, market.volume, market.liquidity
-        )
+        vol_price = self._signal_volume_price(yes_price, market.volume, market.liquidity)
         signals["volume_price"] = vol_price
 
         # Weighted composite adjustment
@@ -489,18 +481,14 @@ class StatArbStrategy(BaseStrategy):
                 outcome = "YES"
                 buy_price = yes_price
                 token_id = (
-                    market.clob_token_ids[0]
-                    if market.clob_token_ids and len(market.clob_token_ids) > 0
-                    else None
+                    market.clob_token_ids[0] if market.clob_token_ids and len(market.clob_token_ids) > 0 else None
                 )
             else:
                 # Fair prob < market price => YES is overpriced, buy NO
                 outcome = "NO"
                 buy_price = no_price
                 token_id = (
-                    market.clob_token_ids[1]
-                    if market.clob_token_ids and len(market.clob_token_ids) > 1
-                    else None
+                    market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
                 )
 
             # Profit metrics
@@ -527,9 +515,7 @@ class StatArbStrategy(BaseStrategy):
                 continue
             if max_position < settings.MIN_POSITION_SIZE:
                 continue
-            absolute_profit = (
-                max_position * (net_profit / total_cost) if total_cost > 0 else 0
-            )
+            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
             if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
                 continue
             if market.end_date:
@@ -560,15 +546,11 @@ class StatArbStrategy(BaseStrategy):
             if signal_breakdown.get("anchoring", 0) > 0:
                 risk_factors.append("Anchoring bias detected at round number")
             if abs(signal_breakdown.get("category_base_rate", 0)) > 0.10:
-                risk_factors.append(
-                    f"Category base rate deviation: {signal_breakdown['category_base_rate']:+.2f}"
-                )
+                risk_factors.append(f"Category base rate deviation: {signal_breakdown['category_base_rate']:+.2f}")
             if abs(signal_breakdown.get("consensus", 0)) > 0.3:
                 risk_factors.append("Price is an outlier within its event")
             if abs(signal_breakdown.get("momentum", 0)) > 0.3:
-                direction_word = (
-                    "upward" if signal_breakdown["momentum"] > 0 else "downward"
-                )
+                direction_word = "upward" if signal_breakdown["momentum"] > 0 else "downward"
                 risk_factors.append(f"Strong {direction_word} momentum detected")
             if abs(signal_breakdown.get("volume_price", 0)) > 0.3:
                 risk_factors.append("Volume-price divergence detected")
@@ -627,9 +609,7 @@ class StatArbStrategy(BaseStrategy):
 
         # Sort by absolute edge (strongest signals first)
         opportunities.sort(
-            key=lambda o: abs(
-                o.positions_to_take[0].get("edge", 0) if o.positions_to_take else 0
-            ),
+            key=lambda o: abs(o.positions_to_take[0].get("edge", 0) if o.positions_to_take else 0),
             reverse=True,
         )
 

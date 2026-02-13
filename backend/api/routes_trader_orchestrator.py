@@ -69,9 +69,7 @@ def _assert_not_globally_paused() -> None:
 
 async def _paper_account_exists(session: AsyncSession, account_id: str) -> bool:
     row = (
-        await session.execute(
-            select(SimulationAccount.id).where(SimulationAccount.id == account_id)
-        )
+        await session.execute(select(SimulationAccount.id).where(SimulationAccount.id == account_id))
     ).scalar_one_or_none()
     return row is not None
 
@@ -107,9 +105,7 @@ async def start_orchestrator(
     settings_updates = {}
     if mode == "paper":
         requested_paper = str(request.paper_account_id or "").strip() or None
-        existing_paper = str(
-            (control_before.get("settings") or {}).get("paper_account_id") or ""
-        ).strip() or None
+        existing_paper = str((control_before.get("settings") or {}).get("paper_account_id") or "").strip() or None
         paper_account_id = requested_paper or existing_paper
         if not paper_account_id:
             raise HTTPException(
@@ -225,7 +221,9 @@ async def start_live(
         requested_by=request.requested_by,
     )
     if preflight.get("status") != "passed":
-        raise HTTPException(status_code=409, detail="Live preflight failed. Configure trading settings/credentials first.")
+        raise HTTPException(
+            status_code=409, detail="Live preflight failed. Configure trading settings/credentials first."
+        )
 
     ok = await consume_live_arm_token(session, request.arm_token)
     if not ok:

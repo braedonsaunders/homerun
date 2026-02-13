@@ -329,9 +329,7 @@ class ExecutionTierService:
                 select(
                     TierAssignment.category,
                     func.count(TierAssignment.id).label("count"),
-                    func.avg(TierAssignment.category_buffer_applied).label(
-                        "avg_category_buffer"
-                    ),
+                    func.avg(TierAssignment.category_buffer_applied).label("avg_category_buffer"),
                 )
                 .where(TierAssignment.category.isnot(None))
                 .group_by(TierAssignment.category)
@@ -349,21 +347,15 @@ class ExecutionTierService:
                 "name": row.tier_name,
                 "count": row.count,
                 "avg_roi_percent": round(row.avg_roi, 4) if row.avg_roi else 0.0,
-                "avg_liquidity": round(row.avg_liquidity, 2)
-                if row.avg_liquidity
-                else 0.0,
-                "avg_total_buffer": round(row.avg_total_buffer, 6)
-                if row.avg_total_buffer
-                else 0.0,
+                "avg_liquidity": round(row.avg_liquidity, 2) if row.avg_liquidity else 0.0,
+                "avg_total_buffer": round(row.avg_total_buffer, 6) if row.avg_total_buffer else 0.0,
             }
 
         category_breakdown = {}
         for row in category_rows:
             category_breakdown[row.category or "unknown"] = {
                 "count": row.count,
-                "avg_category_buffer": round(row.avg_category_buffer, 6)
-                if row.avg_category_buffer
-                else 0.0,
+                "avg_category_buffer": round(row.avg_category_buffer, 6) if row.avg_category_buffer else 0.0,
             }
 
         return {

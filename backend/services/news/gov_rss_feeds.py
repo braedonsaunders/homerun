@@ -61,9 +61,7 @@ class GovRSSFeedService:
 
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 row = result.scalar_one_or_none()
                 if row is None:
                     row = AppSettings(
@@ -110,11 +108,7 @@ class GovRSSFeedService:
             self._last_errors.append("No RSS feeds configured")
             return []
 
-        tasks = [
-            self._fetch_single_feed(feed_info)
-            for feed_info in feed_rows
-            if bool(feed_info.get("enabled", True))
-        ]
+        tasks = [self._fetch_single_feed(feed_info) for feed_info in feed_rows if bool(feed_info.get("enabled", True))]
         if not tasks:
             self._last_errors.append("All RSS feeds are disabled")
             return []
@@ -236,10 +230,7 @@ class GovRSSFeedService:
 
     def get_articles(self, max_age_hours: int = 48) -> list[GovArticle]:
         cutoff = datetime.now(timezone.utc).timestamp() - (max_age_hours * 3600)
-        articles = [
-            a for a in self._articles.values()
-            if a.fetched_at.timestamp() > cutoff
-        ]
+        articles = [a for a in self._articles.values() if a.fetched_at.timestamp() > cutoff]
         articles.sort(key=lambda a: a.fetched_at.timestamp(), reverse=True)
         return articles
 
@@ -249,10 +240,7 @@ class GovRSSFeedService:
 
     def _prune_old_articles(self) -> None:
         cutoff = datetime.now(timezone.utc).timestamp() - (72 * 3600)
-        to_remove = [
-            aid for aid, article in self._articles.items()
-            if article.fetched_at.timestamp() < cutoff
-        ]
+        to_remove = [aid for aid, article in self._articles.items() if article.fetched_at.timestamp() < cutoff]
         for aid in to_remove:
             del self._articles[aid]
         valid_ids = set(self._articles.keys())

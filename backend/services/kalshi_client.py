@@ -34,9 +34,7 @@ class KalshiClient:
     def __init__(self):
         self.base_url: str = KALSHI_API_BASE
         self._client: Optional[httpx.AsyncClient] = None
-        self._trading_client: Optional[httpx.AsyncClient] = (
-            None  # Proxy-aware for trading
-        )
+        self._trading_client: Optional[httpx.AsyncClient] = None  # Proxy-aware for trading
 
         # Authentication state
         self._auth_token: Optional[str] = None
@@ -156,9 +154,7 @@ class KalshiClient:
             await self._rate_limit_wait()
             client = await self._get_client()
             url = f"{self.base_url}{path}"
-            response = await client.get(
-                url, params=params, headers=self._auth_headers()
-            )
+            response = await client.get(url, params=params, headers=self._auth_headers())
             if response.status_code == 429 and attempt < max_retries:
                 # Drain bucket so other concurrent requests also pause
                 self._drain_read_bucket()
@@ -192,9 +188,7 @@ class KalshiClient:
             await self._rate_limit_wait(write=True)
             client = await self._get_client()
             url = f"{self.base_url}{path}"
-            response = await client.post(
-                url, json=json_body or {}, headers=self._auth_headers()
-            )
+            response = await client.post(url, json=json_body or {}, headers=self._auth_headers())
             if response.status_code == 429 and attempt < max_retries:
                 self._write_bucket = 0.0
                 self._write_last_refill = time.monotonic()
@@ -238,9 +232,7 @@ class KalshiClient:
 
         # Use midpoint of bid/ask when available; fall back to last_price
         yes_price = (yes_bid + yes_ask) / 2.0 if (yes_bid + yes_ask) > 0 else last_price
-        no_price = (
-            (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
-        )
+        no_price = (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
 
         outcome_prices = [yes_price, no_price]
 
@@ -298,9 +290,7 @@ class KalshiClient:
         markets: list[Market] = []
         for m in data.get("markets", []):
             try:
-                markets.append(
-                    KalshiClient._parse_kalshi_market(m, event_ticker=event_ticker)
-                )
+                markets.append(KalshiClient._parse_kalshi_market(m, event_ticker=event_ticker))
             except Exception:
                 pass
 
@@ -473,9 +463,7 @@ class KalshiClient:
         max_pages = 2  # keep it fast — 2 pages × 200 = 400 events
 
         for _ in range(max_pages):
-            events, next_cursor = await self.get_events(
-                closed=False, limit=200, cursor=cursor
-            )
+            events, next_cursor = await self.get_events(closed=False, limit=200, cursor=cursor)
             if not events:
                 break
 
@@ -499,9 +487,7 @@ class KalshiClient:
         async def _fill_markets(event: Event):
             if not event.markets:
                 async with sem:
-                    markets, _ = await self.get_markets_page(
-                        limit=200, event_ticker=event.id, status="open"
-                    )
+                    markets, _ = await self.get_markets_page(limit=200, event_ticker=event.id, status="open")
                     event.markets = markets
 
         await asyncio.gather(*[_fill_markets(e) for e in matching_events])
@@ -557,9 +543,7 @@ class KalshiClient:
         markets: list[Market] = []
         for m in markets_raw:
             try:
-                markets.append(
-                    self._parse_kalshi_market(m, event_ticker=event_ticker or "")
-                )
+                markets.append(self._parse_kalshi_market(m, event_ticker=event_ticker or ""))
             except Exception as exc:
                 logger.debug("Failed to parse Kalshi market", error=str(exc))
 
@@ -621,13 +605,9 @@ class KalshiClient:
 
         market_data = data.get("market", data)
         try:
-            return self._parse_kalshi_market(
-                market_data, event_ticker=market_data.get("event_ticker", "")
-            )
+            return self._parse_kalshi_market(market_data, event_ticker=market_data.get("event_ticker", ""))
         except Exception as exc:
-            logger.error(
-                "Failed to parse Kalshi market", ticker=market_id, error=str(exc)
-            )
+            logger.error("Failed to parse Kalshi market", ticker=market_id, error=str(exc))
             return None
 
     async def get_market_candlesticks_batch(
@@ -686,11 +666,7 @@ class KalshiClient:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            ticker = str(
-                row.get("market_ticker")
-                or row.get("ticker")
-                or ""
-            ).strip()
+            ticker = str(row.get("market_ticker") or row.get("ticker") or "").strip()
             if not ticker:
                 continue
 
@@ -800,9 +776,7 @@ class KalshiClient:
             await self._rate_limit_wait(write=True)
             client = await self._get_client()
             url = f"{self.base_url}/login"
-            response = await client.post(
-                url, json={"email": email, "password": password}
-            )
+            response = await client.post(url, json={"email": email, "password": password})
             response.raise_for_status()
             data = response.json()
             self._auth_token = data.get("token")
@@ -958,14 +932,8 @@ class KalshiClient:
                             if p["market_id"] == ticker:
                                 p["market_question"] = market.question
                                 p["event_slug"] = market.event_slug
-                                p["current_price"] = (
-                                    market.yes_price
-                                    if p["outcome"] == "YES"
-                                    else market.no_price
-                                )
-                                p["unrealized_pnl"] = p["size"] * (
-                                    p["current_price"] - p["average_cost"]
-                                )
+                                p["current_price"] = market.yes_price if p["outcome"] == "YES" else market.no_price
+                                p["unrealized_pnl"] = p["size"] * (p["current_price"] - p["average_cost"])
 
             return positions
         except httpx.HTTPStatusError as exc:
@@ -1009,9 +977,7 @@ class KalshiClient:
                 "type": order_type,
             }
             if order_type == "limit":
-                body["yes_price"] = (
-                    price_cents if side == "yes" else (100 - price_cents)
-                )
+                body["yes_price"] = price_cents if side == "yes" else (100 - price_cents)
 
             data = await self._post("/portfolio/orders", json_body=body)
             order = data.get("order", data)

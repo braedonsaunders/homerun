@@ -63,9 +63,7 @@ class KellyCriterion:
     MAX_KELLY_FRACTION: float = 0.05  # Never bet more than 5% of bankroll
 
     @staticmethod
-    def calculate_kelly_fraction(
-        win_prob: float, win_amount: float, loss_amount: float
-    ) -> float:
+    def calculate_kelly_fraction(win_prob: float, win_amount: float, loss_amount: float) -> float:
         """Classic Kelly formula: f* = (p * b - q) / b
 
         where b = win_amount / loss_amount, p = win_prob, q = 1 - p.
@@ -84,14 +82,10 @@ class KellyCriterion:
         return max(0.0, min(fraction, 1.0))
 
     @staticmethod
-    def calculate_half_kelly(
-        win_prob: float, win_amount: float, loss_amount: float
-    ) -> float:
+    def calculate_half_kelly(win_prob: float, win_amount: float, loss_amount: float) -> float:
         """Half-Kelly: more conservative, reduces variance by ~75% while
         capturing ~75% of the growth rate of full Kelly."""
-        full = KellyCriterion.calculate_kelly_fraction(
-            win_prob, win_amount, loss_amount
-        )
+        full = KellyCriterion.calculate_kelly_fraction(win_prob, win_amount, loss_amount)
         return full / 2.0
 
     @classmethod
@@ -243,13 +237,9 @@ class PortfolioRiskManager:
 
         for pos in positions:
             if pos.category:
-                exposure_by_category[pos.category] = (
-                    exposure_by_category.get(pos.category, 0.0) + pos.size_usd
-                )
+                exposure_by_category[pos.category] = exposure_by_category.get(pos.category, 0.0) + pos.size_usd
             if pos.event_id:
-                exposure_by_event[pos.event_id] = (
-                    exposure_by_event.get(pos.event_id, 0.0) + pos.size_usd
-                )
+                exposure_by_event[pos.event_id] = exposure_by_event.get(pos.event_id, 0.0) + pos.size_usd
 
         total_exposure = sum(p.size_usd for p in positions)
 
@@ -276,28 +266,18 @@ class PortfolioRiskManager:
         if not self._positions:
             return 0.0
 
-        opp_market_ids = set(
-            m.get("id", "") for m in opportunity.markets if m.get("id")
-        )
+        opp_market_ids = set(m.get("id", "") for m in opportunity.markets if m.get("id"))
 
         max_score = 0.0
 
         for pos in self._positions.values():
             # Same event is highest correlation
-            if (
-                opportunity.event_id
-                and pos.event_id
-                and opportunity.event_id == pos.event_id
-            ):
+            if opportunity.event_id and pos.event_id and opportunity.event_id == pos.event_id:
                 max_score = max(max_score, 1.0)
                 break  # Can't go higher
 
             # Same category is moderate correlation
-            if (
-                opportunity.category
-                and pos.category
-                and opportunity.category == pos.category
-            ):
+            if opportunity.category and pos.category and opportunity.category == pos.category:
                 max_score = max(max_score, 0.5)
 
             # Overlapping market IDs is mild correlation
@@ -330,10 +310,7 @@ class PortfolioRiskManager:
         # 2. Total exposure limit
         remaining_total = self.max_total_exposure - state.total_exposure_usd
         if remaining_total <= 0:
-            reason = (
-                f"Total exposure limit reached "
-                f"(${state.total_exposure_usd:.2f} / ${self.max_total_exposure:.2f})"
-            )
+            reason = f"Total exposure limit reached (${state.total_exposure_usd:.2f} / ${self.max_total_exposure:.2f})"
             logger.warning(reason, opportunity_id=opportunity.id)
             return False, reason, 0.0
 
@@ -501,9 +478,7 @@ class PortfolioRiskManager:
             "num_positions": state.num_positions,
             "max_total_limit": self.max_total_exposure,
             "utilization_pct": round(
-                (state.total_exposure_usd / self.max_total_exposure * 100)
-                if self.max_total_exposure > 0
-                else 0.0,
+                (state.total_exposure_usd / self.max_total_exposure * 100) if self.max_total_exposure > 0 else 0.0,
                 1,
             ),
             "category_breakdown": state.exposure_by_category,
@@ -534,18 +509,10 @@ class PortfolioRiskManager:
             hhi = 0.0
 
         # Size-weighted expected return
-        weighted_roi = (
-            sum(p.size_usd * p.expected_roi for p in positions) / total
-            if total > 0
-            else 0.0
-        )
+        weighted_roi = sum(p.size_usd * p.expected_roi for p in positions) / total if total > 0 else 0.0
 
         # Size-weighted risk (used as volatility proxy)
-        weighted_risk = (
-            sum(p.size_usd * p.risk_score for p in positions) / total
-            if total > 0
-            else 0.0
-        )
+        weighted_risk = sum(p.size_usd * p.risk_score for p in positions) / total if total > 0 else 0.0
 
         # Sharpe-like ratio: expected return / risk
         sharpe = weighted_roi / weighted_risk if weighted_risk > 0 else 0.0
@@ -556,15 +523,9 @@ class PortfolioRiskManager:
 
         # Top category and event
         top_category = (
-            max(state.exposure_by_category, key=state.exposure_by_category.get)
-            if state.exposure_by_category
-            else None
+            max(state.exposure_by_category, key=state.exposure_by_category.get) if state.exposure_by_category else None
         )
-        top_event = (
-            max(state.exposure_by_event, key=state.exposure_by_event.get)
-            if state.exposure_by_event
-            else None
-        )
+        top_event = max(state.exposure_by_event, key=state.exposure_by_event.get) if state.exposure_by_event else None
 
         report.update(
             {

@@ -21,9 +21,7 @@ class BasicArbStrategy(BaseStrategy):
     name = "Basic Arbitrage"
     description = "Buy YES and NO on same market when total < $1"
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         for market in markets:
@@ -41,12 +39,8 @@ class BasicArbStrategy(BaseStrategy):
 
             # Update with live prices if we have them
             if market.clob_token_ids:
-                yes_token = (
-                    market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
-                )
-                no_token = (
-                    market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-                )
+                yes_token = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
+                no_token = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
 
                 if yes_token and yes_token in prices:
                     yes_price = prices[yes_token].get("mid", yes_price)
@@ -67,17 +61,13 @@ class BasicArbStrategy(BaseStrategy):
                     "action": "BUY",
                     "outcome": "YES",
                     "price": yes_price,
-                    "token_id": market.clob_token_ids[0]
-                    if market.clob_token_ids
-                    else None,
+                    "token_id": market.clob_token_ids[0] if market.clob_token_ids else None,
                 },
                 {
                     "action": "BUY",
                     "outcome": "NO",
                     "price": no_price,
-                    "token_id": market.clob_token_ids[1]
-                    if len(market.clob_token_ids) > 1
-                    else None,
+                    "token_id": market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None,
                 },
             ]
 

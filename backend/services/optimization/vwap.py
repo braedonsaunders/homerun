@@ -32,14 +32,8 @@ class OrderBook:
     @classmethod
     def from_clob_response(cls, data: dict) -> "OrderBook":
         """Create OrderBook from Polymarket CLOB API response."""
-        bids = [
-            OrderBookLevel(price=float(b["price"]), size=float(b["size"]))
-            for b in data.get("bids", [])
-        ]
-        asks = [
-            OrderBookLevel(price=float(a["price"]), size=float(a["size"]))
-            for a in data.get("asks", [])
-        ]
+        bids = [OrderBookLevel(price=float(b["price"]), size=float(b["size"])) for b in data.get("bids", [])]
+        asks = [OrderBookLevel(price=float(a["price"]), size=float(a["size"])) for a in data.get("asks", [])]
         # Sort: bids descending, asks ascending
         bids.sort(key=lambda x: x.price, reverse=True)
         asks.sort(key=lambda x: x.price)
@@ -152,9 +146,7 @@ class VWAPCalculator:
             fill_probability=fill_probability,
         )
 
-    def calculate_sell_vwap(
-        self, order_book: OrderBook, size_shares: float
-    ) -> VWAPResult:
+    def calculate_sell_vwap(self, order_book: OrderBook, size_shares: float) -> VWAPResult:
         """
         Calculate VWAP for selling a given number of shares.
 
@@ -205,9 +197,7 @@ class VWAPCalculator:
         mid = (best_ask + best_bid) / 2 if (best_ask + best_bid) > 0 else vwap
         slippage_bps = ((mid - vwap) / mid * 10000) if mid > 0 else 0
 
-        fill_probability = (
-            min(1.0, total_shares_sold / size_shares) if size_shares > 0 else 1.0
-        )
+        fill_probability = min(1.0, total_shares_sold / size_shares) if size_shares > 0 else 1.0
 
         return VWAPResult(
             vwap=vwap,

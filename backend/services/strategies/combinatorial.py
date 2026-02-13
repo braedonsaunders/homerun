@@ -126,9 +126,7 @@ class KnownPatternMatcher:
         r"(?:above|over|more than|greater than|exceeds?)\s+\$?([\d,]+(?:\.\d+)?)",
         re.IGNORECASE,
     )
-    _PRICE_BELOW = re.compile(
-        r"(?:below|under|less than|fewer than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE
-    )
+    _PRICE_BELOW = re.compile(r"(?:below|under|less than|fewer than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE)
 
     # Date-ordered cumulative pattern: "by <date_a>" implies "by <date_b>" when A < B
     _BY_DATE = re.compile(
@@ -141,9 +139,7 @@ class KnownPatternMatcher:
     _WINS_PATTERN = re.compile(r"\b(?P<entity>.+?)\s+wins?\b", re.IGNORECASE)
 
     @classmethod
-    def match(
-        cls, q_a: str, q_b: str, share_context: bool
-    ) -> Optional[tuple[DependencyType, str]]:
+    def match(cls, q_a: str, q_b: str, share_context: bool) -> Optional[tuple[DependencyType, str]]:
         """
         Check two market questions against known patterns.
 
@@ -286,9 +282,7 @@ class DependencyAccuracyTracker:
                 self._records = data.get("records", [])
                 self._threshold_override = data.get("threshold_override")
                 self._accuracy_cache = None
-                logger.info(
-                    f"Loaded {len(self._records)} dependency accuracy records from disk"
-                )
+                logger.info(f"Loaded {len(self._records)} dependency accuracy records from disk")
         except Exception as e:
             logger.warning(f"Failed to load accuracy data: {e}")
 
@@ -314,9 +308,7 @@ class DependencyAccuracyTracker:
     # Maximum number of records to keep in memory
     _MAX_RECORDS = 500
 
-    def record_dependency(
-        self, market_a_id: str, market_b_id: str, dep_type: str, acted_on: bool = True
-    ) -> str:
+    def record_dependency(self, market_a_id: str, market_b_id: str, dep_type: str, acted_on: bool = True) -> str:
         """Record that a dependency was detected and (optionally) acted upon."""
         dep_key = f"{market_a_id}:{market_b_id}:{dep_type}"
         self._records.append(
@@ -334,9 +326,7 @@ class DependencyAccuracyTracker:
         self._save_to_disk()
         return dep_key
 
-    def record_resolution(
-        self, market_a_id: str, market_b_id: str, dep_type: str, was_correct: bool
-    ) -> None:
+    def record_resolution(self, market_a_id: str, market_b_id: str, dep_type: str, was_correct: bool) -> None:
         """Record whether a dependency turned out to be correct after resolution."""
         dep_key = f"{market_a_id}:{market_b_id}:{dep_type}"
         for record in reversed(self._records):
@@ -353,9 +343,7 @@ class DependencyAccuracyTracker:
         if self._accuracy_cache is not None:
             return self._accuracy_cache
 
-        resolved = [
-            r for r in self._records if r["correct"] is not None and r["acted_on"]
-        ]
+        resolved = [r for r in self._records if r["correct"] is not None and r["acted_on"]]
         if not resolved:
             return None
 
@@ -369,9 +357,7 @@ class DependencyAccuracyTracker:
 
     @property
     def total_resolved(self) -> int:
-        return sum(
-            1 for r in self._records if r["correct"] is not None and r["acted_on"]
-        )
+        return sum(1 for r in self._records if r["correct"] is not None and r["acted_on"])
 
     @property
     def effective_threshold(self) -> float:
@@ -451,16 +437,11 @@ class DependencyValidator:
             return [], 0.0, "REJECT"
 
         # Step 1: Check for known patterns (bypass LLM entirely)
-        known = KnownPatternMatcher.match(
-            market_a_question, market_b_question, share_context
-        )
+        known = KnownPatternMatcher.match(market_a_question, market_b_question, share_context)
         known_pattern_match = known is not None
 
         # Step 2: Structural validation for each dependency
-        structural_results = [
-            self._structural_check(dep, market_a_question, market_b_question)
-            for dep in dependencies
-        ]
+        structural_results = [self._structural_check(dep, market_a_question, market_b_question) for dep in dependencies]
         structural_valid_count = sum(1 for ok in structural_results if ok)
         structural_pass = structural_valid_count > 0
 
@@ -568,9 +549,7 @@ class DependencyValidator:
             return True
 
         # Price thresholds: "above X" implies "above Y" where X > Y
-        above_re = re.compile(
-            r"(?:above|over|more than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE
-        )
+        above_re = re.compile(r"(?:above|over|more than)\s+\$?([\d,]+(?:\.\d+)?)", re.IGNORECASE)
         a_vals = above_re.findall(q_a)
         b_vals = above_re.findall(q_b)
         if a_vals and b_vals:
@@ -664,16 +643,8 @@ class DependencyValidator:
         """
         for dep in dependencies:
             try:
-                p_a = (
-                    prices_a[dep.outcome_a_idx]
-                    if dep.outcome_a_idx < len(prices_a)
-                    else None
-                )
-                p_b = (
-                    prices_b[dep.outcome_b_idx]
-                    if dep.outcome_b_idx < len(prices_b)
-                    else None
-                )
+                p_a = prices_a[dep.outcome_a_idx] if dep.outcome_a_idx < len(prices_a) else None
+                p_b = prices_b[dep.outcome_b_idx] if dep.outcome_b_idx < len(prices_b) else None
 
                 if p_a is None or p_b is None:
                     continue
@@ -683,17 +654,13 @@ class DependencyValidator:
                     # Allow small tolerance for market noise.
                     # Flag if P(A) > P(B) + 0.15 (large contradiction)
                     if p_a > p_b + 0.15:
-                        logger.debug(
-                            f"Price sanity fail (IMPLIES): P(A)={p_a:.3f} > P(B)={p_b:.3f} + 0.15"
-                        )
+                        logger.debug(f"Price sanity fail (IMPLIES): P(A)={p_a:.3f} > P(B)={p_b:.3f} + 0.15")
                         return False
 
                 elif dep.dep_type == DependencyType.EXCLUDES:
                     # If A and B are exclusive, P(A) + P(B) <= 1 + fee margin
                     if p_a + p_b > 1.15:
-                        logger.debug(
-                            f"Price sanity fail (EXCLUDES): P(A)+P(B)={p_a + p_b:.3f} > 1.15"
-                        )
+                        logger.debug(f"Price sanity fail (EXCLUDES): P(A)+P(B)={p_a + p_b:.3f} > 1.15")
                         return False
 
                 elif dep.dep_type == DependencyType.CUMULATIVE:
@@ -734,10 +701,7 @@ class DependencyValidator:
             node_a = (dep.market_a_idx, dep.outcome_a_idx)
             node_b = (dep.market_b_idx, dep.outcome_b_idx)
 
-            if (
-                dep.dep_type == DependencyType.IMPLIES
-                or dep.dep_type == DependencyType.CUMULATIVE
-            ):
+            if dep.dep_type == DependencyType.IMPLIES or dep.dep_type == DependencyType.CUMULATIVE:
                 implies_edges[node_a].add(node_b)
             elif dep.dep_type == DependencyType.EXCLUDES:
                 excludes_edges[node_a].add(node_b)
@@ -749,9 +713,7 @@ class DependencyValidator:
             overlap = implied_nodes & excluded_by_a
             if overlap:
                 for node_b in overlap:
-                    contradictions.append(
-                        f"Node {node_a} both implies and excludes {node_b}"
-                    )
+                    contradictions.append(f"Node {node_a} both implies and excludes {node_b}")
 
         # Check 2: Transitive contradiction
         # A implies B, B implies C ... then A should not exclude any node
@@ -854,17 +816,11 @@ class CombinatorialStrategy(BaseStrategy):
         # Persist accuracy data across restarts
         from pathlib import Path
 
-        persistence_path = str(
-            Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json"
-        )
-        self._accuracy_tracker = DependencyAccuracyTracker(
-            persistence_path=persistence_path
-        )
+        persistence_path = str(Path(__file__).parent.parent.parent / "data" / "dependency_accuracy.json")
+        self._accuracy_tracker = DependencyAccuracyTracker(persistence_path=persistence_path)
         self._validator = DependencyValidator(self._accuracy_tracker)
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """
         Detect combinatorial arbitrage opportunities.
 
@@ -945,9 +901,7 @@ class CombinatorialStrategy(BaseStrategy):
             return None  # Independent markets, no combinatorial arb
 
         # --- Validation pipeline ---
-        share_context = self._share_context(
-            market_a.question.lower(), market_b.question.lower()
-        )
+        share_context = self._share_context(market_a.question.lower(), market_b.question.lower())
         validated_deps, confidence, tier = self._validator.validate_dependencies(
             dependencies=dependencies,
             market_a_question=market_a.question,
@@ -969,15 +923,11 @@ class CombinatorialStrategy(BaseStrategy):
 
         # Track the dependency for accuracy monitoring
         for dep in validated_deps:
-            self._accuracy_tracker.record_dependency(
-                market_a.id, market_b.id, dep.dep_type.value
-            )
+            self._accuracy_tracker.record_dependency(market_a.id, market_b.id, dep.dep_type.value)
 
         # Build constraint matrix and run IP solver
         try:
-            result = constraint_solver.detect_cross_market_arbitrage(
-                prices_a, prices_b, validated_deps
-            )
+            result = constraint_solver.detect_cross_market_arbitrage(prices_a, prices_b, validated_deps)
 
             if result.arbitrage_found and result.profit > self.min_profit:
                 return self._create_combinatorial_opportunity(
@@ -996,9 +946,7 @@ class CombinatorialStrategy(BaseStrategy):
 
         return None
 
-    def _get_market_prices(
-        self, market: Market, prices: dict[str, dict]
-    ) -> list[float]:
+    def _get_market_prices(self, market: Market, prices: dict[str, dict]) -> list[float]:
         """Get outcome prices for a market."""
         if len(market.outcome_prices) == 2:
             # Binary market
@@ -1028,9 +976,7 @@ class CombinatorialStrategy(BaseStrategy):
 
         return []
 
-    def _detect_dependencies_sync(
-        self, market_a: Market, market_b: Market
-    ) -> list[Dependency]:
+    def _detect_dependencies_sync(self, market_a: Market, market_b: Market) -> list[Dependency]:
         """
         Synchronously detect dependencies using heuristics.
 
@@ -1159,9 +1105,7 @@ class CombinatorialStrategy(BaseStrategy):
         common = words_a & words_b
         return len(common) >= 2
 
-    def _find_related_markets(
-        self, market: Market, all_markets: list[Market]
-    ) -> list[Market]:
+    def _find_related_markets(self, market: Market, all_markets: list[Market]) -> list[Market]:
         """Find markets potentially related to the given market."""
         q = market.question.lower()
 
@@ -1420,9 +1364,7 @@ class CombinatorialStrategy(BaseStrategy):
             market_infos.append((info_a, info_b))
 
         # Run LLM detection in parallel
-        analyses = await dependency_detector.batch_detect(
-            [(a, b) for a, b in market_infos], concurrency=5
-        )
+        analyses = await dependency_detector.batch_detect([(a, b) for a, b in market_infos], concurrency=5)
 
         # Also run heuristic detection for each pair to compare
         heuristic_results = {}
@@ -1443,9 +1385,7 @@ class CombinatorialStrategy(BaseStrategy):
 
             # --- Validation pipeline ---
             heuristic_found = heuristic_results.get((market_a.id, market_b.id), False)
-            share_context = self._share_context(
-                market_a.question.lower(), market_b.question.lower()
-            )
+            share_context = self._share_context(market_a.question.lower(), market_b.question.lower())
 
             validated_deps, confidence, tier = self._validator.validate_dependencies(
                 dependencies=analysis.dependencies,
@@ -1468,14 +1408,10 @@ class CombinatorialStrategy(BaseStrategy):
 
             # Track the dependency for accuracy monitoring
             for dep in validated_deps:
-                self._accuracy_tracker.record_dependency(
-                    market_a.id, market_b.id, dep.dep_type.value
-                )
+                self._accuracy_tracker.record_dependency(market_a.id, market_b.id, dep.dep_type.value)
 
             try:
-                result = constraint_solver.detect_cross_market_arbitrage(
-                    prices_a, prices_b, validated_deps
-                )
+                result = constraint_solver.detect_cross_market_arbitrage(prices_a, prices_b, validated_deps)
 
                 if result.arbitrage_found and result.profit > self.min_profit:
                     opp = self._create_combinatorial_opportunity(
@@ -1508,9 +1444,7 @@ class CombinatorialStrategy(BaseStrategy):
         market resolution. Call this when markets resolve so the
         accuracy tracker can auto-adjust thresholds.
         """
-        self._accuracy_tracker.record_resolution(
-            market_a_id, market_b_id, dep_type, was_correct
-        )
+        self._accuracy_tracker.record_resolution(market_a_id, market_b_id, dep_type, was_correct)
 
     def get_validation_stats(self) -> dict:
         """Return validation and accuracy tracking statistics."""

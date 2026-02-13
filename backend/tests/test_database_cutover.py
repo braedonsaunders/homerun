@@ -30,18 +30,12 @@ async def test_init_database_drops_legacy_auto_trader_tables(tmp_path, monkeypat
 
     async with engine.begin() as conn:
         legacy_rows = await conn.execute(
-            text(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name LIKE 'auto_trader_%'"
-            )
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'auto_trader_%'")
         )
         assert legacy_rows.fetchall() == []
 
         orchestrator_rows = await conn.execute(
-            text(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='trader_orchestrator_control'"
-            )
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='trader_orchestrator_control'")
         )
         assert orchestrator_rows.first() is not None
 

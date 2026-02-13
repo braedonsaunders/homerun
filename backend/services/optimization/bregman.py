@@ -84,9 +84,7 @@ class BregmanProjector:
         prices = np.clip(prices, self.epsilon, None)
         return prices / np.sum(prices)
 
-    def project_binary_market(
-        self, yes_price: float, no_price: float
-    ) -> Tuple[float, float, float]:
+    def project_binary_market(self, yes_price: float, no_price: float) -> Tuple[float, float, float]:
         """
         Project binary market prices to arbitrage-free state.
 
@@ -106,9 +104,7 @@ class BregmanProjector:
 
         return float(projected[0]), float(projected[1]), profit
 
-    def project_multi_outcome(
-        self, prices: list[float], constraint_type: str = "sum_to_one"
-    ) -> ProjectionResult:
+    def project_multi_outcome(self, prices: list[float], constraint_type: str = "sum_to_one") -> ProjectionResult:
         """
         Project multi-outcome market prices to arbitrage-free state.
 
@@ -235,15 +231,11 @@ class BregmanProjector:
 
         if A_eq is not None and b_eq is not None:
             for i in range(len(b_eq)):
-                constraints.append(
-                    {"type": "eq", "fun": lambda mu, i=i: A_eq[i] @ mu - b_eq[i]}
-                )
+                constraints.append({"type": "eq", "fun": lambda mu, i=i: A_eq[i] @ mu - b_eq[i]})
 
         if A_ineq is not None and b_ineq is not None:
             for i in range(len(b_ineq)):
-                constraints.append(
-                    {"type": "ineq", "fun": lambda mu, i=i: A_ineq[i] @ mu - b_ineq[i]}
-                )
+                constraints.append({"type": "ineq", "fun": lambda mu, i=i: A_ineq[i] @ mu - b_ineq[i]})
 
         bounds = [(self.epsilon, 1 - self.epsilon)] * n
         mu0 = theta / np.sum(theta)
@@ -269,9 +261,7 @@ class BregmanProjector:
             iterations=result.nit if hasattr(result, "nit") else 0,
         )
 
-    def _compute_positions(
-        self, projected: np.ndarray, original: np.ndarray
-    ) -> list[dict]:
+    def _compute_positions(self, projected: np.ndarray, original: np.ndarray) -> list[dict]:
         """
         Compute optimal trading positions from projection.
 

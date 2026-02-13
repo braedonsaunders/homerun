@@ -37,9 +37,7 @@ class BaseStrategy(ABC):
         self.min_profit = settings.MIN_PROFIT_THRESHOLD
 
     @abstractmethod
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Detect arbitrage opportunities"""
         pass
 
@@ -70,9 +68,7 @@ class BaseStrategy(ABC):
                 factors.append(f"Long capital lockup ({days_until} days to resolution)")
             elif days_until > ext_lockup:
                 score += 0.2
-                factors.append(
-                    f"Extended capital lockup ({days_until} days to resolution)"
-                )
+                factors.append(f"Extended capital lockup ({days_until} days to resolution)")
 
         # Liquidity risk
         low_liq = getattr(settings, "RISK_LOW_LIQUIDITY", 1000.0)
@@ -103,17 +99,14 @@ class BaseStrategy(ABC):
             score += partial_fill_risk * 0.3  # Weight execution risk
             if partial_fill_risk > 0.2:
                 factors.append(
-                    f"Multi-leg execution risk ({num_legs} legs, "
-                    f"{partial_fill_risk:.0%} partial fill chance)"
+                    f"Multi-leg execution risk ({num_legs} legs, {partial_fill_risk:.0%} partial fill chance)"
                 )
             elif num_legs > 1:
                 factors.append(f"Multi-leg trade ({num_legs} legs)")
 
         return min(score, 1.0), factors
 
-    def _calculate_annualized_roi(
-        self, roi_percent: float, resolution_date: Optional[datetime]
-    ) -> Optional[float]:
+    def _calculate_annualized_roi(self, roi_percent: float, resolution_date: Optional[datetime]) -> Optional[float]:
         """Calculate annualized ROI based on days to resolution.
 
         Returns None if resolution_date is unknown.
@@ -176,9 +169,7 @@ class BaseStrategy(ABC):
         realistic_cost = vwap_total_cost if vwap_total_cost is not None else total_cost
         realistic_gross = expected_payout - realistic_cost
         realistic_net = realistic_gross - fee_breakdown.total_fees
-        realistic_roi = (
-            (realistic_net / realistic_cost) * 100 if realistic_cost > 0 else 0
-        )
+        realistic_roi = (realistic_net / realistic_cost) * 100 if realistic_cost > 0 else 0
 
         # Use realistic profit for filtering when VWAP data is available
         effective_roi = realistic_roi if vwap_total_cost is not None else roi
@@ -216,19 +207,9 @@ class BaseStrategy(ABC):
         max_position = min_liquidity * 0.1  # Don't exceed 10% of liquidity
 
         # Resolve thresholds (allow strategy-specific overrides for thin-book markets)
-        eff_min_liquidity = (
-            min_liquidity_hard
-            if min_liquidity_hard is not None
-            else settings.MIN_LIQUIDITY_HARD
-        )
-        eff_min_position = (
-            min_position_size if min_position_size is not None else settings.MIN_POSITION_SIZE
-        )
-        eff_min_absolute = (
-            min_absolute_profit
-            if min_absolute_profit is not None
-            else settings.MIN_ABSOLUTE_PROFIT
-        )
+        eff_min_liquidity = min_liquidity_hard if min_liquidity_hard is not None else settings.MIN_LIQUIDITY_HARD
+        eff_min_position = min_position_size if min_position_size is not None else settings.MIN_POSITION_SIZE
+        eff_min_absolute = min_absolute_profit if min_absolute_profit is not None else settings.MIN_ABSOLUTE_PROFIT
 
         # --- Hard filter: minimum liquidity ---
         if min_liquidity < eff_min_liquidity:
@@ -242,9 +223,7 @@ class BaseStrategy(ABC):
         # Use realistic net profit for the absolute profit check when available
         effective_net = realistic_net if vwap_total_cost is not None else net_profit
         effective_cost = realistic_cost if vwap_total_cost is not None else total_cost
-        absolute_profit = (
-            max_position * (effective_net / effective_cost) if effective_cost > 0 else 0
-        )
+        absolute_profit = max_position * (effective_net / effective_cost) if effective_cost > 0 else 0
         if absolute_profit < eff_min_absolute:
             return None
 
@@ -262,13 +241,8 @@ class BaseStrategy(ABC):
                 return None
 
             # --- Hard filter: minimum annualized ROI ---
-            annualized_roi = self._calculate_annualized_roi(
-                effective_roi, resolution_date
-            )
-            if (
-                annualized_roi is not None
-                and annualized_roi < settings.MIN_ANNUALIZED_ROI
-            ):
+            annualized_roi = self._calculate_annualized_roi(effective_roi, resolution_date)
+            if annualized_roi is not None and annualized_roi < settings.MIN_ANNUALIZED_ROI:
                 return None
 
         risk_score, risk_factors = self.calculate_risk_score(markets, resolution_date)

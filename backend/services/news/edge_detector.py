@@ -62,8 +62,7 @@ PROBABILITY_SCHEMA: dict[str, Any] = {
             "minimum": 0.01,
             "maximum": 0.99,
             "description": (
-                "Your estimated probability that this market resolves YES, "
-                "as a decimal between 0.01 and 0.99."
+                "Your estimated probability that this market resolves YES, as a decimal between 0.01 and 0.99."
             ),
         },
         "confidence": {
@@ -77,10 +76,7 @@ PROBABILITY_SCHEMA: dict[str, Any] = {
         },
         "reasoning": {
             "type": "string",
-            "description": (
-                "Brief reasoning explaining how the news affects the probability. "
-                "1-3 sentences max."
-            ),
+            "description": ("Brief reasoning explaining how the news affects the probability. 1-3 sentences max."),
         },
         "news_relevance": {
             "type": "string",
@@ -138,9 +134,7 @@ class NewsEdgeDetector:
             # Remove any existing edge for the same market+article combo
             key = f"{edge.match.article.article_id}:{edge.match.market.market_id}"
             self._cached_edges = [
-                e
-                for e in self._cached_edges
-                if f"{e.match.article.article_id}:{e.match.market.market_id}" != key
+                e for e in self._cached_edges if f"{e.match.article.article_id}:{e.match.market.market_id}" != key
             ]
             self._cached_edges.append(edge)
             self._cached_edges.sort(key=lambda e: e.edge_percent, reverse=True)
@@ -192,10 +186,7 @@ class NewsEdgeDetector:
         results = await asyncio.gather(*tasks)
 
         for result in results:
-            if (
-                result is not None
-                and result.edge_percent >= settings.NEWS_MIN_EDGE_PERCENT
-            ):
+            if result is not None and result.edge_percent >= settings.NEWS_MIN_EDGE_PERCENT:
                 edges.append(result)
 
         edges.sort(key=lambda e: e.edge_percent, reverse=True)

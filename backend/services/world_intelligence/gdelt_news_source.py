@@ -129,15 +129,9 @@ class GDELTWorldNewsService:
         self._last_errors: list[str] = []
         self._failed_queries: int = 0
         self._configured_queries_count: int = 0
-        self._enabled: bool = bool(
-            getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True)
-        )
-        self._timespan_hours: int = int(
-            max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6) or 6)
-        )
-        self._max_records: int = int(
-            max(10, getattr(settings, "WORLD_INTEL_GDELT_NEWS_MAX_RECORDS", 40) or 40)
-        )
+        self._enabled: bool = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True))
+        self._timespan_hours: int = int(max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6) or 6))
+        self._max_records: int = int(max(10, getattr(settings, "WORLD_INTEL_GDELT_NEWS_MAX_RECORDS", 40) or 40))
         self._request_timeout: float = float(
             max(
                 5.0,
@@ -158,8 +152,7 @@ class GDELTWorldNewsService:
         self._query_delay_seconds: float = float(
             max(
                 1.0,
-                getattr(settings, "WORLD_INTEL_GDELT_NEWS_QUERY_DELAY_SECONDS", 5.0)
-                or 5.0,
+                getattr(settings, "WORLD_INTEL_GDELT_NEWS_QUERY_DELAY_SECONDS", 5.0) or 5.0,
             )
         )
         self._query_lock = asyncio.Lock()
@@ -171,18 +164,12 @@ class GDELTWorldNewsService:
     async def _load_configuration(self) -> tuple[bool, list[dict[str, Any]], int, int, str]:
         default_enabled = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True))
         default_queries = default_world_intel_gdelt_queries()
-        default_timespan = int(
-            max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6) or 6)
-        )
-        default_max_records = int(
-            max(10, getattr(settings, "WORLD_INTEL_GDELT_NEWS_MAX_RECORDS", 40) or 40)
-        )
+        default_timespan = int(max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6) or 6))
+        default_max_records = int(max(10, getattr(settings, "WORLD_INTEL_GDELT_NEWS_MAX_RECORDS", 40) or 40))
 
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 row = result.scalar_one_or_none()
                 if row is None:
                     row = AppSettings(
@@ -199,22 +186,16 @@ class GDELTWorldNewsService:
 
                 raw_enabled = getattr(row, "world_intel_gdelt_news_enabled", None)
                 enabled = default_enabled if raw_enabled is None else bool(raw_enabled)
-                rows = normalize_world_intel_gdelt_queries(
-                    getattr(row, "world_intel_gdelt_news_queries_json", None)
-                )
+                rows = normalize_world_intel_gdelt_queries(getattr(row, "world_intel_gdelt_news_queries_json", None))
                 if not rows:
                     rows = default_queries
                     row.world_intel_gdelt_news_queries_json = rows
                     row.world_intel_gdelt_news_source = (
-                        str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip()
-                        or "gdelt_doc_seed"
+                        str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip() or "gdelt_doc_seed"
                     )
                     await session.commit()
 
-                source = (
-                    str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip()
-                    or "gdelt_doc_seed"
-                )
+                source = str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip() or "gdelt_doc_seed"
                 raw_timespan = getattr(row, "world_intel_gdelt_news_timespan_hours", None)
                 raw_max_records = getattr(row, "world_intel_gdelt_news_max_records", None)
         except Exception as exc:
@@ -449,15 +430,9 @@ class GDELTWorldNewsService:
 
     def _prune_old_articles(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=72)
-        valid_ids = {
-            article_id
-            for article_id, article in self._articles.items()
-            if article.fetched_at >= cutoff
-        }
+        valid_ids = {article_id for article_id, article in self._articles.items() if article.fetched_at >= cutoff}
         self._articles = {
-            article_id: article
-            for article_id, article in self._articles.items()
-            if article_id in valid_ids
+            article_id: article for article_id, article in self._articles.items() if article_id in valid_ids
         }
         stale_consumers: list[str] = []
         for consumer, seen in self._seen_by_consumer.items():
@@ -510,9 +485,7 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
     row = result.scalar_one_or_none()
     if row is None:
         row = AppSettings(id="default")
-        row.world_intel_gdelt_news_enabled = bool(
-            getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True)
-        )
+        row.world_intel_gdelt_news_enabled = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True))
         row.world_intel_gdelt_news_queries_json = default_world_intel_gdelt_queries()
         row.world_intel_gdelt_news_timespan_hours = int(
             max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_TIMESPAN_HOURS", 6) or 6)
@@ -529,15 +502,12 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
 
 async def load_gdelt_news_config_from_db(session: AsyncSession) -> dict[str, Any]:
     row = await _get_or_create_app_settings(session)
-    rows = normalize_world_intel_gdelt_queries(
-        getattr(row, "world_intel_gdelt_news_queries_json", None)
-    )
+    rows = normalize_world_intel_gdelt_queries(getattr(row, "world_intel_gdelt_news_queries_json", None))
     if not rows:
         rows = default_world_intel_gdelt_queries()
         row.world_intel_gdelt_news_queries_json = rows
         row.world_intel_gdelt_news_source = (
-            str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip()
-            or "gdelt_doc_seed"
+            str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip() or "gdelt_doc_seed"
         )
         await session.commit()
 
@@ -582,29 +552,22 @@ async def sync_gdelt_news_from_source(
     row = await _get_or_create_app_settings(session)
 
     enabled = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_ENABLED", True))
-    interval_hours = int(
-        max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_HOURS", 1) or 1)
-    )
+    interval_hours = int(max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_HOURS", 1) or 1))
     last_sync = getattr(row, "world_intel_gdelt_news_synced_at", None)
 
     due = force or last_sync is None
     if not due and isinstance(last_sync, datetime):
         last_sync_utc = (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
-        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(
-            hours=interval_hours
-        )
+        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(hours=interval_hours)
 
     if not due:
         health = gdelt_world_news_service.get_health()
         return {
             "updated": False,
             "reason": "fresh",
-            "source": str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip()
-            or "gdelt_doc_seed",
+            "source": str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip() or "gdelt_doc_seed",
             "fetched_articles": 0,
             "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
             "health": health,
@@ -615,8 +578,7 @@ async def sync_gdelt_news_from_source(
         return {
             "updated": False,
             "reason": "disabled",
-            "source": str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip()
-            or "gdelt_doc_seed",
+            "source": str(getattr(row, "world_intel_gdelt_news_source", "") or "").strip() or "gdelt_doc_seed",
             "fetched_articles": 0,
             "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
             "health": health,
@@ -645,9 +607,7 @@ async def sync_gdelt_news_from_source(
 
 async def get_gdelt_news_source_status(session: AsyncSession) -> dict[str, Any]:
     row = await _get_or_create_app_settings(session)
-    rows = normalize_world_intel_gdelt_queries(
-        getattr(row, "world_intel_gdelt_news_queries_json", None)
-    )
+    rows = normalize_world_intel_gdelt_queries(getattr(row, "world_intel_gdelt_news_queries_json", None))
     if not rows:
         rows = default_world_intel_gdelt_queries()
 
@@ -656,21 +616,13 @@ async def get_gdelt_news_source_status(session: AsyncSession) -> dict[str, Any]:
     health = gdelt_world_news_service.get_health()
     return {
         "source": source,
-        "enabled": bool(
-            getattr(row, "world_intel_gdelt_news_enabled", True)
-        ),
+        "enabled": bool(getattr(row, "world_intel_gdelt_news_enabled", True)),
         "queries": len(rows),
-        "timespan_hours": int(
-            max(1, getattr(row, "world_intel_gdelt_news_timespan_hours", 6) or 6)
-        ),
-        "max_records": int(
-            max(10, getattr(row, "world_intel_gdelt_news_max_records", 40) or 40)
-        ),
+        "timespan_hours": int(max(1, getattr(row, "world_intel_gdelt_news_timespan_hours", 6) or 6)),
+        "max_records": int(max(10, getattr(row, "world_intel_gdelt_news_max_records", 40) or 40)),
         "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
         "sync_enabled": bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_ENABLED", True)),
-        "sync_interval_hours": int(
-            max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_HOURS", 1) or 1)
-        ),
+        "sync_interval_hours": int(max(1, getattr(settings, "WORLD_INTEL_GDELT_NEWS_SYNC_HOURS", 1) or 1)),
         "health": health,
     }
 

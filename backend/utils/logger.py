@@ -106,9 +106,7 @@ def setup_logging(level: str = "INFO", json_format: bool = True, log_file: str =
     if json_format:
         console_handler.setFormatter(JSONFormatter())
     else:
-        console_handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+        console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     root_logger.addHandler(console_handler)
 
     # File handler (optional)

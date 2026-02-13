@@ -72,9 +72,7 @@ class TestBregmanProjection:
         theta = np.array([0.4, 0.6])
         kl_forward = self.projector.kl_divergence(mu, theta)
         kl_reverse = self.projector.kl_divergence(theta, mu)
-        assert abs(kl_forward - kl_reverse) > 1e-4, (
-            "KL divergence should be asymmetric for distinct distributions"
-        )
+        assert abs(kl_forward - kl_reverse) > 1e-4, "KL divergence should be asymmetric for distinct distributions"
 
     def test_kl_divergence_zero_probabilities(self):
         """KL divergence handles near-zero probabilities via clipping."""
@@ -97,9 +95,7 @@ class TestBregmanProjection:
         """Projected prices must sum to 1 (probability simplex constraint)."""
         prices = np.array([0.3, 0.4, 0.5])
         projected = self.projector.project_to_simplex(prices)
-        assert abs(np.sum(projected) - 1.0) < 1e-10, (
-            f"Projected prices should sum to 1, got {np.sum(projected)}"
-        )
+        assert abs(np.sum(projected) - 1.0) < 1e-10, f"Projected prices should sum to 1, got {np.sum(projected)}"
 
     def test_project_to_simplex_all_positive(self):
         """All projected prices must be positive."""
@@ -140,17 +136,13 @@ class TestBregmanProjection:
         """Binary market where YES + NO = 1 should give ~zero profit."""
         yes_proj, no_proj, profit = self.projector.project_binary_market(0.6, 0.4)
         assert abs(yes_proj + no_proj - 1.0) < 1e-8
-        assert profit < 1e-6, (
-            f"No arbitrage expected, profit should be ~0, got {profit}"
-        )
+        assert profit < 1e-6, f"No arbitrage expected, profit should be ~0, got {profit}"
 
     def test_binary_market_projection_large_mispricing(self):
         """Large mispricing (YES + NO << 1) should yield larger profit."""
         _, _, profit_small = self.projector.project_binary_market(0.4, 0.5)
         _, _, profit_large = self.projector.project_binary_market(0.2, 0.3)
-        assert profit_large > profit_small, (
-            "Larger mispricing should yield larger arbitrage profit"
-        )
+        assert profit_large > profit_small, "Larger mispricing should yield larger arbitrage profit"
 
     # -- Multi-outcome projection tests --
 
@@ -162,9 +154,7 @@ class TestBregmanProjection:
         result = self.projector.project_multi_outcome(prices, "sum_to_one")
         assert isinstance(result, ProjectionResult)
         assert result.converged, "Projection should converge"
-        assert abs(np.sum(result.projected_prices) - 1.0) < 1e-4, (
-            "Projected prices should sum to 1"
-        )
+        assert abs(np.sum(result.projected_prices) - 1.0) < 1e-4, "Projected prices should sum to 1"
 
     def test_multi_outcome_projection_profit_underpriced(self):
         """Projection profit should be positive for underpriced market (sum < 1)."""
@@ -186,9 +176,7 @@ class TestBregmanProjection:
         projected = self.projector.project_to_simplex(theta_raw)
         # Both are now on the simplex so KL divergence must be >= 0
         kl = self.projector.kl_divergence(projected, theta_norm)
-        assert kl >= -1e-10, (
-            f"KL between normalized distributions should be >= 0, got {kl}"
-        )
+        assert kl >= -1e-10, f"KL between normalized distributions should be >= 0, got {kl}"
 
     def test_compute_optimal_trade_output_structure(self):
         """compute_optimal_trade should return properly structured output."""
@@ -249,9 +237,7 @@ class TestConstraintSolver:
         # Let's use prices where the cheapest single outcome >= 1.0
         prices_high = np.array([1.05, 1.10])
         result_high = self.solver.detect_arbitrage(prices_high, A, b, is_eq)
-        assert not result_high.arbitrage_found, (
-            f"No arbitrage expected when min price={min(prices_high)}"
-        )
+        assert not result_high.arbitrage_found, f"No arbitrage expected when min price={min(prices_high)}"
 
     def test_simple_binary_market_with_arbitrage(self):
         """Binary market where you can buy both outcomes for < $1."""
@@ -282,10 +268,7 @@ class TestConstraintSolver:
         is_eq = np.array([True, True])
         result = self.solver.detect_arbitrage(prices, A, b, is_eq)
         # Should not crash; status should not be an error
-        assert (
-            "error" not in result.solver_status.lower()
-            or result.solver_status.startswith("fallback")
-        )
+        assert "error" not in result.solver_status.lower() or result.solver_status.startswith("fallback")
 
     def test_feasibility_check_infeasible(self):
         """Contradictory constraints should not find arbitrage."""
@@ -314,12 +297,8 @@ class TestConstraintSolver:
         is_eq = np.array([True, True])
         result = self.solver.detect_arbitrage(prices, A, b, is_eq)
         assert result.arbitrage_found, "Should find arbitrage: 0.35 < 1.0"
-        assert abs(result.total_cost - 0.35) < 1e-6, (
-            f"Optimal cost should be 0.35, got {result.total_cost}"
-        )
-        assert abs(result.profit - 0.65) < 1e-6, (
-            f"Profit should be 0.65, got {result.profit}"
-        )
+        assert abs(result.total_cost - 0.35) < 1e-6, f"Optimal cost should be 0.35, got {result.total_cost}"
+        assert abs(result.profit - 0.65) < 1e-6, f"Profit should be 0.65, got {result.profit}"
 
     def test_implies_dependency(self):
         """IMPLIES dependency: if A_yes, then B_yes must be true."""
@@ -444,9 +423,7 @@ class TestDependencyDetector:
         )
         result = self.detector._heuristic_detect(market_a, market_b)
         assert not result.is_independent, "Markets should be detected as dependent"
-        implies_deps = [
-            d for d in result.dependencies if d.dep_type == self.DependencyType.IMPLIES
-        ]
+        implies_deps = [d for d in result.dependencies if d.dep_type == self.DependencyType.IMPLIES]
         assert len(implies_deps) > 0, "Should find IMPLIES dependency"
 
     def test_excludes_relationship(self):
@@ -465,9 +442,7 @@ class TestDependencyDetector:
         )
         result = self.detector._heuristic_detect(market_a, market_b)
         assert not result.is_independent, "Markets should be detected as dependent"
-        excludes_deps = [
-            d for d in result.dependencies if d.dep_type == self.DependencyType.EXCLUDES
-        ]
+        excludes_deps = [d for d in result.dependencies if d.dep_type == self.DependencyType.EXCLUDES]
         assert len(excludes_deps) > 0, "Should find EXCLUDES dependency"
 
     def test_cumulative_relationship_dates(self):
@@ -486,11 +461,7 @@ class TestDependencyDetector:
         )
         result = self.detector._heuristic_detect(market_a, market_b)
         assert not result.is_independent, "Markets should be detected as dependent"
-        cumulative_deps = [
-            d
-            for d in result.dependencies
-            if d.dep_type == self.DependencyType.CUMULATIVE
-        ]
+        cumulative_deps = [d for d in result.dependencies if d.dep_type == self.DependencyType.CUMULATIVE]
         assert len(cumulative_deps) > 0, "Should find CUMULATIVE dependency"
 
     def test_unrelated_markets_no_dependency(self):
@@ -526,9 +497,7 @@ class TestDependencyDetector:
             prices=[0.5, 0.5],
         )
         result = self.detector._heuristic_detect(market_a, market_b)
-        assert result.is_independent, (
-            "Ambiguous markets should be classified independent"
-        )
+        assert result.is_independent, "Ambiguous markets should be classified independent"
         # Low confidence due to ambiguity (no known entities)
         assert result.confidence <= 0.9
 
@@ -544,9 +513,7 @@ class TestDependencyDetector:
 
     def test_extract_entities_states(self):
         """Entity extraction should find US states."""
-        entities = self.detector._extract_entities(
-            "who will win pennsylvania and georgia"
-        )
+        entities = self.detector._extract_entities("who will win pennsylvania and georgia")
         assert "pennsylvania" in entities
         assert "georgia" in entities
 
@@ -558,21 +525,15 @@ class TestDependencyDetector:
             outcomes=["A1", "A2", "A3"],
             prices=[0.3, 0.3, 0.4],
         )
-        market_b = self.MarketInfo(
-            id="b", question="Market B?", outcomes=["B1", "B2"], prices=[0.5, 0.5]
-        )
+        market_b = self.MarketInfo(id="b", question="Market B?", outcomes=["B1", "B2"], prices=[0.5, 0.5])
         result = self.detector._heuristic_detect(market_a, market_b)
         assert result.total_combinations == 6, "3 * 2 = 6 total combinations"
 
     def test_parse_response_valid_json(self):
         """Parser should handle valid LLM JSON response."""
         response = '{"dependencies": [{"a_outcome": 0, "b_outcome": 0, "type": "implies", "reason": "test"}], "valid_combinations": 3, "is_independent": false, "confidence": 0.85}'
-        market_a = self.MarketInfo(
-            id="a", question="Q1?", outcomes=["Yes", "No"], prices=[0.5, 0.5]
-        )
-        market_b = self.MarketInfo(
-            id="b", question="Q2?", outcomes=["Yes", "No"], prices=[0.5, 0.5]
-        )
+        market_a = self.MarketInfo(id="a", question="Q1?", outcomes=["Yes", "No"], prices=[0.5, 0.5])
+        market_b = self.MarketInfo(id="b", question="Q2?", outcomes=["Yes", "No"], prices=[0.5, 0.5])
         result = self.detector._parse_response(response, market_a, market_b)
         assert len(result.dependencies) == 1
         assert result.confidence == 0.85
@@ -581,12 +542,8 @@ class TestDependencyDetector:
     def test_parse_response_invalid_json(self):
         """Parser should gracefully handle invalid JSON."""
         response = "this is not json at all"
-        market_a = self.MarketInfo(
-            id="a", question="Q1?", outcomes=["Yes", "No"], prices=[0.5, 0.5]
-        )
-        market_b = self.MarketInfo(
-            id="b", question="Q2?", outcomes=["Yes", "No"], prices=[0.5, 0.5]
-        )
+        market_a = self.MarketInfo(id="a", question="Q1?", outcomes=["Yes", "No"], prices=[0.5, 0.5])
+        market_b = self.MarketInfo(id="b", question="Q2?", outcomes=["Yes", "No"], prices=[0.5, 0.5])
         result = self.detector._parse_response(response, market_a, market_b)
         # Should return safe default (independent)
         assert result.is_independent
@@ -626,12 +583,8 @@ class TestFrankWolfeOptimizer:
         prices = np.array([0.3, 0.4])
         oracle = self.create_binary_market_oracle(2)
         result = solver.solve(prices, oracle)
-        assert result.converged or result.iterations > 0, (
-            "Solver should run at least 1 iteration"
-        )
-        assert result.arbitrage_profit > 0, (
-            "Underpriced market should have positive arbitrage profit"
-        )
+        assert result.converged or result.iterations > 0, "Solver should run at least 1 iteration"
+        assert result.arbitrage_profit > 0, "Underpriced market should have positive arbitrage profit"
 
     def test_profit_bound_proposition_4_1(self):
         """Guaranteed profit <= arbitrage profit (Proposition 4.1)."""
@@ -643,9 +596,7 @@ class TestFrankWolfeOptimizer:
         prices = np.array([0.15, 0.20, 0.25])
         oracle = self.create_binary_market_oracle(3)
         result = solver.solve(prices, oracle)
-        assert result.arbitrage_profit > 0, (
-            "Underpriced market should have positive arbitrage profit"
-        )
+        assert result.arbitrage_profit > 0, "Underpriced market should have positive arbitrage profit"
         # guaranteed_profit = D(mu||theta) - g(mu) should be <= D(mu||theta)
         assert result.guaranteed_profit <= result.arbitrage_profit + 1e-6, (
             "Guaranteed profit should not exceed arbitrage profit"
@@ -661,9 +612,7 @@ class TestFrankWolfeOptimizer:
         prices = np.array([0.3, 0.4])
         oracle = self.create_binary_market_oracle(2)
         result = solver.solve(prices, oracle)
-        assert result.arbitrage_profit > 0, (
-            "Should find positive arbitrage profit for underpriced market"
-        )
+        assert result.arbitrage_profit > 0, "Should find positive arbitrage profit for underpriced market"
 
     def test_no_arbitrage_market(self):
         """Fair market (prices = exact probabilities) should find minimal profit."""
@@ -677,9 +626,7 @@ class TestFrankWolfeOptimizer:
         result = solver.solve(prices, oracle)
         # The divergence from simplex should be very small since they sum to 1
         # Already on the simplex, so profit should be near zero
-        assert result.arbitrage_profit < 0.1, (
-            f"Fair market should have minimal profit, got {result.arbitrage_profit}"
-        )
+        assert result.arbitrage_profit < 0.1, f"Fair market should have minimal profit, got {result.arbitrage_profit}"
 
     def test_adaptive_contraction_epsilon_decreases(self):
         """Barrier epsilon should decrease over iterations (adaptive contraction)."""
@@ -695,9 +642,7 @@ class TestFrankWolfeOptimizer:
             # Epsilon should be non-increasing over time
             first_eps = result.epsilon_history[0]
             last_eps = result.epsilon_history[-1]
-            assert last_eps <= first_eps + 1e-10, (
-                "Barrier epsilon should decrease or stay the same"
-            )
+            assert last_eps <= first_eps + 1e-10, "Barrier epsilon should decrease or stay the same"
 
     def test_barrier_method_gap_history(self):
         """Gap history should be recorded at each iteration."""
@@ -708,9 +653,7 @@ class TestFrankWolfeOptimizer:
         prices = np.array([0.3, 0.3, 0.5])
         oracle = self.create_binary_market_oracle(3)
         result = solver.solve(prices, oracle)
-        assert len(result.gap_history) == result.iterations, (
-            "Gap history length should match number of iterations"
-        )
+        assert len(result.gap_history) == result.iterations, "Gap history length should match number of iterations"
 
     def test_profit_history_tracked(self):
         """Profit history should track guaranteed profit at each iteration."""
@@ -757,9 +700,7 @@ class TestFrankWolfeOptimizer:
         result = solver.solve(prices, oracle)
         decision = solver.should_execute_trade(result, execution_cost=0.001)
         if result.guaranteed_profit > 0.001:
-            assert decision["should_trade"], (
-                f"Should trade when guaranteed profit is {decision['guaranteed_profit']}"
-            )
+            assert decision["should_trade"], f"Should trade when guaranteed profit is {decision['guaranteed_profit']}"
 
     def test_should_execute_trade_below_threshold(self):
         """should_execute_trade: small profit below threshold should not trade."""
@@ -876,16 +817,12 @@ class TestVWAPCalculator:
         """VWAP for a single ask level should equal that level's price."""
         book = self._make_book(asks=[(0.50, 100)], bids=[(0.48, 100)])
         result = self.calculator.calculate_buy_vwap(book, size_usd=10.0)
-        assert abs(result.vwap - 0.50) < 1e-8, (
-            f"Single level VWAP should be 0.50, got {result.vwap}"
-        )
+        assert abs(result.vwap - 0.50) < 1e-8, f"Single level VWAP should be 0.50, got {result.vwap}"
         assert result.levels_consumed == 1
 
     def test_vwap_multiple_levels(self):
         """VWAP should be weighted average across multiple levels."""
-        book = self._make_book(
-            asks=[(0.50, 100), (0.55, 100), (0.60, 100)], bids=[(0.48, 100)]
-        )
+        book = self._make_book(asks=[(0.50, 100), (0.55, 100), (0.60, 100)], bids=[(0.48, 100)])
         # Buy $100: fill 100 shares at $0.50 = $50, then 100 shares at $0.55 = $55
         # Total cost = $100 (spending limit). Need partial fill at level 2.
         # Level 1: 100 * 0.50 = $50. Remaining = $50
@@ -894,9 +831,7 @@ class TestVWAPCalculator:
         # VWAP = 100 / 190.9 = 0.5238
         result = self.calculator.calculate_buy_vwap(book, size_usd=100.0)
         expected_vwap = 100.0 / (100.0 + 50.0 / 0.55)
-        assert abs(result.vwap - expected_vwap) < 1e-4, (
-            f"Expected VWAP ~{expected_vwap:.4f}, got {result.vwap:.4f}"
-        )
+        assert abs(result.vwap - expected_vwap) < 1e-4, f"Expected VWAP ~{expected_vwap:.4f}, got {result.vwap:.4f}"
         assert result.levels_consumed == 2
 
     def test_vwap_empty_order_book(self):
@@ -918,24 +853,18 @@ class TestVWAPCalculator:
 
     def test_order_splitting_across_levels(self):
         """Order should split across multiple price levels."""
-        book = self._make_book(
-            asks=[(0.40, 50), (0.45, 50), (0.50, 50)], bids=[(0.38, 100)]
-        )
+        book = self._make_book(asks=[(0.40, 50), (0.45, 50), (0.50, 50)], bids=[(0.38, 100)])
         # Buy $40: 50 shares at $0.40 = $20, then 50 shares at $0.45 = $22.5
         # Total from level 1: $20, remaining $20
         # Level 2: $20 / 0.45 = 44.4 shares at $0.45 = $20
         result = self.calculator.calculate_buy_vwap(book, size_usd=40.0)
         assert result.levels_consumed == 2
-        assert result.vwap > 0.40, (
-            "VWAP should be above best ask due to eating into book"
-        )
+        assert result.vwap > 0.40, "VWAP should be above best ask due to eating into book"
         assert result.vwap < 0.50, "VWAP should not exceed worst level consumed"
 
     def test_sell_vwap_calculation(self):
         """Sell VWAP should walk through bid side."""
-        book = self._make_book(
-            asks=[(0.55, 100)], bids=[(0.50, 50), (0.48, 50), (0.45, 50)]
-        )
+        book = self._make_book(asks=[(0.55, 100)], bids=[(0.50, 50), (0.48, 50), (0.45, 50)])
         result = self.calculator.calculate_sell_vwap(book, size_shares=80.0)
         # Sell 80 shares: 50 at $0.50 = $25, 30 at $0.48 = $14.40
         # VWAP = $39.40 / 80 = $0.4925
@@ -946,22 +875,16 @@ class TestVWAPCalculator:
     def test_varying_volume_profiles(self):
         """Test VWAP with varying volume at each level."""
         # Fat level at best ask, thin levels above
-        book_fat = self._make_book(
-            asks=[(0.50, 1000), (0.55, 10), (0.60, 10)], bids=[(0.48, 100)]
-        )
+        book_fat = self._make_book(asks=[(0.50, 1000), (0.55, 10), (0.60, 10)], bids=[(0.48, 100)])
         result_fat = self.calculator.calculate_buy_vwap(book_fat, size_usd=50.0)
 
         # Thin level at best ask, fat levels above
-        book_thin = self._make_book(
-            asks=[(0.50, 10), (0.55, 1000), (0.60, 10)], bids=[(0.48, 100)]
-        )
+        book_thin = self._make_book(asks=[(0.50, 10), (0.55, 1000), (0.60, 10)], bids=[(0.48, 100)])
         result_thin = self.calculator.calculate_buy_vwap(book_thin, size_usd=50.0)
 
         # Fat best ask: VWAP should be closer to 0.50
         # Thin best ask: VWAP should be higher because we need second level
-        assert result_fat.vwap <= result_thin.vwap + 1e-8, (
-            "Fat best ask should give better (lower) VWAP"
-        )
+        assert result_fat.vwap <= result_thin.vwap + 1e-8, "Fat best ask should give better (lower) VWAP"
 
     def test_slippage_calculation(self):
         """Slippage should be calculated from mid-price."""
@@ -976,9 +899,7 @@ class TestVWAPCalculator:
         """Arbitrage profit estimation with full order books."""
         yes_book = self._make_book(asks=[(0.40, 200)], bids=[(0.38, 100)])
         no_book = self._make_book(asks=[(0.45, 200)], bids=[(0.43, 100)])
-        result = self.calculator.estimate_arbitrage_profit(
-            yes_book, no_book, size_usd=100.0
-        )
+        result = self.calculator.estimate_arbitrage_profit(yes_book, no_book, size_usd=100.0)
         # Total VWAP cost = 0.40 + 0.45 = 0.85 < 1.0 -> profitable
         assert result["total_vwap_cost"] < 1.0
         assert result["gross_profit"] > 0
@@ -1095,20 +1016,14 @@ class TestCombinatorialStrategy:
             strategy = CombinatorialStrategy()
 
         market_a = self._make_market("1", "Will Trump win Pennsylvania?", 0.48, 0.52)
-        market_b = self._make_market(
-            "2", "Will Republican win Pennsylvania?", 0.55, 0.45
-        )
+        market_b = self._make_market("2", "Will Republican win Pennsylvania?", 0.55, 0.45)
         market_c = self._make_market("3", "Will Bitcoin reach 100K?", 0.3, 0.7)
 
-        related = strategy._find_related_markets(
-            market_a, [market_a, market_b, market_c]
-        )
+        related = strategy._find_related_markets(market_a, [market_a, market_b, market_c])
         # market_b shares "trump"/"pennsylvania"; market_c shares nothing
         assert len(related) >= 1
         if len(related) > 0:
-            assert related[0].id == "2", (
-                "Most related market should be the Pennsylvania one"
-            )
+            assert related[0].id == "2", "Most related market should be the Pennsylvania one"
 
     def test_share_context_matching(self):
         """_share_context should find common significant words (len > 3)."""
@@ -1125,9 +1040,9 @@ class TestCombinatorialStrategy:
             "trump wins pennsylvania primary 2024",
         ), "Should share context (trump, pennsylvania both > 3 chars)"
 
-        assert not strategy._share_context(
-            "will bitcoin reach 100k", "will lakers championship"
-        ), "Should not share context (no common words > 3 chars)"
+        assert not strategy._share_context("will bitcoin reach 100k", "will lakers championship"), (
+            "Should not share context (no common words > 3 chars)"
+        )
 
     def test_detect_dependencies_sync_implies(self):
         """Sync dependency detection should find implies relationships."""
@@ -1140,18 +1055,12 @@ class TestCombinatorialStrategy:
 
         # Questions must share at least 2 words with len > 3 for _share_context.
         # "trump" (5), "pennsylvania" (12) are shared via stop-word filtering.
-        market_a = self._make_market(
-            "1", "will trump pennsylvania election primary 2024", 0.48, 0.52
-        )
-        market_b = self._make_market(
-            "2", "will republican trump pennsylvania general 2024", 0.55, 0.45
-        )
+        market_a = self._make_market("1", "will trump pennsylvania election primary 2024", 0.48, 0.52)
+        market_b = self._make_market("2", "will republican trump pennsylvania general 2024", 0.55, 0.45)
 
         deps = strategy._detect_dependencies_sync(market_a, market_b)
         implies_deps = [d for d in deps if d.dep_type.value == "implies"]
-        assert len(implies_deps) > 0, (
-            "Should detect Trump implies Republican dependency"
-        )
+        assert len(implies_deps) > 0, "Should detect Trump implies Republican dependency"
 
 
 # =============================================================================
@@ -1176,9 +1085,7 @@ class TestParallelExecutor:
         self.LegResult = LegResult
 
     def _make_leg(self, token_id="tok_1", side="BUY", price=0.50, size_usd=10.0):
-        return self.ExecutionLeg(
-            token_id=token_id, side=side, price=price, size_usd=size_usd
-        )
+        return self.ExecutionLeg(token_id=token_id, side=side, price=price, size_usd=size_usd)
 
     def _patch_validation(self, executor):
         """Patch _validate_legs to return [] for all-valid legs.

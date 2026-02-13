@@ -10,9 +10,7 @@ from services.weather.contract_parser import parse_weather_contract
 
 
 def test_parse_temperature_contract_with_location_and_threshold():
-    parsed = parse_weather_contract(
-        "Will the high in New York, NY on Jan 29 be above 18F?"
-    )
+    parsed = parse_weather_contract("Will the high in New York, NY on Jan 29 be above 18F?")
     assert parsed is not None
     assert parsed.metric == "temp_max_threshold"
     assert parsed.operator == "gt"
@@ -51,9 +49,7 @@ def test_parse_grouped_temperature_threshold_contract():
 
 
 def test_parse_precipitation_contract():
-    parsed = parse_weather_contract(
-        "Will it rain in Seattle on February 14, 2026?"
-    )
+    parsed = parse_weather_contract("Will it rain in Seattle on February 14, 2026?")
     assert parsed is not None
     assert parsed.metric == "precip_occurrence"
     assert parsed.operator == "gt"
@@ -61,9 +57,7 @@ def test_parse_precipitation_contract():
 
 
 def test_parse_exact_temperature_contract_with_be_syntax():
-    parsed = parse_weather_contract(
-        "Will the highest temperature in London be 13°C on February 11?"
-    )
+    parsed = parse_weather_contract("Will the highest temperature in London be 13°C on February 11?")
     assert parsed is not None
     assert parsed.metric == "temp_max_range"
     assert parsed.location == "London"
@@ -73,9 +67,7 @@ def test_parse_exact_temperature_contract_with_be_syntax():
 
 
 def test_parse_postfix_or_higher_contract_is_threshold():
-    parsed = parse_weather_contract(
-        "Will the highest temperature in Dallas be 68°F or higher on February 13?"
-    )
+    parsed = parse_weather_contract("Will the highest temperature in Dallas be 68°F or higher on February 13?")
     assert parsed is not None
     assert parsed.metric == "temp_max_threshold"
     assert parsed.operator == "gt"
@@ -85,9 +77,7 @@ def test_parse_postfix_or_higher_contract_is_threshold():
 
 
 def test_parse_postfix_or_lower_contract_is_threshold():
-    parsed = parse_weather_contract(
-        "Will the lowest temperature in Dallas be 32°F or lower on February 13?"
-    )
+    parsed = parse_weather_contract("Will the lowest temperature in Dallas be 32°F or lower on February 13?")
     assert parsed is not None
     assert parsed.metric == "temp_min_threshold"
     assert parsed.operator == "lt"
@@ -97,9 +87,7 @@ def test_parse_postfix_or_lower_contract_is_threshold():
 
 
 def test_parse_quantitative_precipitation_contract_returns_none():
-    parsed = parse_weather_contract(
-        "Will NYC have between 3 and 4 inches of precipitation in February?"
-    )
+    parsed = parse_weather_contract("Will NYC have between 3 and 4 inches of precipitation in February?")
     assert parsed is None
 
 

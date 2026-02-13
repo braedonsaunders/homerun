@@ -46,11 +46,7 @@ def _signal_metadata(signal: Any) -> dict[str, Any]:
     if isinstance(signal, dict):
         raw = signal.get("metadata") or signal.get("metadata_json") or {}
     else:
-        raw = (
-            getattr(signal, "metadata", None)
-            or getattr(signal, "metadata_json", None)
-            or {}
-        )
+        raw = getattr(signal, "metadata", None) or getattr(signal, "metadata_json", None) or {}
     return raw if isinstance(raw, dict) else {}
 
 
@@ -149,10 +145,7 @@ def _build_market_lookup(opportunities: list[Any]) -> dict[str, dict[str, Any]]:
                 {
                     "market_id": market_id,
                     "market_question": str(
-                        market.get("question")
-                        or market.get("title")
-                        or getattr(opp, "title", "")
-                        or market_id
+                        market.get("question") or market.get("title") or getattr(opp, "title", "") or market_id
                     ),
                     "event_id": event_id or None,
                     "event_slug": event_slug or None,
@@ -325,14 +318,10 @@ async def resolve_world_signal_opportunities(
         for market_id in market_ids[: max(1, int(max_markets_per_signal))]:
             if not market_id:
                 continue
-            resolved.append(
-                _resolve_candidate(signal, market_id, market_lookup)
-            )
+            resolved.append(_resolve_candidate(signal, market_id, market_lookup))
 
     if resolved:
-        tradability = await get_market_tradability_map(
-            [str(item.get("market_id") or "") for item in resolved]
-        )
+        tradability = await get_market_tradability_map([str(item.get("market_id") or "") for item in resolved])
         for item in resolved:
             market_key = str(item.get("market_id") or "").strip().lower()
             if tradability.get(market_key, True):

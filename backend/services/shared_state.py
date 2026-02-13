@@ -2,6 +2,7 @@
 Shared state: DB as single source of truth.
 Scanner worker writes snapshot; API and other workers read from DB.
 """
+
 from __future__ import annotations
 
 import logging
@@ -87,9 +88,7 @@ async def write_scanner_snapshot(
             if hasattr(o, "model_dump"):
                 payload.append(o.model_dump(mode="json"))
             else:
-                payload.append(
-                    ArbitrageOpportunity.model_validate(o).model_dump(mode="json")
-                )
+                payload.append(ArbitrageOpportunity.model_validate(o).model_dump(mode="json"))
         except Exception as e:
             skipped += 1
             logger.debug("Skip unserializable opportunity in snapshot write: %s", e)
@@ -99,9 +98,7 @@ async def write_scanner_snapshot(
             skipped,
             len(opportunities),
         )
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = ScannerSnapshot(id=SNAPSHOT_ID)
@@ -140,9 +137,7 @@ async def _persist_incremental_state(
     run = ScannerRun(
         id=uuid.uuid4().hex[:16],
         scan_mode=scan_mode,
-        success=not str(status.get("current_activity", "")).lower().startswith(
-            "last scan error"
-        ),
+        success=not str(status.get("current_activity", "")).lower().startswith("last scan error"),
         opportunity_count=len(payload),
         started_at=completed_at,
         completed_at=completed_at,
@@ -261,9 +256,7 @@ async def _persist_incremental_state(
 
 async def update_scanner_activity(session: AsyncSession, activity: str) -> None:
     """Update only current_activity in the snapshot (worker calls during scan for live status)."""
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = ScannerSnapshot(
@@ -287,17 +280,13 @@ async def read_scanner_snapshot(
     session: AsyncSession,
 ) -> tuple[list[ArbitrageOpportunity], dict[str, Any]]:
     """Read latest opportunities and status from DB. Returns (opportunities, status_dict)."""
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return [], _default_status()
 
     opportunities: list[ArbitrageOpportunity] = []
-    market_history = (
-        row.market_history_json if isinstance(row.market_history_json, dict) else {}
-    )
+    market_history = row.market_history_json if isinstance(row.market_history_json, dict) else {}
     for d in row.opportunities_json or []:
         try:
             opp = ArbitrageOpportunity.model_validate(d)
@@ -366,12 +355,7 @@ def _market_ids_from_opportunity(opp: ArbitrageOpportunity) -> list[str]:
     for position in opp.positions_to_take or []:
         if not isinstance(position, dict):
             continue
-        mid = str(
-            position.get("market_id")
-            or position.get("market")
-            or position.get("id")
-            or ""
-        ).strip().lower()
+        mid = str(position.get("market_id") or position.get("market") or position.get("id") or "").strip().lower()
         if not mid or mid in seen:
             continue
         seen.add(mid)
@@ -394,9 +378,7 @@ async def update_opportunity_ai_analysis_in_snapshot(
 
     updated = False
 
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID)
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is not None and isinstance(row.opportunities_json, list):
         patched_payload: list[dict[str, Any]] = []
@@ -468,10 +450,7 @@ async def get_opportunities_from_db(
         opportunities = [o for o in opportunities if o.min_liquidity >= filter.min_liquidity]
     if filter.category:
         cl = filter.category.lower()
-        opportunities = [
-            o for o in opportunities
-            if o.category and o.category.lower() == cl
-        ]
+        opportunities = [o for o in opportunities if o.category and o.category.lower() == cl]
     return opportunities
 
 
@@ -486,9 +465,7 @@ async def get_scanner_status_from_db(session: AsyncSession) -> dict[str, Any]:
 
 async def read_scanner_control(session: AsyncSession) -> dict[str, Any]:
     """Read scanner control row. Returns dict with is_enabled, is_paused, scan_interval_seconds, requested_scan_at."""
-    result = await session.execute(
-        select(ScannerControl).where(ScannerControl.id == CONTROL_ID)
-    )
+    result = await session.execute(select(ScannerControl).where(ScannerControl.id == CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return {
@@ -507,9 +484,7 @@ async def read_scanner_control(session: AsyncSession) -> dict[str, Any]:
 
 async def ensure_scanner_control(session: AsyncSession) -> ScannerControl:
     """Ensure scanner_control row exists; return it."""
-    result = await session.execute(
-        select(ScannerControl).where(ScannerControl.id == CONTROL_ID)
-    )
+    result = await session.execute(select(ScannerControl).where(ScannerControl.id == CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = ScannerControl(id=CONTROL_ID)
@@ -544,9 +519,7 @@ async def request_one_scan(session: AsyncSession) -> None:
 
 async def clear_scan_request(session: AsyncSession) -> None:
     """Clear requested_scan_at after worker has run (worker calls this)."""
-    result = await session.execute(
-        select(ScannerControl).where(ScannerControl.id == CONTROL_ID)
-    )
+    result = await session.execute(select(ScannerControl).where(ScannerControl.id == CONTROL_ID))
     row = result.scalar_one_or_none()
     if row and row.requested_scan_at is not None:
         row.requested_scan_at = None
@@ -566,6 +539,7 @@ def _remove_expired_opportunities(
 ) -> list[ArbitrageOpportunity]:
     """Drop opportunities whose resolution date has passed."""
     from datetime import timezone
+
     now = datetime.now(timezone.utc)
     out = []
     for o in opportunities:
@@ -584,12 +558,15 @@ def _remove_old_opportunities(
 ) -> list[ArbitrageOpportunity]:
     """Drop opportunities older than max_age_minutes."""
     from datetime import timedelta, timezone
+
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+
     def ok(o: ArbitrageOpportunity) -> bool:
         d = o.detected_at
         if d.tzinfo is None:
             d = d.replace(tzinfo=timezone.utc)
         return d >= cutoff
+
     return [o for o in opportunities if ok(o)]
 
 

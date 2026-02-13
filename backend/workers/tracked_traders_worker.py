@@ -59,27 +59,17 @@ async def _market_cache_hygiene_settings() -> dict:
     }
     try:
         async with AsyncSessionLocal() as session:
-            row = (
-                await session.execute(select(AppSettings).where(AppSettings.id == "default"))
-            ).scalar_one_or_none()
+            row = (await session.execute(select(AppSettings).where(AppSettings.id == "default"))).scalar_one_or_none()
             if not row:
                 return config
             config["enabled"] = bool(
-                row.market_cache_hygiene_enabled
-                if row.market_cache_hygiene_enabled is not None
-                else True
+                row.market_cache_hygiene_enabled if row.market_cache_hygiene_enabled is not None else True
             )
             config["interval_hours"] = int(row.market_cache_hygiene_interval_hours or 6)
             config["retention_days"] = int(row.market_cache_retention_days or 120)
-            config["reference_lookback_days"] = int(
-                row.market_cache_reference_lookback_days or 45
-            )
-            config["weak_entry_grace_days"] = int(
-                row.market_cache_weak_entry_grace_days or 7
-            )
-            config["max_entries_per_slug"] = int(
-                row.market_cache_max_entries_per_slug or 3
-            )
+            config["reference_lookback_days"] = int(row.market_cache_reference_lookback_days or 45)
+            config["weak_entry_grace_days"] = int(row.market_cache_weak_entry_grace_days or 7)
+            config["max_entries_per_slug"] = int(row.market_cache_max_entries_per_slug or 3)
     except Exception as exc:
         logger.warning("Failed to read market cache hygiene settings: %s", exc)
     return config

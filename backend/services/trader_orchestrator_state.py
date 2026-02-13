@@ -298,6 +298,7 @@ async def write_orchestrator_snapshot(
     await session.refresh(row)
     return _serialize_snapshot(row)
 
+
 def list_trader_templates() -> list[dict[str, Any]]:
     return [
         {
@@ -330,11 +331,7 @@ def _normalize_trader_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def list_traders(session: AsyncSession) -> list[dict[str, Any]]:
-    rows = (
-        (await session.execute(select(Trader).order_by(Trader.name.asc())))
-        .scalars()
-        .all()
-    )
+    rows = (await session.execute(select(Trader).order_by(Trader.name.asc()))).scalars().all()
     return [_serialize_trader(row) for row in rows]
 
 
@@ -378,11 +375,7 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
         raise ValueError("strategy_key is required")
 
     existing = (
-        (
-            await session.execute(
-                select(Trader).where(func.lower(Trader.name) == normalized["name"].lower())
-            )
-        )
+        (await session.execute(select(Trader).where(func.lower(Trader.name) == normalized["name"].lower())))
         .scalars()
         .first()
     )
@@ -601,6 +594,7 @@ async def list_trader_events(
         rows = rows[:limit]
     return rows, next_cursor
 
+
 async def list_trader_decisions(
     session: AsyncSession,
     *,
@@ -652,9 +646,7 @@ async def get_trader_decision_detail(session: AsyncSession, decision_id: str) ->
     orders = (
         (
             await session.execute(
-                select(TraderOrder)
-                .where(TraderOrder.decision_id == decision_id)
-                .order_by(desc(TraderOrder.created_at))
+                select(TraderOrder).where(TraderOrder.decision_id == decision_id).order_by(desc(TraderOrder.created_at))
             )
         )
         .scalars()
@@ -834,9 +826,7 @@ async def list_unconsumed_trade_signals(
 ) -> list[TradeSignal]:
     now = _now()
     consumed = (
-        select(TraderSignalConsumption.signal_id)
-        .where(TraderSignalConsumption.trader_id == trader_id)
-        .subquery()
+        select(TraderSignalConsumption.signal_id).where(TraderSignalConsumption.trader_id == trader_id).subquery()
     )
     query = (
         select(TradeSignal)
@@ -938,9 +928,7 @@ async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
     open_orders = int(
         (
             await session.execute(
-                select(func.count(TraderOrder.id)).where(
-                    TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES))
-                )
+                select(func.count(TraderOrder.id)).where(TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)))
             )
         ).scalar()
         or 0
@@ -998,6 +986,7 @@ async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
         "metrics": await compute_orchestrator_metrics(session),
         "traders": await list_traders(session),
     }
+
 
 async def _build_preflight_checks(
     session: AsyncSession,

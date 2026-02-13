@@ -77,4 +77,3 @@ def decrypt_secret(value: Optional[str]) -> Optional[str]:
     except Exception as exc:
         logger.warning("Failed to decrypt stored secret", error=str(exc))
         return None
-

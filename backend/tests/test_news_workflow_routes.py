@@ -82,9 +82,7 @@ def test_build_supporting_articles_uses_cache_for_cluster_article_ids():
         ),
     }
 
-    refs = routes_news_workflow._build_supporting_articles_from_finding(
-        finding, article_cache_by_id=cache
-    )
+    refs = routes_news_workflow._build_supporting_articles_from_finding(finding, article_cache_by_id=cache)
 
     assert [r["article_id"] for r in refs] == ["a1", "a2"]
     assert refs[0]["published"].endswith("Z")

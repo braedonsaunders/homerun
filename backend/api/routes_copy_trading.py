@@ -19,9 +19,7 @@ class CreateCopyConfigRequest(BaseModel):
     max_position_size: float = Field(default=1000.0, ge=10.0, le=1000000.0)
     copy_delay_seconds: int = Field(default=5, ge=0, le=300)
     slippage_tolerance: float = Field(default=1.0, ge=0.0, le=10.0)
-    proportional_sizing: bool = Field(
-        default=False, description="Scale positions relative to source wallet size"
-    )
+    proportional_sizing: bool = Field(default=False, description="Scale positions relative to source wallet size")
     proportional_multiplier: float = Field(
         default=1.0,
         ge=0.01,
@@ -199,9 +197,7 @@ async def force_sync_config(config_id: str):
 @copy_trading_router.get("/trades")
 async def list_copied_trades(
     config_id: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(
-        default=None, description="Filter by status: pending, executed, failed, skipped"
-    ),
+    status: Optional[str] = Query(default=None, description="Filter by status: pending, executed, failed, skipped"),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
@@ -257,12 +253,8 @@ async def get_copy_trading_status():
             "ws_connected": ws_monitor_status.get("ws_connected", False),
             "fallback_polling": ws_monitor_status.get("fallback_polling", False),
             "tracked_wallets": ws_monitor_status.get("tracked_wallets", 0),
-            "blocks_processed": ws_monitor_status.get("stats", {}).get(
-                "blocks_processed", 0
-            ),
-            "events_detected": ws_monitor_status.get("stats", {}).get(
-                "events_detected", 0
-            ),
+            "blocks_processed": ws_monitor_status.get("stats", {}).get("blocks_processed", 0),
+            "events_detected": ws_monitor_status.get("stats", {}).get("events_detected", 0),
         },
         "dedup_cache_size": len(copy_trader._realtime_dedup_cache),
         "total_configs": len(configs),

@@ -14,12 +14,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-_REGION_FILE = (
-    Path(__file__).resolve().parents[2]
-    / "data"
-    / "world_intelligence"
-    / "regions.json"
-)
+_REGION_FILE = Path(__file__).resolve().parents[2] / "data" / "world_intelligence" / "regions.json"
 
 
 @dataclass(frozen=True)
@@ -140,4 +135,3 @@ class RegionCatalog:
 
 
 region_catalog = RegionCatalog()
-

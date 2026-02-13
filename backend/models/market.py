@@ -68,17 +68,13 @@ class Market(BaseModel):
         clob_token_ids: list[str] = []
         outcome_prices: list[float] = []
 
-        clob_token_ids_raw = _parse_maybe_json_list(
-            data.get("clobTokenIds", data.get("clob_token_ids"))
-        )
+        clob_token_ids_raw = _parse_maybe_json_list(data.get("clobTokenIds", data.get("clob_token_ids")))
         for token_id in clob_token_ids_raw:
             token_text = str(token_id or "").strip()
             if token_text:
                 clob_token_ids.append(token_text)
 
-        outcome_prices_raw = _parse_maybe_json_list(
-            data.get("outcomePrices", data.get("outcome_prices"))
-        )
+        outcome_prices_raw = _parse_maybe_json_list(data.get("outcomePrices", data.get("outcome_prices")))
         for price in outcome_prices_raw:
             try:
                 outcome_prices.append(float(price))
@@ -159,12 +155,8 @@ class Market(BaseModel):
             enable_order_book=data.get("enableOrderBook", data.get("enable_order_book")),
             status=data.get("status", data.get("marketStatus", data.get("market_status"))),
             neg_risk=data.get("negRisk", data.get("neg_risk", False)),
-            volume=float(
-                data.get("volume") or data.get("volumeNum") or 0
-            ),
-            liquidity=float(
-                data.get("liquidity") or data.get("liquidityNum") or 0
-            ),
+            volume=float(data.get("volume") or data.get("volumeNum") or 0),
+            liquidity=float(data.get("liquidity") or data.get("liquidityNum") or 0),
             end_date=data.get("endDate"),
             tags=tags,
         )

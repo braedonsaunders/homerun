@@ -128,10 +128,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
     d_lat = lat2_r - lat1_r
     d_lon = lon2_r - lon1_r
-    a = (
-        math.sin(d_lat / 2) ** 2
-        + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(d_lon / 2) ** 2
-    )
+    a = math.sin(d_lat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(d_lon / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a)))
     earth_radius_km = 6371.0
     return earth_radius_km * c
@@ -189,9 +186,7 @@ def _is_distinct_previous_snapshot(current: Any, candidate: Any, score_attr: str
     if candidate_ts > current_ts:
         return False
     try:
-        return float(getattr(candidate, score_attr) or 0.0) != float(
-            getattr(current, score_attr) or 0.0
-        )
+        return float(getattr(candidate, score_attr) or 0.0) != float(getattr(current, score_attr) or 0.0)
     except Exception:
         return True
 
@@ -216,17 +211,13 @@ def _signal_row_to_dict(row: WorldIntelligenceSignal) -> dict[str, Any]:
         "metadata": row.metadata_json or {},
         "related_market_ids": list(row.related_market_ids or []),
         "market_relevance_score": (
-            round(float(row.market_relevance_score), 3)
-            if row.market_relevance_score is not None
-            else None
+            round(float(row.market_relevance_score), 3) if row.market_relevance_score is not None else None
         ),
     }
 
 
 async def _get_world_snapshot(session: AsyncSession) -> Optional[WorldIntelligenceSnapshot]:
-    result = await session.execute(
-        select(WorldIntelligenceSnapshot).where(WorldIntelligenceSnapshot.id == "latest")
-    )
+    result = await session.execute(select(WorldIntelligenceSnapshot).where(WorldIntelligenceSnapshot.id == "latest"))
     return result.scalar_one_or_none()
 
 
@@ -236,9 +227,7 @@ async def _latest_instability_by_country(
     rows = (
         (
             await session.execute(
-                select(CountryInstabilityRecord)
-                .order_by(CountryInstabilityRecord.computed_at.desc())
-                .limit(5000)
+                select(CountryInstabilityRecord).order_by(CountryInstabilityRecord.computed_at.desc()).limit(5000)
             )
         )
         .scalars()
@@ -306,13 +295,7 @@ async def _latest_tension_pairs(
     session: AsyncSession,
 ) -> dict[str, tuple[Any, Optional[Any]]]:
     rows = (
-        (
-            await session.execute(
-                select(TensionPairRecord)
-                .order_by(TensionPairRecord.computed_at.desc())
-                .limit(5000)
-            )
-        )
+        (await session.execute(select(TensionPairRecord).order_by(TensionPairRecord.computed_at.desc()).limit(5000)))
         .scalars()
         .all()
     )
@@ -359,11 +342,7 @@ async def _latest_tension_pairs(
             continue
         score = meta.get("tension_score")
         try:
-            tension_score = (
-                float(score)
-                if score is not None
-                else float(row.severity or 0.0) * 100.0
-            )
+            tension_score = float(score) if score is not None else float(row.severity or 0.0) * 100.0
         except Exception:
             tension_score = float(row.severity or 0.0) * 100.0
         avg_goldstein = meta.get("avg_goldstein_scale")
@@ -497,17 +476,10 @@ async def _dynamic_military_hotspots(
         cluster["activity_types"][activity_type] = cluster["activity_types"].get(activity_type, 0) + 1
 
     ranked = sorted(
-        (
-            item for item in clusters.items()
-            if int(item[1].get("count", 0)) >= int(min_events)
-        ),
+        (item for item in clusters.items() if int(item[1].get("count", 0)) >= int(min_events)),
         key=lambda item: (
             int(item[1].get("count", 0)),
-            (
-                float(item[1]["latest_at"].timestamp())
-                if isinstance(item[1].get("latest_at"), datetime)
-                else 0.0
-            ),
+            (float(item[1]["latest_at"].timestamp()) if isinstance(item[1].get("latest_at"), datetime) else 0.0),
         ),
         reverse=True,
     )[: max(1, int(max_hotspots))]
@@ -625,9 +597,7 @@ async def _dynamic_chokepoint_scores(
             nearby += 1
             signal_type = str(row.signal_type or "unknown")
             breakdown[signal_type] = breakdown.get(signal_type, 0) + 1
-            if isinstance(row.detected_at, datetime) and (
-                newest_ts is None or row.detected_at > newest_ts
-            ):
+            if isinstance(row.detected_at, datetime) and (newest_ts is None or row.detected_at > newest_ts):
                 newest_ts = row.detected_at
 
             proximity = max(0.0, 1.0 - (distance / radius_km))
@@ -668,7 +638,7 @@ async def _instability_change_7d(
     if row.score is None:
         return None
     iso3 = (row.iso3 or "").upper()
-    country = (row.country or "")
+    country = row.country or ""
     if not iso3 and not country:
         return None
     current_at = row.computed_at or datetime.now(timezone.utc)
@@ -747,14 +717,7 @@ async def get_world_signals(
     if min_severity_value > 0:
         query = query.where(WorldIntelligenceSignal.severity >= min_severity_value)
 
-    total = int(
-        (
-            await session.execute(
-                select(func.count()).select_from(query.subquery())
-            )
-        ).scalar()
-        or 0
-    )
+    total = int((await session.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0)
 
     rows = (
         (
@@ -797,8 +760,10 @@ async def get_world_signals(
                     "signal_type": row_signal_type or "unknown",
                     "severity": round(row_severity, 3),
                     "country": raw.get("country"),
-                    "country_iso3": country_catalog.normalize_iso3(str(raw.get("iso3") or raw.get("country") or "")) or None,
-                    "country_name": country_catalog.country_name(str(raw.get("iso3") or raw.get("country") or "")) or None,
+                    "country_iso3": country_catalog.normalize_iso3(str(raw.get("iso3") or raw.get("country") or ""))
+                    or None,
+                    "country_name": country_catalog.country_name(str(raw.get("iso3") or raw.get("country") or ""))
+                    or None,
                     "latitude": raw.get("latitude"),
                     "longitude": raw.get("longitude"),
                     "title": raw.get("title") or "Signal",
@@ -886,11 +851,7 @@ async def get_world_opportunities(
         rows,
         max_markets_per_signal=max_markets_per_signal,
     )
-    resolved = [
-        row
-        for row in resolved
-        if float(row.get("market_relevance_score") or 0.0) >= float(min_relevance)
-    ]
+    resolved = [row for row in resolved if float(row.get("market_relevance_score") or 0.0) >= float(min_relevance)]
     if tradable_only:
         resolved = [row for row in resolved if bool(row.get("tradable"))]
 
@@ -944,7 +905,7 @@ async def get_instability_scores(
     rows: list[dict[str, Any]] = []
     for _, (row, prev) in latest.items():
         iso3 = (row.iso3 or "").upper()
-        row_country = (row.country or "")
+        row_country = row.country or ""
         if country_value:
             c = country_value.strip().lower()
             if c not in {iso3.lower(), row_country.lower()}:
@@ -1012,9 +973,7 @@ async def get_tension_pairs(
                 "tension_score": round(score, 1),
                 "event_count": int(row.event_count or 0),
                 "avg_goldstein_scale": (
-                    round(float(row.avg_goldstein_scale), 2)
-                    if row.avg_goldstein_scale is not None
-                    else None
+                    round(float(row.avg_goldstein_scale), 2) if row.avg_goldstein_scale is not None else None
                 ),
                 "trend": row.trend or "stable",
                 "top_event_types": list(
@@ -1024,8 +983,7 @@ async def get_tension_pairs(
                             {},
                         )
                         or {}
-                    )
-                    .get("top_event_types")
+                    ).get("top_event_types")
                     or []
                 ),
                 "last_updated": _to_iso(row.computed_at),
@@ -1162,6 +1120,7 @@ async def get_military_activity(session: AsyncSession = Depends(get_db_session))
     if snapshot and isinstance(snapshot.stats, dict):
         source_health = ((snapshot.stats or {}).get("source_status") or {}).get("military", {}) or {}
     from services.world_intelligence.military_monitor import military_monitor
+
     live_health = military_monitor.get_health()
     if isinstance(source_health, dict):
         source_health = {**source_health, **live_health}
@@ -1259,13 +1218,10 @@ async def get_world_source_status(session: AsyncSession = Depends(get_db_session
     merged_sources["trade_dependencies"] = await get_trade_dependency_source_status(session)
     merged_sources["gdelt_news"] = await get_gdelt_news_source_status(session)
     normalized_sources = {
-        str(name): _normalize_source_health_entry(details)
-        for name, details in merged_sources.items()
+        str(name): _normalize_source_health_entry(details) for name, details in merged_sources.items()
     }
     normalized_errors = [
-        str(error)
-        for error in (errors or [])
-        if str(error).strip() and not _is_benign_source_error(error)
+        str(error) for error in (errors or []) if str(error).strip() and not _is_benign_source_error(error)
     ]
     return {
         "sources": normalized_sources,
@@ -1406,9 +1362,7 @@ async def get_world_intelligence_summary(
             critical_anomalies += 1
 
     instability_latest = await _latest_instability_by_country(session)
-    instability_threshold = float(
-        max(0.0, getattr(settings, "WORLD_INTEL_INSTABILITY_CRITICAL", 60.0) or 60.0)
-    )
+    instability_threshold = float(max(0.0, getattr(settings, "WORLD_INTEL_INSTABILITY_CRITICAL", 60.0) or 60.0))
     critical_countries = []
     for _, (row, _prev) in instability_latest.items():
         score = float(row.score or 0.0)
@@ -1424,9 +1378,7 @@ async def get_world_intelligence_summary(
     critical_countries.sort(key=lambda c: float(c["score"]), reverse=True)
 
     tension_latest = await _latest_tension_pairs(session)
-    tension_threshold = float(
-        max(0.0, getattr(settings, "WORLD_INTEL_TENSION_CRITICAL", 70.0) or 70.0)
-    )
+    tension_threshold = float(max(0.0, getattr(settings, "WORLD_INTEL_TENSION_CRITICAL", 70.0) or 70.0))
     high_tensions = []
     for _, (row, _prev) in tension_latest.items():
         score = float(row.tension_score or 0.0)
@@ -1490,9 +1442,7 @@ async def get_world_intelligence_status(
     public_stats.pop("runtime_state", None)
 
     interval_seconds = int(
-        status.get("interval_seconds")
-        or worker.get("interval_seconds")
-        or settings.WORLD_INTELLIGENCE_INTERVAL_SECONDS
+        status.get("interval_seconds") or worker.get("interval_seconds") or settings.WORLD_INTELLIGENCE_INTERVAL_SECONDS
     )
     status.setdefault("running", bool(worker.get("running", False)))
     status.setdefault("enabled", bool(worker.get("enabled", False)))

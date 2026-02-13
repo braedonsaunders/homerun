@@ -98,9 +98,7 @@ class WeatherWorkflowOrchestrator:
 
         async def _bounded_evaluate(market_obj):
             async with sem:
-                return await self._evaluate_market(
-                    market_obj, settings=settings, min_liquidity=min_liquidity
-                )
+                return await self._evaluate_market(market_obj, settings=settings, min_liquidity=min_liquidity)
 
         evaluations = await asyncio.gather(
             *[_bounded_evaluate(m) for m in markets],
@@ -136,9 +134,7 @@ class WeatherWorkflowOrchestrator:
             "signals_generated": signals_generated,
             "intents_created": intents_created,
             "cycle_count": self._cycle_count,
-            "last_elapsed_seconds": round(
-                (datetime.now(timezone.utc) - started).total_seconds(), 2
-            ),
+            "last_elapsed_seconds": round((datetime.now(timezone.utc) - started).total_seconds(), 2),
         }
 
         await shared_state.write_weather_snapshot(
@@ -150,8 +146,7 @@ class WeatherWorkflowOrchestrator:
                 "interval_seconds": settings.get("scan_interval_seconds", 14400),
                 "last_scan": datetime.now(timezone.utc).isoformat(),
                 "current_activity": (
-                    f"Weather scan complete: {len(opportunities)} opportunities, "
-                    f"{intents_created} intents"
+                    f"Weather scan complete: {len(opportunities)} opportunities, {intents_created} intents"
                 ),
             },
             stats=final_stats,
@@ -184,9 +179,7 @@ class WeatherWorkflowOrchestrator:
         resolution_dt = getattr(market, "end_date", None)
         if isinstance(resolution_dt, str):
             try:
-                resolution_dt = datetime.fromisoformat(
-                    str(resolution_dt).replace("Z", "+00:00")
-                )
+                resolution_dt = datetime.fromisoformat(str(resolution_dt).replace("Z", "+00:00"))
             except Exception:
                 resolution_dt = None
         if isinstance(resolution_dt, datetime):
@@ -270,9 +263,7 @@ class WeatherWorkflowOrchestrator:
                     "source_count": signal.source_count,
                     "source_spread_c": signal.source_spread_c,
                     "source_spread_f": (
-                        (signal.source_spread_c * 9.0 / 5.0)
-                        if signal.source_spread_c is not None
-                        else None
+                        (signal.source_spread_c * 9.0 / 5.0) if signal.source_spread_c is not None else None
                     ),
                     "forecast_sources": self._build_forecast_sources_payload(forecast),
                 },
@@ -306,9 +297,7 @@ class WeatherWorkflowOrchestrator:
         now = datetime.now(timezone.utc)
 
         while offset < max_events_offset and len(markets) < limit:
-            events = await polymarket_client.get_events(
-                closed=False, limit=page_size, offset=offset
-            )
+            events = await polymarket_client.get_events(closed=False, limit=page_size, offset=offset)
             if not events:
                 break
             scanned_events += len(events)
@@ -337,9 +326,7 @@ class WeatherWorkflowOrchestrator:
                     end_dt = m.end_date
                     if isinstance(end_dt, str):
                         try:
-                            end_dt = datetime.fromisoformat(
-                                str(end_dt).replace("Z", "+00:00")
-                            )
+                            end_dt = datetime.fromisoformat(str(end_dt).replace("Z", "+00:00"))
                         except Exception:
                             end_dt = None
                     if isinstance(end_dt, datetime):
@@ -373,9 +360,7 @@ class WeatherWorkflowOrchestrator:
             "weather",
         ]
         for query in fallback_queries:
-            searched = await polymarket_client.search_markets(
-                query, limit=min(max(limit * 2, 50), 300)
-            )
+            searched = await polymarket_client.search_markets(query, limit=min(max(limit * 2, 50), 300))
             for m in searched:
                 if not self._is_market_candidate_tradable(m):
                     continue
@@ -394,9 +379,7 @@ class WeatherWorkflowOrchestrator:
                 end_dt = m.end_date
                 if isinstance(end_dt, str):
                     try:
-                        end_dt = datetime.fromisoformat(
-                            str(end_dt).replace("Z", "+00:00")
-                        )
+                        end_dt = datetime.fromisoformat(str(end_dt).replace("Z", "+00:00"))
                     except Exception:
                         end_dt = None
                 if isinstance(end_dt, datetime):
@@ -464,13 +447,9 @@ class WeatherWorkflowOrchestrator:
         try:
             return bool(polymarket_client.is_market_tradable(info))
         except Exception:
-            return bool(getattr(market, "active", True)) and not bool(
-                getattr(market, "closed", False)
-            )
+            return bool(getattr(market, "active", True)) and not bool(getattr(market, "closed", False))
 
-    async def _attach_market_price_history(
-        self, opportunities: list[ArbitrageOpportunity]
-    ) -> None:
+    async def _attach_market_price_history(self, opportunities: list[ArbitrageOpportunity]) -> None:
         """Hydrate per-market YES/NO price history via scanner shared backfill."""
         if not opportunities:
             return
@@ -616,9 +595,7 @@ class WeatherWorkflowOrchestrator:
                 "source_count": signal.source_count,
                 "source_spread_c": signal.source_spread_c,
                 "source_spread_f": (
-                    (signal.source_spread_c * 9.0 / 5.0)
-                    if signal.source_spread_c is not None
-                    else None
+                    (signal.source_spread_c * 9.0 / 5.0) if signal.source_spread_c is not None else None
                 ),
                 "consensus_probability": forecast.consensus_probability,
                 "consensus_temp_c": signal.consensus_temperature_c,

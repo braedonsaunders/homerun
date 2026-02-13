@@ -129,11 +129,7 @@ class HybridRetriever:
                 )
             )
             overlap_count = len(event_tokens.intersection(market_tokens))
-            overlap_ratio = (
-                overlap_count / max(1, len(event_tokens))
-                if event_tokens
-                else 0.0
-            )
+            overlap_ratio = overlap_count / max(1, len(event_tokens)) if event_tokens else 0.0
 
             # Event alignment score blends category affinity and entity overlap.
             category_score = 0.0
@@ -143,8 +139,7 @@ class HybridRetriever:
             event_score = min(1.0, (0.35 * category_score) + (0.65 * overlap_ratio))
 
             has_textual_signal = (
-                result.keyword_score >= min_keyword_signal
-                or result.semantic_score >= min_semantic_signal
+                result.keyword_score >= min_keyword_signal or result.semantic_score >= min_semantic_signal
             )
             if not has_textual_signal:
                 continue

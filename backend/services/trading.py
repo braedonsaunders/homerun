@@ -147,9 +147,7 @@ class TradingService:
                 settings.POLYMARKET_API_PASSPHRASE,
             ]
         ):
-            logger.error(
-                "Missing Polymarket API credentials. Cannot initialize trading."
-            )
+            logger.error("Missing Polymarket API credentials. Cannot initialize trading.")
             return False
 
         try:
@@ -179,19 +177,14 @@ class TradingService:
                 if patched:
                     logger.info("Trading requests will be routed through VPN proxy")
                 else:
-                    logger.warning(
-                        "Trading proxy enabled but patch failed — "
-                        "trades will use direct connection"
-                    )
+                    logger.warning("Trading proxy enabled but patch failed — trades will use direct connection")
 
             self._initialized = True
             logger.info("Trading service initialized successfully")
             return True
 
         except ImportError:
-            logger.error(
-                "py-clob-client not installed. Run: pip install py-clob-client"
-            )
+            logger.error("py-clob-client not installed. Run: pip install py-clob-client")
             return False
         except Exception as e:
             logger.error(f"Failed to initialize trading client: {e}")
@@ -209,9 +202,7 @@ class TradingService:
             self._stats.daily_pnl = 0.0
             self._daily_volume_reset = today
 
-    def _validate_order(
-        self, size_usd: float, token_id: str = None
-    ) -> tuple[bool, str]:
+    def _validate_order(self, size_usd: float, token_id: str = None) -> tuple[bool, str]:
         """
         Validate order against safety limits.
 
@@ -522,11 +513,7 @@ class TradingService:
         except Exception as e:
             logger.error(f"Get orders error: {e}")
 
-        return [
-            o
-            for o in self._orders.values()
-            if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
-        ]
+        return [o for o in self._orders.values() if o.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]]
 
     async def sync_positions(self) -> list[Position]:
         """Sync positions from Polymarket"""
@@ -556,9 +543,7 @@ class TradingService:
                     average_cost=float(pos.get("avgCost", 0)),
                     current_price=float(pos.get("currentPrice", 0)),
                 )
-                position.unrealized_pnl = (
-                    position.current_price - position.average_cost
-                ) * position.size
+                position.unrealized_pnl = (position.current_price - position.average_cost) * position.size
                 self._positions[token_id] = position
 
             self._stats.open_positions = len(self._positions)
@@ -580,9 +565,7 @@ class TradingService:
         except Exception:
             return None
 
-    async def execute_opportunity(
-        self, opportunity_id: str, positions: list[dict], size_usd: float
-    ) -> list[Order]:
+    async def execute_opportunity(self, opportunity_id: str, positions: list[dict], size_usd: float) -> list[Order]:
         """
         Execute an arbitrage opportunity with PARALLEL order submission.
 
@@ -673,18 +656,14 @@ class TradingService:
                 f"Position has EXPOSURE RISK!"
             )
             # Auto-reconcile: unwind filled legs from failed arbitrage
-            asyncio.create_task(
-                self._auto_reconcile(orders, valid_positions, failed_count)
-            )
+            asyncio.create_task(self._auto_reconcile(orders, valid_positions, failed_count))
 
         return orders
 
     async def _auto_reconcile(self, orders: list, positions: list, failed_count: int):
         """Auto-unwind partial multi-leg fills to prevent one-sided exposure."""
         await asyncio.sleep(2)  # Brief delay before reconciliation
-        logger.info(
-            f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs"
-        )
+        logger.info(f"AUTO_RECONCILE: Unwinding {len(orders) - failed_count} filled legs")
         for order in orders:
             if order.status in (
                 OrderStatus.OPEN,
@@ -695,19 +674,13 @@ class TradingService:
                     try:
                         unwind = await self.place_order(
                             token_id=order.token_id,
-                            side=OrderSide.SELL
-                            if order.side == OrderSide.BUY
-                            else OrderSide.BUY,
-                            price=order.price * 0.95
-                            if order.side == OrderSide.BUY
-                            else order.price * 1.05,
+                            side=OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY,
+                            price=order.price * 0.95 if order.side == OrderSide.BUY else order.price * 1.05,
                             size=order.filled_size,
                             order_type=OrderType.FOK,
                             market_question=f"AUTO_RECONCILE: {order.market_question}",
                         )
-                        logger.info(
-                            f"Reconciliation order placed: {unwind.status.value}"
-                        )
+                        logger.info(f"Reconciliation order placed: {unwind.status.value}")
                     except Exception as e:
                         logger.error(f"Reconciliation failed: {e}")
 
@@ -745,9 +718,7 @@ class TradingService:
             return {
                 "address": address,
                 "usdc_balance": 0.0,  # Would need web3 call
-                "positions_value": sum(
-                    p.size * p.current_price for p in self._positions.values()
-                ),
+                "positions_value": sum(p.size * p.current_price for p in self._positions.values()),
             }
         except Exception as e:
             return {"error": str(e)}

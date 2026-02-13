@@ -149,9 +149,7 @@ class MarketAnalyzer:
         except ImportError:
             # Agent framework not available yet -- fall back to a simpler
             # single-shot LLM call with manually gathered data.
-            logger.warning(
-                "Agent framework not available, falling back to single-shot analysis"
-            )
+            logger.warning("Agent framework not available, falling back to single-shot analysis")
             return await self._fallback_analyze(
                 query=query,
                 market_id=market_id,
@@ -240,8 +238,7 @@ class MarketAnalyzer:
             AgentTool(
                 name="analyze_resolution",
                 description=(
-                    "Deep analysis of a market's resolution criteria, checking "
-                    "for ambiguities, edge cases, and risks."
+                    "Deep analysis of a market's resolution criteria, checking for ambiguities, edge cases, and risks."
                 ),
                 parameters={
                     "type": "object",
@@ -387,9 +384,7 @@ class MarketAnalyzer:
         except ImportError:
             # news_sentiment module not available -- do a basic RSS fetch
             logger.warning("NewsSentimentAnalyzer not available, using basic RSS fetch")
-            return await self._basic_news_search(
-                args.get("query", ""), args.get("max_results", 5)
-            )
+            return await self._basic_news_search(args.get("query", ""), args.get("max_results", 5))
 
         except Exception as exc:
             logger.error("search_news failed: %s", exc)
@@ -429,9 +424,7 @@ class MarketAnalyzer:
                     params={"token_id": token_id},
                 )
                 if resp.status_code != 200:
-                    return {
-                        "error": f"Order book request failed (HTTP {resp.status_code})"
-                    }
+                    return {"error": f"Order book request failed (HTTP {resp.status_code})"}
 
                 book = resp.json()
                 bids = book.get("bids", [])
@@ -442,18 +435,13 @@ class MarketAnalyzer:
                     {"price": float(b["price"]), "size": float(b["size"])}
                     for b in bids[:10]  # Top 10 levels
                 ]
-                ask_levels = [
-                    {"price": float(a["price"]), "size": float(a["size"])}
-                    for a in asks[:10]
-                ]
+                ask_levels = [{"price": float(a["price"]), "size": float(a["size"])} for a in asks[:10]]
 
                 # Calculate key metrics
                 best_bid = max((b["price"] for b in bid_levels), default=0.0)
                 best_ask = min((a["price"] for a in ask_levels), default=1.0)
                 spread = best_ask - best_bid if best_ask > best_bid else 0.0
-                mid_price = (
-                    (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 0.0
-                )
+                mid_price = (best_bid + best_ask) / 2 if (best_bid + best_ask) > 0 else 0.0
 
                 total_bid_liquidity = sum(b["price"] * b["size"] for b in bid_levels)
                 total_ask_liquidity = sum(a["price"] * a["size"] for a in ask_levels)
@@ -463,9 +451,7 @@ class MarketAnalyzer:
                     "best_bid": best_bid,
                     "best_ask": best_ask,
                     "spread": round(spread, 4),
-                    "spread_percent": round(spread / mid_price * 100, 2)
-                    if mid_price > 0
-                    else 0.0,
+                    "spread_percent": round(spread / mid_price * 100, 2) if mid_price > 0 else 0.0,
                     "mid_price": round(mid_price, 4),
                     "bid_levels": bid_levels[:5],  # Return top 5 for context
                     "ask_levels": ask_levels[:5],
@@ -525,11 +511,7 @@ class MarketAnalyzer:
                         for m in resp.json():
                             question_lower = m.get("question", "").lower()
                             # Check if any significant query word appears
-                            if any(
-                                word in question_lower
-                                for word in query_words
-                                if len(word) > 3
-                            ):
+                            if any(word in question_lower for word in query_words if len(word) > 3):
                                 entry = {
                                     "condition_id": m.get("conditionId", ""),
                                     "question": m.get("question", ""),
@@ -540,9 +522,7 @@ class MarketAnalyzer:
                                     "slug": m.get("slug", ""),
                                 }
                                 # Avoid duplicates
-                                if entry["condition_id"] not in {
-                                    r["condition_id"] for r in results
-                                }:
+                                if entry["condition_id"] not in {r["condition_id"] for r in results}:
                                     results.append(entry)
 
             if not results:
@@ -649,9 +629,7 @@ class MarketAnalyzer:
 
         # Gather news
         news_query = market_question or query
-        news_data = await self._tool_search_news(
-            {"query": news_query, "max_results": 5}
-        )
+        news_data = await self._tool_search_news({"query": news_query, "max_results": 5})
         if "error" not in news_data:
             data_gathered["news"] = news_data
             tools_used.append("search_news")
@@ -702,10 +680,7 @@ class MarketAnalyzer:
 
         try:
             encoded_query = urllib.parse.quote(query)
-            url = (
-                f"https://news.google.com/rss/search"
-                f"?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-            )
+            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
 
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(

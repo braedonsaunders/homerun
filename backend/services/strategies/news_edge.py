@@ -54,9 +54,7 @@ class NewsEdgeStrategy(BaseStrategy):
     name = "News Edge"
     description = "Detect news-driven mispricings via semantic matching + LLM probability estimation"
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Sync detect — not used for this strategy.
 
         NewsEdgeStrategy requires async I/O (news fetching, LLM calls).
@@ -77,9 +75,7 @@ class NewsEdgeStrategy(BaseStrategy):
         try:
             # Step 1: Fetch new articles
             await news_feed_service.fetch_all()
-            all_articles = news_feed_service.get_articles(
-                max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS
-            )
+            all_articles = news_feed_service.get_articles(max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS)
 
             if not all_articles:
                 logger.debug("News Edge: no articles available")
@@ -93,18 +89,12 @@ class NewsEdgeStrategy(BaseStrategy):
             loop = asyncio.get_running_loop()
 
             if not semantic_matcher._initialized:
-                await loop.run_in_executor(
-                    _MATCHER_EXECUTOR, semantic_matcher.initialize
-                )
+                await loop.run_in_executor(_MATCHER_EXECUTOR, semantic_matcher.initialize)
 
-            await loop.run_in_executor(
-                _MATCHER_EXECUTOR, semantic_matcher.update_market_index, market_infos
-            )
+            await loop.run_in_executor(_MATCHER_EXECUTOR, semantic_matcher.update_market_index, market_infos)
 
             # Step 3: Embed new articles
-            await loop.run_in_executor(
-                _MATCHER_EXECUTOR, semantic_matcher.embed_articles, all_articles
-            )
+            await loop.run_in_executor(_MATCHER_EXECUTOR, semantic_matcher.embed_articles, all_articles)
 
             # Step 4: Match articles to markets
             matches = await loop.run_in_executor(
@@ -231,9 +221,7 @@ class NewsEdgeStrategy(BaseStrategy):
             side = "NO"
             entry_price = mi.no_price
             target_price = 1.0 - edge.model_probability
-            token_id = (
-                market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-            )
+            token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
 
         # Profit calculation: if we buy at entry_price and the true probability
         # is target_price, our expected value is target_price per share.

@@ -31,9 +31,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _find_opportunity_by_id(
-    session: AsyncSession, opportunity_id: str
-) -> tuple[Any, Optional[str]]:
+async def _find_opportunity_by_id(session: AsyncSession, opportunity_id: str) -> tuple[Any, Optional[str]]:
     """Find opportunity across scanner and weather snapshots."""
     scanner_opps = await shared_state.get_opportunities_from_db(session, None)
     scanner_hit = next((o for o in scanner_opps if o.id == opportunity_id), None)
@@ -96,15 +94,11 @@ async def get_resolution_analysis(market_id: str):
 
 
 @router.get("/ai/resolution/history")
-async def get_resolution_history(
-    market_id: Optional[str] = None, limit: int = Query(20, le=100)
-):
+async def get_resolution_history(market_id: Optional[str] = None, limit: int = Query(20, le=100)):
     """Get resolution analysis history."""
     from services.ai.resolution_analyzer import resolution_analyzer
 
-    return await resolution_analyzer.get_analysis_history(
-        market_id=market_id, limit=limit
-    )
+    return await resolution_analyzer.get_analysis_history(market_id=market_id, limit=limit)
 
 
 # === Opportunity Judging ===
@@ -143,9 +137,7 @@ async def judge_opportunity(
         recommendation=result.get("recommendation", "review"),
         reasoning=result.get("reasoning"),
         risk_factors=result.get("risk_factors", []),
-        judged_at=datetime.fromisoformat(result["judged_at"])
-        if result.get("judged_at")
-        else utcnow(),
+        judged_at=datetime.fromisoformat(result["judged_at"]) if result.get("judged_at") else utcnow(),
     )
     try:
         if snapshot_source == "weather":
@@ -198,11 +190,7 @@ async def judge_opportunities_bulk(
         targets = list(opps)
     else:
         # Judge all that don't already have a non-pending analysis
-        targets = [
-            o
-            for o in opps
-            if not o.ai_analysis or o.ai_analysis.recommendation == "pending"
-        ]
+        targets = [o for o in opps if not o.ai_analysis or o.ai_analysis.recommendation == "pending"]
 
     results = []
     errors = []
@@ -220,9 +208,7 @@ async def judge_opportunities_bulk(
                 recommendation=result.get("recommendation", "review"),
                 reasoning=result.get("reasoning"),
                 risk_factors=result.get("risk_factors", []),
-                judged_at=datetime.fromisoformat(result["judged_at"])
-                if result.get("judged_at")
-                else utcnow(),
+                judged_at=datetime.fromisoformat(result["judged_at"]) if result.get("judged_at") else utcnow(),
             )
             try:
                 await shared_state.update_opportunity_ai_analysis_in_snapshot(
@@ -338,9 +324,7 @@ async def execute_skill(request: ExecuteSkillRequest):
 
     skill = skill_loader.get_skill(request.skill_name)
     if not skill:
-        raise HTTPException(
-            status_code=404, detail=f"Skill not found: {request.skill_name}"
-        )
+        raise HTTPException(status_code=404, detail=f"Skill not found: {request.skill_name}")
 
     result = await skill_loader.execute_skill(
         name=request.skill_name,
@@ -406,13 +390,9 @@ async def get_ai_status():
         skills_list = await asyncio.to_thread(skill_loader.list_skills)
         return {
             "enabled": manager.is_available(),
-            "providers_configured": list(manager._providers.keys())
-            if hasattr(manager, "_providers")
-            else [],
+            "providers_configured": list(manager._providers.keys()) if hasattr(manager, "_providers") else [],
             "skills_available": len(skills_list),
-            "usage": await manager.get_usage_stats()
-            if manager.is_available()
-            else None,
+            "usage": await manager.get_usage_stats() if manager.is_available() else None,
         }
     except RuntimeError:
         return {
@@ -495,9 +475,7 @@ async def get_opportunity_ai_summary(
     try:
         from services.ai.opportunity_judge import opportunity_judge
 
-        history = await opportunity_judge.get_judgment_history(
-            opportunity_id=opportunity_id, limit=1
-        )
+        history = await opportunity_judge.get_judgment_history(opportunity_id=opportunity_id, limit=1)
         if history and len(history) > 0:
             summary["judgment"] = history[0]
     except Exception as e:
@@ -608,11 +586,7 @@ async def _build_context_pack(
                 direction=None,
                 max_age_minutes=24 * 60,
             )
-            insider_rows = (
-                insider_payload.get("opportunities", [])
-                if isinstance(insider_payload, dict)
-                else []
-            )
+            insider_rows = insider_payload.get("opportunities", []) if isinstance(insider_payload, dict) else []
             match = next(
                 (row for row in insider_rows if str(row.get("id") or "") == signal_id),
                 None,
@@ -633,8 +607,7 @@ async def _build_context_pack(
                 "market_slug": trader_signal.get("market_slug"),
                 "direction": trader_signal.get("direction"),
                 "tier": trader_signal.get("tier"),
-                "confidence": trader_signal.get("confidence")
-                or trader_signal.get("conviction_score"),
+                "confidence": trader_signal.get("confidence") or trader_signal.get("conviction_score"),
                 "wallet_count": trader_signal.get("wallet_count"),
                 "edge_percent": trader_signal.get("edge_percent"),
                 "insider_score": trader_signal.get("insider_score"),
@@ -693,9 +666,7 @@ async def _build_context_pack(
                 "market_efficiency": judgment_row.market_efficiency,
                 "recommendation": judgment_row.recommendation,
                 "risk_factors": judgment_row.risk_factors or [],
-                "judged_at": judgment_row.judged_at.isoformat()
-                if judgment_row.judged_at
-                else None,
+                "judged_at": judgment_row.judged_at.isoformat() if judgment_row.judged_at else None,
             }
 
     elif context_type == "market" and context_id:
@@ -731,8 +702,7 @@ async def _build_context_pack(
                 select(NewsWorkflowFinding)
                 .where(
                     NewsWorkflowFinding.market_id.in_(market_ids),
-                    NewsWorkflowFinding.created_at
-                    >= datetime.now(timezone.utc) - timedelta(hours=48),
+                    NewsWorkflowFinding.created_at >= datetime.now(timezone.utc) - timedelta(hours=48),
                 )
                 .order_by(desc(NewsWorkflowFinding.created_at))
                 .limit(max(1, min(news_limit, 20)))
@@ -784,9 +754,7 @@ async def get_ai_context_pack(
         "general",
         description="opportunity | trader_signal | market | general",
     ),
-    context_id: Optional[str] = Query(
-        None, description="opportunity_id or market_id for the context type"
-    ),
+    context_id: Optional[str] = Query(None, description="opportunity_id or market_id for the context type"),
     include_news: bool = Query(True, description="Include workflow findings/intents"),
     news_limit: int = Query(5, ge=1, le=20),
 ):
@@ -818,9 +786,7 @@ async def list_ai_chat_sessions(
     """List recent persistent AI chat sessions."""
     from services.ai.chat_memory import chat_memory_service
 
-    sessions = await chat_memory_service.list_sessions(
-        context_type=context_type, context_id=context_id, limit=limit
-    )
+    sessions = await chat_memory_service.list_sessions(context_type=context_type, context_id=context_id, limit=limit)
     return {"sessions": sessions, "total": len(sessions)}
 
 
@@ -871,13 +837,9 @@ async def ai_chat(
 
         chat_session = None
         if request.session_id:
-            chat_session = await chat_memory_service.get_session(
-                request.session_id, message_limit=1
-            )
+            chat_session = await chat_memory_service.get_session(request.session_id, message_limit=1)
         if chat_session is None and request.context_type and request.context_id:
-            chat_session = await chat_memory_service.find_latest_for_context(
-                request.context_type, request.context_id
-            )
+            chat_session = await chat_memory_service.find_latest_for_context(request.context_type, request.context_id)
         if chat_session is None:
             chat_session = await chat_memory_service.create_session(
                 context_type=request.context_type or "general",
@@ -922,10 +884,7 @@ async def ai_chat(
             "news_findings": context_pack.get("news_findings", [])[:3],
             "news_intents": context_pack.get("news_intents", [])[:3],
         }
-        system_prompt += (
-            "\nCurrent context pack (JSON):\n"
-            + json.dumps(compact_context, ensure_ascii=True)
-        )
+        system_prompt += "\nCurrent context pack (JSON):\n" + json.dumps(compact_context, ensure_ascii=True)
 
         messages = [LLMMessage(role="system", content=system_prompt)]
         history_source = persisted if persisted else request.history[-10:]
@@ -933,9 +892,7 @@ async def ai_chat(
             role = msg.get("role", "user")
             if role not in ("user", "assistant"):
                 continue
-            messages.append(
-                LLMMessage(role=role, content=msg.get("content", ""))
-            )
+            messages.append(LLMMessage(role=role, content=msg.get("content", "")))
         messages.append(LLMMessage(role="user", content=request.message))
 
         await chat_memory_service.append_message(

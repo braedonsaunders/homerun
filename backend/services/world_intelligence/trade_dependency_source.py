@@ -57,16 +57,11 @@ async def _fetch_world_bank_trade_indicator() -> tuple[int | None, dict[str, flo
     timeout = float(
         max(
             5.0,
-            getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_REQUEST_TIMEOUT_SECONDS", 20.0)
-            or 20.0,
+            getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_REQUEST_TIMEOUT_SECONDS", 20.0) or 20.0,
         )
     )
-    per_page = int(
-        max(500, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_WB_PER_PAGE", 5000) or 5000)
-    )
-    max_pages = int(
-        max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_WB_MAX_PAGES", 50) or 50)
-    )
+    per_page = int(max(500, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_WB_PER_PAGE", 5000) or 5000))
+    max_pages = int(max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_WB_MAX_PAGES", 50) or 50))
     rows: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=timeout) as client:
         page = 1
@@ -120,11 +115,7 @@ async def _fetch_world_bank_trade_indicator() -> tuple[int | None, dict[str, flo
         return None, {}
 
     latest_year = max(item[0] for item in latest_by_country.values())
-    values = {
-        iso3: val
-        for iso3, (year, val) in latest_by_country.items()
-        if year == latest_year
-    }
+    values = {iso3: val for iso3, (year, val) in latest_by_country.items() if year == latest_year}
     return latest_year, values
 
 
@@ -174,8 +165,7 @@ async def load_trade_dependencies_from_db(session: AsyncSession) -> dict[str, An
         deps = _default_trade_dependencies()
         row.world_intel_trade_dependencies_json = deps
         row.world_intel_trade_dependency_source = (
-            str(getattr(row, "world_intel_trade_dependency_source", "") or "").strip()
-            or "static_seed"
+            str(getattr(row, "world_intel_trade_dependency_source", "") or "").strip() or "static_seed"
         )
         await session.commit()
     source = str(getattr(row, "world_intel_trade_dependency_source", "") or "").strip() or "db"
@@ -205,21 +195,15 @@ async def sync_trade_dependencies_from_world_bank(
     existing = _clean_trade_dependencies(getattr(row, "world_intel_trade_dependencies_json", None))
 
     enabled = bool(getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_ENABLED", True))
-    interval_hours = int(
-        max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_HOURS", 24) or 24)
-    )
+    interval_hours = int(max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_HOURS", 24) or 24))
     last_sync = getattr(row, "world_intel_trade_dependency_synced_at", None)
 
     due = force or not existing
     if not due and enabled and isinstance(last_sync, datetime):
         last_sync_utc = (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
-        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(
-            hours=interval_hours
-        )
+        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(hours=interval_hours)
 
     if not due:
         source = str(getattr(row, "world_intel_trade_dependency_source", "") or "").strip() or "db"
@@ -324,7 +308,5 @@ async def get_trade_dependency_source_status(session: AsyncSession) -> dict[str,
         "indicator_year": int(year) if year is not None else None,
         "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
         "sync_enabled": bool(getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_ENABLED", True)),
-        "sync_interval_hours": int(
-            max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_HOURS", 24) or 24)
-        ),
+        "sync_interval_hours": int(max(1, getattr(settings, "WORLD_INTEL_TRADE_DEPENDENCY_SYNC_HOURS", 24) or 24)),
     }

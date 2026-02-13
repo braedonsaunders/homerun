@@ -95,9 +95,7 @@ def test_get_market_by_condition_id_falls_back_to_market_trades(monkeypatch):
     assert info["slug"] == "nba-ind-bkn-2026-02-11"
     assert info["condition_id"] == requested
     assert client._market_cache[requested]["question"] == "Pacers vs. Nets"
-    token_key = (
-        "token:2104009334376064720665425320836536669709149939945916240432665923815485331158"
-    )
+    token_key = "token:2104009334376064720665425320836536669709149939945916240432665923815485331158"
     assert client._market_cache[token_key]["question"] == "Pacers vs. Nets"
 
 
@@ -207,9 +205,7 @@ def test_get_market_by_token_id_skips_invalid_ids(monkeypatch):
 
 def test_token_id_shape_classifier():
     assert (
-        PolymarketClient._looks_like_condition_id(
-            "0x168b010a13936e827d9f1407afbfcfd915120f31246e95e9e20441e31011c3b0"
-        )
+        PolymarketClient._looks_like_condition_id("0x168b010a13936e827d9f1407afbfcfd915120f31246e95e9e20441e31011c3b0")
         is True
     )
     assert (

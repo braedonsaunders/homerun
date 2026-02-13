@@ -93,7 +93,7 @@ def _collect_ws_prices_for_markets(feed_manager, markets: list) -> dict[str, flo
         return ws_prices
 
     for market in markets:
-        for token_id in (getattr(market, "clob_token_ids", None) or []):
+        for token_id in getattr(market, "clob_token_ids", None) or []:
             token = str(token_id or "").strip()
             if not token or len(token) <= 20:
                 continue
@@ -133,9 +133,7 @@ def _overlay_ws_prices_on_market_row(row: dict, market, ws_prices: dict[str, flo
     except Exception:
         down_idx = 1
 
-    up_token = (
-        str(tokens[up_idx]).strip() if 0 <= up_idx < len(tokens) and str(tokens[up_idx]).strip() else None
-    )
+    up_token = str(tokens[up_idx]).strip() if 0 <= up_idx < len(tokens) and str(tokens[up_idx]).strip() else None
     down_token = (
         str(tokens[down_idx]).strip() if 0 <= down_idx < len(tokens) and str(tokens[down_idx]).strip() else None
     )
@@ -174,7 +172,7 @@ async def _sync_ws_subscriptions(feed_manager, markets: list, subscribed_tokens:
 
     active_tokens: set[str] = set()
     for market in markets:
-        for token_id in (getattr(market, "clob_token_ids", None) or []):
+        for token_id in getattr(market, "clob_token_ids", None) or []:
             token = str(token_id or "").strip()
             if token and len(token) > 20:
                 active_tokens.add(token)
@@ -219,9 +217,7 @@ def _restore_price_to_beat_from_snapshot_markets(markets: list[dict]) -> int:
         end_time = row.get("end_time")
         if isinstance(end_time, str) and end_time.strip():
             try:
-                end_ts = datetime.fromisoformat(
-                    end_time.replace("Z", "+00:00")
-                ).timestamp()
+                end_ts = datetime.fromisoformat(end_time.replace("Z", "+00:00")).timestamp()
                 if now_ts - end_ts > 1800:
                     continue
             except ValueError:
@@ -240,9 +236,7 @@ async def _is_autotrader_active(session) -> bool:
         from services.trader_orchestrator_state import read_orchestrator_control
 
         control = await read_orchestrator_control(session)
-        return bool(control.get("is_enabled", False)) and not bool(
-            control.get("is_paused", True)
-        )
+        return bool(control.get("is_enabled", False)) and not bool(control.get("is_paused", True))
     except Exception:
         return False
 
@@ -300,9 +294,7 @@ def _build_crypto_market_payload(
             row["oracle_source"] = getattr(oracle, "source", None)
             row["oracle_updated_at_ms"] = oracle.updated_at_ms
             row["oracle_age_seconds"] = (
-                round((now_ms - oracle.updated_at_ms) / 1000, 1)
-                if oracle.updated_at_ms
-                else None
+                round((now_ms - oracle.updated_at_ms) / 1000, 1) if oracle.updated_at_ms else None
             )
             point_ts = int(oracle.updated_at_ms or now_ms)
             _record_oracle_point(market.asset, point_ts, float(oracle.price))
@@ -320,9 +312,7 @@ def _build_crypto_market_payload(
                 "source": source_oracle.source,
                 "price": float(source_oracle.price),
                 "updated_at_ms": int(updated_at) if updated_at else None,
-                "age_seconds": (
-                    round((now_ms - int(updated_at)) / 1000, 1) if updated_at else None
-                ),
+                "age_seconds": (round((now_ms - int(updated_at)) / 1000, 1) if updated_at else None),
             }
 
         row["price_to_beat"] = svc._price_to_beat.get(market.slug)
@@ -341,22 +331,12 @@ async def _run_loop() -> None:
     async with AsyncSessionLocal() as session:
         await ensure_worker_control(session, worker_name, default_interval=2)
         previous_snapshot = await read_worker_snapshot(session, worker_name)
-        previous_stats = (
-            previous_snapshot.get("stats")
-            if isinstance(previous_snapshot.get("stats"), dict)
-            else {}
-        )
-        previous_markets = (
-            previous_stats.get("markets")
-            if isinstance(previous_stats.get("markets"), list)
-            else []
-        )
+        previous_stats = previous_snapshot.get("stats") if isinstance(previous_snapshot.get("stats"), dict) else {}
+        previous_markets = previous_stats.get("markets") if isinstance(previous_stats.get("markets"), list) else []
         if previous_markets:
             startup_stats = {
                 "market_count": len(previous_markets),
-                "signals_emitted_last_run": int(
-                    previous_stats.get("signals_emitted_last_run") or 0
-                ),
+                "signals_emitted_last_run": int(previous_stats.get("signals_emitted_last_run") or 0),
                 "markets": previous_markets,
             }
 
@@ -426,11 +406,7 @@ async def _run_loop() -> None:
         requested_run_at = control.get("requested_run_at")
         viewer_active = _is_recent_request(requested_run_at)
         fast_mode = bool(viewer_active or autotrader_active)
-        interval = (
-            configured_interval
-            if fast_mode
-            else max(configured_interval, _IDLE_INTERVAL_SECONDS)
-        )
+        interval = configured_interval if fast_mode else max(configured_interval, _IDLE_INTERVAL_SECONDS)
 
         if (not enabled or paused) and not viewer_active:
             async with AsyncSessionLocal() as session:
@@ -467,9 +443,7 @@ async def _run_loop() -> None:
             svc = get_crypto_service()
             markets = svc.get_live_markets()
             if ws_feeds_running and feed_manager is not None:
-                subscribed_tokens = await _sync_ws_subscriptions(
-                    feed_manager, markets, subscribed_tokens
-                )
+                subscribed_tokens = await _sync_ws_subscriptions(feed_manager, markets, subscribed_tokens)
             ws_prices = _collect_ws_prices_for_markets(feed_manager, markets)
             markets_payload = _build_crypto_market_payload(
                 markets,

@@ -31,19 +31,11 @@ def _is_condition_id(value: str) -> bool:
 def _is_token_id(value: str) -> bool:
     if _is_condition_id(value):
         return False
-    return bool(
-        _POLYMARKET_NUMERIC_TOKEN_ID_RE.fullmatch(value)
-        or _POLYMARKET_HEX_TOKEN_ID_RE.fullmatch(value)
-    )
+    return bool(_POLYMARKET_NUMERIC_TOKEN_ID_RE.fullmatch(value) or _POLYMARKET_HEX_TOKEN_ID_RE.fullmatch(value))
 
 
 def _extract_token_ids(market_info: dict[str, Any]) -> list[str]:
-    raw = (
-        market_info.get("token_ids")
-        or market_info.get("clob_token_ids")
-        or market_info.get("tokenIds")
-        or []
-    )
+    raw = market_info.get("token_ids") or market_info.get("clob_token_ids") or market_info.get("tokenIds") or []
     out: list[str] = []
     if not isinstance(raw, list):
         return out
@@ -338,12 +330,8 @@ async def build_live_signal_contexts(
         yes_token, no_token = yes_no_tokens_by_market.get(market_id, (None, None))
         selected_token = selected_token_by_signal.get(signal_id)
 
-        yes_live = (
-            live_prices.get(yes_token) if yes_token else None
-        )
-        no_live = (
-            live_prices.get(no_token) if no_token else None
-        )
+        yes_live = live_prices.get(yes_token) if yes_token else None
+        no_live = live_prices.get(no_token) if no_token else None
         if yes_live is None:
             yes_live = _safe_float(market_info.get("yes_price"))
         if no_live is None:
@@ -364,9 +352,7 @@ async def build_live_signal_contexts(
             elif selected_token == no_token:
                 selected_live = no_live
 
-        selected_history = (
-            history_points_by_token.get(selected_token, []) if selected_token else []
-        )
+        selected_history = history_points_by_token.get(selected_token, []) if selected_token else []
         if selected_live is None and selected_history:
             selected_live = selected_history[-1]["p"]
 
@@ -410,11 +396,7 @@ async def build_live_signal_contexts(
             "model_probability": model_probability,
             "live_edge_percent": live_edge,
             "history_summary": _build_history_summary(selected_history),
-            "history_tail": (
-                selected_history[-max(1, int(history_tail_points)) :]
-                if selected_history
-                else []
-            ),
+            "history_tail": (selected_history[-max(1, int(history_tail_points)) :] if selected_history else []),
         }
     return contexts
 
@@ -433,12 +415,8 @@ class RuntimeTradeSignalView:
 
         live_entry = _safe_float(self.live_context.get("live_selected_price"))
         live_edge = _safe_float(self.live_context.get("live_edge_percent"))
-        self.entry_price = (
-            live_entry if live_entry is not None else getattr(base_signal, "entry_price", None)
-        )
-        self.edge_percent = (
-            live_edge if live_edge is not None else getattr(base_signal, "edge_percent", None)
-        )
+        self.entry_price = live_entry if live_entry is not None else getattr(base_signal, "entry_price", None)
+        self.edge_percent = live_edge if live_edge is not None else getattr(base_signal, "edge_percent", None)
 
         payload = getattr(base_signal, "payload_json", None)
         if not isinstance(payload, dict):

@@ -20,9 +20,7 @@ class MarketDataProvider(Protocol):
     async def get_all_markets(self, active: bool = True) -> list[Market]:
         """Fetch all active markets for opportunity detection."""
 
-    async def get_recent_markets(
-        self, since_minutes: int = 10, active: bool = True
-    ) -> list[Market]:
+    async def get_recent_markets(self, since_minutes: int = 10, active: bool = True) -> list[Market]:
         """Fetch recently created markets for incremental scans."""
 
     async def get_prices_batch(self, token_ids: list[str]) -> dict:

@@ -32,4 +32,3 @@ class GlobalPauseState:
 
 # Singleton - import this from any service
 global_pause_state = GlobalPauseState()
-

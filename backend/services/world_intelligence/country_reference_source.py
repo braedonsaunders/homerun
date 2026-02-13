@@ -60,8 +60,7 @@ async def fetch_world_bank_country_rows() -> list[dict[str, str]]:
     timeout = float(
         max(
             5.0,
-            getattr(settings, "WORLD_INTEL_COUNTRY_REFERENCE_REQUEST_TIMEOUT_SECONDS", 20.0)
-            or 20.0,
+            getattr(settings, "WORLD_INTEL_COUNTRY_REFERENCE_REQUEST_TIMEOUT_SECONDS", 20.0) or 20.0,
         )
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -80,11 +79,7 @@ async def fetch_world_bank_country_rows() -> list[dict[str, str]]:
         if not isinstance(item, dict):
             continue
         region = item.get("region")
-        region_name = (
-            str(region.get("value") or "").strip().lower()
-            if isinstance(region, dict)
-            else ""
-        )
+        region_name = str(region.get("value") or "").strip().lower() if isinstance(region, dict) else ""
         iso3 = str(item.get("id") or "").strip().upper()
         iso2 = str(item.get("iso2Code") or "").strip().upper()
         name = str(item.get("name") or "").strip()
@@ -107,8 +102,7 @@ async def load_country_reference_from_db(session: AsyncSession) -> int:
         rows = _default_country_rows()
         row.world_intel_country_reference_json = rows
         row.world_intel_country_reference_source = (
-            str(getattr(row, "world_intel_country_reference_source", "") or "").strip()
-            or "static_seed"
+            str(getattr(row, "world_intel_country_reference_source", "") or "").strip() or "static_seed"
         )
         await session.commit()
     source = str(getattr(row, "world_intel_country_reference_source", "") or "").strip() or "db"
@@ -135,9 +129,7 @@ async def sync_country_reference_from_world_bank(
     due = force or not existing_rows
     if not due and enabled and isinstance(last_sync, datetime):
         age = datetime.now(timezone.utc).replace(tzinfo=None) - (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
         due = age >= timedelta(hours=interval_hours)
     if not due:

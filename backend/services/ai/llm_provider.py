@@ -222,14 +222,9 @@ def _extract_error_message(data: Any, fallback: str) -> str:
     return fallback_text or "Unknown error"
 
 
-def _openai_json_schema_response_format(
-    schema: dict, name: str = "structured_output"
-) -> dict:
+def _openai_json_schema_response_format(schema: dict, name: str = "structured_output") -> dict:
     """Build OpenAI-compatible JSON schema response_format payload."""
-    safe_name = (
-        "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
-        or "structured_output"
-    )
+    safe_name = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name) or "structured_output"
     return {
         "type": "json_schema",
         "json_schema": {
@@ -307,9 +302,7 @@ _MAX_RETRIES = 3
 _BASE_DELAY = 1.0  # seconds
 
 
-async def _retry_with_backoff(
-    coro_factory, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY
-):
+async def _retry_with_backoff(coro_factory, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY):
     """Execute an async callable with exponential backoff on retryable errors.
 
     Retries on HTTP 429 (rate limit) and 5xx (server errors).
@@ -433,9 +426,7 @@ class BaseLLMProvider(ABC):
         """
         return []
 
-    def _estimate_cost(
-        self, model: str, input_tokens: int, output_tokens: int
-    ) -> float:
+    def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Estimate cost in USD based on model pricing.
 
         Args:
@@ -491,15 +482,10 @@ class OpenAIProvider(BaseLLMProvider):
                 Supported values: "json_schema", "json_object", "text".
         """
         self.api_key = api_key
-        self.base_url = _ensure_openai_compatible_base_url(
-            base_url, "https://api.openai.com/v1"
-        )
+        self.base_url = _ensure_openai_compatible_base_url(base_url, "https://api.openai.com/v1")
         self._model_prefixes = model_prefixes
         if structured_output_format not in {"json_schema", "json_object", "text"}:
-            raise ValueError(
-                "structured_output_format must be one of: "
-                "'json_schema', 'json_object', 'text'"
-            )
+            raise ValueError("structured_output_format must be one of: 'json_schema', 'json_object', 'text'")
         self._structured_output_format = structured_output_format
 
     def _build_headers(self) -> dict[str, str]:
@@ -559,9 +545,7 @@ class OpenAIProvider(BaseLLMProvider):
                 if "arguments" not in function and "arguments" in tc:
                     function["arguments"] = tc["arguments"]
                 if not isinstance(function.get("arguments"), str):
-                    function["arguments"] = json.dumps(
-                        function.get("arguments", {}), default=str
-                    )
+                    function["arguments"] = json.dumps(function.get("arguments", {}), default=str)
                 if not function.get("name"):
                     return None
 
@@ -588,9 +572,7 @@ class OpenAIProvider(BaseLLMProvider):
         if not isinstance(name, str) or not name:
             return None
 
-        arguments_str = (
-            arguments if isinstance(arguments, str) else json.dumps(arguments, default=str)
-        )
+        arguments_str = arguments if isinstance(arguments, str) else json.dumps(arguments, default=str)
         normalized = {
             "type": "function",
             "function": {"name": name, "arguments": arguments_str},
@@ -683,9 +665,7 @@ class OpenAIProvider(BaseLLMProvider):
             models = []
             for m in data.get("data", []):
                 model_id = m.get("id", "")
-                if self._model_prefixes and not any(
-                    model_id.startswith(p) for p in self._model_prefixes
-                ):
+                if self._model_prefixes and not any(model_id.startswith(p) for p in self._model_prefixes):
                     continue
                 display_name = m.get("name") or model_id
                 models.append({"id": model_id, "name": display_name})
@@ -740,9 +720,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"OpenAI API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
 
         choice = data["choices"][0]
         message = choice["message"]
@@ -802,9 +780,7 @@ class OpenAIProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(
-                0, LLMMessage(role="system", content=json_instruction)
-            )
+            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
 
         payload: dict[str, Any] = {
             "model": model,
@@ -824,9 +800,7 @@ class OpenAIProvider(BaseLLMProvider):
             data = _safe_response_json(response)
             if response.status_code != 200:
                 error_msg = _extract_error_message(data, response.text)
-                raise RuntimeError(
-                    f"OpenAI API error ({response.status_code}): {error_msg}"
-                )
+                raise RuntimeError(f"OpenAI API error ({response.status_code}): {error_msg}")
 
         try:
             content = data["choices"][0]["message"].get("content", "")
@@ -836,9 +810,7 @@ class OpenAIProvider(BaseLLMProvider):
         try:
             return _parse_structured_json_content(content)
         except RuntimeError:
-            logger.error(
-                "Failed to parse structured output as JSON: %s", str(content)[:500]
-            )
+            logger.error("Failed to parse structured output as JSON: %s", str(content)[:500])
             raise
 
 
@@ -872,9 +844,7 @@ class AnthropicProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
 
-    def _format_messages(
-        self, messages: list[LLMMessage]
-    ) -> tuple[Optional[str], list[dict]]:
+    def _format_messages(self, messages: list[LLMMessage]) -> tuple[Optional[str], list[dict]]:
         """Convert LLMMessage objects to Anthropic API format.
 
         Anthropic separates system prompt from messages. This method
@@ -920,13 +890,9 @@ class AnthropicProvider(BaseLLMProvider):
                         {
                             "type": "tool_use",
                             "id": tc.get("id", "") if isinstance(tc, dict) else tc.id,
-                            "name": tc.get("function", {}).get("name", "")
-                            if isinstance(tc, dict)
-                            else tc.name,
+                            "name": tc.get("function", {}).get("name", "") if isinstance(tc, dict) else tc.name,
                             "input": (
-                                json.loads(
-                                    tc.get("function", {}).get("arguments", "{}")
-                                )
+                                json.loads(tc.get("function", {}).get("arguments", "{}"))
                                 if isinstance(tc, dict)
                                 else tc.arguments
                             ),
@@ -987,9 +953,7 @@ class AnthropicProvider(BaseLLMProvider):
                     headers=self._build_headers(),
                 )
             if response.status_code != 200:
-                logger.warning(
-                    "Failed to list Anthropic models: %s", response.text[:200]
-                )
+                logger.warning("Failed to list Anthropic models: %s", response.text[:200])
                 return []
             data = response.json()
             models = []
@@ -1052,9 +1016,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"Anthropic API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"Anthropic API error ({response.status_code}): {error_msg}")
 
         # Extract text content and tool calls
         content_blocks = data.get("content", [])
@@ -1073,8 +1035,7 @@ class AnthropicProvider(BaseLLMProvider):
         usage = TokenUsage(
             input_tokens=usage_data.get("input_tokens", 0),
             output_tokens=usage_data.get("output_tokens", 0),
-            total_tokens=usage_data.get("input_tokens", 0)
-            + usage_data.get("output_tokens", 0),
+            total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
         )
 
         return LLMResponse(
@@ -1121,9 +1082,7 @@ class AnthropicProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(
-                0, LLMMessage(role="system", content=json_instruction)
-            )
+            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
 
         response = await self.chat(
             messages=augmented_messages,
@@ -1143,9 +1102,7 @@ class AnthropicProvider(BaseLLMProvider):
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
-            logger.error(
-                "Failed to parse Anthropic structured output: %s", content[:500]
-            )
+            logger.error("Failed to parse Anthropic structured output: %s", content[:500])
             raise RuntimeError(f"LLM returned invalid JSON: {exc}") from exc
 
 
@@ -1170,9 +1127,7 @@ class GoogleProvider(BaseLLMProvider):
         self.api_key = api_key
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-    def _format_contents(
-        self, messages: list[LLMMessage]
-    ) -> tuple[Optional[dict], list[dict]]:
+    def _format_contents(self, messages: list[LLMMessage]) -> tuple[Optional[dict], list[dict]]:
         """Convert LLMMessage objects to Gemini API format.
 
         Gemini uses 'contents' with 'parts' structure and a separate
@@ -1236,9 +1191,7 @@ class GoogleProvider(BaseLLMProvider):
             for m in data.get("models", []):
                 name = m.get("name", "")
                 # name is like "models/gemini-2.0-flash" - extract the model id
-                model_id = (
-                    name.replace("models/", "") if name.startswith("models/") else name
-                )
+                model_id = name.replace("models/", "") if name.startswith("models/") else name
                 display_name = m.get("displayName", model_id)
                 # Only include generative models that support generateContent
                 supported = m.get("supportedGenerationMethods", [])
@@ -1302,9 +1255,7 @@ class GoogleProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"Google API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"Google API error ({response.status_code}): {error_msg}")
 
         # Parse response
         candidates = data.get("candidates", [])
@@ -1377,9 +1328,7 @@ class GoogleProvider(BaseLLMProvider):
         # Add JSON instruction to system or as user prefix
         if system_instruction:
             existing_text = system_instruction["parts"][0]["text"]
-            system_instruction["parts"][0]["text"] = (
-                existing_text + "\n\n" + json_instruction
-            )
+            system_instruction["parts"][0]["text"] = existing_text + "\n\n" + json_instruction
         else:
             system_instruction = {"parts": [{"text": json_instruction}]}
 
@@ -1407,9 +1356,7 @@ class GoogleProvider(BaseLLMProvider):
 
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"Google API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"Google API error ({response.status_code}): {error_msg}")
 
         candidates = data.get("candidates", [])
         if not candidates:
@@ -1474,9 +1421,7 @@ class XAIProvider(BaseLLMProvider):
         Returns:
             LLMResponse with content and usage.
         """
-        response = await self._delegate.chat(
-            messages, model, tools, temperature, max_tokens
-        )
+        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
         response.provider = self.provider.value
         return response
 
@@ -1498,9 +1443,7 @@ class XAIProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        return await self._delegate.structured_output(
-            messages, schema, model, temperature
-        )
+        return await self._delegate.structured_output(messages, schema, model, temperature)
 
 
 # ==================== DEEPSEEK PROVIDER ====================
@@ -1553,9 +1496,7 @@ class DeepSeekProvider(BaseLLMProvider):
         Returns:
             LLMResponse with content and usage.
         """
-        response = await self._delegate.chat(
-            messages, model, tools, temperature, max_tokens
-        )
+        response = await self._delegate.chat(messages, model, tools, temperature, max_tokens)
         response.provider = self.provider.value
         return response
 
@@ -1577,9 +1518,7 @@ class DeepSeekProvider(BaseLLMProvider):
         Returns:
             Parsed JSON dict conforming to the schema.
         """
-        return await self._delegate.structured_output(
-            messages, schema, model, temperature
-        )
+        return await self._delegate.structured_output(messages, schema, model, temperature)
 
 
 # ==================== OLLAMA PROVIDER ====================
@@ -1600,9 +1539,7 @@ class OllamaProvider(BaseLLMProvider):
         api_key: Optional[str] = None,
     ):
         self.api_key = api_key
-        self.base_url = _ensure_openai_compatible_base_url(
-            base_url, "http://localhost:11434/v1"
-        )
+        self.base_url = _ensure_openai_compatible_base_url(base_url, "http://localhost:11434/v1")
         self._native_base_url = _strip_v1_suffix(self.base_url)
         self._delegate = OpenAIProvider(
             api_key=api_key,
@@ -1678,9 +1615,7 @@ class OllamaProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(
-                0, LLMMessage(role="system", content=json_instruction)
-            )
+            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
 
         payload: dict[str, Any] = {
             "model": model,
@@ -1702,9 +1637,7 @@ class OllamaProvider(BaseLLMProvider):
         data = _safe_response_json(response)
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"Ollama API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"Ollama API error ({response.status_code}): {error_msg}")
 
         try:
             content = data["message"].get("content", "")
@@ -1735,9 +1668,7 @@ class LMStudioProvider(BaseLLMProvider):
         api_key: Optional[str] = None,
     ):
         self.api_key = api_key
-        self.base_url = _ensure_openai_compatible_base_url(
-            base_url, "http://localhost:1234/v1"
-        )
+        self.base_url = _ensure_openai_compatible_base_url(base_url, "http://localhost:1234/v1")
         self._delegate = OpenAIProvider(
             api_key=api_key,
             base_url=self.base_url,
@@ -1778,9 +1709,7 @@ class LMStudioProvider(BaseLLMProvider):
                 content=augmented_messages[0].content + "\n\n" + json_instruction,
             )
         else:
-            augmented_messages.insert(
-                0, LLMMessage(role="system", content=json_instruction)
-            )
+            augmented_messages.insert(0, LLMMessage(role="system", content=json_instruction))
 
         payload: dict[str, Any] = {
             "model": model,
@@ -1804,16 +1733,12 @@ class LMStudioProvider(BaseLLMProvider):
         data = _safe_response_json(response)
         if response.status_code != 200:
             error_msg = _extract_error_message(data, response.text)
-            raise RuntimeError(
-                f"LM Studio API error ({response.status_code}): {error_msg}"
-            )
+            raise RuntimeError(f"LM Studio API error ({response.status_code}): {error_msg}")
 
         try:
             content = data["choices"][0]["message"].get("content", "")
         except (TypeError, KeyError, IndexError) as exc:
-            raise RuntimeError(
-                "LM Studio API returned malformed response payload"
-            ) from exc
+            raise RuntimeError("LM Studio API returned malformed response payload") from exc
 
         try:
             return _parse_structured_json_content(content)
@@ -1876,9 +1801,7 @@ class LLMManager:
 
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 app_settings = result.scalar_one_or_none()
 
                 if app_settings is None:
@@ -1899,38 +1822,26 @@ class LLMManager:
                 selected_provider = self._parse_provider_name(app_settings.llm_provider)
 
                 if openai_key:
-                    self._providers[LLMProvider.OPENAI] = OpenAIProvider(
-                        api_key=openai_key
-                    )
+                    self._providers[LLMProvider.OPENAI] = OpenAIProvider(api_key=openai_key)
                     logger.info("Initialized OpenAI LLM provider")
 
                 if anthropic_key:
-                    self._providers[LLMProvider.ANTHROPIC] = AnthropicProvider(
-                        api_key=anthropic_key
-                    )
+                    self._providers[LLMProvider.ANTHROPIC] = AnthropicProvider(api_key=anthropic_key)
                     logger.info("Initialized Anthropic LLM provider")
 
                 if google_key:
-                    self._providers[LLMProvider.GOOGLE] = GoogleProvider(
-                        api_key=google_key
-                    )
+                    self._providers[LLMProvider.GOOGLE] = GoogleProvider(api_key=google_key)
                     logger.info("Initialized Google LLM provider")
 
                 if xai_key:
-                    self._providers[LLMProvider.XAI] = XAIProvider(
-                        api_key=xai_key
-                    )
+                    self._providers[LLMProvider.XAI] = XAIProvider(api_key=xai_key)
                     logger.info("Initialized xAI LLM provider")
 
                 if deepseek_key:
-                    self._providers[LLMProvider.DEEPSEEK] = DeepSeekProvider(
-                        api_key=deepseek_key
-                    )
+                    self._providers[LLMProvider.DEEPSEEK] = DeepSeekProvider(api_key=deepseek_key)
                     logger.info("Initialized DeepSeek LLM provider")
 
-                enable_ollama = selected_provider == LLMProvider.OLLAMA or bool(
-                    (ollama_base_url or "").strip()
-                )
+                enable_ollama = selected_provider == LLMProvider.OLLAMA or bool((ollama_base_url or "").strip())
                 if enable_ollama:
                     self._providers[LLMProvider.OLLAMA] = OllamaProvider(
                         base_url=ollama_base_url or "http://localhost:11434",
@@ -1941,9 +1852,7 @@ class LLMManager:
                         self._providers[LLMProvider.OLLAMA].base_url,
                     )
 
-                enable_lmstudio = selected_provider == LLMProvider.LMSTUDIO or bool(
-                    (lmstudio_base_url or "").strip()
-                )
+                enable_lmstudio = selected_provider == LLMProvider.LMSTUDIO or bool((lmstudio_base_url or "").strip())
                 if enable_lmstudio:
                     self._providers[LLMProvider.LMSTUDIO] = LMStudioProvider(
                         base_url=lmstudio_base_url or "http://localhost:1234/v1",
@@ -1971,19 +1880,11 @@ class LLMManager:
                     LLMProvider.LMSTUDIO: "local-model",
                 }
 
-                configured_model = (
-                    app_settings.ai_default_model
-                    or app_settings.llm_model
-                )
+                configured_model = app_settings.ai_default_model or app_settings.llm_model
                 if configured_model:
                     self._default_model = configured_model
-                elif (
-                    self._preferred_provider
-                    and self._preferred_provider in _provider_default_models
-                ):
-                    self._default_model = _provider_default_models[
-                        self._preferred_provider
-                    ]
+                elif self._preferred_provider and self._preferred_provider in _provider_default_models:
+                    self._default_model = _provider_default_models[self._preferred_provider]
                 else:
                     self._default_model = "gpt-4o-mini"
 
@@ -2007,9 +1908,7 @@ class LLMManager:
 
                 # Load current month's spend
                 now = utcnow()
-                month_start = now.replace(
-                    day=1, hour=0, minute=0, second=0, microsecond=0
-                )
+                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 spend_result = await session.execute(
                     select(func.coalesce(func.sum(LLMUsageLog.cost_usd), 0.0)).where(
                         LLMUsageLog.requested_at >= month_start,
@@ -2041,9 +1940,7 @@ class LLMManager:
             The detected LLMProvider enum value.
         """
         model_lower = (model or "").lower().strip()
-        if any(
-            model_lower.startswith(p) for p in OPENAI_MODEL_PREFIXES
-        ):
+        if any(model_lower.startswith(p) for p in OPENAI_MODEL_PREFIXES):
             return LLMProvider.OPENAI
         if model_lower.startswith("claude-"):
             return LLMProvider.ANTHROPIC
@@ -2084,8 +1981,7 @@ class LLMManager:
         provider = self._providers.get(provider_enum)
         if provider is None:
             raise RuntimeError(
-                f"LLM provider '{provider_enum.value}' is not configured. "
-                "Configure this provider in Settings."
+                f"LLM provider '{provider_enum.value}' is not configured. Configure this provider in Settings."
             )
         return provider
 
@@ -2195,9 +2091,7 @@ class LLMManager:
 
         requested_model = model or self._default_model
         provider_enum = self.detect_provider(requested_model)
-        model_for_provider = _normalize_model_name_for_provider(
-            requested_model, provider_enum
-        )
+        model_for_provider = _normalize_model_name_for_provider(requested_model, provider_enum)
         provider = self._get_provider(provider_enum)
         self._check_global_pause()
         self._check_spend_limit()
@@ -2289,9 +2183,7 @@ class LLMManager:
 
         requested_model = model or self._default_model
         provider_enum = self.detect_provider(requested_model)
-        model_for_provider = _normalize_model_name_for_provider(
-            requested_model, provider_enum
-        )
+        model_for_provider = _normalize_model_name_for_provider(requested_model, provider_enum)
         provider = self._get_provider(provider_enum)
         self._check_global_pause()
         self._check_spend_limit()
@@ -2309,14 +2201,9 @@ class LLMManager:
             # Provider structured_output returns a dict (no usage info),
             # so estimate tokens from the schema prompt + response size.
             latency_ms = int((time.time() - start_time) * 1000)
-            estimated_input = (
-                sum(len(m.content) // 4 for m in messages)
-                + len(json.dumps(schema)) // 4
-            )
+            estimated_input = sum(len(m.content) // 4 for m in messages) + len(json.dumps(schema)) // 4
             estimated_output = len(json.dumps(result)) // 4
-            cost = provider._estimate_cost(
-                model_for_provider, estimated_input, estimated_output
-            )
+            cost = provider._estimate_cost(model_for_provider, estimated_input, estimated_output)
             await self._log_usage(
                 provider=provider_enum.value,
                 model=model_for_provider,
@@ -2364,21 +2251,15 @@ class LLMManager:
                 totals_result = await session.execute(
                     select(
                         func.coalesce(
-                            func.sum(
-                                case((LLMUsageLog.success, LLMUsageLog.cost_usd), else_=0)
-                            ),
+                            func.sum(case((LLMUsageLog.success, LLMUsageLog.cost_usd), else_=0)),
                             0.0,
                         ),
                         func.coalesce(
-                            func.sum(
-                                case((LLMUsageLog.success, LLMUsageLog.input_tokens), else_=0)
-                            ),
+                            func.sum(case((LLMUsageLog.success, LLMUsageLog.input_tokens), else_=0)),
                             0,
                         ),
                         func.coalesce(
-                            func.sum(
-                                case((LLMUsageLog.success, LLMUsageLog.output_tokens), else_=0)
-                            ),
+                            func.sum(case((LLMUsageLog.success, LLMUsageLog.output_tokens), else_=0)),
                             0,
                         ),
                         func.count(case((LLMUsageLog.success, 1), else_=None)),
@@ -2444,10 +2325,7 @@ class LLMManager:
                 "avg_latency_ms": round(avg_latency, 1),
                 "spend_limit_usd": self._spend_limit,
                 "spend_remaining_usd": max(0.0, self._spend_limit - total_cost),
-                "providers": {
-                    row[0]: {"cost_usd": float(row[1]), "requests": int(row[2])}
-                    for row in provider_rows
-                },
+                "providers": {row[0]: {"cost_usd": float(row[1]), "requests": int(row[2])} for row in provider_rows},
                 "by_model": {
                     row[0]: {
                         "requests": int(row[1]),
@@ -2469,9 +2347,7 @@ class LLMManager:
                 "configured_providers": [p.value for p in self._providers],
             }
 
-    async def fetch_and_cache_models(
-        self, provider_name: Optional[str] = None
-    ) -> dict[str, list[dict[str, str]]]:
+    async def fetch_and_cache_models(self, provider_name: Optional[str] = None) -> dict[str, list[dict[str, str]]]:
         """Fetch models from provider APIs and cache them in the database.
 
         Args:
@@ -2501,11 +2377,7 @@ class LLMManager:
                     # Delete old entries for this provider
                     from sqlalchemy import delete
 
-                    await session.execute(
-                        delete(LLMModelCache).where(
-                            LLMModelCache.provider == p_enum.value
-                        )
-                    )
+                    await session.execute(delete(LLMModelCache).where(LLMModelCache.provider == p_enum.value))
                     # Insert new entries
                     for m in models:
                         entry = LLMModelCache(
@@ -2528,9 +2400,7 @@ class LLMManager:
 
         return results
 
-    async def get_cached_models(
-        self, provider_name: Optional[str] = None
-    ) -> dict[str, list[dict[str, str]]]:
+    async def get_cached_models(self, provider_name: Optional[str] = None) -> dict[str, list[dict[str, str]]]:
         """Get cached models from the database.
 
         Args:
@@ -2552,9 +2422,7 @@ class LLMManager:
             for row in rows:
                 if row.provider not in models_by_provider:
                     models_by_provider[row.provider] = []
-                models_by_provider[row.provider].append(
-                    {"id": row.model_id, "name": row.display_name or row.model_id}
-                )
+                models_by_provider[row.provider].append({"id": row.model_id, "name": row.display_name or row.model_id})
             return models_by_provider
         except Exception as exc:
             logger.error("Failed to get cached models: %s", exc)

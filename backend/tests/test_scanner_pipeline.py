@@ -113,9 +113,7 @@ class TestScanOnce:
         strategy_a = MagicMock()
         strategy_a.name = "StratA"
         strategy_a.strategy_type = StrategyType.BASIC
-        strategy_a.detect = MagicMock(
-            return_value=[sample_opportunity_low_roi, sample_opportunity]
-        )
+        strategy_a.detect = MagicMock(return_value=[sample_opportunity_low_roi, sample_opportunity])
 
         # Strategy 2 returns high ROI opp
         strategy_b = MagicMock()
@@ -302,9 +300,7 @@ class TestMispricingClassification:
         assert results[0].mispricing_type == MispricingType.SETTLEMENT_LAG
 
     @pytest.mark.asyncio
-    async def test_mispricing_type_not_overwritten_if_already_set(
-        self, mock_polymarket_client
-    ):
+    async def test_mispricing_type_not_overwritten_if_already_set(self, mock_polymarket_client):
         """If a strategy already set mispricing_type, the scanner does not overwrite it."""
         opp = ArbitrageOpportunity(
             strategy=StrategyType.BASIC,
@@ -360,7 +356,7 @@ class TestSharedPriceHistoryAttach:
                 {
                     "id": "m_weather_1",
                     "platform": "polymarket",
-                    "clob_token_ids": f"[\"{yes_token}\", \"{no_token}\"]",
+                    "clob_token_ids": f'["{yes_token}", "{no_token}"]',
                     "yes_price": 0.2,
                     "no_price": 0.8,
                 }
@@ -413,9 +409,7 @@ class TestSharedPriceHistoryAttach:
             }
         )
 
-        attached = await scanner.attach_price_history_to_opportunities(
-            [opp], timeout_seconds=None
-        )
+        attached = await scanner.attach_price_history_to_opportunities([opp], timeout_seconds=None)
 
         assert attached == 1
         assert "price_history" in opp.markets[0]
@@ -571,9 +565,7 @@ class TestGetOpportunities:
         assert result[0].strategy == StrategyType.BASIC
 
     def test_min_liquidity_filter(self, sample_opportunity, sample_opportunity_low_roi):
-        scanner = self._scanner_with_opportunities(
-            [sample_opportunity, sample_opportunity_low_roi]
-        )
+        scanner = self._scanner_with_opportunities([sample_opportunity, sample_opportunity_low_roi])
         f = OpportunityFilter(min_liquidity=1000.0)
         result = scanner.get_opportunities(filter=f)
 
@@ -611,9 +603,7 @@ class TestClearAndRemove:
         count = scanner.clear_opportunities()
         assert count == 0
 
-    def test_remove_expired_opportunities(
-        self, sample_opportunity, expired_opportunity
-    ):
+    def test_remove_expired_opportunities(self, sample_opportunity, expired_opportunity):
         scanner = _build_scanner()
         scanner._opportunities = [sample_opportunity, expired_opportunity]
 
@@ -774,9 +764,7 @@ class TestScannerCallbacks:
     """Tests for scan and status callbacks."""
 
     @pytest.mark.asyncio
-    async def test_scan_callback_invoked(
-        self, mock_polymarket_client, sample_opportunity
-    ):
+    async def test_scan_callback_invoked(self, mock_polymarket_client, sample_opportunity):
         strategy = MagicMock()
         strategy.name = "S"
         strategy.strategy_type = StrategyType.BASIC
@@ -816,9 +804,7 @@ class TestScannerCallbacks:
         cb2.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_exception_does_not_break_scan(
-        self, mock_polymarket_client, sample_opportunity
-    ):
+    async def test_callback_exception_does_not_break_scan(self, mock_polymarket_client, sample_opportunity):
         strategy = MagicMock()
         strategy.name = "S"
         strategy.strategy_type = StrategyType.BASIC

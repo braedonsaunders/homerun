@@ -14,21 +14,11 @@ class StrategyType(str, Enum):
     MUST_HAPPEN = "must_happen"
     MIRACLE = "miracle"  # Bet against impossible/absurd events
     COMBINATORIAL = "combinatorial"  # Cross-market arbitrage via integer programming
-    SETTLEMENT_LAG = (
-        "settlement_lag"  # Exploit delayed price updates after outcome determined
-    )
-    CROSS_PLATFORM = (
-        "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
-    )
-    BTC_ETH_HIGHFREQ = (
-        "btc_eth_highfreq"  # High-frequency BTC/ETH/SOL/XRP 5m/15m/1hr binary market arbitrage
-    )
-    NEWS_EDGE = (
-        "news_edge"  # News-driven informational edge via LLM probability estimation
-    )
-    WEATHER_EDGE = (
-        "weather_edge"  # Weather-driven informational edge via forecast model consensus
-    )
+    SETTLEMENT_LAG = "settlement_lag"  # Exploit delayed price updates after outcome determined
+    CROSS_PLATFORM = "cross_platform"  # Cross-platform arbitrage (e.g. Polymarket vs Kalshi)
+    BTC_ETH_HIGHFREQ = "btc_eth_highfreq"  # High-frequency BTC/ETH/SOL/XRP 5m/15m/1hr binary market arbitrage
+    NEWS_EDGE = "news_edge"  # News-driven informational edge via LLM probability estimation
+    WEATHER_EDGE = "weather_edge"  # Weather-driven informational edge via forecast model consensus
     BAYESIAN_CASCADE = "bayesian_cascade"
     LIQUIDITY_VACUUM = "liquidity_vacuum"
     ENTROPY_ARB = "entropy_arb"
@@ -72,9 +62,7 @@ class AIAnalysis(BaseModel):
     resolution_safety: float = 0.0
     execution_feasibility: float = 0.0
     market_efficiency: float = 0.0
-    recommendation: str = (
-        "pending"  # strong_execute, execute, review, skip, strong_skip, pending
-    )
+    recommendation: str = "pending"  # strong_execute, execute, review, skip, strong_skip, pending
     reasoning: Optional[str] = None
     risk_factors: list[str] = []
     judged_at: Optional[datetime] = None
@@ -85,9 +73,7 @@ class ArbitrageOpportunity(BaseModel):
     """Represents a detected arbitrage opportunity"""
 
     id: str = Field(default_factory=lambda: "")
-    stable_id: str = Field(
-        default_factory=lambda: ""
-    )  # Persists across scans (no timestamp)
+    stable_id: str = Field(default_factory=lambda: "")  # Persists across scans (no timestamp)
     strategy: str  # StrategyType value for built-ins, plugin slug for plugins
     title: str
     description: str
@@ -148,9 +134,7 @@ class ArbitrageOpportunity(BaseModel):
         if not self.stable_id:
             self.stable_id = f"{strategy_name}_{market_hash}"
         if not self.id:
-            self.id = (
-                f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
-            )
+            self.id = f"{strategy_name}_{market_hash}_{int(self.detected_at.timestamp())}"
 
 
 class OpportunityFilter(BaseModel):

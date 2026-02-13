@@ -407,9 +407,7 @@ class ExtractedEntities:
     timeframes: set[str] = field(default_factory=set)  # "by end of year", etc.
     price_targets: list[float] = field(default_factory=list)
     percentages: list[float] = field(default_factory=list)
-    number_thresholds: list[tuple[str, float]] = field(
-        default_factory=list
-    )  # (direction, value)
+    number_thresholds: list[tuple[str, float]] = field(default_factory=list)  # (direction, value)
     event_types: set[str] = field(default_factory=set)
     resolution_methods: set[str] = field(default_factory=set)
 
@@ -582,9 +580,7 @@ def _resolution_dates_compatible(
     return abs(d1_naive - d2_naive) <= timedelta(days=tolerance_days)
 
 
-def _resolution_methods_compatible(
-    e1: ExtractedEntities, e2: ExtractedEntities
-) -> tuple[bool, str]:
+def _resolution_methods_compatible(e1: ExtractedEntities, e2: ExtractedEntities) -> tuple[bool, str]:
     """Check whether the resolution methods extracted from both markets
     are compatible.  Returns (is_compatible, reason_string).
 
@@ -845,11 +841,7 @@ class MarketMatcher:
             resolution_score = 0.7
         elif resolution_match and "caution" in method_reason.lower():
             resolution_score = 0.85
-        overall = (
-            self.w_text * text_sim
-            + self.w_entity * entity_score
-            + self.w_resolution * resolution_score
-        )
+        overall = self.w_text * text_sim + self.w_entity * entity_score + self.w_resolution * resolution_score
         reasoning_parts.append(f"overall_confidence={overall:.3f}")
 
         if overall < self.confidence_threshold:
@@ -1243,34 +1235,24 @@ class CrossPlatformScanner:
                     # Scale risk inversely with match confidence
                     # confidence 1.0 -> no extra risk
                     # confidence 0.55 (threshold) -> +0.30 risk
-                    confidence_penalty = max(
-                        0.0, 0.30 * (1.0 - match_result.overall_confidence)
-                    )
+                    confidence_penalty = max(0.0, 0.30 * (1.0 - match_result.overall_confidence))
                     risk_score = min(1.0, risk_score + confidence_penalty)
 
                     if not match_result.resolution_match:
                         risk_score = min(1.0, risk_score + 0.20)
-                        risk_factors_list.append(
-                            "Resolution criteria may differ between platforms"
-                        )
+                        risk_factors_list.append("Resolution criteria may differ between platforms")
 
                     if match_result.poly_only_entities:
                         risk_factors_list.append(
-                            f"Entities only on Polymarket: "
-                            f"{', '.join(match_result.poly_only_entities[:5])}"
+                            f"Entities only on Polymarket: {', '.join(match_result.poly_only_entities[:5])}"
                         )
                     if match_result.kalshi_only_entities:
                         risk_factors_list.append(
-                            f"Entities only on Kalshi: "
-                            f"{', '.join(match_result.kalshi_only_entities[:5])}"
+                            f"Entities only on Kalshi: {', '.join(match_result.kalshi_only_entities[:5])}"
                         )
 
                 # Build enriched description
-                description = (
-                    f"{desc}. "
-                    f"Poly YES={p_yes:.3f} NO={p_no:.3f} | "
-                    f"Kalshi YES={k_yes:.3f} NO={k_no:.3f}"
-                )
+                description = f"{desc}. Poly YES={p_yes:.3f} NO={p_no:.3f} | Kalshi YES={k_yes:.3f} NO={k_no:.3f}"
                 if match_result is not None:
                     description += (
                         f" | Match confidence={match_result.overall_confidence:.2f}"
@@ -1295,12 +1277,8 @@ class CrossPlatformScanner:
                     "no_price": k_no,
                 }
                 if match_result is not None:
-                    poly_market_dict["match_confidence"] = (
-                        match_result.overall_confidence
-                    )
-                    kalshi_market_dict["match_confidence"] = (
-                        match_result.overall_confidence
-                    )
+                    poly_market_dict["match_confidence"] = match_result.overall_confidence
+                    kalshi_market_dict["match_confidence"] = match_result.overall_confidence
                     poly_market_dict["match_reasoning"] = match_result.match_reasoning
                     kalshi_market_dict["match_reasoning"] = match_result.match_reasoning
 

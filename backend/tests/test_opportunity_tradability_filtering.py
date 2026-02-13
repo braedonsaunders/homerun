@@ -70,18 +70,13 @@ def test_weather_opportunities_filtered_by_market_tradability(monkeypatch):
         return [good, bad], {}
 
     async def _fake_map(market_ids, **_kwargs):
-        return {
-            str(mid).lower(): str(mid).lower() != "0xweatherbad"
-            for mid in market_ids
-        }
+        return {str(mid).lower(): str(mid).lower() != "0xweatherbad" for mid in market_ids}
 
     monkeypatch.setattr(weather_shared_state, "read_weather_snapshot", _fake_read)
     monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
 
     rows = asyncio.run(
-        weather_shared_state.get_weather_opportunities_from_db(
-            session=None, require_tradable_markets=True
-        )
+        weather_shared_state.get_weather_opportunities_from_db(session=None, require_tradable_markets=True)
     )
     assert [r.markets[0]["id"] for r in rows] == ["0xweathergood"]
 
@@ -102,9 +97,7 @@ def test_weather_opportunities_drop_near_resolution(monkeypatch):
     monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
 
     rows = asyncio.run(
-        weather_shared_state.get_weather_opportunities_from_db(
-            session=None, exclude_near_resolution=True
-        )
+        weather_shared_state.get_weather_opportunities_from_db(session=None, exclude_near_resolution=True)
     )
     assert [r.markets[0]["id"] for r in rows] == ["0xlater"]
 
@@ -140,11 +133,7 @@ def test_weather_max_entry_keeps_report_only_cards(monkeypatch):
     monkeypatch.setattr(weather_shared_state, "read_weather_snapshot", _fake_read)
     monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
 
-    rows = asyncio.run(
-        weather_shared_state.get_weather_opportunities_from_db(
-            session=None, max_entry_price=0.25
-        )
-    )
+    rows = asyncio.run(weather_shared_state.get_weather_opportunities_from_db(session=None, max_entry_price=0.25))
     assert [r.markets[0]["id"] for r in rows] == ["0xreport"]
 
 
@@ -191,9 +180,7 @@ def test_weather_target_date_counts_from_snapshot(monkeypatch):
     monkeypatch.setattr(weather_shared_state, "read_weather_snapshot", _fake_read)
     monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
 
-    rows = asyncio.run(
-        weather_shared_state.get_weather_target_date_counts_from_db(session=None)
-    )
+    rows = asyncio.run(weather_shared_state.get_weather_target_date_counts_from_db(session=None))
     assert rows == [
         {"date": "2026-02-13", "count": 2},
         {"date": "2026-02-14", "count": 1},
@@ -202,9 +189,7 @@ def test_weather_target_date_counts_from_snapshot(monkeypatch):
 
 def test_weather_target_date_counts_fallback_to_question_text(monkeypatch):
     text_only = _opp("0xtext")
-    text_only.markets[0]["question"] = (
-        "Will the highest temperature in Wellington be 23C or higher on Feb 13?"
-    )
+    text_only.markets[0]["question"] = "Will the highest temperature in Wellington be 23C or higher on Feb 13?"
     text_only.markets[0].pop("weather", None)
     text_only.resolution_date = None
 
@@ -217,9 +202,7 @@ def test_weather_target_date_counts_fallback_to_question_text(monkeypatch):
     monkeypatch.setattr(weather_shared_state, "read_weather_snapshot", _fake_read)
     monkeypatch.setattr(weather_shared_state, "get_market_tradability_map", _fake_map)
 
-    rows = asyncio.run(
-        weather_shared_state.get_weather_target_date_counts_from_db(session=None)
-    )
+    rows = asyncio.run(weather_shared_state.get_weather_target_date_counts_from_db(session=None))
     assert rows and rows[0]["count"] == 1
 
 
@@ -240,9 +223,7 @@ def test_market_tradability_map_handles_lookup_failure(monkeypatch):
         _raise_lookup,
     )
 
-    result = asyncio.run(
-        market_tradability.get_market_tradability_map(["0xabc", "123"])
-    )
+    result = asyncio.run(market_tradability.get_market_tradability_map(["0xabc", "123"]))
 
     # Guard is fail-open for unknown lookups so we do not drop good markets on transient API errors.
     assert result["0xabc"] is True
@@ -302,9 +283,7 @@ def test_market_tradability_map_routes_condition_and_token_ids(monkeypatch):
 
     condition_id = "0x" + ("a" * 64)
     token_id = "1234567890123456789012345"
-    result = asyncio.run(
-        market_tradability.get_market_tradability_map([condition_id, token_id])
-    )
+    result = asyncio.run(market_tradability.get_market_tradability_map([condition_id, token_id]))
 
     assert result[condition_id] is True
     assert result[token_id] is True

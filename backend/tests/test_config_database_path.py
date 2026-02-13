@@ -31,9 +31,7 @@ def test_normalize_database_url_bootstraps_legacy_backend_db(tmp_path, monkeypat
     monkeypatch.setattr(config, "_PROJECT_ROOT", project_root.resolve())
     monkeypatch.setattr(config, "_LEGACY_DB_PATH", legacy_db.resolve())
 
-    normalized = config.Settings._normalize_database_url(
-        "sqlite+aiosqlite:///./data/arbitrage.db"
-    )
+    normalized = config.Settings._normalize_database_url("sqlite+aiosqlite:///./data/arbitrage.db")
     expected_path = (project_root / "data" / "arbitrage.db").resolve()
 
     assert normalized == f"sqlite+aiosqlite:///{expected_path}"
@@ -56,9 +54,7 @@ def test_normalize_database_url_does_not_overwrite_existing_target(tmp_path, mon
     monkeypatch.setattr(config, "_PROJECT_ROOT", project_root.resolve())
     monkeypatch.setattr(config, "_LEGACY_DB_PATH", legacy_db.resolve())
 
-    normalized = config.Settings._normalize_database_url(
-        "sqlite+aiosqlite:///./data/arbitrage.db"
-    )
+    normalized = config.Settings._normalize_database_url("sqlite+aiosqlite:///./data/arbitrage.db")
 
     assert normalized == f"sqlite+aiosqlite:///{target_db.resolve()}"
     assert target_db.read_bytes() == b"current"

@@ -74,9 +74,7 @@ class OraclePrice:
             "asset": self.asset,
             "price": self.price,
             "updated_at_ms": self.updated_at_ms,
-            "age_seconds": (time.time() * 1000 - self.updated_at_ms) / 1000
-            if self.updated_at_ms
-            else None,
+            "age_seconds": (time.time() * 1000 - self.updated_at_ms) / 1000 if self.updated_at_ms else None,
             "source": self.source,
         }
 
@@ -214,9 +212,7 @@ class ChainlinkFeed:
                         }
                     )
                     await ws.send(sub_msg)
-                    logger.info(
-                        f"ChainlinkFeed: subscribed to {CHAINLINK_TOPIC} + {BINANCE_TOPIC}"
-                    )
+                    logger.info(f"ChainlinkFeed: subscribed to {CHAINLINK_TOPIC} + {BINANCE_TOPIC}")
 
                     async for raw in ws:
                         if self._stopped:
@@ -230,9 +226,7 @@ class ChainlinkFeed:
                     break
                 logger.debug(f"ChainlinkFeed: connection error: {e}")
                 await asyncio.sleep(reconnect_ms / 1000.0)
-                reconnect_ms = min(
-                    int(reconnect_ms * 1.5), RECONNECT_MAX_MS
-                )
+                reconnect_ms = min(int(reconnect_ms * 1.5), RECONNECT_MAX_MS)
 
     def _handle_message(self, raw: str | bytes) -> None:
         """Parse a WebSocket message and update the price cache + history."""
@@ -261,12 +255,7 @@ class ChainlinkFeed:
             return
 
         # Extract symbol
-        symbol = str(
-            payload.get("symbol")
-            or payload.get("pair")
-            or payload.get("ticker")
-            or ""
-        ).lower()
+        symbol = str(payload.get("symbol") or payload.get("pair") or payload.get("ticker") or "").lower()
 
         # Map to canonical asset -- try exact match first, then substring
         asset = _SYMBOL_MAP.get(symbol)
@@ -279,11 +268,7 @@ class ChainlinkFeed:
             return
 
         # Extract price (field is "value" per RTDS docs)
-        price_val = (
-            payload.get("value")
-            or payload.get("price")
-            or payload.get("current")
-        )
+        price_val = payload.get("value") or payload.get("price") or payload.get("current")
         try:
             price = float(price_val)
         except (TypeError, ValueError):
@@ -297,9 +282,7 @@ class ChainlinkFeed:
         if ts_val is not None:
             try:
                 ts_float = float(ts_val)
-                updated_at_ms = (
-                    int(ts_float * 1000) if ts_float < 1e12 else int(ts_float)
-                )
+                updated_at_ms = int(ts_float * 1000) if ts_float < 1e12 else int(ts_float)
             except (TypeError, ValueError):
                 pass
         if updated_at_ms is None:
@@ -342,7 +325,6 @@ class ChainlinkFeed:
             cutoff = int(time.time() * 1000) - HISTORY_MAX_AGE_MS
             while self._history[asset] and self._history[asset][0][0] < cutoff:
                 self._history[asset].popleft()
-
 
 
 # ---------------------------------------------------------------------------

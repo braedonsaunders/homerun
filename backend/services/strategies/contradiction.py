@@ -52,9 +52,7 @@ class ContradictionStrategy(BaseStrategy):
         ("rise", "fall"),
     ]
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         # Index markets by key topics for efficient matching
@@ -133,9 +131,7 @@ class ContradictionStrategy(BaseStrategy):
 
         return index
 
-    def _find_contradiction_candidates(
-        self, market: Market, topic_index: dict[str, list[Market]]
-    ) -> list[Market]:
+    def _find_contradiction_candidates(self, market: Market, topic_index: dict[str, list[Market]]) -> list[Market]:
         """Find markets that might contradict this one"""
         candidates = {}  # Use dict keyed by ID since Market isn't hashable
         question = market.question.lower()
@@ -257,18 +253,14 @@ class ContradictionStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market_a.question[:50],
                     "price": yes_a,
-                    "token_id": market_a.clob_token_ids[0]
-                    if market_a.clob_token_ids
-                    else None,
+                    "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None,
                 },
                 {
                     "action": "BUY",
                     "outcome": "YES",
                     "market": market_b.question[:50],
                     "price": yes_b,
-                    "token_id": market_b.clob_token_ids[0]
-                    if market_b.clob_token_ids
-                    else None,
+                    "token_id": market_b.clob_token_ids[0] if market_b.clob_token_ids else None,
                 },
             ]
 
@@ -281,9 +273,7 @@ class ContradictionStrategy(BaseStrategy):
             )
             # Add extra risk factor for contradiction strategy
             if opp:
-                opp.risk_factors.insert(
-                    0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive"
-                )
+                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
             return opp
 
         # Approach 2: Buy YES on A, NO on B
@@ -302,18 +292,14 @@ class ContradictionStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market_a.question[:50],
                     "price": yes_a,
-                    "token_id": market_a.clob_token_ids[0]
-                    if market_a.clob_token_ids
-                    else None,
+                    "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None,
                 },
                 {
                     "action": "BUY",
                     "outcome": "NO",
                     "market": market_b.question[:50],
                     "price": no_b,
-                    "token_id": market_b.clob_token_ids[1]
-                    if len(market_b.clob_token_ids) > 1
-                    else None,
+                    "token_id": market_b.clob_token_ids[1] if len(market_b.clob_token_ids) > 1 else None,
                 },
             ]
 
@@ -326,9 +312,7 @@ class ContradictionStrategy(BaseStrategy):
             )
             # Add extra risk factor for contradiction strategy
             if opp:
-                opp.risk_factors.insert(
-                    0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive"
-                )
+                opp.risk_factors.insert(0, "⚠️ REQUIRES MANUAL VERIFICATION - may not be exhaustive")
             return opp
 
         return None

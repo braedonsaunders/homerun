@@ -267,9 +267,7 @@ class DepthAnalyzer:
 
         return result
 
-    async def calculate_depth_at_price(
-        self, token_id: str, side: str, price: float
-    ) -> float:
+    async def calculate_depth_at_price(self, token_id: str, side: str, price: float) -> float:
         """Calculate total executable depth (USD) at or better than *price*.
 
         Parameters
@@ -311,9 +309,7 @@ class DepthAnalyzer:
 
         return depth_usd
 
-    async def get_executable_price(
-        self, token_id: str, side: str, size: float
-    ) -> float:
+    async def get_executable_price(self, token_id: str, side: str, size: float) -> float:
         """Compute the volume-weighted average price (VWAP) to fill *size* USD.
 
         Walks through the order book consuming levels until the requested

@@ -87,10 +87,7 @@ def build_polymarket_market_url(
     condition_id_text = _clean_segment(condition_id).lower()
 
     if event_slug_text and market_slug_text and event_slug_text != market_slug_text:
-        return (
-            f"{POLYMARKET_BASE_URL}/event/"
-            f"{quote(event_slug_text, safe='')}/{quote(market_slug_text, safe='')}"
-        )
+        return f"{POLYMARKET_BASE_URL}/event/{quote(event_slug_text, safe='')}/{quote(market_slug_text, safe='')}"
     if market_slug_text:
         # /market/{market_slug} is stable and resolves to the canonical event path.
         return f"{POLYMARKET_BASE_URL}/market/{quote(market_slug_text, safe='')}"
@@ -113,9 +110,7 @@ def build_kalshi_market_url(
     if _is_likely_kalshi_ticker(market_ticker_text):
         return f"{KALSHI_BASE_URL}/markets/{quote(market_ticker_text, safe='')}"
 
-    event_ticker_text = _clean_segment(event_ticker) or derive_kalshi_event_ticker(
-        market_ticker_text
-    )
+    event_ticker_text = _clean_segment(event_ticker) or derive_kalshi_event_ticker(market_ticker_text)
     if _is_likely_kalshi_ticker(event_ticker_text):
         return f"{KALSHI_BASE_URL}/markets/{quote(event_ticker_text, safe='')}"
 
@@ -138,17 +133,12 @@ def build_market_url(
                 or market.get("eventSlug")
             ),
             event_slug=(
-                market.get("event_slug")
-                or market.get("eventSlug")
-                or market.get("slug")
-                or market.get("market_slug")
+                market.get("event_slug") or market.get("eventSlug") or market.get("slug") or market.get("market_slug")
             ),
         )
 
     return build_polymarket_market_url(
-        event_slug=market.get("event_slug")
-        or market.get("eventSlug")
-        or opportunity_event_slug,
+        event_slug=market.get("event_slug") or market.get("eventSlug") or opportunity_event_slug,
         market_slug=market.get("slug") or market.get("market_slug"),
         market_id=market.get("id") or market.get("market_id"),
         condition_id=market.get("condition_id") or market.get("conditionId"),
@@ -184,9 +174,7 @@ def attach_market_links_to_opportunity_dict(
         platform = infer_market_platform(market_dict)
         market_dict["platform"] = platform
 
-        market_url = _clean_absolute_url(
-            market_dict.get("url") or market_dict.get("market_url")
-        )
+        market_url = _clean_absolute_url(market_dict.get("url") or market_dict.get("market_url"))
         if not market_url:
             market_url = build_market_url(market_dict, opportunity_event_slug=event_slug)
 

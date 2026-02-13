@@ -72,10 +72,7 @@ def _assert_supported_worker(name: str) -> None:
     if name not in ALLOWED_WORKERS:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Unknown worker '{name}'. "
-                f"Supported workers: {sorted(ALLOWED_WORKERS)}"
-            ),
+            detail=(f"Unknown worker '{name}'. Supported workers: {sorted(ALLOWED_WORKERS)}"),
         )
 
 
@@ -118,9 +115,7 @@ async def _worker_detail(session: AsyncSession, worker_name: str) -> dict:
             "is_enabled": bool(control.get("is_enabled", True)),
             "is_paused": bool(control.get("is_paused", False)),
             "interval_seconds": int((control.get("run_interval_minutes") or 60) * 60),
-            "priority_backlog_mode": bool(
-                control.get("priority_backlog_mode", True)
-            ),
+            "priority_backlog_mode": bool(control.get("priority_backlog_mode", True)),
             "requested_run_at": control.get("requested_run_at").isoformat()
             if control.get("requested_run_at")
             else None,
@@ -285,13 +280,9 @@ async def set_worker_run_interval(
     elif name == "weather":
         await weather_shared_state.set_weather_interval(session, interval_seconds)
     elif name == "discovery":
-        await discovery_shared_state.set_discovery_interval(
-            session, max(1, interval_seconds // 60)
-        )
+        await discovery_shared_state.set_discovery_interval(session, max(1, interval_seconds // 60))
     elif name == "trader_orchestrator":
-        await update_orchestrator_control(
-            session, run_interval_seconds=interval_seconds
-        )
+        await update_orchestrator_control(session, run_interval_seconds=interval_seconds)
     else:
         await set_worker_interval(session, name, interval_seconds)
 

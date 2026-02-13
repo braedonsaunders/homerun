@@ -39,9 +39,7 @@ class RetryConfig:
 
 def calculate_delay(attempt: int, config: RetryConfig) -> float:
     """Calculate delay with exponential backoff and optional jitter"""
-    delay = min(
-        config.base_delay * (config.exponential_base**attempt), config.max_delay
-    )
+    delay = min(config.base_delay * (config.exponential_base**attempt), config.max_delay)
     if config.jitter:
         delay = delay * (0.5 + random.random())
     return delay
@@ -137,10 +135,7 @@ class RetryableClient:
                     delay = calculate_delay(attempt, self.config)
 
                     # Special handling for rate limits
-                    if (
-                        isinstance(e, httpx.HTTPStatusError)
-                        and e.response.status_code == 429
-                    ):
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
                         retry_after = e.response.headers.get("Retry-After")
                         if retry_after:
                             delay = max(delay, float(retry_after))

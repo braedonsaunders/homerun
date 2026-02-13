@@ -150,9 +150,7 @@ class FillMonitor:
                         price=order.average_fill_price or order.price,
                         size_filled=order.filled_size,
                         size_requested=order.size,
-                        fill_percent=(order.filled_size / order.size * 100)
-                        if order.size > 0
-                        else 0,
+                        fill_percent=(order.filled_size / order.size * 100) if order.size > 0 else 0,
                         fee=0.0,
                         detected_at=utcnow(),
                     )
@@ -195,9 +193,7 @@ class FillMonitor:
                         price=fill.price,
                         size=fill.size_filled,
                         fee=fill.fee,
-                        status="filled"
-                        if fill.fill_percent >= 99.9
-                        else "partially_filled",
+                        status="filled" if fill.fill_percent >= 99.9 else "partially_filled",
                         fill_percent=fill.fill_percent,
                     )
                 )
@@ -208,11 +204,7 @@ class FillMonitor:
     async def get_recent_fills(self, limit: int = 50) -> list[dict]:
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(FillEvent)
-                    .order_by(FillEvent.detected_at.desc())
-                    .limit(limit)
-                )
+                result = await session.execute(select(FillEvent).order_by(FillEvent.detected_at.desc()).limit(limit))
                 return [
                     {
                         "order_id": f.order_id,

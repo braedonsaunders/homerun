@@ -127,9 +127,7 @@ Return valid JSON only:
         else:
             self.api_url = "http://localhost:11434/api/generate"
 
-    async def detect_dependencies(
-        self, market_a: MarketInfo, market_b: MarketInfo
-    ) -> DependencyAnalysis:
+    async def detect_dependencies(self, market_a: MarketInfo, market_b: MarketInfo) -> DependencyAnalysis:
         """
         Detect dependencies between two markets using LLM.
 
@@ -163,9 +161,7 @@ Return valid JSON only:
             # Return heuristic result on failure
             return heuristic_result
 
-    def _heuristic_detect(
-        self, market_a: MarketInfo, market_b: MarketInfo
-    ) -> DependencyAnalysis:
+    def _heuristic_detect(self, market_a: MarketInfo, market_b: MarketInfo) -> DependencyAnalysis:
         """
         Fast heuristic dependency detection without LLM.
 
@@ -377,9 +373,7 @@ Return valid JSON only:
 
         return "{}"
 
-    def _parse_response(
-        self, response: str, market_a: MarketInfo, market_b: MarketInfo
-    ) -> DependencyAnalysis:
+    def _parse_response(self, response: str, market_a: MarketInfo, market_b: MarketInfo) -> DependencyAnalysis:
         """Parse LLM response into DependencyAnalysis."""
         try:
             # Extract JSON from response

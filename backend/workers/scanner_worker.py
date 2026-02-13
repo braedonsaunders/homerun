@@ -4,6 +4,7 @@ API and other workers read opportunities/status from DB only.
 Run from repo root: cd backend && python -m workers.scanner_worker
 Or from backend: python -m workers.scanner_worker
 """
+
 import asyncio
 import logging
 import os
@@ -227,6 +228,7 @@ async def _run_scan_loop() -> None:
     # Opportunity recorder hooks into scanner callbacks in this process.
     try:
         from services.opportunity_recorder import opportunity_recorder
+
         await opportunity_recorder.start()
         logger.info("Opportunity recorder started")
     except Exception as e:
@@ -239,10 +241,7 @@ async def _run_scan_loop() -> None:
         current_count = len(scanner.get_opportunities())
         async with AsyncSessionLocal() as session:
             if restored_count > 0:
-                activity = (
-                    f"Scanner resumed with {restored_count} restored opportunities; "
-                    "next scan pending."
-                )
+                activity = f"Scanner resumed with {restored_count} restored opportunities; next scan pending."
             else:
                 activity = "Scanner started; first scan pending."
             await update_scanner_activity(session, activity)
@@ -335,9 +334,7 @@ async def _run_scan_loop() -> None:
                     existing_last_scan = existing_status.get("last_scan")
 
                 if network_resolution_error:
-                    activity = (
-                        "Upstream market API DNS/network error; retaining last known snapshot."
-                    )
+                    activity = "Upstream market API DNS/network error; retaining last known snapshot."
                 else:
                     activity = f"Last scan error: {e}"
                 await write_scanner_snapshot(
@@ -367,11 +364,7 @@ async def _run_scan_loop() -> None:
                         "signals_emitted_last_run": 0,
                     },
                 )
-            sleep_seconds = (
-                settings.FAST_SCAN_INTERVAL_SECONDS
-                if settings.TIERED_SCANNING_ENABLED
-                else interval
-            )
+            sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED else interval
             await asyncio.sleep(max(1, sleep_seconds))
             continue
 
@@ -432,12 +425,8 @@ async def _run_scan_loop() -> None:
 
         try:
             async with AsyncSessionLocal() as session:
-                market_history = scanner.get_market_history_for_opportunities(
-                    opps
-                )
-                await write_scanner_snapshot(
-                    session, opps, status, market_history=market_history
-                )
+                market_history = scanner.get_market_history_for_opportunities(opps)
+                await write_scanner_snapshot(session, opps, status, market_history=market_history)
                 emitted = await emit_scanner_signals(session, opps)
                 await clear_scan_request(session)
                 await write_worker_snapshot(
@@ -458,9 +447,7 @@ async def _run_scan_loop() -> None:
         except Exception as e:
             logger.exception("Failed to persist scanner snapshot: %s", e)
         sleep_seconds = (
-            settings.FAST_SCAN_INTERVAL_SECONDS
-            if settings.TIERED_SCANNING_ENABLED and not requested
-            else interval
+            settings.FAST_SCAN_INTERVAL_SECONDS if settings.TIERED_SCANNING_ENABLED and not requested else interval
         )
         sleep_seconds = max(1, sleep_seconds)
 

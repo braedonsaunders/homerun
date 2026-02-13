@@ -45,26 +45,16 @@ _PORTWATCH_DAILY_QUERY_URL = str(
     )
 )
 _CHOKEPOINTS_ENABLED = bool(getattr(settings, "WORLD_INTEL_CHOKEPOINTS_ENABLED", True))
-_CHOKEPOINTS_REFRESH_SECONDS = int(
-    max(60, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_REFRESH_SECONDS", 1800) or 1800)
-)
+_CHOKEPOINTS_REFRESH_SECONDS = int(max(60, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_REFRESH_SECONDS", 1800) or 1800))
 _CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS = float(
     max(
         5.0,
-        getattr(settings, "WORLD_INTEL_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS", 20.0)
-        or 20.0,
+        getattr(settings, "WORLD_INTEL_CHOKEPOINTS_REQUEST_TIMEOUT_SECONDS", 20.0) or 20.0,
     )
 )
-_CHOKEPOINTS_MAX_DAILY_ROWS = int(
-    max(100, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_MAX_DAILY_ROWS", 500) or 500)
-)
+_CHOKEPOINTS_MAX_DAILY_ROWS = int(max(100, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_MAX_DAILY_ROWS", 500) or 500))
 
-_STATIC_REGIONS_FILE = (
-    Path(__file__).resolve().parents[2]
-    / "data"
-    / "world_intelligence"
-    / "regions.json"
-)
+_STATIC_REGIONS_FILE = Path(__file__).resolve().parents[2] / "data" / "world_intelligence" / "regions.json"
 
 
 def _to_iso(value: Optional[datetime]) -> Optional[str]:
@@ -244,9 +234,7 @@ class ChokepointFeed:
                     "baseline_vessel_count_total": _coerce_int(attrs.get("vessel_count_total")),
                     "baseline_vessel_count_container": _coerce_int(attrs.get("vessel_count_container")),
                     "baseline_vessel_count_dry_bulk": _coerce_int(attrs.get("vessel_count_dry_bulk")),
-                    "baseline_vessel_count_general_cargo": _coerce_int(
-                        attrs.get("vessel_count_general_cargo")
-                    ),
+                    "baseline_vessel_count_general_cargo": _coerce_int(attrs.get("vessel_count_general_cargo")),
                     "baseline_vessel_count_roro": _coerce_int(attrs.get("vessel_count_RoRo")),
                     "baseline_vessel_count_tanker": _coerce_int(attrs.get("vessel_count_tanker")),
                     "industry_top1": str(attrs.get("industry_top1") or "").strip() or None,

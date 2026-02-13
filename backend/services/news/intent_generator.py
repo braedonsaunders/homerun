@@ -95,9 +95,7 @@ class IntentGenerator:
                 "market_id": finding.market_id,
                 "market_question": finding.market_question,
                 "direction": finding.direction,
-                "entry_price": finding.market_price
-                if finding.direction == "buy_yes"
-                else (1.0 - finding.market_price),
+                "entry_price": finding.market_price if finding.direction == "buy_yes" else (1.0 - finding.market_price),
                 "model_probability": finding.model_probability,
                 "edge_percent": finding.edge_percent,
                 "confidence": finding.confidence,
@@ -147,9 +145,7 @@ class IntentGenerator:
                     "url": finding.article_url,
                     "source": finding.article_source,
                     "published": None,
-                    "fetched_at": finding.created_at.isoformat()
-                    if finding.created_at
-                    else None,
+                    "fetched_at": finding.created_at.isoformat() if finding.created_at else None,
                 }
             ]
 
@@ -169,10 +165,7 @@ class IntentGenerator:
 
     @staticmethod
     def _signal_key(finding: WorkflowFinding) -> str:
-        raw = (
-            f"{getattr(finding, 'signal_key', '')}:{finding.article_id}:"
-            f"{finding.market_id}:{finding.direction}"
-        )
+        raw = f"{getattr(finding, 'signal_key', '')}:{finding.article_id}:{finding.market_id}:{finding.direction}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
     def _compute_size(

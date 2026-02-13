@@ -65,7 +65,7 @@ class CryptoMarket:
         "fees_enabled",
         "event_slug",
         "event_title",
-        "is_current",        # True = currently live, False = upcoming
+        "is_current",  # True = currently live, False = upcoming
         "upcoming_markets",  # list of upcoming market dicts for this asset
     )
 
@@ -91,11 +91,7 @@ class CryptoMarket:
             except (ValueError, AttributeError):
                 pass
 
-        is_live = (
-            start is not None
-            and end is not None
-            and start.timestamp() <= time.time() < end.timestamp()
-        )
+        is_live = start is not None and end is not None and start.timestamp() <= time.time() < end.timestamp()
 
         combined = None
         if self.up_price is not None and self.down_price is not None:
@@ -226,12 +222,8 @@ def _parse_outcome_prices(market_data: dict) -> tuple[Optional[float], Optional[
     if outcome_prices and len(outcome_prices) >= 2:
         up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
         if up_idx < len(outcome_prices) and down_idx < len(outcome_prices):
-            return _coerce_probability(outcome_prices[up_idx]), _coerce_probability(
-                outcome_prices[down_idx]
-            )
-        return _coerce_probability(outcome_prices[0]), _coerce_probability(
-            outcome_prices[1]
-        )
+            return _coerce_probability(outcome_prices[up_idx]), _coerce_probability(outcome_prices[down_idx])
+        return _coerce_probability(outcome_prices[0]), _coerce_probability(outcome_prices[1])
 
     # Fallback: derive from bestBid/bestAsk midpoint
     best_bid = _parse_float(market_data.get("bestBid"))
@@ -248,6 +240,7 @@ def _oracle_snapshot_payload(oracle: object | None) -> dict[str, float | str | N
     try:
         from services.chainlink_feed import OraclePrice
     except Exception:
+
         class OraclePrice:
             pass
 
@@ -260,11 +253,7 @@ def _oracle_snapshot_payload(oracle: object | None) -> dict[str, float | str | N
         }
 
     updated_ms = getattr(oracle, "updated_at_ms", None)
-    age_seconds = (
-        round((time.time() * 1000 - int(updated_ms)) / 1000, 1)
-        if updated_ms
-        else None
-    )
+    age_seconds = round((time.time() * 1000 - int(updated_ms)) / 1000, 1) if updated_ms else None
 
     return {
         "price": float(getattr(oracle, "price")),
@@ -305,9 +294,7 @@ class CryptoService:
                 logger.warning(f"CryptoService fetch failed: {e}")
         return self._cache
 
-    def _fetch_clob_midpoint(
-        self, client: httpx.Client, token_id: str
-    ) -> Optional[float]:
+    def _fetch_clob_midpoint(self, client: httpx.Client, token_id: str) -> Optional[float]:
         """Fetch token midpoint from CLOB and normalize to [0, 1]."""
         token = str(token_id or "").strip()
         if not token:
@@ -327,9 +314,7 @@ class CryptoService:
         except Exception:
             return None
 
-    def _fetch_clob_price(
-        self, client: httpx.Client, token_id: str, side: str
-    ) -> Optional[float]:
+    def _fetch_clob_price(self, client: httpx.Client, token_id: str, side: str) -> Optional[float]:
         """Fetch token best price from CLOB and normalize to [0, 1]."""
         token = str(token_id or "").strip()
         side_norm = str(side or "").strip().lower()
@@ -394,7 +379,7 @@ class CryptoService:
                 series_vol_24h = 0.0
                 series_liq = 0.0
                 if events:
-                    series_data = (events[0].get("series") or [{}])
+                    series_data = events[0].get("series") or [{}]
                     if series_data and isinstance(series_data, list):
                         s = series_data[0] if series_data else {}
                         series_vol_24h = _parse_float(s.get("volume24hr")) or 0.0
@@ -418,9 +403,7 @@ class CryptoService:
                 outcomes = _parse_json_list(mkt.get("outcomes"))
                 up_idx, down_idx = _resolve_binary_outcome_indexes(outcomes)
                 clob_ids = [
-                    str(token).strip()
-                    for token in _parse_json_list(mkt.get("clobTokenIds"))
-                    if str(token).strip()
+                    str(token).strip() for token in _parse_json_list(mkt.get("clobTokenIds")) if str(token).strip()
                 ]
 
                 best_bid = _coerce_probability(mkt.get("bestBid"))
@@ -453,23 +436,23 @@ class CryptoService:
                         continue
                     em = emkts[0]
                     e_up, e_down = _parse_outcome_prices(em)
-                    upcoming.append({
-                        "id": str(em.get("id", "")),
-                        "slug": em.get("slug", ""),
-                        "event_title": evt.get("title", ""),
-                        "start_time": evt.get("startTime") or em.get("eventStartTime"),
-                        "end_time": em.get("endDate"),
-                        "up_price": e_up,
-                        "down_price": e_down,
-                        "best_bid": _parse_float(em.get("bestBid")),
-                        "best_ask": _parse_float(em.get("bestAsk")),
-                        "liquidity": _parse_float(em.get("liquidityNum"))
-                        or _parse_float(em.get("liquidity"))
-                        or 0.0,
-                        "volume": _parse_float(em.get("volumeNum"))
-                        or _parse_float(em.get("volume"))
-                        or 0.0,
-                    })
+                    upcoming.append(
+                        {
+                            "id": str(em.get("id", "")),
+                            "slug": em.get("slug", ""),
+                            "event_title": evt.get("title", ""),
+                            "start_time": evt.get("startTime") or em.get("eventStartTime"),
+                            "end_time": em.get("endDate"),
+                            "up_price": e_up,
+                            "down_price": e_down,
+                            "best_bid": _parse_float(em.get("bestBid")),
+                            "best_ask": _parse_float(em.get("bestAsk")),
+                            "liquidity": _parse_float(em.get("liquidityNum"))
+                            or _parse_float(em.get("liquidity"))
+                            or 0.0,
+                            "volume": _parse_float(em.get("volumeNum")) or _parse_float(em.get("volume")) or 0.0,
+                        }
+                    )
 
                 return CryptoMarket(
                     id=str(mkt.get("id", "")),
@@ -478,20 +461,15 @@ class CryptoService:
                     question=mkt.get("question", ""),
                     asset=asset,
                     timeframe=timeframe,
-                    start_time=current_event.get("startTime")
-                    or mkt.get("eventStartTime"),
+                    start_time=current_event.get("startTime") or mkt.get("eventStartTime"),
                     end_time=mkt.get("endDate"),
                     up_price=up_price,
                     down_price=down_price,
                     best_bid=best_bid,
                     best_ask=best_ask,
                     spread=_parse_float(mkt.get("spread")),
-                    liquidity=_parse_float(mkt.get("liquidityNum"))
-                    or _parse_float(mkt.get("liquidity"))
-                    or 0.0,
-                    volume=_parse_float(mkt.get("volumeNum"))
-                    or _parse_float(mkt.get("volume"))
-                    or 0.0,
+                    liquidity=_parse_float(mkt.get("liquidityNum")) or _parse_float(mkt.get("liquidity")) or 0.0,
+                    volume=_parse_float(mkt.get("volumeNum")) or _parse_float(mkt.get("volume")) or 0.0,
                     volume_24h=_parse_float(mkt.get("volume24hr")) or 0.0,
                     series_volume_24h=series_vol_24h,
                     series_liquidity=series_liq,
@@ -524,12 +502,7 @@ class CryptoService:
         if not configured_series:
             return []
 
-        now_iso = (
-            datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
+        now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
         max_workers = max(
             1,
@@ -587,9 +560,7 @@ class CryptoService:
             if not end_str:
                 continue
             try:
-                end_ms = datetime.fromisoformat(
-                    end_str.replace("Z", "+00:00")
-                ).timestamp() * 1000
+                end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
             except (ValueError, AttributeError):
                 continue
             if end_ms <= now_ms:
@@ -613,10 +584,7 @@ class CryptoService:
             if not end_str:
                 continue
             try:
-                end_ms = (
-                    datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                    * 1000
-                )
+                end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
             except (ValueError, AttributeError):
                 continue
             if end_ms <= now_ms:
@@ -625,12 +593,7 @@ class CryptoService:
             start_ms = None
             if start_str:
                 try:
-                    start_ms = (
-                        datetime.fromisoformat(
-                            start_str.replace("Z", "+00:00")
-                        ).timestamp()
-                        * 1000
-                    )
+                    start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
                 except (ValueError, AttributeError):
                     pass
 
@@ -648,7 +611,6 @@ class CryptoService:
             return upcoming[0][1]
         return None
 
-
     # ------------------------------------------------------------------
     # Fast scan loop (independent of main scanner)
     # ------------------------------------------------------------------
@@ -661,9 +623,7 @@ class CryptoService:
         2. Broadcasts live market data to all connected frontends via WebSocket
         """
         self._fast_scan_running = True
-        logger.info(
-            f"CryptoService: starting fast scan loop (every {interval_seconds:.1f}s)"
-        )
+        logger.info(f"CryptoService: starting fast scan loop (every {interval_seconds:.1f}s)")
 
         while self._fast_scan_running:
             try:
@@ -686,6 +646,7 @@ class CryptoService:
         """
         try:
             from services.chainlink_feed import get_chainlink_feed
+
             feed = get_chainlink_feed()
         except Exception:
             return
@@ -701,9 +662,7 @@ class CryptoService:
             if not m.start_time:
                 continue
             try:
-                start_ts = datetime.fromisoformat(
-                    str(m.start_time).replace("Z", "+00:00")
-                ).timestamp()
+                start_ts = datetime.fromisoformat(str(m.start_time).replace("Z", "+00:00")).timestamp()
             except (ValueError, AttributeError):
                 continue
 
@@ -762,6 +721,7 @@ class CryptoService:
             # Layer 1: CLOB WebSocket price cache (sub-second)
             try:
                 from services.ws_feeds import get_feed_manager
+
                 feed_mgr = get_feed_manager()
                 if feed_mgr._started:
                     for m in markets:
@@ -777,7 +737,7 @@ class CryptoService:
             # Layer 2: CLOB HTTP API for tokens not in WS cache
             missing_tokens = []
             for m in markets:
-                for token_id in (m.clob_token_ids or []):
+                for token_id in m.clob_token_ids or []:
                     if token_id and len(token_id) > 20 and token_id not in ws_prices:
                         missing_tokens.append(token_id)
 
@@ -834,9 +794,9 @@ class CryptoService:
                     d["oracle_price"] = oracle.price
                     d["oracle_source"] = getattr(oracle, "source", None)
                     d["oracle_updated_at_ms"] = oracle.updated_at_ms
-                    d["oracle_age_seconds"] = round(
-                        (time.time() * 1000 - oracle.updated_at_ms) / 1000, 1
-                    ) if oracle.updated_at_ms else None
+                    d["oracle_age_seconds"] = (
+                        round((time.time() * 1000 - oracle.updated_at_ms) / 1000, 1) if oracle.updated_at_ms else None
+                    )
                 else:
                     d["oracle_price"] = None
                     d["oracle_updated_at_ms"] = None
@@ -852,7 +812,7 @@ class CryptoService:
                 d["oracle_prices_by_source"] = source_snapshots
 
                 # Attach recent oracle price history for sparkline chart
-                history = feed._history.get(m.asset) if hasattr(feed, '_history') else None
+                history = feed._history.get(m.asset) if hasattr(feed, "_history") else None
                 if history and len(history) > 0:
                     pts = list(history)
                     # Sample to ~80 points for smooth chart without flooding WS
@@ -863,9 +823,7 @@ class CryptoService:
                     last = list(history)[-1]
                     if pts[-1] != last:
                         pts.append(last)
-                    d["oracle_history"] = [
-                        {"t": t, "p": round(p, 2)} for t, p in pts
-                    ]
+                    d["oracle_history"] = [{"t": t, "p": round(p, 2)} for t, p in pts]
                 else:
                     d["oracle_history"] = []
 
@@ -874,6 +832,7 @@ class CryptoService:
             await broadcast_crypto_markets(result)
         except Exception as e:
             logger.debug(f"CryptoService: broadcast failed: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Singleton

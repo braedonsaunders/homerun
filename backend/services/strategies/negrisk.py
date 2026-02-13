@@ -34,9 +34,7 @@ class NegRiskStrategy(BaseStrategy):
     name = "NegRisk / One-of-Many"
     description = "Buy YES on all outcomes in verified mutually-exclusive events"
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         for event in events:
@@ -69,9 +67,7 @@ class NegRiskStrategy(BaseStrategy):
 
         return opportunities
 
-    def _detect_negrisk_event(
-        self, event: Event, prices: dict[str, dict]
-    ) -> ArbitrageOpportunity | None:
+    def _detect_negrisk_event(self, event: Event, prices: dict[str, dict]) -> ArbitrageOpportunity | None:
         """Detect arbitrage in official NegRisk events.
 
         IMPORTANT: The NegRisk flag guarantees mutual exclusivity among LISTED
@@ -107,9 +103,7 @@ class NegRiskStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market.question[:50],
                     "price": yes_price,
-                    "token_id": market.clob_token_ids[0]
-                    if market.clob_token_ids
-                    else None,
+                    "token_id": market.clob_token_ids[0] if market.clob_token_ids else None,
                 }
             )
 
@@ -345,9 +339,7 @@ class NegRiskStrategy(BaseStrategy):
         ]
         return any(kw in title_lower for kw in open_ended_keywords)
 
-    def _detect_date_sweep(
-        self, event: Event, prices: dict[str, dict]
-    ) -> ArbitrageOpportunity | None:
+    def _detect_date_sweep(self, event: Event, prices: dict[str, dict]) -> ArbitrageOpportunity | None:
         """
         DEPRECATED - DO NOT USE
 
@@ -559,9 +551,7 @@ class NegRiskStrategy(BaseStrategy):
         # If >=50% of questions match threshold patterns, this is a threshold market
         return len(questions) > 0 and threshold_count >= len(questions) * 0.5
 
-    def _detect_multi_outcome(
-        self, event: Event, prices: dict[str, dict]
-    ) -> ArbitrageOpportunity | None:
+    def _detect_multi_outcome(self, event: Event, prices: dict[str, dict]) -> ArbitrageOpportunity | None:
         """
         Detect multi-outcome arbitrage: exhaustive outcomes where one must win
         Buy YES on all outcomes when total < $1
@@ -584,17 +574,11 @@ class NegRiskStrategy(BaseStrategy):
 
         # CRITICAL: Filter out independent betting markets
         # These are NOT mutually exclusive - spread, over/under, BTTS can all be true!
-        exclusive_markets = [
-            m
-            for m in active_markets
-            if not self._is_independent_betting_market(m.question)
-        ]
+        exclusive_markets = [m for m in active_markets if not self._is_independent_betting_market(m.question)]
 
         # CRITICAL: Filter out date-based markets
         # "By X date" markets are CUMULATIVE, not mutually exclusive!
-        exclusive_markets = [
-            m for m in exclusive_markets if not self._is_date_based_market(m.question)
-        ]
+        exclusive_markets = [m for m in exclusive_markets if not self._is_date_based_market(m.question)]
 
         # If most markets are independent bet types or date-based, skip this event
         if len(exclusive_markets) < 3:
@@ -623,9 +607,7 @@ class NegRiskStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market.question[:50],
                     "price": yes_price,
-                    "token_id": market.clob_token_ids[0]
-                    if market.clob_token_ids
-                    else None,
+                    "token_id": market.clob_token_ids[0] if market.clob_token_ids else None,
                 }
             )
 
@@ -679,9 +661,7 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            opp.risk_factors.insert(
-                0, "Verify manually: ensure all possible outcomes are listed"
-            )
+            opp.risk_factors.insert(0, "Verify manually: ensure all possible outcomes are listed")
             if total_yes < settings.NEGRISK_WARN_TOTAL_YES:
                 opp.risk_factors.insert(
                     0,
@@ -764,11 +744,7 @@ class NegRiskStrategy(BaseStrategy):
         )
 
         if opp:
-            opp.risk_factors.insert(
-                0, f"Short Multi-Outcome: buying NO on all {n} outcomes"
-            )
-            opp.risk_factors.insert(
-                1, "Verify manually: ensure all possible outcomes are listed"
-            )
+            opp.risk_factors.insert(0, f"Short Multi-Outcome: buying NO on all {n} outcomes")
+            opp.risk_factors.insert(1, "Verify manually: ensure all possible outcomes are listed")
 
         return opp

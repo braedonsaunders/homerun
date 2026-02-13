@@ -70,9 +70,7 @@ class SkillLoader:
         self._scan_directory(self._project_dir, "project")
 
         self._discovered = True
-        logger.info(
-            f"Discovered {len(self._skills)} skills: {list(self._skills.keys())}"
-        )
+        logger.info(f"Discovered {len(self._skills)} skills: {list(self._skills.keys())}")
 
     def _scan_directory(self, directory: Path, tier: str):
         """Scan a directory for .md skill files."""
@@ -209,9 +207,7 @@ class SkillLoader:
                     row.status = "completed"
                     row.output_result = result
                     row.completed_at = utcnow()
-                    row.duration_seconds = (
-                        utcnow() - started_at
-                    ).total_seconds()
+                    row.duration_seconds = (utcnow() - started_at).total_seconds()
                     if "session_id" in result:
                         row.session_id = result["session_id"]
                     await session.commit()
@@ -229,9 +225,7 @@ class SkillLoader:
                     row.status = "failed"
                     row.error = str(e)
                     row.completed_at = utcnow()
-                    row.duration_seconds = (
-                        utcnow() - started_at
-                    ).total_seconds()
+                    row.duration_seconds = (utcnow() - started_at).total_seconds()
                     await session.commit()
             raise
 

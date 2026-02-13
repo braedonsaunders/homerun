@@ -263,25 +263,21 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
     """Recompute per-source snapshot rows from ``trade_signals``."""
 
     rows = (
-        (
-            await session.execute(
-                select(
-                    TradeSignal.source,
-                    TradeSignal.status,
-                    func.count(TradeSignal.id),
-                    func.max(TradeSignal.created_at),
-                    func.min(
-                        case(
-                            (TradeSignal.status == "pending", TradeSignal.created_at),
-                            else_=None,
-                        )
-                    ),
-                )
-                .group_by(TradeSignal.source, TradeSignal.status)
-            )
+        await session.execute(
+            select(
+                TradeSignal.source,
+                TradeSignal.status,
+                func.count(TradeSignal.id),
+                func.max(TradeSignal.created_at),
+                func.min(
+                    case(
+                        (TradeSignal.status == "pending", TradeSignal.created_at),
+                        else_=None,
+                    )
+                ),
+            ).group_by(TradeSignal.source, TradeSignal.status)
         )
-        .all()
-    )
+    ).all()
 
     source_stats: dict[str, dict[str, Any]] = {}
     for source, status, count, latest_created, oldest_pending in rows:
@@ -303,20 +299,13 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
         key = f"{status}_count"
         if key in stats:
             stats[key] = int(count or 0)
-        if latest_created and (
-            stats["latest_signal_at"] is None or latest_created > stats["latest_signal_at"]
-        ):
+        if latest_created and (stats["latest_signal_at"] is None or latest_created > stats["latest_signal_at"]):
             stats["latest_signal_at"] = latest_created
-        if oldest_pending and (
-            stats["oldest_pending_at"] is None
-            or oldest_pending < stats["oldest_pending_at"]
-        ):
+        if oldest_pending and (stats["oldest_pending_at"] is None or oldest_pending < stats["oldest_pending_at"]):
             stats["oldest_pending_at"] = oldest_pending
 
     now = _utc_now()
-    existing_rows = (
-        (await session.execute(select(TradeSignalSnapshot))).scalars().all()
-    )
+    existing_rows = (await session.execute(select(TradeSignalSnapshot))).scalars().all()
     existing_by_source = {r.source: r for r in existing_rows}
 
     for source, stats in source_stats.items():
@@ -339,9 +328,7 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
         row.latest_signal_at = stats.get("latest_signal_at")
         row.oldest_pending_at = stats.get("oldest_pending_at")
         row.freshness_seconds = (
-            (now - stats["latest_signal_at"]).total_seconds()
-            if stats.get("latest_signal_at")
-            else None
+            (now - stats["latest_signal_at"]).total_seconds() if stats.get("latest_signal_at") else None
         )
         row.updated_at = now
         row.stats_json = {
@@ -363,9 +350,7 @@ async def refresh_trade_signal_snapshots(session: AsyncSession) -> list[dict[str
 
     out: list[dict[str, Any]] = []
     snapshot_rows = (
-        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())))
-        .scalars()
-        .all()
+        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc()))).scalars().all()
     )
     for row in snapshot_rows:
         out.append(
@@ -671,12 +656,7 @@ async def emit_crypto_market_signals(
         up_price = market.get("up_price")
         down_price = market.get("down_price")
 
-        if (
-            price_to_beat is None
-            or oracle_price is None
-            or up_price is None
-            or down_price is None
-        ):
+        if price_to_beat is None or oracle_price is None or up_price is None or down_price is None:
             continue
 
         try:

@@ -107,14 +107,10 @@ class Settings(BaseSettings):
 
     # Opportunity Quality Filters (hard rejection thresholds)
     MIN_LIQUIDITY_HARD: float = 1000.0  # Reject opportunities below this liquidity ($)
-    MIN_POSITION_SIZE: float = (
-        50.0  # Reject if max position < this (absolute profit too small)
-    )
+    MIN_POSITION_SIZE: float = 50.0  # Reject if max position < this (absolute profit too small)
     MIN_ABSOLUTE_PROFIT: float = 10.0  # Reject if net profit on max position < this
     MIN_ANNUALIZED_ROI: float = 10.0  # Reject if annualized ROI < this percent
-    MAX_RESOLUTION_MONTHS: int = (
-        18  # Reject if resolution > this many months away (capital lockup)
-    )
+    MAX_RESOLUTION_MONTHS: int = 18  # Reject if resolution > this many months away (capital lockup)
 
     # NegRisk Exhaustivity Thresholds
     # Genuine NegRisk arbitrage is 1-3% (total YES 0.97-0.99).
@@ -137,9 +133,7 @@ class Settings(BaseSettings):
     MIN_LIQUIDITY_PER_LEG: float = 500.0  # $500 per leg minimum
 
     # Settlement Lag Timing
-    SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = (
-        14  # Only detect settlement lag within this window
-    )
+    SETTLEMENT_LAG_MAX_DAYS_TO_RESOLUTION: int = 14  # Only detect settlement lag within this window
     SETTLEMENT_LAG_NEAR_ZERO: float = 0.02  # Price below this suggests resolved to NO
     SETTLEMENT_LAG_NEAR_ONE: float = 0.95  # Price above this suggests resolved to YES
     SETTLEMENT_LAG_MIN_SUM_DEVIATION: float = 0.03  # Min deviation from 1.0
@@ -289,12 +283,8 @@ class Settings(BaseSettings):
     WARM_TIER_MAX_AGE_SECONDS: int = 1800  # Markets younger than this = WARM
     COLD_TIER_UNCHANGED_CYCLES: int = 5  # Consecutive unchanged cycles before COLD
     THIN_BOOK_LIQUIDITY_THRESHOLD: float = 500.0  # Below this = thin book (HOT signal)
-    CRYPTO_PREDICTION_WINDOW_SECONDS: int = (
-        30  # Pre-position this far before predicted creation
-    )
-    INCREMENTAL_FETCH_ENABLED: bool = (
-        True  # Use delta fetching for new market detection
-    )
+    CRYPTO_PREDICTION_WINDOW_SECONDS: int = 30  # Pre-position this far before predicted creation
+    INCREMENTAL_FETCH_ENABLED: bool = True  # Use delta fetching for new market detection
 
     # Combinatorial Validation
     COMBINATORIAL_MIN_CONFIDENCE: float = 0.75  # Min LLM confidence for trades
@@ -499,11 +489,7 @@ class Settings(BaseSettings):
                 return text
             if path_part in {":memory:", "/:memory:"}:
                 return f"{prefix}:memory:"
-            absolute = (
-                Path(path_part).resolve()
-                if path_part.startswith("/")
-                else (_PROJECT_ROOT / path_part).resolve()
-            )
+            absolute = Path(path_part).resolve() if path_part.startswith("/") else (_PROJECT_ROOT / path_part).resolve()
             _bootstrap_legacy_sqlite_db(absolute)
             return f"{prefix}{absolute}"
 
@@ -531,9 +517,7 @@ async def apply_search_filters():
     from sqlalchemy import select
 
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(AppSettings).where(AppSettings.id == "default")
-        )
+        result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
         db = result.scalar_one_or_none()
         if not db:
             return  # No saved settings yet — use defaults

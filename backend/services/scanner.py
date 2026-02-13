@@ -144,13 +144,9 @@ class ArbitrageScanner:
 
         self._market_price_history: dict[str, list[dict[str, float]]] = {}
         self._market_history_retention_seconds: int = spark_window_hours * 3600
-        retention_points = int(
-            self._market_history_retention_seconds / spark_sample_seconds
-        ) + 2
+        retention_points = int(self._market_history_retention_seconds / spark_sample_seconds) + 2
         self._market_history_max_points: int = max(spark_max_points, retention_points)
-        self._market_history_export_points: int = min(
-            self._market_history_max_points, spark_export_points
-        )
+        self._market_history_export_points: int = min(self._market_history_max_points, spark_export_points)
         # Keep one sample per interval even if price is unchanged, so cards
         # show multi-hour trend shape rather than a single refreshed point.
         self._market_history_sample_interval_ms: int = spark_sample_seconds * 1000
@@ -227,9 +223,7 @@ class ArbitrageScanner:
                             ws_hits += 1
 
             if ws_hits > 0:
-                print(
-                    f"  WS price overlay: {ws_hits}/{len(token_ids)} tokens from real-time feed"
-                )
+                print(f"  WS price overlay: {ws_hits}/{len(token_ids)} tokens from real-time feed")
             return merged
         except Exception as e:
             print(f"  WS price merge failed (using HTTP): {e}")
@@ -317,10 +311,7 @@ class ArbitrageScanner:
             history = self._market_price_history.setdefault(market_id, [])
             if history:
                 last = history[-1]
-                if (
-                    abs(last.get("yes", 0.0) - point["yes"]) < 1e-9
-                    and abs(last.get("no", 0.0) - point["no"]) < 1e-9
-                ):
+                if abs(last.get("yes", 0.0) - point["yes"]) < 1e-9 and abs(last.get("no", 0.0) - point["no"]) < 1e-9:
                     last_t = float(last.get("t", 0.0) or 0.0)
                     if (point["t"] - last_t) < self._market_history_sample_interval_ms:
                         last["t"] = point["t"]
@@ -341,9 +332,7 @@ class ArbitrageScanner:
             platform = str(getattr(market, "platform", "polymarket") or "polymarket")
             if platform != "polymarket":
                 continue
-            token_pair = self._coerce_polymarket_token_pair(
-                getattr(market, "clob_token_ids", None)
-            )
+            token_pair = self._coerce_polymarket_token_pair(getattr(market, "clob_token_ids", None))
             if token_pair is None:
                 continue
             self._market_token_ids[market_id] = token_pair
@@ -374,30 +363,22 @@ class ArbitrageScanner:
             return None
         return yes_token, no_token
 
-    def _remember_market_tokens_from_opportunities(
-        self, opportunities: list[ArbitrageOpportunity]
-    ) -> None:
+    def _remember_market_tokens_from_opportunities(self, opportunities: list[ArbitrageOpportunity]) -> None:
         """Cache YES/NO token IDs from opportunity market dicts."""
         for opp in opportunities:
             for market in opp.markets:
                 market_id = str(market.get("id", "") or "")
                 if not market_id:
                     continue
-                platform = str(
-                    market.get("platform", "polymarket") or "polymarket"
-                ).lower()
+                platform = str(market.get("platform", "polymarket") or "polymarket").lower()
                 if platform != "polymarket":
                     continue
-                token_pair = self._coerce_polymarket_token_pair(
-                    market.get("clob_token_ids")
-                )
+                token_pair = self._coerce_polymarket_token_pair(market.get("clob_token_ids"))
                 if token_pair is None:
                     continue
                 self._market_token_ids[market_id] = token_pair
 
-    def _merge_market_history_points(
-        self, market_id: str, incoming: list[dict[str, float]], now_ms: int
-    ) -> int:
+    def _merge_market_history_points(self, market_id: str, incoming: list[dict[str, float]], now_ms: int) -> int:
         """Merge incoming history into in-memory store and return merged length."""
         if not incoming:
             return len(self._market_price_history.get(market_id, []))
@@ -480,15 +461,9 @@ class ArbitrageScanner:
                     if market_id not in self._market_token_ids:
                         continue
                     polymarket_candidates.append(market_id)
-                if (
-                    len(polymarket_candidates) + len(kalshi_candidates)
-                    >= self._market_history_backfill_max_markets
-                ):
+                if len(polymarket_candidates) + len(kalshi_candidates) >= self._market_history_backfill_max_markets:
                     break
-            if (
-                len(polymarket_candidates) + len(kalshi_candidates)
-                >= self._market_history_backfill_max_markets
-            ):
+            if len(polymarket_candidates) + len(kalshi_candidates) >= self._market_history_backfill_max_markets:
                 break
 
         total_candidates = len(polymarket_candidates) + len(kalshi_candidates)
@@ -583,9 +558,7 @@ class ArbitrageScanner:
 
         results: list[tuple[str, list[dict[str, float]], bool]] = []
         if polymarket_candidates:
-            poly_results = await asyncio.gather(
-                *[_fetch_polymarket(mid) for mid in polymarket_candidates]
-            )
+            poly_results = await asyncio.gather(*[_fetch_polymarket(mid) for mid in polymarket_candidates])
             results.extend(poly_results)
 
         # Kalshi provides batched candlestick history by market ticker.
@@ -666,9 +639,7 @@ class ArbitrageScanner:
                     market_ids.add(mid)
 
         out: dict[str, list[dict[str, float]]] = {}
-        export_points = (
-            self._market_history_export_points if max_points is None else max_points
-        )
+        export_points = self._market_history_export_points if max_points is None else max_points
         limit = max(2, min(self._market_history_max_points, int(export_points)))
         for mid in market_ids:
             hist = self._market_price_history.get(mid, [])
@@ -730,9 +701,7 @@ class ArbitrageScanner:
         """Load scanner settings from database"""
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(ScannerSettings).where(ScannerSettings.id == "default")
-                )
+                result = await session.execute(select(ScannerSettings).where(ScannerSettings.id == "default"))
                 settings_row = result.scalar_one_or_none()
 
                 if settings_row:
@@ -743,9 +712,7 @@ class ArbitrageScanner:
                         global_pause_state.resume()
                     else:
                         global_pause_state.pause()
-                    print(
-                        f"Loaded scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s"
-                    )
+                    print(f"Loaded scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s")
                 else:
                     # Create default settings
                     new_settings = ScannerSettings(
@@ -763,9 +730,7 @@ class ArbitrageScanner:
         """Save scanner settings to database"""
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(ScannerSettings).where(ScannerSettings.id == "default")
-                )
+                result = await session.execute(select(ScannerSettings).where(ScannerSettings.id == "default"))
                 settings_row = result.scalar_one_or_none()
 
                 if settings_row:
@@ -781,9 +746,7 @@ class ArbitrageScanner:
                     session.add(settings_row)
 
                 await session.commit()
-                print(
-                    f"Saved scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s"
-                )
+                print(f"Saved scanner settings: enabled={self._enabled}, interval={self._interval_seconds}s")
         except Exception as e:
             print(f"Error saving scanner settings: {e}")
 
@@ -793,9 +756,7 @@ class ArbitrageScanner:
             from models.database import StrategyPlugin as StrategyPluginModel
 
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(StrategyPluginModel).where(StrategyPluginModel.enabled)
-                )
+                result = await session.execute(select(StrategyPluginModel).where(StrategyPluginModel.enabled))
                 plugins = result.scalars().all()
 
             loaded_count = 0
@@ -805,9 +766,7 @@ class ArbitrageScanner:
                     # Update status in DB
                     async with AsyncSessionLocal() as session:
                         result = await session.execute(
-                            select(StrategyPluginModel).where(
-                                StrategyPluginModel.id == p.id
-                            )
+                            select(StrategyPluginModel).where(StrategyPluginModel.id == p.id)
                         )
                         db_plugin = result.scalar_one_or_none()
                         if db_plugin:
@@ -820,9 +779,7 @@ class ArbitrageScanner:
                     # Update error status in DB
                     async with AsyncSessionLocal() as session:
                         result = await session.execute(
-                            select(StrategyPluginModel).where(
-                                StrategyPluginModel.id == p.id
-                            )
+                            select(StrategyPluginModel).where(StrategyPluginModel.id == p.id)
                         )
                         db_plugin = result.scalar_one_or_none()
                         if db_plugin:
@@ -842,11 +799,7 @@ class ArbitrageScanner:
         plugin_strategies = plugin_loader.get_all_strategy_instances()
         # BTC 15-minute high-frequency logic is isolated to crypto-worker.
         # Scanner strategy set must not run btc_eth_highfreq.
-        return [
-            s
-            for s in (self.strategies + plugin_strategies)
-            if self._strategy_key(s) != "btc_eth_highfreq"
-        ]
+        return [s for s in (self.strategies + plugin_strategies) if self._strategy_key(s) != "btc_eth_highfreq"]
 
     @staticmethod
     def _strategy_key(strategy) -> str:
@@ -865,9 +818,7 @@ class ArbitrageScanner:
         if not demoted:
             return all_strategies
 
-        filtered = [
-            s for s in all_strategies if self._strategy_key(s) not in demoted
-        ]
+        filtered = [s for s in all_strategies if self._strategy_key(s) not in demoted]
         skipped = len(all_strategies) - len(filtered)
         if skipped > 0:
             print(f"  Validation guardrails: skipped {skipped} demoted strategies")
@@ -890,27 +841,15 @@ class ArbitrageScanner:
             # these are resolved events awaiting settlement and can't
             # be traded profitably.
             now = datetime.now(timezone.utc)
-            markets = [
-                m
-                for m in markets
-                if m.end_date is None or _make_aware(m.end_date) > now
-            ]
+            markets = [m for m in markets if m.end_date is None or _make_aware(m.end_date) > now]
 
             # Also prune expired markets inside events so strategies
             # like NegRisk that iterate event.markets don't pick them up.
             for event in events:
-                event.markets = [
-                    m
-                    for m in event.markets
-                    if m.end_date is None or _make_aware(m.end_date) > now
-                ]
+                event.markets = [m for m in event.markets if m.end_date is None or _make_aware(m.end_date) > now]
 
-            print(
-                f"  Fetched {len(events)} Polymarket events and {len(markets)} markets"
-            )
-            await self._set_activity(
-                f"Fetched {len(events)} events, {len(markets)} markets"
-            )
+            print(f"  Fetched {len(events)} Polymarket events and {len(markets)} markets")
+            await self._set_activity(f"Fetched {len(events)} events, {len(markets)} markets")
 
             # Fetch Kalshi markets and merge them so ALL strategies
             # (not just cross-platform) can detect opportunities on Kalshi.
@@ -919,34 +858,19 @@ class ArbitrageScanner:
             if settings.CROSS_PLATFORM_ENABLED:
                 await self._set_activity("Fetching Kalshi markets...")
                 try:
-                    kalshi_markets = await self.market_data.get_cross_platform_markets(
-                        active=True
-                    )
-                    kalshi_markets = [
-                        m
-                        for m in kalshi_markets
-                        if m.end_date is None or _make_aware(m.end_date) > now
-                    ]
+                    kalshi_markets = await self.market_data.get_cross_platform_markets(active=True)
+                    kalshi_markets = [m for m in kalshi_markets if m.end_date is None or _make_aware(m.end_date) > now]
                     kalshi_market_count = len(kalshi_markets)
                     markets.extend(kalshi_markets)
 
-                    kalshi_events = await self.market_data.get_cross_platform_events(
-                        closed=False
-                    )
+                    kalshi_events = await self.market_data.get_cross_platform_events(closed=False)
                     for ke in kalshi_events:
-                        ke.markets = [
-                            m
-                            for m in ke.markets
-                            if m.end_date is None or _make_aware(m.end_date) > now
-                        ]
+                        ke.markets = [m for m in ke.markets if m.end_date is None or _make_aware(m.end_date) > now]
                     kalshi_event_count = len(kalshi_events)
                     events.extend(kalshi_events)
 
                     if kalshi_market_count > 0:
-                        print(
-                            f"  Fetched {kalshi_event_count} Kalshi events "
-                            f"and {kalshi_market_count} Kalshi markets"
-                        )
+                        print(f"  Fetched {kalshi_event_count} Kalshi events and {kalshi_market_count} Kalshi markets")
                         await self._set_activity(
                             f"Fetched {kalshi_event_count} Kalshi events, {kalshi_market_count} markets"
                         )
@@ -968,9 +892,7 @@ class ArbitrageScanner:
             # Batch price fetching (limit to avoid rate limits)
             prices = {}
             if all_token_ids:
-                await self._set_activity(
-                    f"Fetching prices for {min(len(all_token_ids), 500)} tokens..."
-                )
+                await self._set_activity(f"Fetching prices for {min(len(all_token_ids), 500)} tokens...")
                 # Sample tokens if too many
                 token_sample = all_token_ids[:500]
                 prices = await self.market_data.get_prices_batch(token_sample)
@@ -995,9 +917,7 @@ class ArbitrageScanner:
                         # The feed will auto-manage subscriptions
                         poly_tokens = [t for t in all_token_ids[:500] if len(t) > 20]
                         if poly_tokens:
-                            await feed_mgr.polymarket_feed.subscribe(
-                                token_ids=poly_tokens[:200]
-                            )
+                            await feed_mgr.polymarket_feed.subscribe(token_ids=poly_tokens[:200])
                 except Exception as e:
                     print(f"  WS subscription failed (non-critical): {e}")
 
@@ -1026,9 +946,7 @@ class ArbitrageScanner:
                         # current thread. Retry on the main loop instead of failing
                         # the whole prioritizer pass.
                         if "no current event loop" in str(e).lower():
-                            tier_map, changed = _run_prioritizer(
-                                self._prioritizer, markets, now
-                            )
+                            tier_map, changed = _run_prioritizer(self._prioritizer, markets, now)
                         else:
                             raise
                     unchanged_count = len(markets) - len(changed)
@@ -1039,10 +957,7 @@ class ArbitrageScanner:
                     # However, for COLD-tier markets, we DO skip them if unchanged.
                     cold_ids = {m.id for m in tier_map[MarketTier.COLD]}
                     markets_to_evaluate = [
-                        m
-                        for m in markets
-                        if m.id not in cold_ids
-                        or self._prioritizer.has_market_changed(m)
+                        m for m in markets if m.id not in cold_ids or self._prioritizer.has_market_changed(m)
                     ]
                     cold_skipped = len(markets) - len(markets_to_evaluate)
 
@@ -1066,9 +981,7 @@ class ArbitrageScanner:
 
             async def _run_strategy(strategy):
                 """Run a single strategy in the default thread-pool executor."""
-                return strategy, await loop.run_in_executor(
-                    None, strategy.detect, events, markets_to_evaluate, prices
-                )
+                return strategy, await loop.run_in_executor(None, strategy.detect, events, markets_to_evaluate, prices)
 
             all_strategies = await self._get_effective_strategies()
             results = await asyncio.gather(
@@ -1097,9 +1010,7 @@ class ArbitrageScanner:
             # Update prioritizer state after evaluation (CPU-bound, run in thread)
             if settings.TIERED_SCANNING_ENABLED:
                 try:
-                    await loop.run_in_executor(
-                        None, self._prioritizer.update_after_evaluation, markets, now
-                    )
+                    await loop.run_in_executor(None, self._prioritizer.update_after_evaluation, markets, now)
                 except Exception:
                     pass
 
@@ -1124,9 +1035,7 @@ class ArbitrageScanner:
             self._opportunities = self._merge_opportunities(all_opportunities)
             try:
                 await asyncio.wait_for(
-                    self._backfill_market_history_for_opportunities(
-                        self._opportunities, now
-                    ),
+                    self._backfill_market_history_for_opportunities(self._opportunities, now),
                     timeout=12,
                 )
             except asyncio.TimeoutError:
@@ -1142,9 +1051,7 @@ class ArbitrageScanner:
             # pre-fetch articles + run semantic matching so the data is
             # ready when the user clicks "Analyze".
             if settings.NEWS_EDGE_ENABLED:
-                asyncio.create_task(
-                    self._prefetch_news_matches(events, markets, prices)
-                )
+                asyncio.create_task(self._prefetch_news_matches(events, markets, prices))
 
             # AI Intelligence: Score unscored opportunities (non-blocking)
             # Only run if auto_ai_scoring is enabled (opt-in, default OFF).
@@ -1163,9 +1070,7 @@ class ArbitrageScanner:
                             except (asyncio.CancelledError, Exception):
                                 pass
                         # Score the full merged pool so retained opps get scored too
-                        self._ai_scoring_task = asyncio.create_task(
-                            self._ai_score_opportunities(self._opportunities)
-                        )
+                        self._ai_scoring_task = asyncio.create_task(self._ai_score_opportunities(self._opportunities))
                 except Exception:
                     pass  # AI scoring is non-critical
 
@@ -1188,8 +1093,7 @@ class ArbitrageScanner:
                 f"{len(self._opportunities)} total in pool{scan_suffix}"
             )
             await self._set_activity(
-                f"Scan complete — {len(all_opportunities)} found, "
-                f"{len(self._opportunities)} total in pool"
+                f"Scan complete — {len(all_opportunities)} found, {len(self._opportunities)} total in pool"
             )
             return self._opportunities
 
@@ -1220,13 +1124,9 @@ class ArbitrageScanner:
             new_markets: list = []
             if settings.INCREMENTAL_FETCH_ENABLED:
                 try:
-                    new_markets = await self.market_data.get_recent_markets(
-                        since_minutes=5
-                    )
+                    new_markets = await self.market_data.get_recent_markets(since_minutes=5)
                     if new_markets:
-                        print(
-                            f"  Incremental: {len(new_markets)} recently created markets"
-                        )
+                        print(f"  Incremental: {len(new_markets)} recently created markets")
                 except Exception as e:
                     print(f"  Incremental fetch failed (non-fatal): {e}")
 
@@ -1252,9 +1152,7 @@ class ArbitrageScanner:
                 prioritizer.update_stability_scores()
                 return prioritizer.classify_all(mkts, ts)
 
-            tier_map = await loop.run_in_executor(
-                None, _classify_cached, self._prioritizer, self._cached_markets, now
-            )
+            tier_map = await loop.run_in_executor(None, _classify_cached, self._prioritizer, self._cached_markets, now)
             hot_markets = tier_map[MarketTier.HOT]
 
             if not hot_markets:
@@ -1286,33 +1184,21 @@ class ArbitrageScanner:
             self._update_market_price_history(hot_markets, merged_prices, now)
 
             # 6. Change detection: only evaluate markets whose prices moved (CPU-bound)
-            changed_markets = await loop.run_in_executor(
-                None, self._prioritizer.get_changed_markets, hot_markets
-            )
+            changed_markets = await loop.run_in_executor(None, self._prioritizer.get_changed_markets, hot_markets)
             if not changed_markets:
-                print(
-                    f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies"
-                )
-                await self._set_activity(
-                    f"Fast scan: {len(hot_markets)} markets unchanged, skipping"
-                )
+                print(f"  All {len(hot_markets)} hot-tier markets unchanged, skipping strategies")
+                await self._set_activity(f"Fast scan: {len(hot_markets)} markets unchanged, skipping")
                 self._prioritizer.update_after_evaluation(hot_markets, now)
                 self._last_scan = now
                 self._last_fast_scan = now
                 return self._opportunities
 
-            print(
-                f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes"
-            )
-            await self._set_activity(
-                f"Fast scan: running strategies on {len(changed_markets)} changed markets..."
-            )
+            print(f"  {len(changed_markets)}/{len(hot_markets)} hot-tier markets have price changes")
+            await self._set_activity(f"Fast scan: running strategies on {len(changed_markets)} changed markets...")
 
             # 7. Run strategies on changed markets only (full events kept for context)
             all_markets_for_strategies = [
-                m
-                for m in changed_markets
-                if m.end_date is None or _make_aware(m.end_date) > now
+                m for m in changed_markets if m.end_date is None or _make_aware(m.end_date) > now
             ]
             events_for_strategies = self._cached_events
 
@@ -1358,9 +1244,7 @@ class ArbitrageScanner:
                 prioritizer.compute_attention_scores(mkts)
                 return unch
 
-            unchanged = await loop.run_in_executor(
-                None, _update_prioritizer_state, self._prioritizer, hot_markets, now
-            )
+            unchanged = await loop.run_in_executor(None, _update_prioritizer_state, self._prioritizer, hot_markets, now)
 
             # 9. Merge into main pool
             if fast_opportunities:
@@ -1368,9 +1252,7 @@ class ArbitrageScanner:
                 self._opportunities = self._merge_opportunities(fast_opportunities)
                 try:
                     await asyncio.wait_for(
-                        self._backfill_market_history_for_opportunities(
-                            self._opportunities, now
-                        ),
+                        self._backfill_market_history_for_opportunities(self._opportunities, now),
                         timeout=6,
                     )
                 except asyncio.TimeoutError:
@@ -1396,8 +1278,7 @@ class ArbitrageScanner:
                 f"({unchanged} unchanged markets skipped)"
             )
             await self._set_activity(
-                f"Fast scan complete — {len(fast_opportunities)} found, "
-                f"{len(self._opportunities)} total"
+                f"Fast scan complete — {len(fast_opportunities)} found, {len(self._opportunities)} total"
             )
             return self._opportunities
 
@@ -1420,35 +1301,25 @@ class ArbitrageScanner:
 
             # Step 1: Fetch articles (free — RSS/GDELT)
             await news_feed_service.fetch_all()
-            all_articles = news_feed_service.get_articles(
-                max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS
-            )
+            all_articles = news_feed_service.get_articles(max_age_hours=settings.NEWS_ARTICLE_TTL_HOURS)
 
             if not all_articles:
                 return
 
             # Step 2: Build market index
-            market_infos = self._news_edge_strategy._build_market_infos(
-                events, markets, prices
-            )
+            market_infos = self._news_edge_strategy._build_market_infos(events, markets, prices)
             if not market_infos:
                 return
 
             loop = asyncio.get_running_loop()
-            with ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="news_prefetch"
-            ) as executor:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="news_prefetch") as executor:
                 if not semantic_matcher._initialized:
                     await loop.run_in_executor(executor, semantic_matcher.initialize)
 
-                await loop.run_in_executor(
-                    executor, semantic_matcher.update_market_index, market_infos
-                )
+                await loop.run_in_executor(executor, semantic_matcher.update_market_index, market_infos)
 
                 # Step 3: Embed articles (local ML, free)
-                await loop.run_in_executor(
-                    executor, semantic_matcher.embed_articles, all_articles
-                )
+                await loop.run_in_executor(executor, semantic_matcher.embed_articles, all_articles)
 
                 # Step 4: Match articles to markets (local, free)
                 matches = await loop.run_in_executor(
@@ -1467,9 +1338,7 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"  News prefetch error: {e}")
 
-    def _deduplicate_cross_strategy(
-        self, opportunities: list[ArbitrageOpportunity]
-    ) -> list[ArbitrageOpportunity]:
+    def _deduplicate_cross_strategy(self, opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
         """Remove duplicate opportunities that cover the same underlying markets.
 
         When multiple strategies detect the same set of markets (e.g., NegRisk
@@ -1499,9 +1368,7 @@ class ArbitrageScanner:
             print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
         return deduped
 
-    def _merge_opportunities(
-        self, new_opportunities: list[ArbitrageOpportunity]
-    ) -> list[ArbitrageOpportunity]:
+    def _merge_opportunities(self, new_opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
         """Merge newly detected opportunities into the existing pool.
 
         Instead of replacing all opportunities on each scan, this method:
@@ -1513,9 +1380,7 @@ class ArbitrageScanner:
         now = datetime.now(timezone.utc)
 
         # Index existing opportunities by stable_id
-        existing_map: dict[str, ArbitrageOpportunity] = {
-            opp.stable_id: opp for opp in self._opportunities
-        }
+        existing_map: dict[str, ArbitrageOpportunity] = {opp.stable_id: opp for opp in self._opportunities}
 
         new_count = 0
         updated_count = 0
@@ -1674,9 +1539,7 @@ class ArbitrageScanner:
                 async def _trigger_reactive():
                     self._reactive_trigger.set()
 
-                feed_mgr.set_reactive_scan_callback(
-                    _trigger_reactive, debounce_seconds=2.0
-                )
+                feed_mgr.set_reactive_scan_callback(_trigger_reactive, debounce_seconds=2.0)
                 self._reactive_scan_registered = True
                 print("  Reactive scanning registered (WS price-change triggers)")
         except Exception as e:
@@ -1718,10 +1581,7 @@ class ArbitrageScanner:
 
             # Determine if it's time for a full scan
             full_interval = settings.FULL_SCAN_INTERVAL_SECONDS
-            needs_full = (
-                self._last_full_scan is None
-                or (now - self._last_full_scan).total_seconds() >= full_interval
-            )
+            needs_full = self._last_full_scan is None or (now - self._last_full_scan).total_seconds() >= full_interval
 
             if needs_full:
                 try:
@@ -1750,14 +1610,10 @@ class ArbitrageScanner:
             # Wait for either the timer OR a reactive price-change trigger
             self._reactive_trigger.clear()
             sleep_seconds = settings.FAST_SCAN_INTERVAL_SECONDS
-            await self._set_activity(
-                f"Idle — next scan in ≤{sleep_seconds}s (or on price change)"
-            )
+            await self._set_activity(f"Idle — next scan in ≤{sleep_seconds}s (or on price change)")
             try:
                 # Wait for reactive trigger, but time out after the normal interval
-                await asyncio.wait_for(
-                    self._reactive_trigger.wait(), timeout=sleep_seconds
-                )
+                await asyncio.wait_for(self._reactive_trigger.wait(), timeout=sleep_seconds)
                 await self._set_activity("Reactive scan triggered by WS price change")
             except asyncio.TimeoutError:
                 pass  # Normal timer-based fallback
@@ -1790,10 +1646,7 @@ class ArbitrageScanner:
                         await session.execute(
                             select(OpportunityJudgment).join(
                                 subq,
-                                (
-                                    OpportunityJudgment.opportunity_id
-                                    == subq.c.opportunity_id
-                                )
+                                (OpportunityJudgment.opportunity_id == subq.c.opportunity_id)
                                 & (OpportunityJudgment.judged_at == subq.c.latest),
                             )
                         )
@@ -1851,9 +1704,7 @@ class ArbitrageScanner:
             self._interval_seconds = interval_seconds
 
         self._running = True
-        print(
-            f"Starting continuous scan (interval: {self._interval_seconds}s, enabled: {self._enabled})"
-        )
+        print(f"Starting continuous scan (interval: {self._interval_seconds}s, enabled: {self._enabled})")
 
         # Run the scan loop
         await self._scan_loop()
@@ -1956,9 +1807,7 @@ class ArbitrageScanner:
 
         return status
 
-    def get_opportunities(
-        self, filter: Optional[OpportunityFilter] = None
-    ) -> list[ArbitrageOpportunity]:
+    def get_opportunities(self, filter: Optional[OpportunityFilter] = None) -> list[ArbitrageOpportunity]:
         """Get current opportunities with optional filtering"""
         opps = self._opportunities
 
@@ -1974,11 +1823,7 @@ class ArbitrageScanner:
             if filter.category:
                 # Case-insensitive category matching
                 category_lower = filter.category.lower()
-                opps = [
-                    o
-                    for o in opps
-                    if o.category and o.category.lower() == category_lower
-                ]
+                opps = [o for o in opps if o.category and o.category.lower() == category_lower]
 
         return opps
 
@@ -2011,9 +1856,7 @@ class ArbitrageScanner:
         before_count = len(self._opportunities)
 
         self._opportunities = [
-            opp
-            for opp in self._opportunities
-            if opp.resolution_date is None or _make_aware(opp.resolution_date) > now
+            opp for opp in self._opportunities if opp.resolution_date is None or _make_aware(opp.resolution_date) > now
         ]
 
         removed = before_count - len(self._opportunities)
@@ -2026,15 +1869,11 @@ class ArbitrageScanner:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
         before_count = len(self._opportunities)
 
-        self._opportunities = [
-            opp for opp in self._opportunities if _make_aware(opp.detected_at) >= cutoff
-        ]
+        self._opportunities = [opp for opp in self._opportunities if _make_aware(opp.detected_at) >= cutoff]
 
         removed = before_count - len(self._opportunities)
         if removed > 0:
-            print(
-                f"Removed {removed} opportunities older than {max_age_minutes} minutes"
-            )
+            print(f"Removed {removed} opportunities older than {max_age_minutes} minutes")
         return removed
 
 

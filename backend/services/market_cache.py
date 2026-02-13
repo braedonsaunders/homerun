@@ -163,9 +163,7 @@ class MarketCacheService:
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    delete(CachedMarket).where(
-                        func.lower(CachedMarket.condition_id) == key_norm
-                    )
+                    delete(CachedMarket).where(func.lower(CachedMarket.condition_id) == key_norm)
                 )
                 await session.commit()
                 return bool(result.rowcount)
@@ -393,9 +391,7 @@ class MarketCacheService:
                 row = result.one()
                 stats["usernames_db_count"] = row[2]
                 stats["usernames_oldest"] = row[0].isoformat() if row[0] else None
-                stats["usernames_newest_update"] = (
-                    row[1].isoformat() if row[1] else None
-                )
+                stats["usernames_newest_update"] = row[1].isoformat() if row[1] else None
 
         except Exception as e:
             logger.error("Failed to gather cache DB stats", error=str(e))
@@ -412,36 +408,22 @@ class MarketCacheService:
             async with AsyncSessionLocal() as session:
                 # Find stale market condition_ids so we can remove from memory too
                 result = await session.execute(
-                    select(CachedMarket.condition_id).where(
-                        CachedMarket.updated_at < cutoff
-                    )
+                    select(CachedMarket.condition_id).where(CachedMarket.updated_at < cutoff)
                 )
                 stale_market_ids = [row[0] for row in result.all()]
 
                 if stale_market_ids:
-                    await session.execute(
-                        delete(CachedMarket).where(
-                            CachedMarket.condition_id.in_(stale_market_ids)
-                        )
-                    )
+                    await session.execute(delete(CachedMarket).where(CachedMarket.condition_id.in_(stale_market_ids)))
                     for cid in stale_market_ids:
                         self._market_cache.pop(cid, None)
                     removed_markets = len(stale_market_ids)
 
                 # Find stale username addresses
-                result = await session.execute(
-                    select(CachedUsername.address).where(
-                        CachedUsername.updated_at < cutoff
-                    )
-                )
+                result = await session.execute(select(CachedUsername.address).where(CachedUsername.updated_at < cutoff))
                 stale_addrs = [row[0] for row in result.all()]
 
                 if stale_addrs:
-                    await session.execute(
-                        delete(CachedUsername).where(
-                            CachedUsername.address.in_(stale_addrs)
-                        )
-                    )
+                    await session.execute(delete(CachedUsername).where(CachedUsername.address.in_(stale_addrs)))
                     for addr in stale_addrs:
                         self._username_cache.pop(addr, None)
                     removed_usernames = len(stale_addrs)
@@ -484,35 +466,23 @@ class MarketCacheService:
                 ),
             )
         )
-        if (
-            not force
-            and self._last_hygiene_at
-            and (now - self._last_hygiene_at) < interval
-        ):
+        if not force and self._last_hygiene_at and (now - self._last_hygiene_at) < interval:
             return {
                 "status": "skipped",
                 "next_due_after": (self._last_hygiene_at + interval).isoformat(),
             }
         result = await self.prune_market_metadata(
-            retention_days=(
-                int(retention_days)
-                if retention_days is not None
-                else MARKET_CACHE_RETENTION_DAYS
-            ),
+            retention_days=(int(retention_days) if retention_days is not None else MARKET_CACHE_RETENTION_DAYS),
             reference_lookback_days=(
                 int(reference_lookback_days)
                 if reference_lookback_days is not None
                 else MARKET_CACHE_REFERENCE_LOOKBACK_DAYS
             ),
             weak_entry_grace_days=(
-                int(weak_entry_grace_days)
-                if weak_entry_grace_days is not None
-                else MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS
+                int(weak_entry_grace_days) if weak_entry_grace_days is not None else MARKET_CACHE_WEAK_ENTRY_GRACE_DAYS
             ),
             max_entries_per_slug=(
-                int(max_entries_per_slug)
-                if max_entries_per_slug is not None
-                else MARKET_CACHE_MAX_ENTRIES_PER_SLUG
+                int(max_entries_per_slug) if max_entries_per_slug is not None else MARKET_CACHE_MAX_ENTRIES_PER_SLUG
             ),
         )
         self._last_hygiene_at = now
@@ -546,13 +516,9 @@ class MarketCacheService:
 
             referenced_ids: set[str] = set()
             activity_refs = await session.execute(
-                select(WalletActivityRollup.market_id)
-                .where(WalletActivityRollup.traded_at >= ref_cutoff)
-                .distinct()
+                select(WalletActivityRollup.market_id).where(WalletActivityRollup.traded_at >= ref_cutoff).distinct()
             )
-            referenced_ids.update(
-                self._norm(mid) for mid in activity_refs.scalars().all() if mid
-            )
+            referenced_ids.update(self._norm(mid) for mid in activity_refs.scalars().all() if mid)
 
             confluence_refs = await session.execute(
                 select(MarketConfluenceSignal.market_id)
@@ -565,9 +531,7 @@ class MarketCacheService:
                 )
                 .distinct()
             )
-            referenced_ids.update(
-                self._norm(mid) for mid in confluence_refs.scalars().all() if mid
-            )
+            referenced_ids.update(self._norm(mid) for mid in confluence_refs.scalars().all() if mid)
 
             slug_counts: dict[str, int] = {}
             for row in rows:
@@ -578,9 +542,7 @@ class MarketCacheService:
             for row in rows:
                 key = self._norm(row.condition_id)
                 payload = row.extra_data if isinstance(row.extra_data, dict) else {}
-                embedded_key = self._norm(
-                    payload.get("condition_id") or payload.get("conditionId")
-                )
+                embedded_key = self._norm(payload.get("condition_id") or payload.get("conditionId"))
                 question = str(row.question or "").strip()
                 slug_norm = self._norm(row.slug)
                 referenced = key in referenced_ids
@@ -593,11 +555,7 @@ class MarketCacheService:
                     reason = "embedded_key_mismatch"
                 elif not question and not slug_norm and not referenced:
                     reason = "empty_payload"
-                elif (
-                    slug_norm
-                    and slug_counts.get(slug_norm, 0) > max_entries_per_slug
-                    and not embedded_key
-                ):
+                elif slug_norm and slug_counts.get(slug_norm, 0) > max_entries_per_slug and not embedded_key:
                     reason = "suspicious_slug_collision"
                 elif updated_at and updated_at < weak_cutoff and not embedded_key and not referenced:
                     reason = "missing_embedded_key"
@@ -611,9 +569,7 @@ class MarketCacheService:
             deleted_count = 0
             if deleted_ids:
                 result = await session.execute(
-                    delete(CachedMarket).where(
-                        CachedMarket.condition_id.in_(list(deleted_ids))
-                    )
+                    delete(CachedMarket).where(CachedMarket.condition_id.in_(list(deleted_ids)))
                 )
                 deleted_count = int(result.rowcount or 0)
                 await session.commit()

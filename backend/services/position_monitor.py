@@ -83,11 +83,7 @@ class PositionMonitor:
             positions = list(result.scalars().all())
 
             # Filter to only positions with price targets
-            monitored = [
-                p
-                for p in positions
-                if p.take_profit_price is not None or p.stop_loss_price is not None
-            ]
+            monitored = [p for p in positions if p.take_profit_price is not None or p.stop_loss_price is not None]
 
             if not monitored:
                 return
@@ -110,15 +106,10 @@ class PositionMonitor:
 
                 # Update stored current price
                 position.current_price = current_price
-                position.unrealized_pnl = (
-                    current_price - position.entry_price
-                ) * position.quantity
+                position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
 
                 # Check take profit
-                if (
-                    position.take_profit_price is not None
-                    and current_price >= position.take_profit_price
-                ):
+                if position.take_profit_price is not None and current_price >= position.take_profit_price:
                     logger.info(
                         "Take profit triggered",
                         position_id=position.id,
@@ -126,16 +117,11 @@ class PositionMonitor:
                         current_price=current_price,
                         take_profit=position.take_profit_price,
                     )
-                    await self._exit_position(
-                        session, position, current_price, "take_profit"
-                    )
+                    await self._exit_position(session, position, current_price, "take_profit")
                     continue
 
                 # Check stop loss
-                if (
-                    position.stop_loss_price is not None
-                    and current_price <= position.stop_loss_price
-                ):
+                if position.stop_loss_price is not None and current_price <= position.stop_loss_price:
                     logger.info(
                         "Stop loss triggered",
                         position_id=position.id,
@@ -143,9 +129,7 @@ class PositionMonitor:
                         current_price=current_price,
                         stop_loss=position.stop_loss_price,
                     )
-                    await self._exit_position(
-                        session, position, current_price, "stop_loss"
-                    )
+                    await self._exit_position(session, position, current_price, "stop_loss")
                     continue
 
             await session.commit()
@@ -190,9 +174,7 @@ class PositionMonitor:
 
                 http_prices = await polymarket_client.get_prices_batch(stale_ids)
                 for tid, data in http_prices.items():
-                    prices[tid] = (
-                        data.get("mid", 0) if isinstance(data, dict) else float(data)
-                    )
+                    prices[tid] = data.get("mid", 0) if isinstance(data, dict) else float(data)
             except Exception as e:
                 logger.error(f"Failed to fetch prices via HTTP: {e}")
 
@@ -224,9 +206,7 @@ class PositionMonitor:
             pnl -= fee
 
         # Update position
-        position.status = (
-            TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
-        )
+        position.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
         position.current_price = exit_price
         position.unrealized_pnl = 0  # Now realized
 
@@ -241,9 +221,7 @@ class PositionMonitor:
             )
             trade = trade_result.scalar_one_or_none()
             if trade:
-                trade.status = (
-                    TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
-                )
+                trade.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
                 trade.actual_pnl = pnl
                 trade.actual_payout = position.entry_cost + pnl
                 trade.fees_paid = fee

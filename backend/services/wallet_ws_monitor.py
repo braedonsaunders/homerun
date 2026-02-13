@@ -38,9 +38,7 @@ CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 
 # OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)
 # keccak256 topic hash
-ORDER_FILLED_TOPIC = (
-    "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
-)
+ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
 
 # Default Polygon WebSocket RPC endpoint
 DEFAULT_WS_URL = settings.POLYGON_WS_URL
@@ -184,9 +182,7 @@ def _parse_order_filled_log(log: dict) -> Optional[dict]:
     }
 
 
-def _determine_trade_side_and_details(
-    parsed: dict, wallet_address: str
-) -> tuple[str, str, float, float]:
+def _determine_trade_side_and_details(parsed: dict, wallet_address: str) -> tuple[str, str, float, float]:
     """Determine trade side, token_id, size, and price from parsed log data.
 
     If the wallet is the maker, they placed the order:
@@ -317,9 +313,7 @@ class WalletWebSocketMonitor:
     def set_wallets_for_source(self, source: str, addresses: list[str]):
         """Replace all tracked wallets for a source in one operation."""
         target = {a.lower() for a in addresses if a}
-        current = {
-            addr for addr, memberships in self._tracked_sources.items() if source in memberships
-        }
+        current = {addr for addr, memberships in self._tracked_sources.items() if source in memberships}
 
         for address in current - target:
             self.remove_wallet(address, source=source)
@@ -404,9 +398,7 @@ class WalletWebSocketMonitor:
             return
 
         if websockets is None:
-            logger.error(
-                "websockets library not installed. Install with: pip install websockets"
-            )
+            logger.error("websockets library not installed. Install with: pip install websockets")
             return
 
         self._running = True
@@ -482,9 +474,7 @@ class WalletWebSocketMonitor:
                             "WS subscription failed",
                             error=sub_result["error"],
                         )
-                        raise ConnectionError(
-                            f"Subscription failed: {sub_result['error']}"
-                        )
+                        raise ConnectionError(f"Subscription failed: {sub_result['error']}")
 
                     subscription_id = sub_result.get("result")
                     logger.info(
@@ -537,9 +527,7 @@ class WalletWebSocketMonitor:
 
                 # Start fallback polling while disconnected
                 if self._poll_fallback_task is None or self._poll_fallback_task.done():
-                    self._poll_fallback_task = asyncio.create_task(
-                        self._poll_fallback_loop()
-                    )
+                    self._poll_fallback_task = asyncio.create_task(self._poll_fallback_loop())
 
                 if self._running:
                     await asyncio.sleep(current_delay)
@@ -569,10 +557,7 @@ class WalletWebSocketMonitor:
             return
 
         # Avoid processing the same block twice
-        if (
-            self._last_processed_block is not None
-            and block_number <= self._last_processed_block
-        ):
+        if self._last_processed_block is not None and block_number <= self._last_processed_block:
             return
 
         block_hex = hex(block_number)
@@ -762,9 +747,7 @@ class WalletWebSocketMonitor:
             return  # Neither maker nor taker is tracked
 
         # Determine trade details
-        side, token_id, size, price = _determine_trade_side_and_details(
-            parsed, matched_wallet
-        )
+        side, token_id, size, price = _determine_trade_side_and_details(parsed, matched_wallet)
 
         tx_hash = log.get("transactionHash", "")
 
@@ -970,15 +953,9 @@ class WalletWebSocketMonitor:
             "ws_url": self._ws_url,
             "tracked_wallets": len(self._tracked_sources),
             "tracked_addresses": list(self._tracked_sources.keys()),
-            "tracked_sources": {
-                addr: sorted(list(sources))
-                for addr, sources in self._tracked_sources.items()
-            },
+            "tracked_sources": {addr: sorted(list(sources)) for addr, sources in self._tracked_sources.items()},
             "last_processed_block": self._last_processed_block,
-            "fallback_polling": (
-                self._poll_fallback_task is not None
-                and not self._poll_fallback_task.done()
-            ),
+            "fallback_polling": (self._poll_fallback_task is not None and not self._poll_fallback_task.done()),
             "stats": dict(self._stats),
         }
 

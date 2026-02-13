@@ -160,11 +160,7 @@ class EdgeEstimator:
         sem = asyncio.Semaphore(self._CONCURRENCY)
         findings: list[WorkflowFinding] = []
 
-        llm_budget = (
-            max(0, max_llm_calls if max_llm_calls is not None else len(reranked))
-            if allow_llm
-            else 0
-        )
+        llm_budget = max(0, max_llm_calls if max_llm_calls is not None else len(reranked)) if allow_llm else 0
 
         async def _one(i: int, rc: RerankedCandidate) -> Optional[WorkflowFinding]:
             async with sem:

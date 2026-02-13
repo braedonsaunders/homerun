@@ -107,6 +107,8 @@ class NewsMarketMatch:
 
 # Default model: small, fast, runs on CPU, 384 dimensions
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
+
+
 class SemanticMatcher:
     """
     Matches news articles to prediction markets using vector similarity.
@@ -145,29 +147,21 @@ class SemanticMatcher:
                     device = os.environ.get("EMBEDDING_DEVICE", "cpu")
                     self._model = SentenceTransformer(self._model_name, device=device)
                     # Smoke-test: encode a tiny string to verify native code works
-                    _test = self._model.encode(
-                        ["test"], show_progress_bar=False, normalize_embeddings=True
-                    )
+                    _test = self._model.encode(["test"], show_progress_bar=False, normalize_embeddings=True)
                     if _test is None or len(_test) == 0:
                         raise RuntimeError("Model encode returned empty result")
                     self._initialized = True
-                    logger.info(
-                        "Semantic matcher initialized with model '%s'", self._model_name
-                    )
+                    logger.info("Semantic matcher initialized with model '%s'", self._model_name)
                     return True
                 except Exception as e:
                     logger.warning(
-                        "Failed to load sentence-transformers model '%s': %s. "
-                        "Falling back to TF-IDF.",
+                        "Failed to load sentence-transformers model '%s': %s. Falling back to TF-IDF.",
                         self._model_name,
                         e,
                     )
                     self._model = None
             else:
-                logger.info(
-                    "sentence-transformers not installed. "
-                    "Using TF-IDF fallback for news matching."
-                )
+                logger.info("sentence-transformers not installed. Using TF-IDF fallback for news matching.")
 
             self._initialized = True
             return False
@@ -202,9 +196,7 @@ class SemanticMatcher:
 
             if self._model is not None:
                 try:
-                    embeddings = self._model.encode(
-                        texts, show_progress_bar=False, normalize_embeddings=True
-                    )
+                    embeddings = self._model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
                     self._market_embeddings = np.array(embeddings, dtype=np.float32)
                 except Exception as e:
                     logger.warning("Market embedding failed, disabling ML mode: %s", e)
@@ -223,9 +215,7 @@ class SemanticMatcher:
                         self._faiss_index = faiss.IndexFlatIP(dim)
                         self._faiss_index.add(embs)
                     except Exception as e:
-                        logger.warning(
-                            "FAISS index build failed, using numpy fallback: %s", e
-                        )
+                        logger.warning("FAISS index build failed, using numpy fallback: %s", e)
                         self._faiss_index = None
                 else:
                     self._faiss_index = None
@@ -255,9 +245,7 @@ class SemanticMatcher:
         texts = [self._article_to_text(a) for a in unembedded]
         with self._lock:
             try:
-                embeddings = self._model.encode(
-                    texts, show_progress_bar=False, normalize_embeddings=True
-                )
+                embeddings = self._model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
             except Exception as e:
                 logger.warning("Article embedding failed, disabling ML mode: %s", e)
                 self._model = None
@@ -318,9 +306,7 @@ class SemanticMatcher:
             return []
 
         try:
-            article_embs = np.array(
-                [a.embedding for a in embedded_articles], dtype=np.float32
-            )
+            article_embs = np.array([a.embedding for a in embedded_articles], dtype=np.float32)
         except (ValueError, TypeError) as e:
             logger.warning("Failed to build article embedding array: %s", e)
             return []

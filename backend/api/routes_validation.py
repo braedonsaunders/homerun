@@ -74,15 +74,11 @@ async def get_validation_overview():
         roi_30d = await opportunity_recorder.get_historical_roi(days=30)
         decay_30d = await opportunity_recorder.get_decay_analysis(days=30)
         calibration = await validation_service.compute_calibration_metrics(days=90)
-        calibration_trend = await validation_service.compute_calibration_trend(
-            days=90, bucket_days=7
-        )
+        calibration_trend = await validation_service.compute_calibration_trend(days=90, bucket_days=7)
         combinatorial_validation = _get_combinatorial_validation_stats()
         strategy_health = await validation_service.get_strategy_health()
         guardrail_config = await validation_service.get_guardrail_config()
-        trader_orchestrator_execution = (
-            await validation_service.compute_trader_orchestrator_execution_metrics(days=30)
-        )
+        trader_orchestrator_execution = await validation_service.compute_trader_orchestrator_execution_metrics(days=30)
         world_intel_resolver = await validation_service.compute_world_intel_resolver_metrics(days=7)
 
         latest_optimization = optimization_results[0] if optimization_results else None
@@ -113,9 +109,7 @@ async def get_validation_overview():
 @router.post("/jobs/backtest")
 async def enqueue_backtest(request: BacktestRequest):
     try:
-        job_id = await validation_service.enqueue_job(
-            "backtest", payload=request.model_dump()
-        )
+        job_id = await validation_service.enqueue_job("backtest", payload=request.model_dump())
         return {"status": "queued", "job_id": job_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -124,9 +118,7 @@ async def enqueue_backtest(request: BacktestRequest):
 @router.post("/jobs/optimize")
 async def enqueue_optimize(request: OptimizeRequest):
     try:
-        job_id = await validation_service.enqueue_job(
-            "optimize", payload=request.model_dump()
-        )
+        job_id = await validation_service.enqueue_job("optimize", payload=request.model_dump())
         return {"status": "queued", "job_id": job_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -171,11 +163,7 @@ async def get_guardrail_config():
 
 @router.put("/guardrails/config")
 async def update_guardrail_config(patch: GuardrailConfigPatch):
-    update = {
-        k: v
-        for k, v in patch.model_dump().items()
-        if v is not None
-    }
+    update = {k: v for k, v in patch.model_dump().items() if v is not None}
     return await validation_service.update_guardrail_config(update)
 
 
@@ -190,9 +178,7 @@ async def get_strategy_health():
 
 
 @router.post("/strategy-health/{strategy_type}/override")
-async def set_strategy_override(
-    strategy_type: str, status: str = "active", note: Optional[str] = None
-):
+async def set_strategy_override(strategy_type: str, status: str = "active", note: Optional[str] = None):
     if status not in ("active", "demoted"):
         raise HTTPException(status_code=400, detail="status must be active or demoted")
     return await validation_service.set_strategy_override(

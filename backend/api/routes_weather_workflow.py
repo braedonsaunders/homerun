@@ -47,17 +47,13 @@ class WeatherWorkflowSettingsRequest(BaseModel):
 
 async def _build_status_payload(session: AsyncSession) -> dict:
     status = await shared_state.get_weather_status_from_db(session)
-    intents = await shared_state.list_weather_intents(
-        session, status_filter="pending", limit=1000
-    )
+    intents = await shared_state.list_weather_intents(session, status_filter="pending", limit=1000)
     status["pending_intents"] = len(intents)
 
     control = await shared_state.read_weather_control(session)
     status["paused"] = bool(control.get("is_paused", False))
     status["requested_scan_at"] = (
-        control.get("requested_scan_at").isoformat()
-        if control.get("requested_scan_at")
-        else None
+        control.get("requested_scan_at").isoformat() if control.get("requested_scan_at") else None
     )
     return status
 
@@ -77,9 +73,7 @@ async def run_weather_workflow_once(session: AsyncSession = Depends(get_db_sessi
     try:
         wf_settings = await shared_state.get_weather_settings(session)
         result = await weather_workflow_orchestrator.run_cycle(session)
-        pending_rows = await shared_state.list_weather_intents(
-            session, status_filter="pending", limit=2000
-        )
+        pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
         emitted = await emit_weather_intent_signals(
             session,
             pending_rows,
@@ -137,9 +131,7 @@ async def set_weather_workflow_interval(
 ):
     await shared_state.set_weather_interval(session, interval_seconds)
     # Keep settings and control aligned.
-    await shared_state.update_weather_settings(
-        session, {"scan_interval_seconds": interval_seconds}
-    )
+    await shared_state.update_weather_settings(session, {"scan_interval_seconds": interval_seconds})
     return {
         "status": "updated",
         **await _build_status_payload(session),
@@ -204,9 +196,7 @@ async def get_weather_intents(
     status_filter: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
 ):
-    rows = await shared_state.list_weather_intents(
-        session, status_filter=status_filter, limit=limit
-    )
+    rows = await shared_state.list_weather_intents(session, status_filter=status_filter, limit=limit)
     intents = [
         {
             "id": r.id,
@@ -298,17 +288,13 @@ async def get_weather_workflow_performance(
 
         pending_intents = (
             await session.execute(
-                select(func.count())
-                .select_from(WeatherTradeIntent)
-                .where(WeatherTradeIntent.status == "pending")
+                select(func.count()).select_from(WeatherTradeIntent).where(WeatherTradeIntent.status == "pending")
             )
         ).scalar_one_or_none() or 0
 
         executed_intents = (
             await session.execute(
-                select(func.count())
-                .select_from(WeatherTradeIntent)
-                .where(WeatherTradeIntent.status == "executed")
+                select(func.count()).select_from(WeatherTradeIntent).where(WeatherTradeIntent.status == "executed")
             )
         ).scalar_one_or_none() or 0
 

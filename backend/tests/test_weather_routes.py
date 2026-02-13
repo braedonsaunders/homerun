@@ -73,9 +73,7 @@ async def test_update_settings_syncs_control_interval(monkeypatch):
         set_interval_mock,
     )
 
-    req = routes_weather_workflow.WeatherWorkflowSettingsRequest(
-        scan_interval_seconds=7200
-    )
+    req = routes_weather_workflow.WeatherWorkflowSettingsRequest(scan_interval_seconds=7200)
     out = await routes_weather_workflow.update_weather_workflow_settings(
         request=req,
         session=fake_session,
@@ -95,9 +93,7 @@ async def test_run_weather_workflow_executes_immediately(monkeypatch):
         "get_weather_settings",
         AsyncMock(return_value={"orchestrator_max_age_minutes": 240}),
     )
-    run_cycle_mock = AsyncMock(
-        return_value={"status": "completed", "markets": 5, "opportunities": 2, "intents": 1}
-    )
+    run_cycle_mock = AsyncMock(return_value={"status": "completed", "markets": 5, "opportunities": 2, "intents": 1})
     monkeypatch.setattr(
         routes_weather_workflow.weather_workflow_orchestrator,
         "run_cycle",
@@ -128,9 +124,7 @@ async def test_run_weather_workflow_executes_immediately(monkeypatch):
     assert out["signals_emitted"] == 2
     assert out["cycle"]["status"] == "completed"
     run_cycle_mock.assert_awaited_once_with(fake_session)
-    list_intents_mock.assert_awaited_once_with(
-        fake_session, status_filter="pending", limit=2000
-    )
+    list_intents_mock.assert_awaited_once_with(fake_session, status_filter="pending", limit=2000)
     emit_mock.assert_awaited_once()
     clear_request_mock.assert_awaited_once_with(fake_session)
 

@@ -85,12 +85,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0  # Earth radius in km
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(math.radians(lat1))
-        * math.cos(math.radians(lat2))
-        * math.sin(dlon / 2) ** 2
-    )
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -233,12 +228,14 @@ class ConvergenceDetector:
             # Build contributing event summaries
             events: list[dict[str, Any]] = []
             for s in signals:
-                events.append({
-                    "type": s.signal_type,
-                    "lat": s.latitude,
-                    "lon": s.longitude,
-                    "metadata": s.metadata,
-                })
+                events.append(
+                    {
+                        "type": s.signal_type,
+                        "lat": s.latitude,
+                        "lon": s.longitude,
+                        "metadata": s.metadata,
+                    }
+                )
 
             zone = ConvergenceZone(
                 grid_key=key,
@@ -290,9 +287,7 @@ class ConvergenceDetector:
 
         for market in markets:
             market_id = getattr(market, "market_id", getattr(market, "id", ""))
-            question = str(
-                getattr(market, "question", getattr(market, "title", ""))
-            ).lower()
+            question = str(getattr(market, "question", getattr(market, "title", ""))).lower()
 
             # Country keyword match
             if country and country != "unknown" and country in question:
@@ -312,8 +307,10 @@ class ConvergenceDetector:
             market_lon = getattr(market, "longitude", None)
             if market_lat is not None and market_lon is not None:
                 dist = _haversine_km(
-                    convergence.latitude, convergence.longitude,
-                    float(market_lat), float(market_lon),
+                    convergence.latitude,
+                    convergence.longitude,
+                    float(market_lat),
+                    float(market_lon),
                 )
                 threshold = _PROXIMITY_THRESHOLDS.get("conflict", 300)
                 if dist <= threshold:

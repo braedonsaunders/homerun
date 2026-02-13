@@ -24,12 +24,8 @@ class SportTokenClassification(Base):
     __tablename__ = "sport_token_classifications"
 
     token_id = Column(String, primary_key=True)
-    sport = Column(
-        String, nullable=False
-    )  # "atp_tennis", "soccer_ligue1", "nba", "nfl", etc.
-    sport_category = Column(
-        String, nullable=False
-    )  # "tennis", "soccer", "basketball", "football"
+    sport = Column(String, nullable=False)  # "atp_tennis", "soccer_ligue1", "nba", "nfl", etc.
+    sport_category = Column(String, nullable=False)  # "tennis", "soccer", "basketball", "football"
     extra_buffer = Column(String, default="0.01")
     classified_at = Column(DateTime, default=datetime.utcnow)
     source_slug = Column(String, nullable=True)
@@ -85,17 +81,14 @@ class SportClassifier:
                         sport=row.sport,
                         sport_category=row.sport_category,
                         extra_buffer=float(row.extra_buffer),
-                        is_live_sport=row.sport_category
-                        in ("tennis", "soccer", "basketball", "mma"),
+                        is_live_sport=row.sport_category in ("tennis", "soccer", "basketball", "mma"),
                     )
             self._loaded = True
             logger.info("Loaded sport classifications", count=len(self._cache))
         except Exception as e:
             logger.error("Failed to load sport classifications", error=str(e))
 
-    def classify_by_slug(
-        self, token_id: str, slug: str
-    ) -> Optional[SportClassification]:
+    def classify_by_slug(self, token_id: str, slug: str) -> Optional[SportClassification]:
         """Classify a token based on its market slug."""
         if token_id in self._cache:
             return self._cache[token_id]
@@ -108,8 +101,7 @@ class SportClassifier:
                     sport=sport_id,
                     sport_category=sport_cat,
                     extra_buffer=buffer,
-                    is_live_sport=sport_cat
-                    in ("tennis", "soccer", "basketball", "mma"),
+                    is_live_sport=sport_cat in ("tennis", "soccer", "basketball", "mma"),
                 )
                 self._cache[token_id] = classification
                 return classification
@@ -129,9 +121,7 @@ class SportClassifier:
     async def persist_classification(self, classification: SportClassification):
         try:
             async with AsyncSessionLocal() as session:
-                existing = await session.get(
-                    SportTokenClassification, classification.token_id
-                )
+                existing = await session.get(SportTokenClassification, classification.token_id)
                 if existing:
                     existing.sport = classification.sport
                     existing.sport_category = classification.sport_category

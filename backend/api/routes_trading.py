@@ -93,9 +93,7 @@ class PositionResponse(BaseModel):
     unrealized_pnl: float
 
     @classmethod
-    def from_position(
-        cls, pos: Position, market_info: Optional[dict] = None
-    ) -> "PositionResponse":
+    def from_position(cls, pos: Position, market_info: Optional[dict] = None) -> "PositionResponse":
         market_info = market_info or {}
         return cls(
             token_id=pos.token_id,
@@ -141,9 +139,7 @@ async def get_trading_status():
             "daily_volume": stats.daily_volume,
             "daily_pnl": stats.daily_pnl,
             "open_positions": stats.open_positions,
-            "last_trade_at": stats.last_trade_at.isoformat()
-            if stats.last_trade_at
-            else None,
+            "last_trade_at": stats.last_trade_at.isoformat() if stats.last_trade_at else None,
         },
         limits={
             "max_trade_size_usd": settings.MAX_TRADE_SIZE_USD,
@@ -208,9 +204,7 @@ async def place_order(request: PlaceOrderRequest):
     try:
         order_type = OrderType(request.order_type.upper())
     except ValueError:
-        raise HTTPException(
-            status_code=400, detail="Invalid order type. Must be GTC, FOK, or GTD"
-        )
+        raise HTTPException(status_code=400, detail="Invalid order type. Must be GTC, FOK, or GTD")
 
     order = await trading_service.place_order(
         token_id=request.token_id,
@@ -299,10 +293,7 @@ async def get_positions():
             if isinstance(info, dict):
                 market_info_by_id[market_id] = info
 
-    return [
-        PositionResponse.from_position(p, market_info_by_id.get(p.market_id))
-        for p in positions
-    ]
+    return [PositionResponse.from_position(p, market_info_by_id.get(p.market_id)) for p in positions]
 
 
 @router.get("/balance")

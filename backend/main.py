@@ -221,15 +221,11 @@ async def lifespan(app: FastAPI):
                 scanner_control = await shared_state.read_scanner_control(session)
                 news_control = await news_shared_state.read_news_control(session)
                 weather_control = await weather_shared_state.read_weather_control(session)
-                discovery_control = await discovery_shared_state.read_discovery_control(
-                    session
-                )
+                discovery_control = await discovery_shared_state.read_discovery_control(session)
                 orchestrator_control = await read_orchestrator_control(session)
                 crypto_control = await read_worker_control(session, "crypto")
                 tracked_control = await read_worker_control(session, "tracked_traders")
-                world_intel_control = await read_worker_control(
-                    session, "world_intelligence"
-                )
+                world_intel_control = await read_worker_control(session, "world_intelligence")
 
             should_pause = all(
                 bool(control.get("is_paused", False))
@@ -259,9 +255,7 @@ async def lifespan(app: FastAPI):
             await apply_search_filters()
             logger.info("Search filter settings loaded from database")
         except Exception as e:
-            logger.warning(
-                f"Failed to load search filter settings (using defaults): {e}"
-            )
+            logger.warning(f"Failed to load search filter settings (using defaults): {e}")
 
         # Pre-flight configuration validation
         from services.config_validator import config_validator
@@ -312,9 +306,7 @@ async def lifespan(app: FastAPI):
                     skills=len(skill_loader.list_skills()),
                 )
             else:
-                logger.info(
-                    "AI intelligence layer initialized (no providers configured)"
-                )
+                logger.info("AI intelligence layer initialized (no providers configured)")
         except Exception as e:
             logger.warning(f"AI initialization failed (non-critical): {e}")
 
@@ -351,9 +343,7 @@ async def lifespan(app: FastAPI):
             if trading_initialized:
                 logger.info("Trading service initialized")
             else:
-                logger.warning(
-                    "Trading service initialization failed - check credentials"
-                )
+                logger.warning("Trading service initialization failed - check credentials")
 
         # Intelligence, crypto, tracked-trader, and trader-orchestrator runtimes are worker-owned.
         logger.info("API runtime running in orchestration/read-only mode for worker-owned loops")
@@ -414,9 +404,7 @@ async def lifespan(app: FastAPI):
         yield
 
     except Exception as e:
-        logger.critical(
-            "Startup failed", error=str(e), traceback=traceback.format_exc()
-        )
+        logger.critical("Startup failed", error=str(e), traceback=traceback.format_exc())
         raise
 
     finally:
@@ -478,9 +466,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         error=str(exc),
         traceback=traceback.format_exc(),
     )
-    return JSONResponse(
-        status_code=500, content={"detail": "Internal server error", "error": str(exc)}
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error", "error": str(exc)})
 
 
 # CORS middleware
@@ -497,9 +483,7 @@ app.add_middleware(
 # API routes
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
-app.include_router(
-    copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"]
-)
+app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
 app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
@@ -608,15 +592,11 @@ async def detailed_health_check():
     """Detailed health check with all system stats"""
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
-        discovery_status = await discovery_shared_state.get_discovery_status_from_db(
-            session
-        )
+        discovery_status = await discovery_shared_state.get_discovery_status_from_db(session)
         try:
             from services.news import shared_state as news_shared_state
 
-            news_workflow_status = await news_shared_state.get_news_status_from_db(
-                session
-            )
+            news_workflow_status = await news_shared_state.get_news_status_from_db(session)
         except Exception:
             news_workflow_status = {}
         worker_status_rows = await list_worker_snapshots(session)
@@ -632,9 +612,7 @@ async def detailed_health_check():
                 "last_scan": scanner_status.get("last_scan"),
                 "opportunities_count": scanner_status.get("opportunities_count", 0),
             },
-            "wallet_tracker": {
-                "tracked_wallets": len(await wallet_tracker.get_all_wallets())
-            },
+            "wallet_tracker": {"tracked_wallets": len(await wallet_tracker.get_all_wallets())},
             "copy_trader": {
                 "running": copy_trader._running,
                 "active_configs": len(copy_trader._active_configs),
@@ -642,9 +620,7 @@ async def detailed_health_check():
             "trading": {
                 "enabled": settings.TRADING_ENABLED,
                 "initialized": trading_service.is_ready(),
-                "stats": trading_service.get_stats().__dict__
-                if trading_service.is_ready()
-                else None,
+                "stats": trading_service.get_stats().__dict__ if trading_service.is_ready() else None,
             },
             "trader_orchestrator": {
                 "running": bool(orchestrator_snapshot.get("running", False)),
@@ -652,9 +628,7 @@ async def detailed_health_check():
             },
             "maintenance": {
                 "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
-                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS
-                if settings.AUTO_CLEANUP_ENABLED
-                else None,
+                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS if settings.AUTO_CLEANUP_ENABLED else None,
             },
             "market_prioritizer": market_prioritizer.get_stats(),
             "ai_intelligence": _get_ai_status(),
@@ -672,15 +646,9 @@ async def detailed_health_check():
                 "pending_intents": int(news_workflow_status.get("pending_intents", 0)),
             },
             "wallet_discovery": {
-                "running": bool(
-                    discovery_status.get("running", wallet_discovery._running)
-                ),
+                "running": bool(discovery_status.get("running", wallet_discovery._running)),
                 "last_run": discovery_status.get("last_run_at")
-                or (
-                    wallet_discovery._last_run_at.isoformat()
-                    if wallet_discovery._last_run_at
-                    else None
-                ),
+                or (wallet_discovery._last_run_at.isoformat() if wallet_discovery._last_run_at else None),
                 "wallets_discovered": int(
                     discovery_status.get(
                         "wallets_discovered_last_run",
@@ -812,9 +780,7 @@ def kill_port(port: int):
     import signal
 
     try:
-        result = subprocess.run(
-            ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5)
         pids = result.stdout.strip()
         if pids:
             for pid_str in pids.split("\n"):
@@ -833,14 +799,10 @@ def kill_port(port: int):
     except FileNotFoundError:
         # lsof not available, try fuser as fallback
         try:
-            result = subprocess.run(
-                ["fuser", f"{port}/tcp"], capture_output=True, text=True, timeout=5
-            )
+            result = subprocess.run(["fuser", f"{port}/tcp"], capture_output=True, text=True, timeout=5)
             pids = result.stdout.strip()
             if pids:
-                subprocess.run(
-                    ["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5
-                )
+                subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
                 logger.info(f"Killed existing process on port {port}")
                 import time
 

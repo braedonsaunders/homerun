@@ -62,9 +62,7 @@ async def _fetch_ucdp_rows_for_year(year: int) -> list[dict[str, Any]]:
             getattr(settings, "WORLD_INTEL_UCDP_REQUEST_TIMEOUT_SECONDS", 25.0) or 25.0,
         )
     )
-    max_pages = int(
-        max(1, getattr(settings, "WORLD_INTEL_UCDP_MAX_PAGES", 100) or 100)
-    )
+    max_pages = int(max(1, getattr(settings, "WORLD_INTEL_UCDP_MAX_PAGES", 100) or 100))
     rows: list[dict[str, Any]] = []
     page = 0
     next_url: Optional[str] = None
@@ -85,11 +83,7 @@ async def _fetch_ucdp_rows_for_year(year: int) -> list[dict[str, Any]]:
             result_rows = payload.get("Result", []) if isinstance(payload, dict) else []
             if isinstance(result_rows, list):
                 rows.extend([row for row in result_rows if isinstance(row, dict)])
-            next_url = (
-                str(payload.get("NextPageUrl") or "").strip()
-                if isinstance(payload, dict)
-                else ""
-            )
+            next_url = str(payload.get("NextPageUrl") or "").strip() if isinstance(payload, dict) else ""
             page += 1
             if not next_url:
                 break
@@ -97,9 +91,7 @@ async def _fetch_ucdp_rows_for_year(year: int) -> list[dict[str, Any]]:
 
 
 async def _fetch_latest_ucdp_conflict_rows() -> tuple[int, list[dict[str, Any]]]:
-    lookback_years = int(
-        max(1, getattr(settings, "WORLD_INTEL_UCDP_LOOKBACK_YEARS", 8) or 8)
-    )
+    lookback_years = int(max(1, getattr(settings, "WORLD_INTEL_UCDP_LOOKBACK_YEARS", 8) or 8))
     current_year = datetime.now(timezone.utc).year
     for year in range(current_year, current_year - lookback_years, -1):
         rows = await _fetch_ucdp_rows_for_year(year)
@@ -137,10 +129,7 @@ async def load_ucdp_conflict_lists_from_db(session: AsyncSession) -> dict[str, A
         active, minor = _default_conflict_lists()
         row.world_intel_ucdp_active_wars_json = active
         row.world_intel_ucdp_minor_conflicts_json = minor
-        row.world_intel_ucdp_source = (
-            str(getattr(row, "world_intel_ucdp_source", "") or "").strip()
-            or "static_seed"
-        )
+        row.world_intel_ucdp_source = str(getattr(row, "world_intel_ucdp_source", "") or "").strip() or "static_seed"
         await session.commit()
     source = str(getattr(row, "world_intel_ucdp_source", "") or "").strip() or "db"
     year = getattr(row, "world_intel_ucdp_year", None)
@@ -156,9 +145,7 @@ async def load_ucdp_conflict_lists_from_db(session: AsyncSession) -> dict[str, A
         "active_wars": len(active),
         "minor_conflicts": len(minor),
         "last_synced_at": (
-            row.world_intel_ucdp_synced_at.isoformat()
-            if isinstance(row.world_intel_ucdp_synced_at, datetime)
-            else None
+            row.world_intel_ucdp_synced_at.isoformat() if isinstance(row.world_intel_ucdp_synced_at, datetime) else None
         ),
     }
 
@@ -179,13 +166,9 @@ async def sync_ucdp_conflict_lists(
     due = force or not (existing_active or existing_minor)
     if not due and enabled and isinstance(last_sync, datetime):
         last_sync_utc = (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
-        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(
-            hours=interval_hours
-        )
+        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(hours=interval_hours)
 
     if not due:
         source = str(getattr(row, "world_intel_ucdp_source", "") or "").strip() or "db"
@@ -283,7 +266,5 @@ async def get_ucdp_conflict_source_status(session: AsyncSession) -> dict[str, An
         "minor_conflicts": len(minor),
         "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
         "sync_enabled": bool(getattr(settings, "WORLD_INTEL_UCDP_SYNC_ENABLED", True)),
-        "sync_interval_hours": int(
-            max(1, getattr(settings, "WORLD_INTEL_UCDP_SYNC_HOURS", 24) or 24)
-        ),
+        "sync_interval_hours": int(max(1, getattr(settings, "WORLD_INTEL_UCDP_SYNC_HOURS", 24) or 24)),
     }

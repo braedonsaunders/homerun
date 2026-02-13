@@ -56,9 +56,7 @@ async def _load_config_from_db() -> ProxyConfig:
         from models.database import AsyncSessionLocal, AppSettings
 
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(AppSettings).where(AppSettings.id == "default")
-            )
+            result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
             row = result.scalar_one_or_none()
             if row is None:
                 _cached_config = ProxyConfig()
@@ -67,13 +65,9 @@ async def _load_config_from_db() -> ProxyConfig:
             _cached_config = ProxyConfig(
                 enabled=bool(row.trading_proxy_enabled),
                 proxy_url=decrypt_secret(row.trading_proxy_url) or None,
-                verify_ssl=row.trading_proxy_verify_ssl
-                if row.trading_proxy_verify_ssl is not None
-                else True,
+                verify_ssl=row.trading_proxy_verify_ssl if row.trading_proxy_verify_ssl is not None else True,
                 timeout=row.trading_proxy_timeout or 30.0,
-                require_vpn=row.trading_proxy_require_vpn
-                if row.trading_proxy_require_vpn is not None
-                else True,
+                require_vpn=row.trading_proxy_require_vpn if row.trading_proxy_require_vpn is not None else True,
             )
             return _cached_config
     except Exception as e:
@@ -198,9 +192,7 @@ def patch_clob_client_proxy() -> bool:
         return True
 
     except ImportError:
-        logger.warning(
-            "py-clob-client not installed, cannot patch HTTP client for proxy"
-        )
+        logger.warning("py-clob-client not installed, cannot patch HTTP client for proxy")
         return False
     except Exception as e:
         logger.error(f"Failed to patch CLOB client proxy: {e}")

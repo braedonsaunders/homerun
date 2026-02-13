@@ -27,8 +27,7 @@ class StrategyDecision:
 class TraderStrategy(Protocol):
     key: str
 
-    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
-        ...
+    def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision: ...
 
 
 class BaseTraderStrategy:

@@ -103,9 +103,7 @@ class ParallelExecutor:
         self.retry_failed_legs = retry_failed_legs
         self.max_retries = max_retries
 
-    async def execute(
-        self, legs: list[ExecutionLeg], opportunity_id: Optional[str] = None
-    ) -> ParallelExecutionResult:
+    async def execute(self, legs: list[ExecutionLeg], opportunity_id: Optional[str] = None) -> ParallelExecutionResult:
         """
         Execute all legs in parallel.
 
@@ -139,10 +137,7 @@ class ParallelExecutor:
             logger.error(f"Leg validation failed: {validation_errors}")
             return ParallelExecutionResult(
                 status=ExecutionStatus.FAILED,
-                legs=[
-                    LegResult(leg=leg, success=False, error=err)
-                    for leg, err in zip(legs, validation_errors)
-                ],
+                legs=[LegResult(leg=leg, success=False, error=err) for leg, err in zip(legs, validation_errors)],
                 total_latency_ms=(time.perf_counter() - start_time) * 1000,
                 successful_legs=0,
                 failed_legs=len(legs),
@@ -164,9 +159,7 @@ class ParallelExecutor:
             logger.error(f"Parallel execution timed out after {self.max_latency_ms}ms")
             return ParallelExecutionResult(
                 status=ExecutionStatus.TIMEOUT,
-                legs=[
-                    LegResult(leg=leg, success=False, error="Timeout") for leg in legs
-                ],
+                legs=[LegResult(leg=leg, success=False, error="Timeout") for leg in legs],
                 total_latency_ms=self.max_latency_ms,
                 successful_legs=0,
                 failed_legs=len(legs),
@@ -182,25 +175,17 @@ class ParallelExecutor:
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                leg_results.append(
-                    LegResult(leg=legs[i], success=False, error=str(result))
-                )
+                leg_results.append(LegResult(leg=legs[i], success=False, error=str(result)))
                 failed += 1
             elif isinstance(result, LegResult):
                 leg_results.append(result)
                 if result.success:
                     successful += 1
-                    total_cost += (
-                        result.fill_price * result.fill_size
-                        if result.fill_price
-                        else legs[i].size_usd
-                    )
+                    total_cost += result.fill_price * result.fill_size if result.fill_price else legs[i].size_usd
                 else:
                     failed += 1
             else:
-                leg_results.append(
-                    LegResult(leg=legs[i], success=False, error="Unknown result type")
-                )
+                leg_results.append(LegResult(leg=legs[i], success=False, error="Unknown result type"))
                 failed += 1
 
         total_latency = (time.perf_counter() - start_time) * 1000
@@ -216,10 +201,7 @@ class ParallelExecutor:
         # Exposure risk if partial execution
         exposure_risk = 0 < successful < len(legs)
         if exposure_risk:
-            logger.warning(
-                f"PARTIAL EXECUTION: {successful}/{len(legs)} legs filled. "
-                f"Position has exposure risk!"
-            )
+            logger.warning(f"PARTIAL EXECUTION: {successful}/{len(legs)} legs filled. Position has exposure risk!")
 
         return ParallelExecutionResult(
             status=status,
@@ -251,9 +233,7 @@ class ParallelExecutor:
                 errors.append(None)
         return errors
 
-    async def _execute_single_leg(
-        self, leg: ExecutionLeg, opportunity_id: Optional[str]
-    ) -> LegResult:
+    async def _execute_single_leg(self, leg: ExecutionLeg, opportunity_id: Optional[str]) -> LegResult:
         """Execute a single leg with timing."""
         start = time.perf_counter()
 
@@ -269,20 +249,14 @@ class ParallelExecutor:
                 return LegResult(
                     leg=leg,
                     success=success,
-                    order_id=getattr(result, "id", None)
-                    or getattr(result, "clob_order_id", None),
+                    order_id=getattr(result, "id", None) or getattr(result, "clob_order_id", None),
                     fill_price=getattr(result, "average_fill_price", None) or leg.price,
-                    fill_size=getattr(result, "filled_size", None)
-                    or (leg.size_usd / leg.price),
-                    error=getattr(result, "error_message", None)
-                    if not success
-                    else None,
+                    fill_size=getattr(result, "filled_size", None) or (leg.size_usd / leg.price),
+                    error=getattr(result, "error_message", None) if not success else None,
                     latency_ms=latency,
                 )
             elif isinstance(result, dict):
-                success = result.get(
-                    "success", result.get("status") in ["open", "filled"]
-                )
+                success = result.get("success", result.get("status") in ["open", "filled"])
                 return LegResult(
                     leg=leg,
                     success=success,
@@ -341,25 +315,19 @@ class ParallelExecutor:
                         token_id=filled.leg.token_id,
                         side="SELL" if filled.leg.side == "BUY" else "BUY",
                         price=filled.fill_price or filled.leg.price,  # Market price
-                        size_usd=filled.fill_size
-                        * (filled.fill_price or filled.leg.price),
+                        size_usd=filled.fill_size * (filled.fill_price or filled.leg.price),
                         market_question=filled.leg.market_question,
                     )
                 )
 
             if hedge_legs:
                 hedge_result = await self.execute(hedge_legs, f"{opportunity_id}_hedge")
-                logger.info(
-                    f"Hedge result: {hedge_result.successful_legs}/{len(hedge_legs)} "
-                    f"positions closed"
-                )
+                logger.info(f"Hedge result: {hedge_result.successful_legs}/{len(hedge_legs)} positions closed")
 
         return result
 
 
-def create_legs_from_opportunity(
-    positions: list[dict], total_size_usd: float
-) -> list[ExecutionLeg]:
+def create_legs_from_opportunity(positions: list[dict], total_size_usd: float) -> list[ExecutionLeg]:
     """
     Helper to create ExecutionLegs from opportunity positions.
 

@@ -24,11 +24,7 @@ class _DummySession:
 
 @pytest.mark.asyncio
 async def test_worker_respects_pause_without_manual_request(monkeypatch):
-    fake_ai = SimpleNamespace(
-        initialize_ai=AsyncMock(
-            return_value=SimpleNamespace(is_available=lambda: False)
-        )
-    )
+    fake_ai = SimpleNamespace(initialize_ai=AsyncMock(return_value=SimpleNamespace(is_available=lambda: False)))
     fake_feed_service = SimpleNamespace(load_from_db=AsyncMock())
     monkeypatch.setitem(sys.modules, "services.ai", fake_ai)
     monkeypatch.setitem(
@@ -64,20 +60,12 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        news_worker.shared_state, "expire_stale_news_intents", AsyncMock(return_value=0)
-    )
-    monkeypatch.setattr(
-        news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0)
-    )
+    monkeypatch.setattr(news_worker.shared_state, "expire_stale_news_intents", AsyncMock(return_value=0))
+    monkeypatch.setattr(news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0))
     run_cycle_mock = AsyncMock(return_value={"status": "completed", "findings": 0, "intents": 0, "stats": {}})
     monkeypatch.setattr(news_worker.workflow_orchestrator, "run_cycle", run_cycle_mock)
-    monkeypatch.setattr(
-        news_worker.shared_state, "try_acquire_news_lease", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr(
-        news_worker.shared_state, "release_news_lease", AsyncMock()
-    )
+    monkeypatch.setattr(news_worker.shared_state, "try_acquire_news_lease", AsyncMock(return_value=True))
+    monkeypatch.setattr(news_worker.shared_state, "release_news_lease", AsyncMock())
     monkeypatch.setattr(news_worker.shared_state, "clear_news_scan_request", AsyncMock())
     monkeypatch.setattr(
         news_worker.asyncio,
@@ -93,11 +81,7 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
-    fake_ai = SimpleNamespace(
-        initialize_ai=AsyncMock(
-            return_value=SimpleNamespace(is_available=lambda: False)
-        )
-    )
+    fake_ai = SimpleNamespace(initialize_ai=AsyncMock(return_value=SimpleNamespace(is_available=lambda: False)))
     fake_feed_service = SimpleNamespace(load_from_db=AsyncMock())
     monkeypatch.setitem(sys.modules, "services.ai", fake_ai)
     monkeypatch.setitem(
@@ -133,26 +117,14 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        news_worker.shared_state, "expire_stale_news_intents", AsyncMock(return_value=0)
-    )
-    monkeypatch.setattr(
-        news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0)
-    )
-    monkeypatch.setattr(
-        news_worker.shared_state, "list_news_intents", AsyncMock(return_value=[])
-    )
+    monkeypatch.setattr(news_worker.shared_state, "expire_stale_news_intents", AsyncMock(return_value=0))
+    monkeypatch.setattr(news_worker.shared_state, "count_pending_news_intents", AsyncMock(return_value=0))
+    monkeypatch.setattr(news_worker.shared_state, "list_news_intents", AsyncMock(return_value=[]))
     monkeypatch.setattr(news_worker, "emit_news_intent_signals", AsyncMock(return_value=0))
-    run_cycle_mock = AsyncMock(
-        return_value={"status": "completed", "findings": 1, "intents": 1, "stats": {}}
-    )
+    run_cycle_mock = AsyncMock(return_value={"status": "completed", "findings": 1, "intents": 1, "stats": {}})
     monkeypatch.setattr(news_worker.workflow_orchestrator, "run_cycle", run_cycle_mock)
-    monkeypatch.setattr(
-        news_worker.shared_state, "try_acquire_news_lease", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr(
-        news_worker.shared_state, "release_news_lease", AsyncMock()
-    )
+    monkeypatch.setattr(news_worker.shared_state, "try_acquire_news_lease", AsyncMock(return_value=True))
+    monkeypatch.setattr(news_worker.shared_state, "release_news_lease", AsyncMock())
     clear_mock = AsyncMock()
     monkeypatch.setattr(news_worker.shared_state, "clear_news_scan_request", clear_mock)
     monkeypatch.setattr(

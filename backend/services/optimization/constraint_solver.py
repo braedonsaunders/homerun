@@ -121,13 +121,9 @@ class ConstraintSolver:
             ArbitrageResult with arbitrage details
         """
         if self.solver == "cvxpy" and CVXPY_AVAILABLE:
-            return self._solve_cvxpy(
-                prices, constraint_matrix, constraint_bounds, is_equality
-            )
+            return self._solve_cvxpy(prices, constraint_matrix, constraint_bounds, is_equality)
         elif self.solver == "scipy" and SCIPY_AVAILABLE:
-            return self._solve_scipy(
-                prices, constraint_matrix, constraint_bounds, is_equality
-            )
+            return self._solve_scipy(prices, constraint_matrix, constraint_bounds, is_equality)
         else:
             return self._solve_fallback(prices, constraint_matrix, constraint_bounds)
 
@@ -253,17 +249,13 @@ class ConstraintSolver:
                 optimal_outcome=None,
                 total_cost=float(np.sum(prices)),
                 positions=[],
-                solver_status=result.message
-                if hasattr(result, "message")
-                else "unknown",
+                solver_status=result.message if hasattr(result, "message") else "unknown",
             )
 
         except Exception:
             return self._solve_fallback(prices, A, b)
 
-    def _solve_fallback(
-        self, prices: np.ndarray, A: np.ndarray, b: np.ndarray
-    ) -> ArbitrageResult:
+    def _solve_fallback(self, prices: np.ndarray, A: np.ndarray, b: np.ndarray) -> ArbitrageResult:
         """Fallback solver using simple enumeration for small problems."""
         n = len(prices)
 
@@ -316,9 +308,7 @@ class ConstraintSolver:
         positions = []
         for i in range(len(z)):
             if z[i] == 1:
-                positions.append(
-                    {"index": i, "action": "BUY", "price": float(prices[i])}
-                )
+                positions.append({"index": i, "action": "BUY", "price": float(prices[i])})
         return positions
 
     def build_constraints_from_dependencies(

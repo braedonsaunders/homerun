@@ -96,8 +96,7 @@ async def load_chokepoint_reference_from_db(session: AsyncSession) -> dict[str, 
         rows = _default_chokepoint_rows()
         row.world_intel_chokepoints_json = rows
         row.world_intel_chokepoints_source = (
-            str(getattr(row, "world_intel_chokepoints_source", "") or "").strip()
-            or "static_seed"
+            str(getattr(row, "world_intel_chokepoints_source", "") or "").strip() or "static_seed"
         )
         await session.commit()
 
@@ -120,21 +119,15 @@ async def sync_chokepoint_reference_from_portwatch(
     existing = _clean_chokepoint_rows(getattr(row, "world_intel_chokepoints_json", None))
 
     enabled = bool(getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_ENABLED", True))
-    interval_hours = int(
-        max(1, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_HOURS", 6) or 6)
-    )
+    interval_hours = int(max(1, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_HOURS", 6) or 6))
     last_sync = getattr(row, "world_intel_chokepoints_synced_at", None)
 
     due = force or not existing
     if not due and isinstance(last_sync, datetime):
         last_sync_utc = (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
-        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(
-            hours=interval_hours
-        )
+        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(hours=interval_hours)
 
     if not due:
         if existing and int(chokepoint_feed.get_health().get("count") or 0) <= 0:
@@ -213,9 +206,6 @@ async def get_chokepoint_reference_source_status(session: AsyncSession) -> dict[
         "count": len(rows),
         "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
         "sync_enabled": bool(getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_ENABLED", True)),
-        "sync_interval_hours": int(
-            max(1, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_HOURS", 6) or 6)
-        ),
+        "sync_interval_hours": int(max(1, getattr(settings, "WORLD_INTEL_CHOKEPOINTS_DB_SYNC_HOURS", 6) or 6)),
         "runtime_health": chokepoint_feed.get_health(),
     }
-

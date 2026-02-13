@@ -244,16 +244,11 @@ class NewsFeedService:
                 all_articles.extend(result)
         return all_articles
 
-    async def _fetch_google_news_rss(
-        self, query: str, max_results: int = 40
-    ) -> list[NewsArticle]:
+    async def _fetch_google_news_rss(self, query: str, max_results: int = 40) -> list[NewsArticle]:
         """Fetch articles from Google News RSS."""
         try:
             encoded = urllib.parse.quote(query)
-            url = (
-                f"https://news.google.com/rss/search"
-                f"?q={encoded}&hl=en-US&gl=US&ceid=US:en"
-            )
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
                 if resp.status_code != 200:
@@ -330,9 +325,7 @@ class NewsFeedService:
                 all_articles.extend(result)
         return all_articles
 
-    async def _fetch_gdelt_query(
-        self, query: str, max_results: int = 30
-    ) -> list[NewsArticle]:
+    async def _fetch_gdelt_query(self, query: str, max_results: int = 30) -> list[NewsArticle]:
         """Fetch from GDELT DOC 2.0 API for a single query."""
         try:
             encoded = urllib.parse.quote(query)
@@ -391,9 +384,7 @@ class NewsFeedService:
 
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 row = result.scalar_one_or_none()
         except Exception as exc:
             logger.debug("RSS config DB read failed, using defaults: %s", exc)
@@ -420,20 +411,14 @@ class NewsFeedService:
     async def _fetch_custom_rss_feeds(self, feed_rows: list[dict[str, Any]]) -> list[NewsArticle]:
         """Fetch from user-configured RSS feed URLs."""
         all_articles: list[NewsArticle] = []
-        tasks = [
-            self._fetch_single_rss(feed_info)
-            for feed_info in feed_rows
-            if bool(feed_info.get("enabled", True))
-        ]
+        tasks = [self._fetch_single_rss(feed_info) for feed_info in feed_rows if bool(feed_info.get("enabled", True))]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, list):
                 all_articles.extend(result)
         return all_articles
 
-    async def _fetch_single_rss(
-        self, feed_info: dict[str, Any], max_results: int = 20
-    ) -> list[NewsArticle]:
+    async def _fetch_single_rss(self, feed_info: dict[str, Any], max_results: int = 20) -> list[NewsArticle]:
         """Fetch from a single RSS feed URL."""
         feed_url = str(feed_info.get("url") or "").strip()
         if not feed_url:
@@ -450,17 +435,13 @@ class NewsFeedService:
                 articles: list[NewsArticle] = []
 
                 # Try both RSS and Atom formats
-                items = root.findall(".//item") or root.findall(
-                    ".//{http://www.w3.org/2005/Atom}entry"
-                )
+                items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
                 for item in items[:max_results]:
                     # RSS format
                     title = (
                         item.findtext("title", "").strip()
-                        or item.findtext(
-                            "{http://www.w3.org/2005/Atom}title", ""
-                        ).strip()
+                        or item.findtext("{http://www.w3.org/2005/Atom}title", "").strip()
                     )
                     link = item.findtext("link", "").strip()
                     if not link:
@@ -469,15 +450,11 @@ class NewsFeedService:
                             link = atom_link.get("href", "")
                     pub_date = (
                         item.findtext("pubDate", "").strip()
-                        or item.findtext(
-                            "{http://www.w3.org/2005/Atom}published", ""
-                        ).strip()
+                        or item.findtext("{http://www.w3.org/2005/Atom}published", "").strip()
                     )
                     description = (
                         item.findtext("description", "").strip()
-                        or item.findtext(
-                            "{http://www.w3.org/2005/Atom}summary", ""
-                        ).strip()
+                        or item.findtext("{http://www.w3.org/2005/Atom}summary", "").strip()
                     )
 
                     if not link or not title:
@@ -550,22 +527,26 @@ class NewsFeedService:
             persisted = 0
             async with AsyncSessionLocal() as session:
                 for a in articles:
-                    stmt = sqlite_insert(NewsArticleCache).values(
-                        article_id=a.article_id,
-                        url=a.url,
-                        title=a.title,
-                        source=a.source,
-                        feed_source=a.feed_source,
-                        category=a.category,
-                        summary=a.summary or "",
-                        published=a.published,
-                        fetched_at=a.fetched_at,
-                        embedding=a.embedding,
-                    ).on_conflict_do_update(
-                        index_elements=["article_id"],
-                        set_={
-                            "embedding": a.embedding,
-                        },
+                    stmt = (
+                        sqlite_insert(NewsArticleCache)
+                        .values(
+                            article_id=a.article_id,
+                            url=a.url,
+                            title=a.title,
+                            source=a.source,
+                            feed_source=a.feed_source,
+                            category=a.category,
+                            summary=a.summary or "",
+                            published=a.published,
+                            fetched_at=a.fetched_at,
+                            embedding=a.embedding,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["article_id"],
+                            set_={
+                                "embedding": a.embedding,
+                            },
+                        )
                     )
                     await session.execute(stmt)
                     persisted += 1
@@ -583,16 +564,10 @@ class NewsFeedService:
             from models.database import AsyncSessionLocal, NewsArticleCache
             from sqlalchemy import select
 
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                hours=settings.NEWS_ARTICLE_TTL_HOURS
-            )
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             loaded = 0
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(NewsArticleCache).where(
-                        NewsArticleCache.fetched_at >= cutoff
-                    )
-                )
+                result = await session.execute(select(NewsArticleCache).where(NewsArticleCache.fetched_at >= cutoff))
                 rows = result.scalars().all()
                 for row in rows:
                     if row.article_id in self._articles:
@@ -622,15 +597,9 @@ class NewsFeedService:
             from models.database import AsyncSessionLocal, NewsArticleCache
             from sqlalchemy import delete
 
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                hours=settings.NEWS_ARTICLE_TTL_HOURS
-            )
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.NEWS_ARTICLE_TTL_HOURS)
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    delete(NewsArticleCache).where(
-                        NewsArticleCache.fetched_at < cutoff
-                    )
-                )
+                result = await session.execute(delete(NewsArticleCache).where(NewsArticleCache.fetched_at < cutoff))
                 await session.commit()
                 count = result.rowcount
             if count:
@@ -640,9 +609,7 @@ class NewsFeedService:
             logger.warning("Failed to prune DB articles: %s", e)
             return 0
 
-    def search_articles(
-        self, query: str, max_age_hours: int = 168, limit: int = 50
-    ) -> list[NewsArticle]:
+    def search_articles(self, query: str, max_age_hours: int = 168, limit: int = 50) -> list[NewsArticle]:
         """Search articles by keyword in title / summary / category."""
         q = query.lower().strip()
         if not q:
@@ -689,11 +656,7 @@ class NewsFeedService:
         """Remove articles older than the configured TTL."""
         ttl_seconds = settings.NEWS_ARTICLE_TTL_HOURS * 3600
         cutoff = datetime.now(timezone.utc).timestamp() - ttl_seconds
-        to_remove = [
-            aid
-            for aid, article in self._articles.items()
-            if article.fetched_at.timestamp() < cutoff
-        ]
+        to_remove = [aid for aid, article in self._articles.items() if article.fetched_at.timestamp() < cutoff]
         for aid in to_remove:
             del self._articles[aid]
         if to_remove:
@@ -739,9 +702,7 @@ def _parse_gdelt_date(date_str: str) -> Optional[datetime]:
     except ValueError:
         pass
     try:
-        return datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 

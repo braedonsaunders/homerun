@@ -183,9 +183,7 @@ class NewsSentimentAnalyzer:
                 },
                 "market_impact": sentiment_result.get("market_impact", ""),
                 "key_takeaways": sentiment_result.get("key_takeaways", []),
-                "outcome_implications": sentiment_result.get(
-                    "outcome_implications", {}
-                ),
+                "outcome_implications": sentiment_result.get("outcome_implications", {}),
                 "session_id": session_id,
             }
 
@@ -237,9 +235,7 @@ class NewsSentimentAnalyzer:
 
         # Source 2: Polymarket blog / community posts (best-effort)
         if len(articles) < max_results:
-            poly_articles = await self._fetch_polymarket_news(
-                query, max_results - len(articles)
-            )
+            poly_articles = await self._fetch_polymarket_news(query, max_results - len(articles))
             articles.extend(poly_articles)
 
         # De-duplicate by URL
@@ -310,8 +306,7 @@ class NewsSentimentAnalyzer:
                     "",
                     f"MARKET CONTEXT: {market_question}",
                     "",
-                    "How do these articles affect the likelihood of the market "
-                    "question resolving YES vs NO?",
+                    "How do these articles affect the likelihood of the market question resolving YES vs NO?",
                 ]
             )
 
@@ -338,9 +333,7 @@ class NewsSentimentAnalyzer:
                 "sentiment_score": 0.0,
                 "confidence": 0.0,
                 "market_impact": f"Sentiment analysis failed: {exc}",
-                "key_takeaways": [
-                    f"Found {len(articles)} articles but could not analyze sentiment."
-                ],
+                "key_takeaways": [f"Found {len(articles)} articles but could not analyze sentiment."],
             }
 
     async def monitor_market_news(
@@ -401,10 +394,7 @@ class NewsSentimentAnalyzer:
         """
         try:
             encoded_query = urllib.parse.quote(query)
-            url = (
-                f"https://news.google.com/rss/search"
-                f"?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-            )
+            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
 
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 response = await client.get(
@@ -488,10 +478,7 @@ class NewsSentimentAnalyzer:
             # Search for Polymarket-specific news via Google News
             poly_query = f"Polymarket {query}"
             encoded = urllib.parse.quote(poly_query)
-            url = (
-                f"https://news.google.com/rss/search"
-                f"?q={encoded}&hl=en-US&gl=US&ceid=US:en"
-            )
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
 
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 response = await client.get(

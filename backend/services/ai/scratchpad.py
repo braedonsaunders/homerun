@@ -163,10 +163,7 @@ class ScratchpadService:
             The newly created entry ID (hex string).
         """
         if entry_type not in VALID_ENTRY_TYPES:
-            raise ValueError(
-                f"Invalid entry_type '{entry_type}'. "
-                f"Must be one of: {VALID_ENTRY_TYPES}"
-            )
+            raise ValueError(f"Invalid entry_type '{entry_type}'. Must be one of: {VALID_ENTRY_TYPES}")
 
         ResearchSession, ScratchpadEntry = _get_models()
         entry_id = uuid.uuid4().hex[:16]
@@ -196,28 +193,16 @@ class ScratchpadService:
 
             # Update session-level aggregates
             update_values = {
-                ResearchSession.total_input_tokens: (
-                    ResearchSession.total_input_tokens + input_tokens
-                ),
-                ResearchSession.total_output_tokens: (
-                    ResearchSession.total_output_tokens + output_tokens
-                ),
+                ResearchSession.total_input_tokens: (ResearchSession.total_input_tokens + input_tokens),
+                ResearchSession.total_output_tokens: (ResearchSession.total_output_tokens + output_tokens),
             }
 
             if entry_type == ENTRY_TYPE_THINKING:
-                update_values[ResearchSession.iterations] = (
-                    ResearchSession.iterations + 1
-                )
+                update_values[ResearchSession.iterations] = ResearchSession.iterations + 1
             elif entry_type == ENTRY_TYPE_TOOL_CALL:
-                update_values[ResearchSession.tools_called] = (
-                    ResearchSession.tools_called + 1
-                )
+                update_values[ResearchSession.tools_called] = ResearchSession.tools_called + 1
 
-            await db.execute(
-                update(ResearchSession)
-                .where(ResearchSession.id == session_id)
-                .values(update_values)
-            )
+            await db.execute(update(ResearchSession).where(ResearchSession.id == session_id).values(update_values))
 
             await db.commit()
 
@@ -254,11 +239,7 @@ class ScratchpadService:
 
         async with AsyncSessionLocal() as db:
             # Fetch started_at so we can compute duration
-            row = await db.execute(
-                select(ResearchSession.started_at).where(
-                    ResearchSession.id == session_id
-                )
-            )
+            row = await db.execute(select(ResearchSession.started_at).where(ResearchSession.id == session_id))
             started_at = row.scalar()
 
             duration = None
@@ -301,9 +282,7 @@ class ScratchpadService:
         ResearchSession, ScratchpadEntry = _get_models()
 
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(ResearchSession).where(ResearchSession.id == session_id)
-            )
+            result = await db.execute(select(ResearchSession).where(ResearchSession.id == session_id))
             session = result.scalar_one_or_none()
             if session is None:
                 return None
@@ -330,12 +309,8 @@ class ScratchpadService:
                 "total_output_tokens": session.total_output_tokens,
                 "total_cost_usd": session.total_cost_usd,
                 "model_used": session.model_used,
-                "started_at": (
-                    session.started_at.isoformat() if session.started_at else None
-                ),
-                "completed_at": (
-                    session.completed_at.isoformat() if session.completed_at else None
-                ),
+                "started_at": (session.started_at.isoformat() if session.started_at else None),
+                "completed_at": (session.completed_at.isoformat() if session.completed_at else None),
                 "duration_seconds": session.duration_seconds,
                 "entries": [self._entry_to_dict(e) for e in entries],
             }
@@ -476,11 +451,7 @@ class ScratchpadService:
                 )
 
             elif entry_type == ENTRY_TYPE_TOOL_RESULT:
-                result_content = (
-                    json.dumps(output_data)
-                    if isinstance(output_data, dict)
-                    else str(output_data)
-                )
+                result_content = json.dumps(output_data) if isinstance(output_data, dict) else str(output_data)
                 messages.append(
                     {
                         "role": "tool",
@@ -521,25 +492,17 @@ class ScratchpadService:
 
         async with AsyncSessionLocal() as db:
             # Find sessions to delete
-            result = await db.execute(
-                select(ResearchSession.id).where(ResearchSession.started_at < cutoff)
-            )
+            result = await db.execute(select(ResearchSession.id).where(ResearchSession.started_at < cutoff))
             session_ids = [row[0] for row in result.all()]
 
             if not session_ids:
                 return 0
 
             # Delete entries first (foreign key)
-            await db.execute(
-                delete(ScratchpadEntry).where(
-                    ScratchpadEntry.session_id.in_(session_ids)
-                )
-            )
+            await db.execute(delete(ScratchpadEntry).where(ScratchpadEntry.session_id.in_(session_ids)))
 
             # Delete sessions
-            await db.execute(
-                delete(ResearchSession).where(ResearchSession.id.in_(session_ids))
-            )
+            await db.execute(delete(ResearchSession).where(ResearchSession.id.in_(session_ids)))
 
             await db.commit()
 
@@ -589,11 +552,7 @@ class ScratchpadService:
             "total_output_tokens": session.total_output_tokens,
             "total_cost_usd": session.total_cost_usd,
             "model_used": session.model_used,
-            "started_at": (
-                session.started_at.isoformat() if session.started_at else None
-            ),
-            "completed_at": (
-                session.completed_at.isoformat() if session.completed_at else None
-            ),
+            "started_at": (session.started_at.isoformat() if session.started_at else None),
+            "completed_at": (session.completed_at.isoformat() if session.completed_at else None),
             "duration_seconds": session.duration_seconds,
         }

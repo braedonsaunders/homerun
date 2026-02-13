@@ -207,15 +207,11 @@ class CredentialManager:
                     return creds
             except Exception as e:
                 logger.error("Failed to derive API key", error=str(e))
-                raise RuntimeError(
-                    f"Could not generate or derive CLOB credentials: {e}"
-                )
+                raise RuntimeError(f"Could not generate or derive CLOB credentials: {e}")
 
         raise RuntimeError("Failed to obtain CLOB API credentials")
 
-    async def get_or_generate(
-        self, private_key: str, clob_url: str = "https://clob.polymarket.com"
-    ) -> ClobCredentials:
+    async def get_or_generate(self, private_key: str, clob_url: str = "https://clob.polymarket.com") -> ClobCredentials:
         """Get cached credentials or generate new ones."""
         address = self._get_wallet_address(private_key)
 
@@ -269,9 +265,7 @@ class CredentialManager:
             async with AsyncSessionLocal() as session:
                 # Deactivate old creds for this address
                 result = await session.execute(
-                    select(StoredCredential).where(
-                        StoredCredential.wallet_address == creds.wallet_address
-                    )
+                    select(StoredCredential).where(StoredCredential.wallet_address == creds.wallet_address)
                 )
                 for old in result.scalars().all():
                     old.is_active = False
@@ -295,9 +289,7 @@ class CredentialManager:
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(StoredCredential).where(
-                        StoredCredential.wallet_address == address
-                    )
+                    select(StoredCredential).where(StoredCredential.wallet_address == address)
                 )
                 for cred in result.scalars().all():
                     cred.is_active = False

@@ -52,8 +52,6 @@ class WeatherModelAdapter(ABC):
     """Forecast provider interface for weather workflow."""
 
     @abstractmethod
-    async def forecast_probability(
-        self, contract: WeatherForecastInput
-    ) -> WeatherForecastResult:
+    async def forecast_probability(self, contract: WeatherForecastInput) -> WeatherForecastResult:
         """Return GFS/ECMWF probabilities for a normalized weather contract."""
         raise NotImplementedError

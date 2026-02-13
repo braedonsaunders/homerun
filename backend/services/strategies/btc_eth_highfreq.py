@@ -143,6 +143,7 @@ _SLUG_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+
 # Polymarket crypto series definitions.
 # Each series has a unique ID on the Gamma API that returns all active events
 # in the series.  Querying /events?series_id=X&active=true&closed=false
@@ -288,13 +289,9 @@ class _CryptoMarketFetcher:
 
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.ensure_future(
-                    feed_mgr.polymarket_feed.subscribe(token_ids=token_ids)
-                )
+                asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
             else:
-                loop.run_until_complete(
-                    feed_mgr.polymarket_feed.subscribe(token_ids=token_ids)
-                )
+                loop.run_until_complete(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
             logger.debug(
                 "BtcEthHighFreq: subscribed %d crypto tokens to WS feed",
                 len(token_ids),
@@ -317,9 +314,7 @@ class _CryptoMarketFetcher:
             return False
 
         try:
-            end_ms = datetime.fromisoformat(
-                end_str.replace("Z", "+00:00")
-            ).timestamp() * 1000
+            end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
         except (ValueError, AttributeError):
             return False
 
@@ -328,9 +323,7 @@ class _CryptoMarketFetcher:
 
         if start_str:
             try:
-                start_ms = datetime.fromisoformat(
-                    start_str.replace("Z", "+00:00")
-                ).timestamp() * 1000
+                start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
                 if now_ms < start_ms:
                     return False  # Not started yet
             except (ValueError, AttributeError):
@@ -357,9 +350,7 @@ class _CryptoMarketFetcher:
             if not end_str:
                 continue
             try:
-                end_ms = datetime.fromisoformat(
-                    end_str.replace("Z", "+00:00")
-                ).timestamp() * 1000
+                end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
             except (ValueError, AttributeError):
                 continue
             if end_ms <= now_ms:
@@ -368,9 +359,7 @@ class _CryptoMarketFetcher:
             start_ms = None
             if start_str:
                 try:
-                    start_ms = datetime.fromisoformat(
-                        start_str.replace("Z", "+00:00")
-                    ).timestamp() * 1000
+                    start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
                 except (ValueError, AttributeError):
                     pass
 
@@ -400,20 +389,11 @@ class _CryptoMarketFetcher:
         seen_ids: set[str] = set()
 
         def _market_id(mkt: dict) -> str:
-            return str(
-                mkt.get("conditionId")
-                or mkt.get("condition_id")
-                or mkt.get("id", "")
-            )
+            return str(mkt.get("conditionId") or mkt.get("condition_id") or mkt.get("id", ""))
 
         try:
             series = _get_crypto_series()
-            now_iso = (
-                datetime.now(timezone.utc)
-                .replace(microsecond=0)
-                .isoformat()
-                .replace("+00:00", "Z")
-            )
+            now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             with httpx.Client(timeout=10.0) as client:
                 for series_id, asset, timeframe in series:
                     try:
@@ -434,7 +414,8 @@ class _CryptoMarketFetcher:
                         if resp.status_code != 200:
                             logger.debug(
                                 "BtcEthHighFreq: Gamma series_id=%s returned %s",
-                                series_id, resp.status_code,
+                                series_id,
+                                resp.status_code,
                             )
                             continue
 
@@ -456,14 +437,16 @@ class _CryptoMarketFetcher:
                                     except Exception as e:
                                         logger.debug(
                                             "BtcEthHighFreq: failed to parse market %s: %s",
-                                            mid, e,
+                                            mid,
+                                            e,
                                         )
 
                         time.sleep(0.05)  # Rate limit between series
                     except Exception as e:
                         logger.debug(
                             "BtcEthHighFreq: series_id=%s fetch failed: %s",
-                            series_id, e,
+                            series_id,
+                            e,
                         )
 
         except Exception as exc:
@@ -475,8 +458,7 @@ class _CryptoMarketFetcher:
 
         if all_markets:
             logger.info(
-                "BtcEthHighFreq: fetched %d live crypto markets via Gamma series API "
-                "(%s)",
+                "BtcEthHighFreq: fetched %d live crypto markets via Gamma series API (%s)",
                 len(all_markets),
                 ", ".join(f"{a} {tf}" for _, a, tf in series),
             )
@@ -629,9 +611,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
     strategy_type = StrategyType.BTC_ETH_HIGHFREQ
     name = "BTC/ETH High-Frequency"
-    description = (
-        "Dynamic high-frequency arbitrage on BTC/ETH 15-min and 1-hr binary markets"
-    )
+    description = "Dynamic high-frequency arbitrage on BTC/ETH 15-min and 1-hr binary markets"
 
     def __init__(self) -> None:
         super().__init__()
@@ -669,9 +649,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             logger.debug("BtcEthHighFreq: no BTC/ETH high-freq candidates found")
             return opportunities
 
-        logger.info(
-            f"BtcEthHighFreq: found {len(candidates)} candidate market(s) — evaluating sub-strategies"
-        )
+        logger.info(f"BtcEthHighFreq: found {len(candidates)} candidate market(s) — evaluating sub-strategies")
 
         for candidate in candidates:
             # Update price history
@@ -680,9 +658,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             # Dynamic strategy selection
             selected, all_scores = self._select_sub_strategy(candidate)
             if selected is None:
-                reasons = " | ".join(
-                    f"{s.strategy.value}: {s.reason}" for s in all_scores
-                )
+                reasons = " | ".join(f"{s.strategy.value}: {s.reason}" for s in all_scores)
                 logger.debug(
                     f"BtcEthHighFreq: no viable sub-strategy for market "
                     f"{candidate.market.id} ({candidate.asset} {candidate.timeframe}, "
@@ -691,9 +667,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 )
                 continue
 
-            scores_str = ", ".join(
-                f"{s.strategy.value}={s.score:.1f}" for s in all_scores
-            )
+            scores_str = ", ".join(f"{s.strategy.value}={s.score:.1f}" for s in all_scores)
             logger.info(
                 f"BtcEthHighFreq: market {candidate.market.id} "
                 f"({candidate.asset} {candidate.timeframe}) — "
@@ -720,9 +694,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     f"liq=${candidate.market.liquidity:.0f})"
                 )
 
-        logger.info(
-            f"BtcEthHighFreq: scan complete — {len(opportunities)} opportunity(ies) found"
-        )
+        logger.info(f"BtcEthHighFreq: scan complete — {len(opportunities)} opportunity(ies) found")
         return opportunities
 
     # ------------------------------------------------------------------
@@ -966,10 +938,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         return SubStrategyScore(
             strategy=SubStrategy.PURE_ARB,
             score=base_score,
-            reason=(
-                f"Pure arb: combined={combined:.4f}, net_profit={net_profit:.4f}, "
-                f"liquidity=${liquidity:.0f}"
-            ),
+            reason=(f"Pure arb: combined={combined:.4f}, net_profit={net_profit:.4f}, liquidity=${liquidity:.0f}"),
             params={
                 "combined_cost": combined,
                 "net_profit": net_profit,
@@ -1010,10 +979,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             return SubStrategyScore(
                 strategy=SubStrategy.DUMP_HEDGE,
                 score=0.0,
-                reason=(
-                    f"Insufficient dump: max drop {max_drop:.4f} "
-                    f"< {_dump_hedge_drop_pct()} threshold"
-                ),
+                reason=(f"Insufficient dump: max drop {max_drop:.4f} < {_dump_hedge_drop_pct()} threshold"),
             )
 
         # Profit model for up-or-down markets: these are ~50/50 binary
@@ -1030,10 +996,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             return SubStrategyScore(
                 strategy=SubStrategy.DUMP_HEDGE,
                 score=0.0,
-                reason=(
-                    f"Market effectively resolved ({dumped_side} at "
-                    f"${dumped_price:.4f} < $0.05 threshold)"
-                ),
+                reason=(f"Market effectively resolved ({dumped_side} at ${dumped_price:.4f} < $0.05 threshold)"),
             )
 
         fair_value = 0.50  # up-or-down markets are coin flips
@@ -1061,9 +1024,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         base_score += guaranteed_component * 1000.0  # strongly reward guaranteed arb
 
         # Volatility bonus: higher volatility means more dump-hedge opportunities
-        volatility = (
-            history.recent_volatility() if (history and history.has_data) else 0.0
-        )
+        volatility = history.recent_volatility() if (history and history.has_data) else 0.0
         base_score += volatility * 50.0
 
         # Liquidity matters: need to be able to fill quickly
@@ -1095,9 +1056,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
     # -- Sub-strategy C: Pre-Placed Limits scoring --
 
-    def _calculate_dynamic_limit_prices(
-        self, c: HighFreqCandidate
-    ) -> tuple[float, float]:
+    def _calculate_dynamic_limit_prices(self, c: HighFreqCandidate) -> tuple[float, float]:
         """Calculate optimal limit order prices based on current market state.
 
         Instead of fixed $0.45-$0.47, adjusts based on:
@@ -1320,9 +1279,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                 if hasattr(c.market.end_date, "timestamp"):
                     end_ts = c.market.end_date.timestamp()
                 else:
-                    end_ts = datetime.fromisoformat(
-                        end_str.replace("Z", "+00:00")
-                    ).timestamp()
+                    end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
                 remaining_secs = max(0, end_ts - time.time())
             except (ValueError, AttributeError):
                 pass
@@ -1331,15 +1288,15 @@ class BtcEthHighFreqStrategy(BaseStrategy):
 
         if remaining_min > 10:
             phase = "EARLY"
-            min_edge = 0.08       # Require 8% edge early (less predictable)
+            min_edge = 0.08  # Require 8% edge early (less predictable)
             score_multiplier = 1.0
         elif remaining_min > 5:
             phase = "MID"
-            min_edge = 0.05       # 5% edge in the middle
+            min_edge = 0.05  # 5% edge in the middle
             score_multiplier = 1.5
         else:
             phase = "LATE"
-            min_edge = 0.03       # 3% edge late (model is most accurate)
+            min_edge = 0.03  # 3% edge late (model is most accurate)
             score_multiplier = 2.0
 
         if best_edge < min_edge:
@@ -1442,9 +1399,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         positions = self._build_both_sides_positions(market, yes_price, no_price)
 
         opp = self.create_opportunity(
-            title=(
-                f"BTC/ETH HF Pure Arb: {c.asset} {c.timeframe} ({market.question[:40]})"
-            ),
+            title=(f"BTC/ETH HF Pure Arb: {c.asset} {c.timeframe} ({market.question[:40]})"),
             description=(
                 f"Pure arbitrage on {c.asset} {c.timeframe} market. "
                 f"Buy YES (${yes_price:.4f}) + NO (${no_price:.4f}) = "
@@ -1498,18 +1453,12 @@ class BtcEthHighFreqStrategy(BaseStrategy):
                     "price": dumped_price,
                     "token_id": market.clob_token_ids[token_idx],
                     "role": "primary",
-                    "note": (
-                        f"Buy dumped side ({dumped_side} dropped "
-                        f"{drop_amount:.4f} to {dumped_price:.4f})"
-                    ),
+                    "note": (f"Buy dumped side ({dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f})"),
                 },
             ]
 
         opp = self.create_opportunity(
-            title=(
-                f"BTC/ETH HF Dump-Hedge: {c.asset} {c.timeframe} "
-                f"({dumped_side} dropped to {dumped_price:.2f})"
-            ),
+            title=(f"BTC/ETH HF Dump-Hedge: {c.asset} {c.timeframe} ({dumped_side} dropped to {dumped_price:.2f})"),
             description=(
                 f"Dump-hedge on {c.asset} {c.timeframe} market. "
                 f"{dumped_side} dropped {drop_amount:.4f} to {dumped_price:.4f} — "
@@ -1532,8 +1481,7 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             self._attach_highfreq_metadata(opp, c, SubStrategy.DUMP_HEDGE, params)
             opp.risk_factors.insert(
                 0,
-                f"Directional bet: profit depends on {dumped_side} recovering "
-                f"toward fair value ($0.50)",
+                f"Directional bet: profit depends on {dumped_side} recovering toward fair value ($0.50)",
             )
         return opp
 
@@ -1586,8 +1534,8 @@ class BtcEthHighFreqStrategy(BaseStrategy):
             total_cost=target_combined,
             markets=[market],
             positions=positions,
-            min_liquidity_hard=0.0,   # New markets may have $0 liquidity
-            min_position_size=0.0,    # Limit orders, not market orders
+            min_liquidity_hard=0.0,  # New markets may have $0 liquidity
+            min_position_size=0.0,  # Limit orders, not market orders
             min_absolute_profit=0.0,  # Profit realized on fill, not now
         )
 
@@ -1650,13 +1598,10 @@ class BtcEthHighFreqStrategy(BaseStrategy):
         expected_payout = model_up if side == "UP" else (1.0 - model_up)
 
         opp = self.create_opportunity(
-            title=(
-                f"BTC/ETH HF Directional: {c.asset} {c.timeframe} "
-                f"({side} edge {edge:.1%})"
-            ),
+            title=(f"BTC/ETH HF Directional: {c.asset} {c.timeframe} ({side} edge {edge:.1%})"),
             description=(
                 f"Directional {side} bet on {c.asset} {c.timeframe} market. "
-                f"Model: {model_up:.0%} Up / {1-model_up:.0%} Down. "
+                f"Model: {model_up:.0%} Up / {1 - model_up:.0%} Down. "
                 f"Market: {params['market_up']:.1%} Up. "
                 f"Edge: {edge:.1%}. "
                 f"{'Maker order (0% fee + rebates).' if maker_mode else ''}"

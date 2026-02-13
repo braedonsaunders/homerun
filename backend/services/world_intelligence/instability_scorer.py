@@ -56,6 +56,7 @@ class CountryInstabilityScore:
 @dataclass
 class _HistoricalScore:
     """Internal: daily score snapshot for trend calculation."""
+
     date: datetime
     score: float
 
@@ -118,11 +119,7 @@ class InstabilityScorer:
 
         Weighted: civilian violence (5x), explosions (4x), battles (3x).
         """
-        weighted = (
-            civilian_violence_count * 5
-            + explosions_count * 4
-            + battles_count * 3
-        )
+        weighted = civilian_violence_count * 5 + explosions_count * 4 + battles_count * 3
         if weighted <= 0:
             return 0.0
         return min(100.0, 25.0 * math.log1p(weighted))
@@ -179,9 +176,7 @@ class InstabilityScorer:
 
     def _prune_history(self, iso3: str) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=_HISTORY_MAX_DAYS)
-        self._history[iso3] = [
-            h for h in self._history[iso3] if h.date >= cutoff
-        ]
+        self._history[iso3] = [h for h in self._history[iso3] if h.date >= cutoff]
 
     # -- Public API ----------------------------------------------------------
 
@@ -282,12 +277,7 @@ class InstabilityScorer:
             information = self._information_component(articles_per_hour)
 
             # Weighted event score
-            event_score = (
-                unrest * 0.25
-                + conflict_score * 0.30
-                + security * 0.20
-                + information * 0.25
-            )
+            event_score = unrest * 0.25 + conflict_score * 0.30 + security * 0.20 + information * 0.25
 
             # Apply regime multiplier to event_score
             event_score = min(100.0, event_score * multiplier)
@@ -305,29 +295,37 @@ class InstabilityScorer:
 
             contributing: list[dict[str, Any]] = []
             if protest_count + riot_count > 0:
-                contributing.append({
-                    "type": "unrest",
-                    "detail": f"{protest_count} protests, {riot_count} riots",
-                    "sub_score": round(unrest, 1),
-                })
+                contributing.append(
+                    {
+                        "type": "unrest",
+                        "detail": f"{protest_count} protests, {riot_count} riots",
+                        "sub_score": round(unrest, 1),
+                    }
+                )
             if civilian_v + explosions + battles > 0:
-                contributing.append({
-                    "type": "conflict",
-                    "detail": f"{civilian_v} civ, {explosions} exp, {battles} bat",
-                    "sub_score": round(conflict_score, 1),
-                })
+                contributing.append(
+                    {
+                        "type": "conflict",
+                        "detail": f"{civilian_v} civ, {explosions} exp, {battles} bat",
+                        "sub_score": round(conflict_score, 1),
+                    }
+                )
             if flights + vessels > 0:
-                contributing.append({
-                    "type": "security",
-                    "detail": f"{flights} flights, {vessels} vessels",
-                    "sub_score": round(security, 1),
-                })
+                contributing.append(
+                    {
+                        "type": "security",
+                        "detail": f"{flights} flights, {vessels} vessels",
+                        "sub_score": round(security, 1),
+                    }
+                )
             if articles_per_hour > 0:
-                contributing.append({
-                    "type": "information",
-                    "detail": f"{articles_per_hour:.1f} articles/hr",
-                    "sub_score": round(information, 1),
-                })
+                contributing.append(
+                    {
+                        "type": "information",
+                        "detail": f"{articles_per_hour:.1f} articles/hr",
+                        "sub_score": round(information, 1),
+                    }
+                )
 
             trend = self._compute_trend(iso3, score)
             change_24h, change_7d = self._compute_changes(iso3, score)
@@ -351,9 +349,7 @@ class InstabilityScorer:
             )
 
             self._scores[iso3] = result
-            self._history[iso3].append(
-                _HistoricalScore(date=datetime.now(timezone.utc), score=score)
-            )
+            self._history[iso3].append(_HistoricalScore(date=datetime.now(timezone.utc), score=score))
             self._prune_history(iso3)
             results[iso3] = result
 
@@ -389,12 +385,14 @@ class InstabilityScorer:
         for iso3, score_obj in self._scores.items():
             delta = score_obj.change_24h if timeframe_hours <= 24 else score_obj.change_7d
             if abs(delta) > 1.0:
-                changes.append({
-                    "country": iso3,
-                    "score": score_obj.score,
-                    "change": delta,
-                    "trend": score_obj.trend,
-                })
+                changes.append(
+                    {
+                        "country": iso3,
+                        "score": score_obj.score,
+                        "change": delta,
+                        "trend": score_obj.trend,
+                    }
+                )
         return sorted(changes, key=lambda c: abs(c["change"]), reverse=True)
 
 

@@ -62,23 +62,16 @@ class LiveMarketDetector:
                 # A market is "live" if it has active orderbook AND
                 # the condition has end_date_iso in the near future
                 # or if the event is flagged as happening now
-                is_live_result = bool(
-                    data.get("active", False) and data.get("accepting_orders", False)
-                )
+                is_live_result = bool(data.get("active", False) and data.get("accepting_orders", False))
                 # Check for live sports/events indicators
                 description = str(data.get("description", "")).lower()
-                if any(
-                    kw in description
-                    for kw in ["live", "in-play", "in progress", "happening now"]
-                ):
+                if any(kw in description for kw in ["live", "in-play", "in progress", "happening now"]):
                     is_live_result = True
         except Exception as e:
             logger.error("Failed to check live status", token_id=token_id, error=str(e))
 
         gtd_secs = LIVE_GTD_SECONDS if is_live_result else NON_LIVE_GTD_SECONDS
-        cache_ttl = (
-            LIVE_CACHE_TTL_SECONDS if is_live_result else NON_LIVE_CACHE_TTL_SECONDS
-        )
+        cache_ttl = LIVE_CACHE_TTL_SECONDS if is_live_result else NON_LIVE_CACHE_TTL_SECONDS
 
         status = LiveStatus(
             token_id=token_id,
@@ -112,9 +105,7 @@ class LiveMarketDetector:
 
     def get_cache_stats(self) -> dict:
         now = utcnow()
-        live_count = sum(
-            1 for e in self._cache.values() if e.status.is_live and e.expires_at > now
-        )
+        live_count = sum(1 for e in self._cache.values() if e.status.is_live and e.expires_at > now)
         total = sum(1 for e in self._cache.values() if e.expires_at > now)
         return {
             "total_cached": total,
@@ -128,9 +119,7 @@ class LiveMarketDetector:
                 from sqlalchemy import select
 
                 result = await session.execute(
-                    select(MarketLiveStatus).where(
-                        MarketLiveStatus.token_id == status.token_id
-                    )
+                    select(MarketLiveStatus).where(MarketLiveStatus.token_id == status.token_id)
                 )
                 existing = result.scalar_one_or_none()
                 if existing:

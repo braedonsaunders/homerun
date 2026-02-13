@@ -48,27 +48,17 @@ async def create_simulation_account(request: CreateAccountRequest):
 @simulation_router.get("/accounts")
 async def list_simulation_accounts():
     """List all simulation accounts with full stats"""
-    accounts_with_positions = (
-        await simulation_service.get_all_accounts_with_positions()
-    )
+    accounts_with_positions = await simulation_service.get_all_accounts_with_positions()
     result = []
     for acc, positions in accounts_with_positions:
-        roi = (
-            (acc.current_capital - acc.initial_capital) / acc.initial_capital * 100
-            if acc.initial_capital > 0
-            else 0
-        )
-        win_rate = (
-            acc.winning_trades / acc.total_trades * 100 if acc.total_trades > 0 else 0
-        )
+        roi = (acc.current_capital - acc.initial_capital) / acc.initial_capital * 100 if acc.initial_capital > 0 else 0
+        win_rate = acc.winning_trades / acc.total_trades * 100 if acc.total_trades > 0 else 0
         # Calculate unrealized P&L from open positions
         unrealized_pnl = sum(p.unrealized_pnl for p in positions)
         # Book value = sum of entry costs of open positions
         book_value = sum(p.entry_cost for p in positions)
         # Market value = sum of current value of open positions
-        market_value = sum(
-            p.quantity * (p.current_price or p.entry_price) for p in positions
-        )
+        market_value = sum(p.quantity * (p.current_price or p.entry_price) for p in positions)
         result.append(
             {
                 "id": acc.id,
@@ -136,9 +126,7 @@ async def get_account_positions(account_id: str):
             "id": pos.id,
             "market_id": pos.market_id,
             "market_slug": market_info_by_id.get(pos.market_id, {}).get("slug", ""),
-            "event_slug": market_info_by_id.get(pos.market_id, {}).get(
-                "event_slug", ""
-            ),
+            "event_slug": market_info_by_id.get(pos.market_id, {}).get("event_slug", ""),
             "market_question": pos.market_question,
             "token_id": pos.token_id,
             "side": pos.side.value,
@@ -233,9 +221,7 @@ async def get_equity_history(account_id: str):
 
     # Calculate profit factor
     gains = sum(t.actual_pnl for t in trades if t.actual_pnl and t.actual_pnl > 0)
-    losses_abs = abs(
-        sum(t.actual_pnl for t in trades if t.actual_pnl and t.actual_pnl < 0)
-    )
+    losses_abs = abs(sum(t.actual_pnl for t in trades if t.actual_pnl and t.actual_pnl < 0))
     profit_factor = gains / losses_abs if losses_abs > 0 else 0
 
     # Best/worst trades
@@ -248,9 +234,7 @@ async def get_equity_history(account_id: str):
     # Unrealized P&L
     unrealized_pnl = sum(p.unrealized_pnl for p in positions)
     book_value = sum(p.entry_cost for p in positions)
-    market_value = sum(
-        p.quantity * (p.current_price or p.entry_price) for p in positions
-    )
+    market_value = sum(p.quantity * (p.current_price or p.entry_price) for p in positions)
 
     return {
         "account_id": account_id,
@@ -276,12 +260,8 @@ async def get_equity_history(account_id: str):
             "worst_trade": worst_trade,
             "avg_win": avg_win,
             "avg_loss": avg_loss,
-            "win_rate": account.winning_trades / account.total_trades * 100
-            if account.total_trades > 0
-            else 0,
-            "roi_percent": (account.current_capital - account.initial_capital)
-            / account.initial_capital
-            * 100
+            "win_rate": account.winning_trades / account.total_trades * 100 if account.total_trades > 0 else 0,
+            "roi_percent": (account.current_capital - account.initial_capital) / account.initial_capital * 100
             if account.initial_capital > 0
             else 0,
         },
@@ -289,9 +269,7 @@ async def get_equity_history(account_id: str):
 
 
 @simulation_router.get("/accounts/{account_id}/trades")
-async def get_account_trades(
-    account_id: str, limit: int = Query(default=50, ge=1, le=500)
-):
+async def get_account_trades(account_id: str, limit: int = Query(default=50, ge=1, le=500)):
     """Get trade history for a simulation account"""
     trades = await simulation_service.get_trade_history(account_id, limit)
     return [
@@ -327,14 +305,10 @@ async def execute_opportunity(
     from services import shared_state
 
     opportunities = await shared_state.get_opportunities_from_db(session, None)
-    opportunity = next(
-        (o for o in opportunities if o.id == request.opportunity_id), None
-    )
+    opportunity = next((o for o in opportunities if o.id == request.opportunity_id), None)
 
     if not opportunity:
-        raise HTTPException(
-            status_code=404, detail=f"Opportunity not found: {request.opportunity_id}"
-        )
+        raise HTTPException(status_code=404, detail=f"Opportunity not found: {request.opportunity_id}")
 
     try:
         trade = await simulation_service.execute_opportunity(
@@ -364,9 +338,7 @@ async def resolve_trade(
 ):
     """Manually resolve a simulated trade (for testing)"""
     try:
-        trade = await simulation_service.resolve_trade(
-            trade_id=trade_id, winning_outcome=winning_outcome
-        )
+        trade = await simulation_service.resolve_trade(trade_id=trade_id, winning_outcome=winning_outcome)
 
         return {
             "trade_id": trade.id,
@@ -418,7 +390,5 @@ async def get_account_performance(account_id: str):
         "avg_loss": avg_loss,
         "profit_factor": abs(sum(profits) / sum(losses)) if losses else 0,
         "max_drawdown": max_drawdown,
-        "max_drawdown_pct": (max_drawdown / stats["initial_capital"]) * 100
-        if stats["initial_capital"] > 0
-        else 0,
+        "max_drawdown_pct": (max_drawdown / stats["initial_capital"]) * 100 if stats["initial_capital"] > 0 else 0,
     }

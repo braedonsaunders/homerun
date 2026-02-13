@@ -136,9 +136,7 @@ class PriceChaserService:
             return (max(0.01, min(0.99, original_price)), order_type)
 
         # How many chase increments to apply
-        chase_steps = (
-            attempt if self.config.chase_on_first_retry else max(0, attempt - 1)
-        )
+        chase_steps = attempt if self.config.chase_on_first_retry else max(0, attempt - 1)
         raw_adjustment = chase_steps * self.config.price_increment_per_retry
 
         # Cap at max_total_chase

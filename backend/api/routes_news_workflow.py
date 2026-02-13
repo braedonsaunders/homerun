@@ -130,11 +130,7 @@ def _build_supporting_articles_from_finding(
         url = str(ref.get("url") or "").strip()
         if not title and not url:
             continue
-        key = (
-            str(ref.get("article_id") or "").strip()
-            or url
-            or title.lower()
-        )
+        key = str(ref.get("article_id") or "").strip() or url or title.lower()
         if not key or key in seen:
             continue
         seen.add(key)
@@ -202,9 +198,7 @@ def _normalize_history_points(raw_points: object) -> list[dict[str, float]]:
 async def _load_scanner_market_history(
     session: AsyncSession,
 ) -> dict[str, list[dict[str, float]]]:
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))
     row = result.scalar_one_or_none()
     if row is None or not isinstance(row.market_history_json, dict):
         return {}
@@ -229,11 +223,7 @@ def _build_finding_market_snapshot(
     yes_from_history, no_from_history = _extract_yes_no_from_history(history)
 
     fallback_yes = _safe_float(finding.market_price)
-    fallback_no = (
-        float(1.0 - fallback_yes)
-        if fallback_yes is not None and 0.0 <= fallback_yes <= 1.0
-        else None
-    )
+    fallback_no = float(1.0 - fallback_yes) if fallback_yes is not None and 0.0 <= fallback_yes <= 1.0 else None
 
     current_yes = yes_from_history if yes_from_history is not None else fallback_yes
     current_no = no_from_history if no_from_history is not None else fallback_no
@@ -318,15 +308,9 @@ async def _build_status_payload(session: AsyncSession) -> dict:
 
     return {
         "running": bool(status.get("running", False)),
-        "enabled": bool(control.get("is_enabled", True)) and bool(
-            status.get("enabled", True)
-        ),
+        "enabled": bool(control.get("is_enabled", True)) and bool(status.get("enabled", True)),
         "paused": bool(control.get("is_paused", False)),
-        "interval_seconds": int(
-            control.get("scan_interval_seconds")
-            or status.get("interval_seconds")
-            or 120
-        ),
+        "interval_seconds": int(control.get("scan_interval_seconds") or status.get("interval_seconds") or 120),
         "last_scan": status.get("last_scan"),
         "next_scan": status.get("next_scan"),
         "current_activity": status.get("current_activity"),
@@ -335,9 +319,7 @@ async def _build_status_payload(session: AsyncSession) -> dict:
         "budget_remaining": status.get("budget_remaining"),
         "pending_intents": pending,
         "requested_scan_at": (
-            _to_iso_utc_z(control.get("requested_scan_at"))
-            if control.get("requested_scan_at")
-            else None
+            _to_iso_utc_z(control.get("requested_scan_at")) if control.get("requested_scan_at") else None
         ),
         "stats": stats,
     }
@@ -387,9 +369,7 @@ async def set_workflow_interval(
     session: AsyncSession = Depends(get_db_session),
 ):
     await shared_state.set_news_interval(session, interval_seconds)
-    await shared_state.update_news_settings(
-        session, {"scan_interval_seconds": interval_seconds}
-    )
+    await shared_state.update_news_settings(session, {"scan_interval_seconds": interval_seconds})
     return {"status": "updated", **await _build_status_payload(session)}
 
 
@@ -397,9 +377,7 @@ async def set_workflow_interval(
 async def get_findings(
     min_edge: float = Query(0.0, ge=0, description="Minimum edge %"),
     actionable_only: bool = Query(False, description="Only actionable findings"),
-    include_debug_rejections: bool = Query(
-        False, description="Include non-actionable debug rejection rows"
-    ),
+    include_debug_rejections: bool = Query(False, description="Include non-actionable debug rejection rows"),
     max_age_hours: int = Query(24, ge=1, le=336, description="Max age in hours"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -433,21 +411,15 @@ async def get_findings(
     article_cache_by_id: dict[str, NewsArticleCache] = {}
     if article_ids_needed:
         article_result = await session.execute(
-            select(NewsArticleCache).where(
-                NewsArticleCache.article_id.in_(list(article_ids_needed))
-            )
+            select(NewsArticleCache).where(NewsArticleCache.article_id.in_(list(article_ids_needed)))
         )
         cached_rows = article_result.scalars().all()
-        article_cache_by_id = {
-            row.article_id: row for row in cached_rows if row.article_id
-        }
+        article_cache_by_id = {row.article_id: row for row in cached_rows if row.article_id}
     market_history = await _load_scanner_market_history(session)
 
     findings = []
     for r in rows:
-        supporting_articles = _build_supporting_articles_from_finding(
-            r, article_cache_by_id=article_cache_by_id
-        )
+        supporting_articles = _build_supporting_articles_from_finding(r, article_cache_by_id=article_cache_by_id)
         market_snapshot = _build_finding_market_snapshot(r, market_history)
         findings.append(
             {
@@ -499,9 +471,7 @@ async def get_intents(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get trade intents."""
-    rows = await shared_state.list_news_intents(
-        session, status_filter=status_filter, limit=limit
-    )
+    rows = await shared_state.list_news_intents(session, status_filter=status_filter, limit=limit)
 
     finding_ids = [r.finding_id for r in rows if r.finding_id]
     finding_by_id: dict[str, NewsWorkflowFinding] = {}
@@ -516,21 +486,15 @@ async def get_intents(
         article_ids_needed = _collect_cluster_article_ids(findings)
         if article_ids_needed:
             article_result = await session.execute(
-                select(NewsArticleCache).where(
-                    NewsArticleCache.article_id.in_(list(article_ids_needed))
-                )
+                select(NewsArticleCache).where(NewsArticleCache.article_id.in_(list(article_ids_needed)))
             )
             cached_rows = article_result.scalars().all()
-            article_cache_by_id = {
-                row.article_id: row for row in cached_rows if row.article_id
-            }
+            article_cache_by_id = {row.article_id: row for row in cached_rows if row.article_id}
 
     intents = []
     for r in rows:
         metadata = r.metadata_json if isinstance(r.metadata_json, dict) else {}
-        supporting_articles = metadata.get(
-            "supporting_articles"
-        ) or _build_supporting_articles_from_finding(
+        supporting_articles = metadata.get("supporting_articles") or _build_supporting_articles_from_finding(
             finding_by_id.get(r.finding_id),
             article_cache_by_id=article_cache_by_id,
         )
@@ -564,9 +528,7 @@ async def get_intents(
 @router.post("/news-workflow/intents/{intent_id}/skip")
 async def skip_intent(intent_id: str, session: AsyncSession = Depends(get_db_session)):
     """Manually skip a pending intent."""
-    intent_result = await session.execute(
-        select(NewsTradeIntent).where(NewsTradeIntent.id == intent_id)
-    )
+    intent_result = await session.execute(select(NewsTradeIntent).where(NewsTradeIntent.id == intent_id))
     intent = intent_result.scalar_one_or_none()
     if intent is None:
         raise HTTPException(status_code=404, detail="Intent not found")
@@ -608,9 +570,7 @@ async def update_workflow_settings(
         settings_payload = await shared_state.update_news_settings(session, updates)
 
         if "scan_interval_seconds" in updates:
-            await shared_state.set_news_interval(
-                session, int(updates["scan_interval_seconds"])
-            )
+            await shared_state.set_news_interval(session, int(updates["scan_interval_seconds"]))
 
         return {"status": "success", "settings": settings_payload}
     except Exception as e:

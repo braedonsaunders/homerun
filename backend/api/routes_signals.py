@@ -73,9 +73,7 @@ async def get_signal_stats(session: AsyncSession = Depends(get_db_session)):
     snapshots = await refresh_trade_signal_snapshots(session)
 
     rows = (
-        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())))
-        .scalars()
-        .all()
+        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc()))).scalars().all()
     )
 
     totals = {

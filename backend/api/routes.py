@@ -100,9 +100,7 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
         # Verify plugin exists and is enabled
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(StrategyPlugin).where(
-                    StrategyPlugin.slug == slug, StrategyPlugin.enabled
-                )
+                select(StrategyPlugin).where(StrategyPlugin.slug == slug, StrategyPlugin.enabled)
             )
             plugin = result.scalar_one_or_none()
         if plugin:
@@ -134,9 +132,7 @@ async def get_opportunities(
     ),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
-    category: Optional[str] = Query(
-        None, description="Filter by category (e.g., politics, sports, crypto)"
-    ),
+    category: Optional[str] = Query(None, description="Filter by category (e.g., politics, sports, crypto)"),
     sort_by: Optional[str] = Query(
         None,
         description="Sort field: ai_score (default), roi, profit, liquidity, risk",
@@ -163,9 +159,7 @@ async def get_opportunities(
 
     # Exclude a specific strategy if requested
     if exclude_strategy:
-        opportunities = [
-            opp for opp in opportunities if opp.strategy != exclude_strategy
-        ]
+        opportunities = [opp for opp in opportunities if opp.strategy != exclude_strategy]
 
     # Apply search filter if provided
     if search:
@@ -208,8 +202,7 @@ async def get_opportunities(
         # ROI sort, but deprioritize AI skip recommendations
         opportunities.sort(
             key=lambda o: (
-                o.ai_analysis is not None
-                and o.ai_analysis.recommendation in ("skip", "strong_skip"),
+                o.ai_analysis is not None and o.ai_analysis.recommendation in ("skip", "strong_skip"),
                 -o.roi_percent if reverse else o.roi_percent,
             ),
         )
@@ -227,9 +220,7 @@ async def get_opportunities(
 
 @router.get("/opportunities/search-polymarket")
 async def search_polymarket_opportunities(
-    q: str = Query(
-        ..., min_length=1, description="Search query for Polymarket and Kalshi markets"
-    ),
+    q: str = Query(..., min_length=1, description="Search query for Polymarket and Kalshi markets"),
     limit: int = Query(50, ge=1, le=100, description="Maximum results to return"),
 ):
     """
@@ -245,9 +236,7 @@ async def search_polymarket_opportunities(
         # Search Polymarket markets directly (fastest) and Kalshi concurrently
         poly_task = polymarket_client.search_markets(q, limit=limit)
         kalshi_task = kalshi_client.search_events(q, limit=limit)
-        poly_markets, kalshi_events = await asyncio.gather(
-            poly_task, kalshi_task, return_exceptions=True
-        )
+        poly_markets, kalshi_events = await asyncio.gather(poly_task, kalshi_task, return_exceptions=True)
 
         # Handle errors gracefully
         if isinstance(poly_markets, BaseException):
@@ -257,7 +246,7 @@ async def search_polymarket_opportunities(
 
         # Collect Kalshi markets from events
         kalshi_markets = []
-        for event in (kalshi_events or []):
+        for event in kalshi_events or []:
             kalshi_markets.extend(event.markets)
 
         all_markets = list(poly_markets) + kalshi_markets
@@ -265,7 +254,8 @@ async def search_polymarket_opportunities(
         # Filter out expired markets
         now = datetime.now(timezone.utc)
         all_markets = [
-            m for m in all_markets
+            m
+            for m in all_markets
             if bool(getattr(m, "active", True))
             and not bool(getattr(m, "closed", False))
             and (m.end_date is None or m.end_date > now)
@@ -278,10 +268,7 @@ async def search_polymarket_opportunities(
         # including GTA VI markets).
         q_lower = q.lower()
         q_words = q_lower.split()
-        all_markets = [
-            m for m in all_markets
-            if any(w in m.question.lower() for w in q_words)
-        ]
+        all_markets = [m for m in all_markets if any(w in m.question.lower() for w in q_words)]
 
         if not all_markets:
             from fastapi.responses import JSONResponse
@@ -318,9 +305,7 @@ async def search_polymarket_opportunities(
                         "id": f"search-{mid}",
                         "stable_id": f"search-{mid}",
                         "title": market.question,
-                        "description": (
-                            f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}"
-                        ),
+                        "description": (f"{platform.title()} market — Yes {yes_price:.0%} / No {no_price:.0%}"),
                         "event_title": market.question,
                         "event_slug": event_slug,
                         "strategy": "search",
@@ -337,12 +322,8 @@ async def search_polymarket_opportunities(
                         "max_position_size": 0.0,
                         "category": category,
                         "detected_at": datetime.now(timezone.utc).isoformat(),
-                        "expires_at": (
-                            market.end_date.isoformat() if market.end_date else None
-                        ),
-                        "resolution_date": (
-                            market.end_date.isoformat() if market.end_date else None
-                        ),
+                        "expires_at": (market.end_date.isoformat() if market.end_date else None),
+                        "resolution_date": (market.end_date.isoformat() if market.end_date else None),
                         "platform": platform,
                         "positions_to_take": [],
                         "markets": [
@@ -528,9 +509,7 @@ async def clear_opportunities(session: AsyncSession = Depends(get_db_session)):
 @router.post("/opportunities/cleanup")
 async def cleanup_opportunities(
     session: AsyncSession = Depends(get_db_session),
-    remove_expired: bool = Query(
-        True, description="Remove opportunities past resolution date"
-    ),
+    remove_expired: bool = Query(True, description="Remove opportunities past resolution date"),
     max_age_minutes: Optional[int] = Query(
         None, ge=1, le=1440, description="Remove opportunities older than X minutes"
     ),
@@ -581,9 +560,7 @@ async def get_wallet_positions(address: str, include_prices: bool = True):
     """Get current positions for a wallet with optional current market prices"""
     try:
         if include_prices:
-            positions = await polymarket_client.get_wallet_positions_with_prices(
-                address
-            )
+            positions = await polymarket_client.get_wallet_positions_with_prices(address)
         else:
             positions = await polymarket_client.get_wallet_positions(address)
         return {"address": address, "positions": positions}
@@ -614,9 +591,7 @@ async def get_wallet_trades(address: str, limit: int = 100):
 @router.get("/wallets/recent-trades/all")
 async def get_all_recent_trades(
     limit: int = Query(100, ge=1, le=500, description="Maximum trades to return"),
-    hours: int = Query(
-        24, ge=1, le=168, description="Only show trades from last N hours"
-    ),
+    hours: int = Query(24, ge=1, le=168, description="Only show trades from last N hours"),
 ):
     """
     Get recent trades from all tracked wallets, aggregated and sorted by timestamp.
@@ -653,9 +628,7 @@ async def get_all_recent_trades(
                             trade_time = datetime.fromtimestamp(trade_time_str)
                         elif "T" in str(trade_time_str) or "-" in str(trade_time_str):
                             trade_time = datetime.fromisoformat(
-                                str(trade_time_str)
-                                .replace("Z", "+00:00")
-                                .replace("+00:00", "")
+                                str(trade_time_str).replace("Z", "+00:00").replace("+00:00", "")
                             )
                         else:
                             trade_time = datetime.fromtimestamp(float(trade_time_str))
@@ -684,25 +657,15 @@ async def get_all_recent_trades(
             ts = t.get("timestamp_iso", "")
             if ts:
                 try:
-                    return datetime.fromisoformat(
-                        ts.replace("Z", "+00:00").replace("+00:00", "")
-                    )
+                    return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
                 except (ValueError, TypeError):
                     pass
             # Fallback to raw timestamp fields
-            raw = (
-                t.get("match_time")
-                or t.get("timestamp")
-                or t.get("time")
-                or t.get("created_at")
-                or ""
-            )
+            raw = t.get("match_time") or t.get("timestamp") or t.get("time") or t.get("created_at") or ""
             if isinstance(raw, str) and raw:
                 try:
                     if "T" in raw or "-" in raw:
-                        return datetime.fromisoformat(
-                            raw.replace("Z", "+00:00").replace("+00:00", "")
-                        )
+                        return datetime.fromisoformat(raw.replace("Z", "+00:00").replace("+00:00", ""))
                     return datetime.fromtimestamp(float(raw))
                 except (ValueError, TypeError, OSError):
                     pass
@@ -735,9 +698,7 @@ async def get_all_recent_trades(
 async def get_markets(active: bool = True, limit: int = 100, offset: int = 0):
     """Get markets from Polymarket"""
     try:
-        markets = await polymarket_client.get_markets(
-            active=active, limit=limit, offset=offset
-        )
+        markets = await polymarket_client.get_markets(active=active, limit=limit, offset=offset)
         return [m.model_dump() for m in markets]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -747,9 +708,7 @@ async def get_markets(active: bool = True, limit: int = 100, offset: int = 0):
 async def get_events(closed: bool = False, limit: int = 100, offset: int = 0):
     """Get events from Polymarket"""
     try:
-        events = await polymarket_client.get_events(
-            closed=closed, limit=limit, offset=offset
-        )
+        events = await polymarket_client.get_events(closed=closed, limit=limit, offset=offset)
         return [e.model_dump() for e in events]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -866,9 +825,7 @@ async def get_strategies():
 @router.get("/discover/leaderboard")
 async def get_leaderboard(
     limit: int = Query(50, ge=1, le=50),
-    time_period: str = Query(
-        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
-    ),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
     order_by: str = Query("PNL", description="Sort by: PNL (profit) or VOL (volume)"),
     category: str = Query(
         "OVERALL",
@@ -881,9 +838,7 @@ async def get_leaderboard(
         order_by = order_by.upper()
         window_key = DISCOVER_TIME_TO_WINDOW.get(time_period)
         if time_period not in DISCOVER_TIME_TO_WINDOW:
-            raise HTTPException(
-                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
-            )
+            raise HTTPException(status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL")
 
         sort_by = "total_pnl" if order_by == "PNL" else "total_returned"
         data = await wallet_discovery.get_leaderboard(
@@ -906,8 +861,7 @@ async def get_leaderboard(
                 "pnl": w.get("period_pnl", w.get("total_pnl", 0.0)),
                 "vol": w.get("total_returned", 0.0),
                 "rank": w.get("rank_position"),
-                "winRate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0)
-                * 100.0,
+                "winRate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0) * 100.0,
                 "deprecated": True,
                 "deprecation_note": "/api/discover/* now proxies /api/discovery/*",
             }
@@ -923,9 +877,7 @@ async def get_leaderboard(
 async def discover_top_traders(
     limit: int = Query(50, ge=1, le=50),
     min_trades: int = Query(10, ge=1),
-    time_period: str = Query(
-        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
-    ),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
     order_by: str = Query("PNL", description="Sort by: PNL or VOL"),
     category: str = Query("OVERALL", description="Market category filter"),
 ):
@@ -935,9 +887,7 @@ async def discover_top_traders(
         order_by = order_by.upper()
         window_key = DISCOVER_TIME_TO_WINDOW.get(time_period)
         if time_period not in DISCOVER_TIME_TO_WINDOW:
-            raise HTTPException(
-                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
-            )
+            raise HTTPException(status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL")
 
         sort_by = "total_pnl" if order_by == "PNL" else "total_returned"
         data = await wallet_discovery.get_leaderboard(
@@ -961,8 +911,7 @@ async def discover_top_traders(
                 "rank": w.get("rank_position"),
                 "buys": w.get("wins", 0),
                 "sells": w.get("losses", 0),
-                "win_rate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0)
-                * 100.0,
+                "win_rate": (w.get("period_win_rate", w.get("win_rate", 0.0)) or 0.0) * 100.0,
                 "wins": w.get("wins", 0),
                 "losses": w.get("losses", 0),
                 "total_markets": w.get("unique_markets", 0),
@@ -979,21 +928,13 @@ async def discover_top_traders(
 
 @router.get("/discover/by-win-rate")
 async def discover_by_win_rate(
-    min_win_rate: float = Query(
-        70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"
-    ),
+    min_win_rate: float = Query(70.0, ge=0, le=100, description="Minimum win rate percentage (0-100)"),
     min_trades: int = Query(10, ge=1, description="Minimum number of closed positions"),
     limit: int = Query(100, ge=1, le=500, description="Max results to return"),
-    time_period: str = Query(
-        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
-    ),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
     category: str = Query("OVERALL", description="Market category filter"),
-    min_volume: float = Query(
-        0, ge=0, description="Minimum trading volume (0 = no minimum)"
-    ),
-    max_volume: float = Query(
-        0, ge=0, description="Maximum trading volume (0 = no maximum)"
-    ),
+    min_volume: float = Query(0, ge=0, description="Minimum trading volume (0 = no minimum)"),
+    max_volume: float = Query(0, ge=0, description="Maximum trading volume (0 = no maximum)"),
     scan_count: int = Query(
         200,
         ge=10,
@@ -1005,9 +946,7 @@ async def discover_by_win_rate(
     try:
         window_key = DISCOVER_TIME_TO_WINDOW.get(time_period.upper())
         if time_period.upper() not in DISCOVER_TIME_TO_WINDOW:
-            raise HTTPException(
-                status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL"
-            )
+            raise HTTPException(status_code=400, detail="Invalid time_period. Use DAY/WEEK/MONTH/ALL")
 
         # We over-fetch so win-rate/volume filters still return enough rows.
         data = await wallet_discovery.get_leaderboard(
@@ -1058,9 +997,7 @@ async def discover_by_win_rate(
 @router.get("/discover/wallet/{address}/win-rate")
 async def get_wallet_win_rate(
     address: str,
-    time_period: str = Query(
-        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
-    ),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
 ):
     """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
@@ -1119,9 +1056,7 @@ async def get_wallet_win_rate(
 @router.get("/discover/wallet/{address}")
 async def analyze_wallet_pnl(
     address: str,
-    time_period: str = Query(
-        "ALL", description="Time period: DAY, WEEK, MONTH, or ALL"
-    ),
+    time_period: str = Query("ALL", description="Time period: DAY, WEEK, MONTH, or ALL"),
 ):
     """Legacy compatibility adapter backed by discovered wallet profile."""
     try:
@@ -1194,8 +1129,7 @@ async def analyze_and_track_wallet(
                 "unrealized_pnl": profile.get("unrealized_pnl", 0.0),
                 "total_pnl": profile.get("total_pnl", 0.0),
                 "roi_percent": (
-                    (profile.get("total_pnl", 0.0) / profile.get("total_invested", 1.0))
-                    * 100.0
+                    (profile.get("total_pnl", 0.0) / profile.get("total_invested", 1.0)) * 100.0
                     if (profile.get("total_invested", 0.0) or 0.0) > 0
                     else 0.0
                 ),

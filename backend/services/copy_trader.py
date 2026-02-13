@@ -28,9 +28,7 @@ from config import settings as app_settings
 
 logger = get_logger("copy_trader")
 
-MIN_WHALE_SHARES = (
-    app_settings.MIN_WHALE_SHARES
-)  # Ignore noise trades below this threshold
+MIN_WHALE_SHARES = app_settings.MIN_WHALE_SHARES  # Ignore noise trades below this threshold
 MIN_CASH_VALUE = 1.01  # Minimum cash value for order execution
 
 # Maximum size of in-memory dedup cache before eviction
@@ -57,9 +55,7 @@ class CopyTradingService:
 
     def __init__(self):
         self._running = False
-        self._poll_interval = (
-            120  # seconds (fallback only; WS monitor provides real-time)
-        )
+        self._poll_interval = 120  # seconds (fallback only; WS monitor provides real-time)
         self._active_configs: dict[str, CopyTradingConfig] = {}
         # In-memory cache of source wallet positions for diffing
         self._wallet_positions: dict[str, list[dict]] = {}
@@ -116,9 +112,7 @@ class CopyTradingService:
             # Also ensure wallet is tracked
             wallet = await session.get(TrackedWallet, source_wallet.lower())
             if not wallet:
-                wallet = TrackedWallet(
-                    address=source_wallet.lower(), label="Copy Target"
-                )
+                wallet = TrackedWallet(address=source_wallet.lower(), label="Copy Target")
                 session.add(wallet)
 
             await session.commit()
@@ -158,22 +152,14 @@ class CopyTradingService:
                     try:
                         from services.wallet_ws_monitor import wallet_ws_monitor
 
-                        remaining = [
-                            c.source_wallet
-                            for c in self._active_configs.values()
-                            if c.enabled
-                        ]
-                        wallet_ws_monitor.set_wallets_for_source(
-                            "copy_trader", remaining
-                        )
+                        remaining = [c.source_wallet for c in self._active_configs.values() if c.enabled]
+                        wallet_ws_monitor.set_wallets_for_source("copy_trader", remaining)
                     except Exception:
                         pass
 
                 logger.info("Removed copy trading config", config_id=config_id)
 
-    async def get_configs(
-        self, account_id: Optional[str] = None
-    ) -> list[CopyTradingConfig]:
+    async def get_configs(self, account_id: Optional[str] = None) -> list[CopyTradingConfig]:
         """Get all copy trading configurations"""
         async with AsyncSessionLocal() as session:
             query = select(CopyTradingConfig)
@@ -191,9 +177,7 @@ class CopyTradingService:
                 config.enabled = enabled
                 await session.commit()
 
-                logger.info(
-                    "Updated copy trading config", config_id=config_id, enabled=enabled
-                )
+                logger.info("Updated copy trading config", config_id=config_id, enabled=enabled)
 
     async def update_config(self, config_id: str, **kwargs):
         """Update arbitrary fields on a copy trading configuration"""
@@ -232,11 +216,7 @@ class CopyTradingService:
                 try:
                     from services.wallet_ws_monitor import wallet_ws_monitor
 
-                    remaining = [
-                        c.source_wallet
-                        for c in self._active_configs.values()
-                        if c.enabled
-                    ]
+                    remaining = [c.source_wallet for c in self._active_configs.values() if c.enabled]
                     wallet_ws_monitor.set_wallets_for_source("copy_trader", remaining)
                 except Exception:
                     pass
@@ -260,9 +240,7 @@ class CopyTradingService:
         """Broadcast a copy trading event to connected frontend clients."""
         if self._ws_broadcast_callback:
             try:
-                await self._ws_broadcast_callback(
-                    {"type": event_type, "data": data}
-                )
+                await self._ws_broadcast_callback({"type": event_type, "data": data})
             except Exception as e:
                 logger.error("Failed to broadcast copy event", error=str(e))
 
@@ -379,9 +357,7 @@ class CopyTradingService:
         # Calculate total pipeline latency
         execution_time = utcnow()
         pipeline_latency_ms = (execution_time - start_time).total_seconds() * 1000.0
-        total_latency_ms = (
-            event.latency_ms + pipeline_latency_ms
-        )  # detection + processing
+        total_latency_ms = event.latency_ms + pipeline_latency_ms  # detection + processing
 
         logger.info(
             "REALTIME copy trade complete",
@@ -434,13 +410,19 @@ class CopyTradingService:
 
         # Filter out noise trades below minimum whale size
         if source_size < MIN_WHALE_SHARES:
-            logger.debug(
-                f"Realtime: skipping small trade: {source_size} shares < {MIN_WHALE_SHARES}"
-            )
+            logger.debug(f"Realtime: skipping small trade: {source_size} shares < {MIN_WHALE_SHARES}")
             asyncio.create_task(
                 self._record_copied_trade(
-                    config, trade_id, "", "", token_id, "BUY", "",
-                    source_price, source_size, event.timestamp,
+                    config,
+                    trade_id,
+                    "",
+                    "",
+                    token_id,
+                    "BUY",
+                    "",
+                    source_price,
+                    source_size,
+                    event.timestamp,
                     status="skipped",
                     error=f"Below minimum whale size ({source_size} < {MIN_WHALE_SHARES})",
                 )
@@ -460,6 +442,7 @@ class CopyTradingService:
             # Probabilistic sub-minimum execution
             if copy_size * source_price < MIN_CASH_VALUE and copy_size > 0:
                 import random
+
                 prob = (copy_size * source_price) / MIN_CASH_VALUE
                 if random.random() < prob:
                     copy_size = MIN_CASH_VALUE / source_price
@@ -484,7 +467,8 @@ class CopyTradingService:
                 )
                 if not depth_result.has_sufficient_depth:
                     token_circuit_breaker.trip_token(
-                        token_id, "insufficient_depth_realtime",
+                        token_id,
+                        "insufficient_depth_realtime",
                         {"available": depth_result.available_depth_usd},
                     )
                     return None
@@ -511,8 +495,16 @@ class CopyTradingService:
             if slippage_pct > config.slippage_tolerance:
                 asyncio.create_task(
                     self._record_copied_trade(
-                        config, trade_id, "", "", token_id, "BUY", "",
-                        source_price, source_size, event.timestamp,
+                        config,
+                        trade_id,
+                        "",
+                        "",
+                        token_id,
+                        "BUY",
+                        "",
+                        source_price,
+                        source_size,
+                        event.timestamp,
                         status="skipped",
                         error=f"Slippage {slippage_pct:.1f}% exceeds tolerance {config.slippage_tolerance}%",
                     )
@@ -535,9 +527,16 @@ class CopyTradingService:
             )
 
             copied = await self._record_copied_trade(
-                config, trade_id, "", "",
-                token_id, "BUY", "",
-                source_price, source_size, event.timestamp,
+                config,
+                trade_id,
+                "",
+                "",
+                token_id,
+                "BUY",
+                "",
+                source_price,
+                source_size,
+                event.timestamp,
                 status="executed",
                 executed_price=execution_price,
                 executed_size=copy_size,
@@ -577,9 +576,7 @@ class CopyTradingService:
         Returns trades sorted oldest-first for sequential processing.
         """
         try:
-            trades = await polymarket_client.get_wallet_trades(
-                wallet_address, limit=100
-            )
+            trades = await polymarket_client.get_wallet_trades(wallet_address, limit=100)
 
             if not trades:
                 return []
@@ -611,14 +608,10 @@ class CopyTradingService:
             return new_trades
 
         except Exception as e:
-            logger.error(
-                "Error fetching trades for wallet", wallet=wallet_address, error=str(e)
-            )
+            logger.error("Error fetching trades for wallet", wallet=wallet_address, error=str(e))
             return []
 
-    def _should_copy_trade(
-        self, trade: dict, config: CopyTradingConfig
-    ) -> tuple[bool, str]:
+    def _should_copy_trade(self, trade: dict, config: CopyTradingConfig) -> tuple[bool, str]:
         """Determine whether a trade should be copied based on config filters.
 
         Returns (should_copy, reason) tuple.
@@ -669,9 +662,7 @@ class CopyTradingService:
         - Fixed max: caps at max_position_size
         - Proportional: scales by proportional_multiplier relative to source size
         """
-        source_size = float(
-            source_trade.get("size", 0) or source_trade.get("amount", 0) or 0
-        )
+        source_size = float(source_trade.get("size", 0) or source_trade.get("amount", 0) or 0)
         source_price = float(source_trade.get("price", 0) or 0)
         source_cost = source_size * source_price
 
@@ -720,17 +711,13 @@ class CopyTradingService:
                 if isinstance(source_ts_raw, (int, float)):
                     source_timestamp = utcfromtimestamp(source_ts_raw)
                 else:
-                    source_timestamp = datetime.fromisoformat(
-                        str(source_ts_raw).replace("Z", "+00:00")
-                    )
+                    source_timestamp = datetime.fromisoformat(str(source_ts_raw).replace("Z", "+00:00"))
             except (ValueError, OSError):
                 source_timestamp = None
 
         # Filter out noise trades below minimum whale size
         if source_size < MIN_WHALE_SHARES:
-            logger.debug(
-                f"Skipping small whale trade: {source_size} shares < {MIN_WHALE_SHARES} minimum"
-            )
+            logger.debug(f"Skipping small whale trade: {source_size} shares < {MIN_WHALE_SHARES} minimum")
             return await self._record_copied_trade(
                 config,
                 trade_id,
@@ -765,9 +752,7 @@ class CopyTradingService:
                     error="Account not found",
                 )
 
-            copy_size = self._calculate_copy_size(
-                trade, config, account.current_capital
-            )
+            copy_size = self._calculate_copy_size(trade, config, account.current_capital)
 
             if copy_size <= 0:
                 return await self._record_copied_trade(
@@ -1000,9 +985,7 @@ class CopyTradingService:
                 if isinstance(source_ts_raw, (int, float)):
                     source_timestamp = utcfromtimestamp(source_ts_raw)
                 else:
-                    source_timestamp = datetime.fromisoformat(
-                        str(source_ts_raw).replace("Z", "+00:00")
-                    )
+                    source_timestamp = datetime.fromisoformat(str(source_ts_raw).replace("Z", "+00:00"))
             except (ValueError, OSError):
                 source_timestamp = None
 
@@ -1106,10 +1089,7 @@ class CopyTradingService:
                 raise ValueError(f"Account not found: {account_id}")
 
             if total_cost > account.current_capital:
-                raise ValueError(
-                    f"Insufficient capital: need ${total_cost:.2f}, "
-                    f"have ${account.current_capital:.2f}"
-                )
+                raise ValueError(f"Insufficient capital: need ${total_cost:.2f}, have ${account.current_capital:.2f}")
 
             # Apply slippage
             slippage_factor = account.slippage_bps / 10000
@@ -1218,9 +1198,7 @@ class CopyTradingService:
             pnl = sell_value - entry_cost - fee
 
             # Close the position
-            position.status = (
-                TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
-            )
+            position.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
             position.current_price = sell_price
             position.unrealized_pnl = 0.0
 
@@ -1247,11 +1225,7 @@ class CopyTradingService:
                 )
                 sim_trade = trade_result.scalar_one_or_none()
                 if sim_trade:
-                    sim_trade.status = (
-                        TradeStatus.RESOLVED_WIN
-                        if pnl > 0
-                        else TradeStatus.RESOLVED_LOSS
-                    )
+                    sim_trade.status = TradeStatus.RESOLVED_WIN if pnl > 0 else TradeStatus.RESOLVED_LOSS
                     sim_trade.actual_payout = sell_value - fee
                     sim_trade.actual_pnl = pnl
                     sim_trade.fees_paid = fee
@@ -1434,9 +1408,7 @@ class CopyTradingService:
                         side=side,
                         outcome=trade.get("outcome", ""),
                         source_price=float(trade.get("price", 0) or 0),
-                        source_size=float(
-                            trade.get("size", 0) or trade.get("amount", 0) or 0
-                        ),
+                        source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
                         source_timestamp=None,
                         status="skipped",
                         error=reason,
@@ -1450,17 +1422,13 @@ class CopyTradingService:
                         await self._record_copied_trade(
                             config,
                             source_trade_id=trade.get("id", ""),
-                            market_id=trade.get(
-                                "market", trade.get("condition_id", "")
-                            ),
+                            market_id=trade.get("market", trade.get("condition_id", "")),
                             market_question=trade.get("title", ""),
                             token_id=trade.get("asset", ""),
                             side=side,
                             outcome=trade.get("outcome", ""),
                             source_price=float(trade.get("price", 0) or 0),
-                            source_size=float(
-                                trade.get("size", 0) or trade.get("amount", 0) or 0
-                            ),
+                            source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
                             source_timestamp=None,
                             status="skipped",
                             error="No matching arbitrage opportunity",
@@ -1471,17 +1439,13 @@ class CopyTradingService:
                         await self._record_copied_trade(
                             config,
                             source_trade_id=trade.get("id", ""),
-                            market_id=trade.get(
-                                "market", trade.get("condition_id", "")
-                            ),
+                            market_id=trade.get("market", trade.get("condition_id", "")),
                             market_question=trade.get("title", ""),
                             token_id=trade.get("asset", ""),
                             side=side,
                             outcome=trade.get("outcome", ""),
                             source_price=float(trade.get("price", 0) or 0),
-                            source_size=float(
-                                trade.get("size", 0) or trade.get("amount", 0) or 0
-                            ),
+                            source_size=float(trade.get("size", 0) or trade.get("amount", 0) or 0),
                             source_timestamp=None,
                             status="skipped",
                             error=f"ROI {opp.roi_percent:.1f}% below threshold {config.min_roi_threshold}%",
@@ -1508,9 +1472,7 @@ class CopyTradingService:
                 try:
                     # Get all enabled configs from DB (fresh read each cycle)
                     async with AsyncSessionLocal() as session:
-                        result = await session.execute(
-                            select(CopyTradingConfig).where(CopyTradingConfig.enabled)
-                        )
+                        result = await session.execute(select(CopyTradingConfig).where(CopyTradingConfig.enabled))
                         configs = list(result.scalars().all())
 
                     # Process each config concurrently
@@ -1574,10 +1536,7 @@ class CopyTradingService:
                 )
 
                 # Process directly from the event data — no HTTP API call
-                tasks = [
-                    self._process_realtime_event(event, config)
-                    for config in configs
-                ]
+                tasks = [self._process_realtime_event(event, config) for config in configs]
                 await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as e:
             logger.error("Error handling real-time trade event", error=str(e))
@@ -1626,11 +1585,7 @@ class CopyTradingService:
             if not config:
                 return None
 
-            success_rate = (
-                config.successful_copies / config.total_copied * 100
-                if config.total_copied > 0
-                else 0
-            )
+            success_rate = config.successful_copies / config.total_copied * 100 if config.total_copied > 0 else 0
 
             return {
                 "config_id": config.id,
@@ -1696,9 +1651,7 @@ class CopyTradingService:
                     "status": t.status,
                     "execution_mode": t.execution_mode,
                     "error_message": t.error_message,
-                    "source_timestamp": t.source_timestamp.isoformat()
-                    if t.source_timestamp
-                    else None,
+                    "source_timestamp": t.source_timestamp.isoformat() if t.source_timestamp else None,
                     "copied_at": t.copied_at.isoformat() if t.copied_at else None,
                     "executed_at": t.executed_at.isoformat() if t.executed_at else None,
                     "realized_pnl": t.realized_pnl,
@@ -1709,9 +1662,7 @@ class CopyTradingService:
     async def get_source_wallet_positions(self, wallet_address: str) -> list[dict]:
         """Get current positions for a source wallet."""
         try:
-            return await polymarket_client.get_wallet_positions_with_prices(
-                wallet_address
-            )
+            return await polymarket_client.get_wallet_positions_with_prices(wallet_address)
         except Exception as e:
             logger.error(
                 "Error fetching source wallet positions",

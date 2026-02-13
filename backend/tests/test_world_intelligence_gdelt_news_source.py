@@ -52,4 +52,3 @@ def test_priority_from_tone_escalates_negative_tone():
     assert _priority_from_tone("medium", -1.0) == "medium"
     assert _priority_from_tone("low", -5.0) == "high"
     assert _priority_from_tone("high", -9.0) == "critical"
-

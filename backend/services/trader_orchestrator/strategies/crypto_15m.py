@@ -31,13 +31,13 @@ class Crypto15mStrategy(BaseTraderStrategy):
         ]
 
         if not all(c.passed for c in checks):
-                return StrategyDecision(
-                    decision="skipped",
-                    reason="Crypto HF filters not met",
-                    score=(edge + confidence) / 2.0,
-                    checks=checks,
-                    payload={"edge": edge, "confidence": confidence},
-                )
+            return StrategyDecision(
+                decision="skipped",
+                reason="Crypto HF filters not met",
+                score=(edge + confidence) / 2.0,
+                checks=checks,
+                payload={"edge": edge, "confidence": confidence},
+            )
 
         size = max(1.0, base_size * (1.0 + max(0.0, edge - min_edge) / 100.0))
         return StrategyDecision(

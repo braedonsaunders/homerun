@@ -174,9 +174,7 @@ async def write_weather_snapshot(
         else:
             payload.append(ArbitrageOpportunity.model_validate(o).model_dump(mode="json"))
 
-    result = await session.execute(
-        select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = WeatherSnapshot(id=WEATHER_SNAPSHOT_ID)
@@ -188,9 +186,7 @@ async def write_weather_snapshot(
     row.running = status.get("running", True)
     row.enabled = status.get("enabled", True)
     row.current_activity = status.get("current_activity")
-    row.interval_seconds = status.get(
-        "interval_seconds", app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS
-    )
+    row.interval_seconds = status.get("interval_seconds", app_settings.WEATHER_WORKFLOW_SCAN_INTERVAL_SECONDS)
     row.stats_json = stats if stats is not None else status.get("stats", {})
     await session.commit()
 
@@ -198,9 +194,7 @@ async def write_weather_snapshot(
 async def read_weather_snapshot(
     session: AsyncSession,
 ) -> tuple[list[ArbitrageOpportunity], dict[str, Any]]:
-    result = await session.execute(
-        select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return [], _default_status()
@@ -297,9 +291,7 @@ async def get_weather_opportunities_from_db(
         ]
 
     if target_date is not None:
-        opportunities = [
-            o for o in opportunities if _opportunity_target_date(o) == target_date
-        ]
+        opportunities = [o for o in opportunities if _opportunity_target_date(o) == target_date]
 
     if opportunities and require_tradable_markets:
         market_ids: set[str] = set()
@@ -356,10 +348,7 @@ async def get_weather_target_date_counts_from_db(
             continue
         counts[d] = counts.get(d, 0) + 1
 
-    return [
-        {"date": d.isoformat(), "count": counts[d]}
-        for d in sorted(counts.keys())
-    ]
+    return [{"date": d.isoformat(), "count": counts[d]} for d in sorted(counts.keys())]
 
 
 async def get_weather_status_from_db(session: AsyncSession) -> dict[str, Any]:
@@ -368,9 +357,7 @@ async def get_weather_status_from_db(session: AsyncSession) -> dict[str, Any]:
 
 
 async def ensure_weather_control(session: AsyncSession) -> WeatherControl:
-    result = await session.execute(
-        select(WeatherControl).where(WeatherControl.id == WEATHER_CONTROL_ID)
-    )
+    result = await session.execute(select(WeatherControl).where(WeatherControl.id == WEATHER_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = WeatherControl(id=WEATHER_CONTROL_ID)
@@ -381,9 +368,7 @@ async def ensure_weather_control(session: AsyncSession) -> WeatherControl:
 
 
 async def read_weather_control(session: AsyncSession) -> dict[str, Any]:
-    result = await session.execute(
-        select(WeatherControl).where(WeatherControl.id == WEATHER_CONTROL_ID)
-    )
+    result = await session.execute(select(WeatherControl).where(WeatherControl.id == WEATHER_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return {
@@ -429,9 +414,7 @@ async def clear_weather_scan_request(session: AsyncSession) -> None:
 
 
 async def upsert_weather_intent(session: AsyncSession, intent: dict[str, Any]) -> None:
-    result = await session.execute(
-        select(WeatherTradeIntent).where(WeatherTradeIntent.id == intent["id"])
-    )
+    result = await session.execute(select(WeatherTradeIntent).where(WeatherTradeIntent.id == intent["id"]))
     row = result.scalar_one_or_none()
     if row is None:
         row = WeatherTradeIntent(**intent)
@@ -479,9 +462,7 @@ async def mark_weather_intent(
     intent_id: str,
     status: str,
 ) -> bool:
-    result = await session.execute(
-        select(WeatherTradeIntent).where(WeatherTradeIntent.id == intent_id)
-    )
+    result = await session.execute(select(WeatherTradeIntent).where(WeatherTradeIntent.id == intent_id))
     row = result.scalar_one_or_none()
     if row is None:
         return False
@@ -515,9 +496,7 @@ async def update_weather_opportunity_ai_analysis_in_snapshot(
     if not oid and not sid:
         return False
 
-    result = await session.execute(
-        select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(WeatherSnapshot).where(WeatherSnapshot.id == WEATHER_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None or not isinstance(row.opportunities_json, list):
         return False
@@ -614,21 +593,13 @@ async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
                 app_settings.WEATHER_WORKFLOW_MAX_MARKETS_PER_SCAN,
             )
         ),
-        "orchestrator_enabled": bool(
-            getattr(db, "weather_workflow_orchestrator_enabled", True)
-        ),
-        "orchestrator_min_edge": float(
-            getattr(db, "weather_workflow_orchestrator_min_edge", 10.0)
-        ),
-        "orchestrator_max_age_minutes": int(
-            getattr(db, "weather_workflow_orchestrator_max_age_minutes", 240)
-        ),
+        "orchestrator_enabled": bool(getattr(db, "weather_workflow_orchestrator_enabled", True)),
+        "orchestrator_min_edge": float(getattr(db, "weather_workflow_orchestrator_min_edge", 10.0)),
+        "orchestrator_max_age_minutes": int(getattr(db, "weather_workflow_orchestrator_max_age_minutes", 240)),
         "default_size_usd": float(
             getattr(db, "weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD)
         ),
-        "max_size_usd": float(
-            getattr(db, "weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD)
-        ),
+        "max_size_usd": float(getattr(db, "weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD)),
         "model": getattr(db, "weather_workflow_model", None),
     }
 

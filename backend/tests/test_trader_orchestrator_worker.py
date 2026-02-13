@@ -13,18 +13,8 @@ from workers import trader_orchestrator_worker
 
 
 def test_supports_live_market_context_excludes_crypto_source():
-    assert (
-        trader_orchestrator_worker._supports_live_market_context(
-            SimpleNamespace(source="crypto")
-        )
-        is False
-    )
-    assert (
-        trader_orchestrator_worker._supports_live_market_context(
-            SimpleNamespace(source="weather")
-        )
-        is True
-    )
+    assert trader_orchestrator_worker._supports_live_market_context(SimpleNamespace(source="crypto")) is False
+    assert trader_orchestrator_worker._supports_live_market_context(SimpleNamespace(source="weather")) is True
 
 
 @pytest.mark.asyncio

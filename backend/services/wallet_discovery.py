@@ -134,17 +134,13 @@ class WalletDiscoveryEngine:
         }
 
     def _discovery_setting(self, key: str, default: Any) -> Any:
-        return (self._runtime_discovery_settings or {}).get(
-            key, self._discovery_settings_defaults().get(key, default)
-        )
+        return (self._runtime_discovery_settings or {}).get(key, self._discovery_settings_defaults().get(key, default))
 
     async def _load_discovery_settings(self) -> dict[str, Any]:
         settings = self._discovery_settings_defaults()
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 row = result.scalar_one_or_none()
                 if row is None:
                     return settings
@@ -213,9 +209,7 @@ class WalletDiscoveryEngine:
     # 1. Trade Statistics (mirrors anomaly_detector pattern)
     # ------------------------------------------------------------------
 
-    def _calculate_trade_stats(
-        self, trades: list[dict], positions: list[dict] | None = None
-    ) -> dict:
+    def _calculate_trade_stats(self, trades: list[dict], positions: list[dict] | None = None) -> dict:
         """
         Calculate comprehensive trading statistics from raw Polymarket
         trade data and open positions.
@@ -237,9 +231,7 @@ class WalletDiscoveryEngine:
             size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
             price = float(trade.get("price", 0) or 0)
             side = (trade.get("side", "") or "").upper()
-            market_id = trade.get(
-                "market", trade.get("condition_id", trade.get("asset", ""))
-            )
+            market_id = trade.get("market", trade.get("condition_id", trade.get("asset", "")))
             outcome = trade.get("outcome", trade.get("outcome_index", ""))
 
             if market_id:
@@ -258,9 +250,7 @@ class WalletDiscoveryEngine:
                         "price": price,
                         "cost": cost,
                         "outcome": outcome,
-                        "timestamp": trade.get(
-                            "timestamp", trade.get("created_at", "")
-                        ),
+                        "timestamp": trade.get("timestamp", trade.get("created_at", "")),
                     }
                 )
             elif side == "SELL":
@@ -271,9 +261,7 @@ class WalletDiscoveryEngine:
                         "price": price,
                         "cost": cost,
                         "outcome": outcome,
-                        "timestamp": trade.get(
-                            "timestamp", trade.get("created_at", "")
-                        ),
+                        "timestamp": trade.get("timestamp", trade.get("created_at", "")),
                     }
                 )
 
@@ -285,9 +273,7 @@ class WalletDiscoveryEngine:
         for pos in positions:
             size = float(pos.get("size", 0) or 0)
             avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-            current_price = float(
-                pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
-            )
+            current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
             unrealized_pnl += size * (current_price - avg_price)
 
         total_pnl = realized_pnl + unrealized_pnl
@@ -511,9 +497,7 @@ class WalletDiscoveryEngine:
         total_trades = int(stats.get("total_trades", 0) or 0)
         total_invested = self._to_float(stats.get("total_invested"), 0.0)
         stats["trades_per_day"] = total_trades / days_active
-        stats["avg_position_size"] = (
-            total_invested / total_trades if total_trades > 0 else 0.0
-        )
+        stats["avg_position_size"] = total_invested / total_trades if total_trades > 0 else 0.0
 
         for key in (
             "win_rate",
@@ -580,9 +564,7 @@ class WalletDiscoveryEngine:
         # (mean_return - risk_free_rate) / downside_deviation
         negative_returns = [r for r in market_rois if r < 0]
         if negative_returns:
-            downside_variance = sum(r**2 for r in negative_returns) / len(
-                negative_returns
-            )
+            downside_variance = sum(r**2 for r in negative_returns) / len(negative_returns)
             downside_deviation = math.sqrt(downside_variance)
             if downside_deviation > 0:
                 result["sortino_ratio"] = mean_return / downside_deviation
@@ -649,9 +631,7 @@ class WalletDiscoveryEngine:
     # 3. Rolling Time Windows
     # ------------------------------------------------------------------
 
-    def _calculate_rolling_windows(
-        self, trades: list[dict], current_time: datetime
-    ) -> dict:
+    def _calculate_rolling_windows(self, trades: list[dict], current_time: datetime) -> dict:
         """
         Calculate metrics over rolling time windows.
 
@@ -754,13 +734,7 @@ class WalletDiscoveryEngine:
         else:
             consistency_norm = 0.5
 
-        rank_score = (
-            0.30 * sharpe_norm
-            + 0.25 * pf_norm
-            + 0.20 * wr_norm
-            + 0.15 * pnl_norm
-            + 0.10 * consistency_norm
-        )
+        rank_score = 0.30 * sharpe_norm + 0.25 * pf_norm + 0.20 * wr_norm + 0.15 * pnl_norm + 0.10 * consistency_norm
 
         return max(0.0, min(rank_score, 1.0))
 
@@ -842,11 +816,7 @@ class WalletDiscoveryEngine:
             tags.append("profitable")
         if sharpe is not None and math.isfinite(sharpe) and sharpe >= 2.0:
             tags.append("risk_adjusted_alpha")
-        if (
-            profit_factor is not None
-            and math.isfinite(profit_factor)
-            and profit_factor >= 3.0
-        ):
+        if profit_factor is not None and math.isfinite(profit_factor) and profit_factor >= 3.0:
             tags.append("strong_edge")
         if win_rate >= 0.55 and total_pnl > 0 and total_trades >= 50:
             tags.append("consistent")
@@ -910,11 +880,7 @@ class WalletDiscoveryEngine:
             )
             return None
 
-        if (
-            len(trades) < MIN_TRADES_FOR_ANALYSIS
-            and not positions
-            and len(closed_positions) < MIN_TRADES_FOR_ANALYSIS
-        ):
+        if len(trades) < MIN_TRADES_FOR_ANALYSIS and not positions and len(closed_positions) < MIN_TRADES_FOR_ANALYSIS:
             return None
 
         # All statistical computations are CPU-bound. Run them in the
@@ -1033,9 +999,7 @@ class WalletDiscoveryEngine:
     # 7. Wallet Discovery from Market Trades
     # ------------------------------------------------------------------
 
-    async def _discover_wallets_from_market(
-        self, market: object, max_wallets: int = 50
-    ) -> set[str]:
+    async def _discover_wallets_from_market(self, market: object, max_wallets: int = 50) -> set[str]:
         """
         Fetch recent trades for a single market and extract unique wallet
         addresses. ``market`` is a Market model instance from the Gamma API.
@@ -1047,9 +1011,7 @@ class WalletDiscoveryEngine:
             if not condition_id:
                 return discovered
 
-            trades = await self.client.get_market_trades(
-                condition_id, limit=min(max_wallets * 2, 200)
-            )
+            trades = await self.client.get_market_trades(condition_id, limit=min(max_wallets * 2, 200))
 
             for trade in trades:
                 # The data API returns 'user' or 'taker' or 'maker' fields
@@ -1070,9 +1032,7 @@ class WalletDiscoveryEngine:
 
         return discovered
 
-    async def _discover_wallets_from_leaderboard(
-        self, scan_count: int = 200
-    ) -> set[str]:
+    async def _discover_wallets_from_leaderboard(self, scan_count: int = 200) -> set[str]:
         """
         Supplement market-based discovery with wallets from the
         Polymarket leaderboard API (PNL and VOL sorted).
@@ -1156,9 +1116,7 @@ class WalletDiscoveryEngine:
     ) -> int:
         """Insert discovered addresses as seed rows even before full analysis."""
         normalized = {
-            str(address).strip().lower()
-            for address in addresses
-            if isinstance(address, str) and str(address).strip()
+            str(address).strip().lower() for address in addresses if isinstance(address, str) and str(address).strip()
         }
         if not normalized:
             return 0
@@ -1174,9 +1132,7 @@ class WalletDiscoveryEngine:
             )
             for chunk in self._chunked(normalized_list, maintenance_batch):
                 rows = await session.execute(
-                    select(DiscoveredWallet.address).where(
-                        DiscoveredWallet.address.in_(chunk)
-                    )
+                    select(DiscoveredWallet.address).where(DiscoveredWallet.address.in_(chunk))
                 )
                 existing.update({str(row.address).lower() for row in rows.all() if row.address})
 
@@ -1215,9 +1171,7 @@ class WalletDiscoveryEngine:
 
         now = now or utcnow()
         async with AsyncSessionLocal() as session:
-            total_result = await session.execute(
-                select(func.count(DiscoveredWallet.address))
-            )
+            total_result = await session.execute(select(func.count(DiscoveredWallet.address)))
             total_wallets = int(total_result.scalar() or 0)
             if total_wallets <= max_discovered_wallets:
                 return 0
@@ -1253,24 +1207,16 @@ class WalletDiscoveryEngine:
                 if self._is_wallet_discovery_protected(wallet):
                     continue
                 non_protected.append(wallet)
-                if (
-                    wallet.last_trade_at is not None
-                    and wallet.last_trade_at >= cutoff_trade
-                ):
+                if wallet.last_trade_at is not None and wallet.last_trade_at >= cutoff_trade:
                     continue
-                if (
-                    wallet.discovered_at is not None
-                    and wallet.discovered_at >= cutoff_discovered
-                ):
+                if wallet.discovered_at is not None and wallet.discovered_at >= cutoff_discovered:
                     continue
                 candidates.append(wallet)
 
             # Prefer removing non-recent/non-essential rows first.
             removable = candidates if candidates else non_protected
 
-            removable.sort(
-                key=lambda wallet: self._discovery_curation_score(wallet, now)
-            )
+            removable.sort(key=lambda wallet: self._discovery_curation_score(wallet, now))
             remove_count = total_wallets - max_discovered_wallets
             if remove_count <= 0:
                 return 0
@@ -1291,9 +1237,7 @@ class WalletDiscoveryEngine:
                 minimum=10,
             )
             for chunk in self._chunked(to_remove, maintenance_batch):
-                result = await session.execute(
-                    delete(DiscoveredWallet).where(DiscoveredWallet.address.in_(chunk))
-                )
+                result = await session.execute(delete(DiscoveredWallet).where(DiscoveredWallet.address.in_(chunk)))
                 removed += int(result.rowcount or 0)
 
             await session.commit()
@@ -1319,9 +1263,7 @@ class WalletDiscoveryEngine:
                     continue
                 # Handle float('inf') and float('nan') values that cannot
                 # be serialized to JSON or stored in SQLite.
-                if isinstance(value, float) and (
-                    math.isinf(value) or math.isnan(value)
-                ):
+                if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
                     value = None
                 if hasattr(wallet, key):
                     setattr(wallet, key, value)
@@ -1433,13 +1375,9 @@ class WalletDiscoveryEngine:
                 .limit(priority_limit)
             )
             if top_pool:
-                smart_pool_query = smart_pool_query.where(
-                    DiscoveredWallet.address.notin_(top_pool)
-                )
+                smart_pool_query = smart_pool_query.where(DiscoveredWallet.address.notin_(top_pool))
             smart_pool_rows = await session.execute(smart_pool_query)
-            smart_pool = [
-                str(row.address).lower() for row in smart_pool_rows.all() if row.address
-            ]
+            smart_pool = [str(row.address).lower() for row in smart_pool_rows.all() if row.address]
 
             backfill_rows = await session.execute(
                 select(DiscoveredWallet.address)
@@ -1472,31 +1410,25 @@ class WalletDiscoveryEngine:
         """Count high-priority wallets waiting for initial analysis."""
         async with AsyncSessionLocal() as session:
             top_pool_unanalyzed = (
-                (
-                    await session.execute(
-                        select(func.count(DiscoveredWallet.address)).where(
-                            DiscoveredWallet.in_top_pool == True,  # noqa: E712
-                            DiscoveredWallet.last_analyzed_at.is_(None),
-                        )
+                await session.execute(
+                    select(func.count(DiscoveredWallet.address)).where(
+                        DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                        DiscoveredWallet.last_analyzed_at.is_(None),
                     )
-                ).scalar()
-                or 0
-            )
+                )
+            ).scalar() or 0
             smart_pool_unanalyzed = (
-                (
-                    await session.execute(
-                        select(func.count(DiscoveredWallet.address)).where(
-                            DiscoveredWallet.discovery_source == "smart_pool",
-                            DiscoveredWallet.last_analyzed_at.is_(None),
-                            or_(
-                                DiscoveredWallet.in_top_pool.is_(None),
-                                DiscoveredWallet.in_top_pool == False,  # noqa: E712
-                            ),
-                        )
+                await session.execute(
+                    select(func.count(DiscoveredWallet.address)).where(
+                        DiscoveredWallet.discovery_source == "smart_pool",
+                        DiscoveredWallet.last_analyzed_at.is_(None),
+                        or_(
+                            DiscoveredWallet.in_top_pool.is_(None),
+                            DiscoveredWallet.in_top_pool == False,  # noqa: E712
+                        ),
                     )
-                ).scalar()
-                or 0
-            )
+                )
+            ).scalar() or 0
         return int(top_pool_unanalyzed + smart_pool_unanalyzed)
 
     # ------------------------------------------------------------------
@@ -1566,9 +1498,7 @@ class WalletDiscoveryEngine:
         try:
             # --- Step 1: Fetch active markets ---
             try:
-                markets = await self.client.get_markets(
-                    active=True, limit=min(max_markets, 100), offset=0
-                )
+                markets = await self.client.get_markets(active=True, limit=min(max_markets, 100), offset=0)
             except Exception as e:
                 logger.error("Failed to fetch markets", error=str(e))
                 markets = []
@@ -1601,9 +1531,7 @@ class WalletDiscoveryEngine:
 
             async def discover_from_market(market):
                 async with semaphore:
-                    addrs = await self._discover_wallets_from_market(
-                        market, max_wallets=max_wallets_per_market
-                    )
+                    addrs = await self._discover_wallets_from_market(market, max_wallets=max_wallets_per_market)
                     await asyncio.sleep(delay_between_markets)
                     return addrs
 
@@ -1615,9 +1543,7 @@ class WalletDiscoveryEngine:
                     all_addresses.update(result)
 
             # From leaderboard
-            leaderboard_addrs = await self._discover_wallets_from_leaderboard(
-                scan_count=200
-            )
+            leaderboard_addrs = await self._discover_wallets_from_leaderboard(scan_count=200)
             all_addresses.update(leaderboard_addrs)
 
             seeded = await self._upsert_discovered_placeholders(
@@ -1661,13 +1587,7 @@ class WalletDiscoveryEngine:
                             DiscoveredWallet.last_analyzed_at,
                         ).where(DiscoveredWallet.address.in_(chunk))
                     )
-                    existing.update(
-                        {
-                            row.address: row.last_analyzed_at
-                            for row in result.all()
-                            if row.address
-                        }
-                    )
+                    existing.update({row.address: row.last_analyzed_at for row in result.all() if row.address})
 
             for addr in all_addresses:
                 last_analyzed = existing.get(addr)
@@ -1684,12 +1604,8 @@ class WalletDiscoveryEngine:
                 "Wallets requiring analysis",
                 total=len(addresses_to_analyze),
                 priority_total=priority_counts.get("priority_total", 0),
-                priority_top_pool_unanalyzed=priority_counts.get(
-                    "top_pool_unanalyzed", 0
-                ),
-                priority_smart_pool_unanalyzed=priority_counts.get(
-                    "smart_pool_unanalyzed", 0
-                ),
+                priority_top_pool_unanalyzed=priority_counts.get("top_pool_unanalyzed", 0),
+                priority_smart_pool_unanalyzed=priority_counts.get("smart_pool_unanalyzed", 0),
                 priority_metrics_backfill=priority_counts.get("metrics_backfill", 0),
                 stale_discovered=len(stale_addresses),
                 skipped_fresh=max(len(all_addresses) - len(stale_addresses), 0),
@@ -1850,9 +1766,7 @@ class WalletDiscoveryEngine:
             Dict with 'wallets' list, 'total' count, and 'window_key' if set.
         """
         async with AsyncSessionLocal() as session:
-            normalized_tags = [
-                t.strip().lower() for t in (tags or []) if isinstance(t, str) and t.strip()
-            ]
+            normalized_tags = [t.strip().lower() for t in (tags or []) if isinstance(t, str) and t.strip()]
             base_filter = [
                 DiscoveredWallet.total_trades >= min_trades,
                 DiscoveredWallet.total_pnl >= min_pnl,
@@ -1876,11 +1790,7 @@ class WalletDiscoveryEngine:
                 base_filter.append(DiscoveredWallet.pool_tier == tier.lower())
             if normalized_tags:
                 for tag in normalized_tags:
-                    base_filter.append(
-                        func.lower(cast(DiscoveredWallet.tags, String)).like(
-                            f'%"{tag}"%'
-                        )
-                    )
+                    base_filter.append(func.lower(cast(DiscoveredWallet.tags, String)).like(f'%"{tag}"%'))
             if search_text:
                 q = f"%{search_text.strip().lower()}%"
                 if q != "%%":
@@ -1896,24 +1806,18 @@ class WalletDiscoveryEngine:
             if market_category:
                 normalized_category = market_category.strip().lower()
                 if normalized_category not in {"", "all", "overall"}:
-                    category_flag = f'%\"leaderboard_category_{normalized_category}\": true%'
-                    category_tag = f'%\"market_{normalized_category}\"%'
+                    category_flag = f'%"leaderboard_category_{normalized_category}": true%'
+                    category_tag = f'%"market_{normalized_category}"%'
                     base_filter.append(
                         or_(
-                            func.lower(cast(DiscoveredWallet.source_flags, String)).like(
-                                category_flag
-                            ),
-                            func.lower(cast(DiscoveredWallet.tags, String)).like(
-                                category_tag
-                            ),
+                            func.lower(cast(DiscoveredWallet.source_flags, String)).like(category_flag),
+                            func.lower(cast(DiscoveredWallet.tags, String)).like(category_tag),
                         )
                     )
 
             # When a rolling window is active, filter to wallets with trades in that window
             if window_key:
-                trade_count_expr = func.json_extract(
-                    DiscoveredWallet.rolling_trade_count, f"$.{window_key}"
-                )
+                trade_count_expr = func.json_extract(DiscoveredWallet.rolling_trade_count, f"$.{window_key}")
                 base_filter.append(trade_count_expr > 0)
 
             # Build main query
@@ -1945,11 +1849,7 @@ class WalletDiscoveryEngine:
                 deduped_wallets: list[DiscoveredWallet] = []
                 seen_entities: set[str] = set()
                 for wallet in ordered_wallets:
-                    entity_key = (
-                        f"cluster:{wallet.cluster_id}"
-                        if wallet.cluster_id
-                        else f"wallet:{wallet.address}"
-                    )
+                    entity_key = f"cluster:{wallet.cluster_id}" if wallet.cluster_id else f"wallet:{wallet.address}"
                     if entity_key in seen_entities:
                         continue
                     seen_entities.add(entity_key)
@@ -1959,9 +1859,7 @@ class WalletDiscoveryEngine:
                 wallets = deduped_wallets[offset : offset + limit]
             else:
                 # Get total count for pagination
-                count_query = select(func.count(DiscoveredWallet.address)).where(
-                    *base_filter
-                )
+                count_query = select(func.count(DiscoveredWallet.address)).where(*base_filter)
                 count_result = await session.execute(count_query)
                 total_count = count_result.scalar() or 0
 
@@ -2012,9 +1910,7 @@ class WalletDiscoveryEngine:
         async with AsyncSessionLocal() as session:
             # Single query with 5 scalar subqueries - one round-trip instead of 5
             stats_query = select(
-                select(func.count(DiscoveredWallet.address)).scalar_subquery().label(
-                    "total"
-                ),
+                select(func.count(DiscoveredWallet.address)).scalar_subquery().label("total"),
                 select(func.count(DiscoveredWallet.address))
                 .where(DiscoveredWallet.is_profitable == True)  # noqa: E712
                 .scalar_subquery()
@@ -2023,9 +1919,7 @@ class WalletDiscoveryEngine:
                 .where(DiscoveredWallet.recommendation == "copy_candidate")
                 .scalar_subquery()
                 .label("copy_candidates"),
-                select(func.avg(DiscoveredWallet.rank_score)).scalar_subquery().label(
-                    "avg_score"
-                ),
+                select(func.avg(DiscoveredWallet.rank_score)).scalar_subquery().label("avg_score"),
                 select(func.avg(DiscoveredWallet.win_rate))
                 .where(DiscoveredWallet.total_trades >= 10)
                 .scalar_subquery()
@@ -2073,9 +1967,7 @@ class WalletDiscoveryEngine:
             "address": w.address,
             "username": w.username,
             "discovered_at": w.discovered_at.isoformat() if w.discovered_at else None,
-            "last_analyzed_at": w.last_analyzed_at.isoformat()
-            if w.last_analyzed_at
-            else None,
+            "last_analyzed_at": w.last_analyzed_at.isoformat() if w.last_analyzed_at else None,
             "discovery_source": w.discovery_source,
             "metrics_source_version": w.metrics_source_version,
             # Basic stats
@@ -2139,11 +2031,7 @@ class WalletDiscoveryEngine:
             "insider_score": w.insider_score or 0.0,
             "insider_confidence": w.insider_confidence or 0.0,
             "insider_sample_size": w.insider_sample_size or 0,
-            "insider_last_scored_at": (
-                w.insider_last_scored_at.isoformat()
-                if w.insider_last_scored_at
-                else None
-            ),
+            "insider_last_scored_at": (w.insider_last_scored_at.isoformat() if w.insider_last_scored_at else None),
             "insider_metrics": w.insider_metrics_json,
             "insider_reasons": w.insider_reasons_json or [],
         }
@@ -2171,9 +2059,7 @@ class WalletDiscoveryEngine:
                 return None
         if isinstance(raw, str):
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
             except (ValueError, TypeError):
                 return None
         return None

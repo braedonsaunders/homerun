@@ -103,17 +103,11 @@ EVENT_EXTRACTION_SCHEMA: dict[str, Any] = {
         "actors": {
             "type": "array",
             "items": {"type": "string"},
-            "description": (
-                "Key people, organisations, or countries involved. "
-                "Max 5 entries. Use full names."
-            ),
+            "description": ("Key people, organisations, or countries involved. Max 5 entries. Use full names."),
         },
         "action": {
             "type": "string",
-            "description": (
-                "What happened, in 5-10 words. "
-                "E.g. 'announced tariff increase on steel imports'."
-            ),
+            "description": ("What happened, in 5-10 words. E.g. 'announced tariff increase on steel imports'."),
         },
         "date": {
             "type": "string",
@@ -199,12 +193,57 @@ def _extract_keywords_fallback(title: str, summary: str) -> ExtractedEvent:
 
     # Extract significant words as keywords
     stop_words = {
-        "the", "a", "an", "is", "are", "was", "were", "be", "been",
-        "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "to", "of", "in", "for", "on", "with",
-        "at", "by", "from", "as", "into", "and", "but", "or", "not",
-        "this", "that", "it", "its", "he", "she", "they", "we", "you",
-        "new", "said", "says", "also", "more", "than", "after", "before",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "and",
+        "but",
+        "or",
+        "not",
+        "this",
+        "that",
+        "it",
+        "its",
+        "he",
+        "she",
+        "they",
+        "we",
+        "you",
+        "new",
+        "said",
+        "says",
+        "also",
+        "more",
+        "than",
+        "after",
+        "before",
     }
     words = re.findall(r"[a-z]{3,}", text)
     keywords = list(set(w for w in words if w not in stop_words))[:15]

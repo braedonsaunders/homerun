@@ -29,25 +29,16 @@ def _is_polymarket_condition_id(value: str) -> bool:
 def _is_polymarket_token_id(value: str) -> bool:
     if _is_polymarket_condition_id(value):
         return False
-    return bool(
-        _POLYMARKET_NUMERIC_TOKEN_ID_RE.fullmatch(value)
-        or _POLYMARKET_HEX_TOKEN_ID_RE.fullmatch(value)
-    )
+    return bool(_POLYMARKET_NUMERIC_TOKEN_ID_RE.fullmatch(value) or _POLYMARKET_HEX_TOKEN_ID_RE.fullmatch(value))
 
 
 def _trim_cache(now: datetime) -> None:
-    stale = [
-        key
-        for key, (cached_at, _) in _cache.items()
-        if (now - cached_at) > _CACHE_TTL
-    ]
+    stale = [key for key, (cached_at, _) in _cache.items() if (now - cached_at) > _CACHE_TTL]
     for key in stale:
         _cache.pop(key, None)
     if len(_cache) <= _CACHE_MAX_SIZE:
         return
-    oldest = sorted(_cache.items(), key=lambda item: item[1][0])[
-        : max(0, len(_cache) - _CACHE_MAX_SIZE)
-    ]
+    oldest = sorted(_cache.items(), key=lambda item: item[1][0])[: max(0, len(_cache) - _CACHE_MAX_SIZE)]
     for key, _ in oldest:
         _cache.pop(key, None)
 
@@ -87,11 +78,7 @@ async def is_market_tradable(
     except Exception:
         info = None
 
-    tradable = (
-        polymarket_client.is_market_tradable(info, now=ref_now)
-        if isinstance(info, dict) and info
-        else True
-    )
+    tradable = polymarket_client.is_market_tradable(info, now=ref_now) if isinstance(info, dict) and info else True
     _cache[key] = (ref_now, bool(tradable))
     return bool(tradable)
 
@@ -104,13 +91,7 @@ async def get_market_tradability_map(
 ) -> dict[str, bool]:
     """Resolve a batch of market ids -> tradability boolean."""
     ref_now = now or utcnow()
-    keys = sorted(
-        {
-            _normalize_market_id(mid)
-            for mid in market_ids
-            if _normalize_market_id(mid)
-        }
-    )
+    keys = sorted({_normalize_market_id(mid) for mid in market_ids if _normalize_market_id(mid)})
     if not keys:
         return {}
 

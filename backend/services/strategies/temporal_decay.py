@@ -115,9 +115,7 @@ class TemporalDecayStrategy(BaseStrategy):
         # market_id -> (deadline_dt, first_seen_price) for decay calculation
         self._market_baselines: dict[str, tuple[datetime, float]] = {}
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         if not settings.TEMPORAL_DECAY_ENABLED:
             return []
 
@@ -200,9 +198,7 @@ class TemporalDecayStrategy(BaseStrategy):
                 opportunities.append(opp)
 
         if opportunities:
-            logger.info(
-                f"Temporal Decay: found {len(opportunities)} decay mispricing(s)"
-            )
+            logger.info(f"Temporal Decay: found {len(opportunities)} decay mispricing(s)")
 
         return opportunities
 
@@ -438,11 +434,7 @@ class TemporalDecayStrategy(BaseStrategy):
             action = "BUY"
             outcome = "NO"
             entry_price = no_price
-            token_id = (
-                market.clob_token_ids[1]
-                if market.clob_token_ids and len(market.clob_token_ids) > 1
-                else None
-            )
+            token_id = market.clob_token_ids[1] if market.clob_token_ids and len(market.clob_token_ids) > 1 else None
             direction_desc = "overpriced"
         else:
             # Market is UNDERPRICED relative to decay expectation -> buy YES
@@ -499,22 +491,13 @@ class TemporalDecayStrategy(BaseStrategy):
         if opp:
             # Override risk score to our statistical range
             opp.risk_score = risk_score
-            opp.risk_factors.append(
-                f"Statistical edge (not risk-free): "
-                f"decay deviation {abs(deviation):.1%}"
-            )
-            opp.risk_factors.append(
-                f"Deadline in {days_remaining:.0f} days "
-                f"({deadline.strftime('%Y-%m-%d')})"
-            )
+            opp.risk_factors.append(f"Statistical edge (not risk-free): decay deviation {abs(deviation):.1%}")
+            opp.risk_factors.append(f"Deadline in {days_remaining:.0f} days ({deadline.strftime('%Y-%m-%d')})")
             opp.risk_factors.insert(
                 0,
-                "DIRECTIONAL BET — not arbitrage. "
-                "Decay deviation may reflect new information, not mispricing.",
+                "DIRECTIONAL BET — not arbitrage. Decay deviation may reflect new information, not mispricing.",
             )
             if days_remaining < 7:
-                opp.risk_factors.append(
-                    "Near-deadline: steep decay but higher event uncertainty"
-                )
+                opp.risk_factors.append("Near-deadline: steep decay but higher event uncertainty")
 
         return opp

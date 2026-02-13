@@ -20,9 +20,7 @@ from services.news.feed_service import NewsArticle
 logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-'_]{2,}")
-_ENTITY_RE = re.compile(
-    r"\b([A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){0,2})\b"
-)
+_ENTITY_RE = re.compile(r"\b([A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){0,2})\b")
 
 _STOP_WORDS = {
     "about",
@@ -268,15 +266,9 @@ class ArticleClusterer:
         lowered = body_text.lower()
 
         title_tokens = [
-            token
-            for token in _TOKEN_RE.findall(title.lower())
-            if len(token) > 2 and token not in _STOP_WORDS
+            token for token in _TOKEN_RE.findall(title.lower()) if len(token) > 2 and token not in _STOP_WORDS
         ]
-        summary_tokens = [
-            token
-            for token in _TOKEN_RE.findall(lowered)
-            if len(token) > 2 and token not in _STOP_WORDS
-        ]
+        summary_tokens = [token for token in _TOKEN_RE.findall(lowered) if len(token) > 2 and token not in _STOP_WORDS]
 
         weighted_counts: Counter[str] = Counter()
         weighted_counts.update(summary_tokens)
@@ -355,4 +347,3 @@ class ArticleClusterer:
 
 
 article_clusterer = ArticleClusterer()
-

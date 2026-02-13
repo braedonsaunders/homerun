@@ -85,8 +85,7 @@ async def _run_loop() -> None:
                 5,
                 min(
                     1440,
-                    control.get("run_interval_minutes")
-                    or settings.DISCOVERY_RUN_INTERVAL_MINUTES,
+                    control.get("run_interval_minutes") or settings.DISCOVERY_RUN_INTERVAL_MINUTES,
                 ),
             )
         )
@@ -203,9 +202,9 @@ async def _run_loop() -> None:
                     },
                 )
 
-            next_scheduled_run_at = datetime.now(timezone.utc).replace(
-                microsecond=0
-            ) + timedelta(minutes=interval_minutes)
+            next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(
+                minutes=interval_minutes
+            )
             logger.info(
                 "Discovery cycle complete: wallets_discovered=%s wallets_analyzed=%s next_run_at=%s",
                 wallet_discovery._wallets_discovered_last_run,
@@ -246,9 +245,9 @@ async def _run_loop() -> None:
                         "priority_backlog_count": priority_backlog_count,
                     },
                 )
-            next_scheduled_run_at = datetime.now(timezone.utc).replace(
-                microsecond=0
-            ) + timedelta(minutes=interval_minutes)
+            next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(
+                minutes=interval_minutes
+            )
 
         await asyncio.sleep(10)
 

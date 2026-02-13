@@ -137,9 +137,7 @@ _IMPLIES_PATTERNS: list[tuple[re.Pattern, re.Pattern]] = [
     # Winning primary implies competing in general / winning nomination
     (
         re.compile(r"\bwins?\b.*\bprimary\b", re.IGNORECASE),
-        re.compile(
-            r"\b(?:wins?\b.*\b(?:general|election|nomination)|nominat)", re.IGNORECASE
-        ),
+        re.compile(r"\b(?:wins?\b.*\b(?:general|election|nomination)|nominat)", re.IGNORECASE),
     ),
     # Winning nomination implies being candidate
     (
@@ -282,8 +280,7 @@ class BayesianCascadeStrategy(BaseStrategy):
     strategy_type = StrategyType.BAYESIAN_CASCADE
     name = "Bayesian Cascade"
     description = (
-        "Graph-based belief propagation to detect mispriced "
-        "markets that haven't reacted to related market moves"
+        "Graph-based belief propagation to detect mispriced markets that haven't reacted to related market moves"
     )
 
     # Minimum price change (absolute, on 0-1 scale) to consider a market
@@ -333,9 +330,7 @@ class BayesianCascadeStrategy(BaseStrategy):
     # Graph construction
     # ------------------------------------------------------------------
 
-    def _build_graph(
-        self, markets: list[Market], prices: dict[str, dict]
-    ) -> BayesianGraph:
+    def _build_graph(self, markets: list[Market], prices: dict[str, dict]) -> BayesianGraph:
         """Build the dependency graph from all active markets."""
         graph = BayesianGraph()
 
@@ -401,9 +396,7 @@ class BayesianCascadeStrategy(BaseStrategy):
                 # Check correlation via shared entities
                 self._check_correlates(graph, a, b)
 
-    def _check_implies(
-        self, graph: BayesianGraph, source: MarketNode, target: MarketNode
-    ) -> None:
+    def _check_implies(self, graph: BayesianGraph, source: MarketNode, target: MarketNode) -> None:
         """Check if source market implies something about target market."""
         q_source = source.market.question
         q_target = target.market.question
@@ -427,9 +420,7 @@ class BayesianCascadeStrategy(BaseStrategy):
                 )
                 return  # One implication edge is enough
 
-    def _check_inverse(
-        self, graph: BayesianGraph, a: MarketNode, b: MarketNode
-    ) -> None:
+    def _check_inverse(self, graph: BayesianGraph, a: MarketNode, b: MarketNode) -> None:
         """Check if two markets are inversely related."""
         q_a = a.market.question
         q_b = b.market.question
@@ -440,9 +431,7 @@ class BayesianCascadeStrategy(BaseStrategy):
             return
 
         for pat_a, pat_b in _INVERSE_PATTERNS:
-            if (pat_a.search(q_a) and pat_b.search(q_b)) or (
-                pat_b.search(q_a) and pat_a.search(q_b)
-            ):
+            if (pat_a.search(q_a) and pat_b.search(q_b)) or (pat_b.search(q_a) and pat_a.search(q_b)):
                 strength = min(0.7, 0.3 + 0.1 * len(shared))
                 # Add bidirectional inverse edges
                 graph.add_edge(
@@ -463,9 +452,7 @@ class BayesianCascadeStrategy(BaseStrategy):
                 )
                 return
 
-    def _check_correlates(
-        self, graph: BayesianGraph, a: MarketNode, b: MarketNode
-    ) -> None:
+    def _check_correlates(self, graph: BayesianGraph, a: MarketNode, b: MarketNode) -> None:
         """
         Check if two markets are correlated via shared entities.
 
@@ -671,20 +658,12 @@ class BayesianCascadeStrategy(BaseStrategy):
             # Target should be higher than it is -> buy YES
             outcome = "YES"
             price = target.price
-            token_id = (
-                target_market.clob_token_ids[0]
-                if target_market.clob_token_ids
-                else None
-            )
+            token_id = target_market.clob_token_ids[0] if target_market.clob_token_ids else None
         else:
             # Target should be lower than it is -> buy NO
             outcome = "NO"
             price = target_market.no_price
-            token_id = (
-                target_market.clob_token_ids[1]
-                if len(target_market.clob_token_ids) > 1
-                else None
-            )
+            token_id = target_market.clob_token_ids[1] if len(target_market.clob_token_ids) > 1 else None
 
         # Model cost so ROI reflects the cascade edge, not full resolution
         # probability.  Buying YES at $0.55 expecting resolution gives 78% ROI

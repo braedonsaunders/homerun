@@ -83,9 +83,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
 
             # Fall back to synthetic detection
             if signal is None:
-                signal = self._detect_synthetic_imbalance(
-                    market, yes_price, no_price, prices
-                )
+                signal = self._detect_synthetic_imbalance(market, yes_price, no_price, prices)
 
             if signal is None:
                 continue
@@ -116,11 +114,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
             total_cost = buy_price
 
             # Build position
-            token_id = (
-                market.clob_token_ids[token_index]
-                if len(market.clob_token_ids) > token_index
-                else None
-            )
+            token_id = market.clob_token_ids[token_index] if len(market.clob_token_ids) > token_index else None
 
             positions = [
                 {
@@ -150,12 +144,8 @@ class LiquidityVacuumStrategy(BaseStrategy):
 
             if opp is not None:
                 # Override risk_score with vacuum-specific scoring
-                opp.risk_score = self._calculate_vacuum_risk(
-                    imbalance_ratio, market, thick_depth
-                )
-                opp.risk_factors = self._build_risk_factors(
-                    imbalance_ratio, market, thick_depth
-                )
+                opp.risk_score = self._calculate_vacuum_risk(imbalance_ratio, market, thick_depth)
+                opp.risk_factors = self._build_risk_factors(imbalance_ratio, market, thick_depth)
                 opportunities.append(opp)
 
         # Update stored prices for next scan velocity calculation
@@ -164,11 +154,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
         # Sort by imbalance ratio (strongest signal first)
         opportunities.sort(
             key=lambda o: next(
-                (
-                    p.get("imbalance_ratio", 0)
-                    for p in o.positions_to_take
-                    if "imbalance_ratio" in p
-                ),
+                (p.get("imbalance_ratio", 0) for p in o.positions_to_take if "imbalance_ratio" in p),
                 0,
             ),
             reverse=True,
@@ -180,20 +166,14 @@ class LiquidityVacuumStrategy(BaseStrategy):
     # Price resolution helpers
     # ------------------------------------------------------------------
 
-    def _resolve_prices(
-        self, market: Market, prices: dict[str, dict]
-    ) -> tuple[float, float]:
+    def _resolve_prices(self, market: Market, prices: dict[str, dict]) -> tuple[float, float]:
         """Return (yes_price, no_price) using live data when available."""
         yes_price = market.yes_price
         no_price = market.no_price
 
         if market.clob_token_ids:
-            yes_token = (
-                market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
-            )
-            no_token = (
-                market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
-            )
+            yes_token = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
+            no_token = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None
 
             if yes_token and yes_token in prices:
                 yes_price = prices[yes_token].get("mid", yes_price)
@@ -206,9 +186,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
     # Mode 1: Direct depth imbalance from order book data
     # ------------------------------------------------------------------
 
-    def _detect_depth_imbalance(
-        self, market: Market, prices: dict[str, dict]
-    ) -> Optional[dict]:
+    def _detect_depth_imbalance(self, market: Market, prices: dict[str, dict]) -> Optional[dict]:
         """Detect imbalance from explicit bid_depth / ask_depth in prices dict.
 
         Returns a signal dict or None.
@@ -265,9 +243,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
             "direction": direction,
             "imbalance_ratio": imbalance_ratio,
             "thick_depth": thick_depth,
-            "reason": (
-                f"Depth imbalance: bid ${bid_depth:,.0f} vs ask ${ask_depth:,.0f}"
-            ),
+            "reason": (f"Depth imbalance: bid ${bid_depth:,.0f} vs ask ${ask_depth:,.0f}"),
         }
 
     # ------------------------------------------------------------------
@@ -303,10 +279,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
         if spread_signal is not None:
             signal = spread_signal
             # Amplify imbalance ratio if velocity confirms direction
-            if (
-                velocity_signal is not None
-                and velocity_signal["direction"] == signal["direction"]
-            ):
+            if velocity_signal is not None and velocity_signal["direction"] == signal["direction"]:
                 signal["imbalance_ratio"] = (
                     signal["imbalance_ratio"] + velocity_signal["imbalance_ratio"]
                 ) / 2.0 + 1.0  # Bonus for confirmation
@@ -316,9 +289,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
         # Velocity-only signal (no spread signal)
         return velocity_signal
 
-    def _analyze_spread(
-        self, combined: float, yes_price: float, no_price: float
-    ) -> Optional[dict]:
+    def _analyze_spread(self, combined: float, yes_price: float, no_price: float) -> Optional[dict]:
         """Detect imbalance from yes + no price deviation from 1.0."""
         if combined > 1.02:
             # Excess selling pressure -- both sides priced high.
@@ -445,9 +416,7 @@ class LiquidityVacuumStrategy(BaseStrategy):
     # Price tracking for velocity
     # ------------------------------------------------------------------
 
-    def _update_prev_prices(
-        self, markets: list[Market], prices: dict[str, dict]
-    ) -> None:
+    def _update_prev_prices(self, markets: list[Market], prices: dict[str, dict]) -> None:
         """Store current prices for velocity calculation on next scan."""
         new_prev: dict[str, dict[str, float]] = {}
         for market in markets:

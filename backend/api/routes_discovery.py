@@ -75,13 +75,9 @@ async def _build_discovery_status(session: AsyncSession) -> dict:
         )
     )
     stats["current_activity"] = worker_status.get("current_activity")
-    stats["interval_minutes"] = int(
-        worker_status.get("run_interval_minutes", 60)
-    )
+    stats["interval_minutes"] = int(worker_status.get("run_interval_minutes", 60))
     stats["paused"] = bool(worker_status.get("paused", False))
-    stats["priority_backlog_mode"] = bool(
-        worker_status.get("priority_backlog_mode", True)
-    )
+    stats["priority_backlog_mode"] = bool(worker_status.get("priority_backlog_mode", True))
     stats["requested_run_at"] = worker_status.get("requested_run_at")
     return stats
 
@@ -254,9 +250,7 @@ def _extract_outcome_prices(raw: object) -> tuple[Optional[float], Optional[floa
 
 async def _load_scanner_market_history(session: AsyncSession) -> dict[str, list[dict]]:
     """Read scanner snapshot market history map used by main opportunities sparklines."""
-    result = await session.execute(
-        select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
-    )
+    result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))
     row = result.scalar_one_or_none()
     if row is None or not isinstance(row.market_history_json, dict):
         return {}
@@ -403,13 +397,7 @@ def _build_signal_validation_payload(
     if not upstream_tradable:
         reasons.append("market_not_tradable")
 
-    is_valid = (
-        has_market_id
-        and has_wallets
-        and has_direction
-        and has_price_reference
-        and price_in_bounds
-    )
+    is_valid = has_market_id and has_wallets and has_direction and has_price_reference and price_in_bounds
     is_actionable = is_valid and has_qualified_source
     is_tradeable = upstream_tradable and is_actionable
 
@@ -464,10 +452,7 @@ def _extract_outcome_labels_from_market_info(
 
     if not labels:
         question = str(
-            market_info.get("groupItemTitle")
-            or market_info.get("question")
-            or fallback_question
-            or ""
+            market_info.get("groupItemTitle") or market_info.get("question") or fallback_question or ""
         ).strip()
         if " vs " in question.lower():
             lowered = question.lower()
@@ -490,14 +475,10 @@ def _extract_outcome_prices_from_market_info(
         return None, None
 
     yes_price = _safe_float(
-        market_info.get("yes_price")
-        if market_info.get("yes_price") is not None
-        else market_info.get("yesPrice")
+        market_info.get("yes_price") if market_info.get("yes_price") is not None else market_info.get("yesPrice")
     )
     no_price = _safe_float(
-        market_info.get("no_price")
-        if market_info.get("no_price") is not None
-        else market_info.get("noPrice")
+        market_info.get("no_price") if market_info.get("no_price") is not None else market_info.get("noPrice")
     )
     if yes_price is not None or no_price is not None:
         return yes_price, no_price
@@ -546,11 +527,11 @@ async def _attach_signal_market_metadata(rows: list[dict]) -> list[dict]:
             fallback_question=str(row.get("market_question") or ""),
         )
         info_yes, info_no = _extract_outcome_prices_from_market_info(info)
-        token_ids = [
-            str(token_id).strip().lower()
-            for token_id in (info.get("token_ids") or [])
-            if str(token_id or "").strip()
-        ] if isinstance(info, dict) else []
+        token_ids = (
+            [str(token_id).strip().lower() for token_id in (info.get("token_ids") or []) if str(token_id or "").strip()]
+            if isinstance(info, dict)
+            else []
+        )
 
         existing_yes = _safe_float(row.get("yes_price"))
         existing_no = _safe_float(row.get("no_price"))
@@ -692,9 +673,7 @@ async def _attach_activity_history_fallback(
         price_f = _safe_float(price)
         if price_f is None or price_f < 0.0 or price_f > 1.01:
             continue
-        events_by_market[market_norm].append(
-            (traded_at, str(side or ""), float(price_f))
-        )
+        events_by_market[market_norm].append((traded_at, str(side or ""), float(price_f)))
 
     for idx, aliases in aliases_by_row.items():
         row = rows[idx]
@@ -765,9 +744,7 @@ async def _annotate_trader_signal_rows(
                 pool_addresses.add(normalized)
 
         tracked_rows = await session.execute(
-            select(TrackedWallet.address).where(
-                TrackedWallet.address.in_(list(unique_addresses))
-            )
+            select(TrackedWallet.address).where(TrackedWallet.address.in_(list(unique_addresses)))
         )
         for (address,) in tracked_rows.all():
             normalized = _normalize_signal_wallet_address(address)
@@ -792,11 +769,7 @@ async def _annotate_trader_signal_rows(
         tracked_wallets = sum(1 for addr in wallet_addresses if addr in tracked_addresses)
         group_wallets = sum(1 for addr in wallet_addresses if group_ids_by_address.get(addr))
         matched_group_ids = sorted(
-            {
-                group_id
-                for addr in wallet_addresses
-                for group_id in group_ids_by_address.get(addr, set())
-            }
+            {group_id for addr in wallet_addresses for group_id in group_ids_by_address.get(addr, set())}
         )
 
         has_qualified_source = bool(pool_wallets or tracked_wallets or group_wallets)
@@ -843,9 +816,7 @@ def _first_valid_trade_time(trade: dict) -> Optional[datetime]:
             if not text:
                 continue
             if "T" in text or "-" in text:
-                return datetime.fromisoformat(
-                    text.replace("Z", "+00:00").replace("+00:00", "")
-                )
+                return datetime.fromisoformat(text.replace("Z", "+00:00").replace("+00:00", ""))
             return datetime.fromtimestamp(float(text))
         except Exception:
             continue
@@ -922,9 +893,7 @@ async def _fetch_group_payload(
     profile_map: dict[str, DiscoveredWallet] = {}
     if all_addresses:
         profile_rows = await session.execute(
-            select(DiscoveredWallet).where(
-                DiscoveredWallet.address.in_(list(all_addresses))
-            )
+            select(DiscoveredWallet).where(DiscoveredWallet.address.in_(list(all_addresses)))
         )
         for wallet in profile_rows.scalars().all():
             profile_map[wallet.address.lower()] = wallet
@@ -955,13 +924,9 @@ async def _fetch_group_payload(
                         "source": member.source,
                         "confidence": member.confidence,
                         "notes": member.notes,
-                        "added_at": member.added_at.isoformat()
-                        if member.added_at
-                        else None,
+                        "added_at": member.added_at.isoformat() if member.added_at else None,
                         "username": profile.username if profile else None,
-                        "composite_score": (
-                            profile.composite_score if profile else None
-                        ),
+                        "composite_score": (profile.composite_score if profile else None),
                         "quality_score": profile.quality_score if profile else None,
                         "activity_score": profile.activity_score if profile else None,
                         "pool_tier": profile.pool_tier if profile else None,
@@ -990,9 +955,7 @@ async def get_leaderboard(
     ),
     sort_dir: str = Query(default="desc", description="asc or desc"),
     tags: Optional[str] = Query(default=None, description="Comma-separated tag filter"),
-    recommendation: Optional[str] = Query(
-        default=None, description="copy_candidate, monitor, avoid"
-    ),
+    recommendation: Optional[str] = Query(default=None, description="copy_candidate, monitor, avoid"),
     time_period: Optional[str] = Query(
         default=None,
         description="Time period filter: 24h, 7d, 30d, 90d, or all (default all)",
@@ -1093,10 +1056,7 @@ async def get_leaderboard(
         if market_category and market_category.lower() not in valid_market_categories:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Invalid market_category. Must be one of: "
-                    f"{valid_market_categories}"
-                ),
+                detail=(f"Invalid market_category. Must be one of: {valid_market_categories}"),
             )
 
         # Map time_period to rolling window key
@@ -1138,6 +1098,7 @@ async def get_leaderboard(
         if (result.get("total") or 0) == 0 and offset == 0:
             try:
                 from services.polymarket import polymarket_client
+
                 raw = await polymarket_client.get_leaderboard(
                     limit=min(limit, 50),
                     time_period="ALL",
@@ -1362,11 +1323,7 @@ async def get_smart_pool_stats(session: AsyncSession = Depends(get_db_session)):
         stats = worker.get("stats") or {}
         if isinstance(stats, dict):
             pool_stats = stats.get("pool_stats")
-            if (
-                isinstance(pool_stats, dict)
-                and "active_1h" in pool_stats
-                and "active_24h" in pool_stats
-            ):
+            if isinstance(pool_stats, dict) and "active_1h" in pool_stats and "active_24h" in pool_stats:
                 # Prefer DB-computed values for live counts, but preserve worker
                 # timing metadata when canonical values are empty in API-only processes.
                 merged = {**pool_stats, **canonical}
@@ -1441,9 +1398,7 @@ async def get_pool_members(
     """List smart-pool members with actionable flags for management workflows."""
     try:
         valid_sort_fields = {
-            "selection_score": lambda row: float(
-                row.get("selection_score") or row.get("composite_score") or 0.0
-            ),
+            "selection_score": lambda row: float(row.get("selection_score") or row.get("composite_score") or 0.0),
             "composite_score": lambda row: float(row.get("composite_score") or 0.0),
             "quality_score": lambda row: float(row.get("quality_score") or 0.0),
             "activity_score": lambda row: float(row.get("activity_score") or 0.0),
@@ -1467,9 +1422,7 @@ async def get_pool_members(
 
         wallets_result = await session.execute(select(DiscoveredWallet))
         wallets = list(wallets_result.scalars().all())
-        tracked_result = await session.execute(
-            select(TrackedWallet.address, TrackedWallet.label)
-        )
+        tracked_result = await session.execute(select(TrackedWallet.address, TrackedWallet.label))
         tracked_rows = list(tracked_result.all())
         tracked_addresses = {str(row[0]).lower() for row in tracked_rows}
         tracked_labels = {
@@ -1479,18 +1432,12 @@ async def get_pool_members(
         }
 
         cluster_ids = sorted(
-            {
-                str(w.cluster_id).strip()
-                for w in wallets
-                if w.cluster_id is not None and str(w.cluster_id).strip()
-            }
+            {str(w.cluster_id).strip() for w in wallets if w.cluster_id is not None and str(w.cluster_id).strip()}
         )
         cluster_labels: dict[str, str] = {}
         if cluster_ids:
             cluster_rows = await session.execute(
-                select(WalletCluster.id, WalletCluster.label).where(
-                    WalletCluster.id.in_(cluster_ids)
-                )
+                select(WalletCluster.id, WalletCluster.label).where(WalletCluster.id.in_(cluster_ids))
             )
             cluster_labels = {
                 str(row[0]).strip().lower(): str(row[1]).strip()
@@ -1522,9 +1469,7 @@ async def get_pool_members(
             addr_l = wallet.address.lower()
             is_tracked = addr_l in tracked_addresses
             tracked_label = tracked_labels.get(addr_l)
-            cluster_label = cluster_labels.get(
-                str(wallet.cluster_id or "").strip().lower()
-            )
+            cluster_label = cluster_labels.get(str(wallet.cluster_id or "").strip().lower())
 
             username = str(wallet.username or "").strip() or None
             display_name = username
@@ -1540,11 +1485,7 @@ async def get_pool_members(
             if not isinstance(selection_meta, dict):
                 selection_meta = {}
             raw_reasons = selection_meta.get("reasons")
-            selection_reasons = (
-                [r for r in raw_reasons if isinstance(r, dict)]
-                if isinstance(raw_reasons, list)
-                else []
-            )
+            selection_reasons = [r for r in raw_reasons if isinstance(r, dict)] if isinstance(raw_reasons, list) else []
             selection_breakdown = selection_meta.get("score_breakdown")
             if not isinstance(selection_breakdown, dict):
                 selection_breakdown = {}
@@ -1572,20 +1513,14 @@ async def get_pool_members(
                 )
             except Exception:
                 selection_percentile = None
-            raw_eligibility_status = str(
-                selection_meta.get("eligibility_status") or ""
-            ).strip().lower()
+            raw_eligibility_status = str(selection_meta.get("eligibility_status") or "").strip().lower()
             if raw_eligibility_status in {"eligible", "blocked"}:
                 eligibility_status = raw_eligibility_status
             else:
                 eligibility_status = "eligible" if wallet.in_top_pool else "blocked"
             raw_blockers = selection_meta.get("eligibility_blockers")
             if isinstance(raw_blockers, list):
-                eligibility_blockers = [
-                    item
-                    for item in raw_blockers
-                    if isinstance(item, (dict, str))
-                ]
+                eligibility_blockers = [item for item in raw_blockers if isinstance(item, (dict, str))]
             else:
                 eligibility_blockers = []
             try:
@@ -1674,9 +1609,7 @@ async def get_pool_members(
                 "quality_gate_version": quality_gate_version,
                 "trades_1h": wallet.trades_1h or 0,
                 "trades_24h": wallet.trades_24h or 0,
-                "last_trade_at": wallet.last_trade_at.isoformat()
-                if wallet.last_trade_at
-                else None,
+                "last_trade_at": wallet.last_trade_at.isoformat() if wallet.last_trade_at else None,
                 "total_trades": wallet.total_trades or 0,
                 "total_pnl": wallet.total_pnl or 0.0,
                 "win_rate": normalized_win_rate,
@@ -1901,28 +1834,16 @@ async def delete_pool_wallet(
         address = validate_eth_address(wallet_address).lower()
 
         removed_discovered = (
-            await session.execute(
-                delete(DiscoveredWallet).where(DiscoveredWallet.address == address)
-            )
+            await session.execute(delete(DiscoveredWallet).where(DiscoveredWallet.address == address))
         ).rowcount or 0
         removed_rollups = (
-            await session.execute(
-                delete(WalletActivityRollup).where(
-                    WalletActivityRollup.wallet_address == address
-                )
-            )
+            await session.execute(delete(WalletActivityRollup).where(WalletActivityRollup.wallet_address == address))
         ).rowcount or 0
         removed_tracked = (
-            await session.execute(
-                delete(TrackedWallet).where(TrackedWallet.address == address)
-            )
+            await session.execute(delete(TrackedWallet).where(TrackedWallet.address == address))
         ).rowcount or 0
         removed_group_memberships = (
-            await session.execute(
-                delete(TraderGroupMember).where(
-                    TraderGroupMember.wallet_address == address
-                )
-            )
+            await session.execute(delete(TraderGroupMember).where(TraderGroupMember.wallet_address == address))
         ).rowcount or 0
         await session.commit()
 
@@ -1949,11 +1870,7 @@ async def promote_tracked_wallets_to_pool(
     """Promote tracked-wallet list into manual-included pool candidates."""
     try:
         tracked_rows = (
-            (
-                await session.execute(
-                    select(TrackedWallet).order_by(TrackedWallet.added_at.asc()).limit(limit)
-                )
-            )
+            (await session.execute(select(TrackedWallet).order_by(TrackedWallet.added_at.asc()).limit(limit)))
             .scalars()
             .all()
         )
@@ -1962,13 +1879,7 @@ async def promote_tracked_wallets_to_pool(
             return {"status": "success", "promoted": 0, "created": 0, "updated": 0}
 
         existing_rows = (
-            (
-                await session.execute(
-                    select(DiscoveredWallet).where(
-                        DiscoveredWallet.address.in_(tracked_addresses)
-                    )
-                )
-            )
+            (await session.execute(select(DiscoveredWallet).where(DiscoveredWallet.address.in_(tracked_addresses))))
             .scalars()
             .all()
         )
@@ -2252,9 +2163,7 @@ async def create_trader_group(
                 detail=f"Invalid source_type. Must be one of: {sorted(GROUP_SOURCE_TYPES)}",
             )
 
-        existing = await session.execute(
-            select(TraderGroup).where(func.lower(TraderGroup.name) == name.lower())
-        )
+        existing = await session.execute(select(TraderGroup).where(func.lower(TraderGroup.name) == name.lower()))
         if existing.scalars().first():
             raise HTTPException(
                 status_code=409,
@@ -2335,14 +2244,10 @@ async def add_group_members(
             return {"status": "success", "added_members": 0, "tracked_members": 0}
 
         existing_members = await session.execute(
-            select(TraderGroupMember.wallet_address).where(
-                TraderGroupMember.group_id == group_id
-            )
+            select(TraderGroupMember.wallet_address).where(TraderGroupMember.group_id == group_id)
         )
         existing_addresses = {
-            str(address).lower()
-            for address in existing_members.scalars().all()
-            if isinstance(address, str)
+            str(address).lower() for address in existing_members.scalars().all() if isinstance(address, str)
         }
 
         to_add = [addr for addr in addresses if addr not in existing_addresses]
@@ -2431,9 +2336,7 @@ async def delete_trader_group(
         if not group:
             raise HTTPException(status_code=404, detail="Trader group not found")
 
-        members_result = await session.execute(
-            select(TraderGroupMember).where(TraderGroupMember.group_id == group_id)
-        )
+        members_result = await session.execute(select(TraderGroupMember).where(TraderGroupMember.group_id == group_id))
         for member in members_result.scalars().all():
             await session.delete(member)
         await session.delete(group)
@@ -2457,9 +2360,7 @@ async def track_group_members(
             raise HTTPException(status_code=404, detail="Trader group not found")
 
         member_result = await session.execute(
-            select(TraderGroupMember.wallet_address).where(
-                TraderGroupMember.group_id == group_id
-            )
+            select(TraderGroupMember.wallet_address).where(TraderGroupMember.group_id == group_id)
         )
         addresses = [addr for addr in member_result.scalars().all() if isinstance(addr, str)]
 
@@ -2492,9 +2393,7 @@ async def get_group_suggestions(
 
         existing_result = await session.execute(select(TraderGroup.name))
         existing_names = {
-            str(name).strip().lower()
-            for name in existing_result.scalars().all()
-            if isinstance(name, str)
+            str(name).strip().lower() for name in existing_result.scalars().all() if isinstance(name, str)
         }
 
         # 1) Cluster-driven suggestions (entity-linked wallets)
@@ -2577,9 +2476,7 @@ async def get_group_suggestions(
                     "id": _suggestion_id("pool", tier),
                     "kind": "pool_tier",
                     "name": name,
-                    "description": (
-                        f"Auto-group from discovery smart pool tier '{tier}'."
-                    ),
+                    "description": (f"Auto-group from discovery smart pool tier '{tier}'."),
                     "wallet_count": len(addresses),
                     "wallet_addresses": addresses,
                     "avg_composite_score": round(avg_comp, 4),
@@ -2615,7 +2512,7 @@ async def get_group_suggestions(
             unique_wallets = {w.address.lower(): w for w in tagged_wallets}
             rows = sorted(
                 unique_wallets.values(),
-                key=lambda w: (w.composite_score or 0.0),
+                key=lambda w: w.composite_score or 0.0,
                 reverse=True,
             )
             if len(rows) < min_group_size:
@@ -2624,17 +2521,13 @@ async def get_group_suggestions(
             display_tag = tag.replace("_", " ").title()
             name = f"{display_tag} Traders"
             addresses = [w.address.lower() for w in rows[:200]]
-            avg_comp = sum((w.composite_score or 0.0) for w in rows[:200]) / len(
-                addresses
-            )
+            avg_comp = sum((w.composite_score or 0.0) for w in rows[:200]) / len(addresses)
             suggestions.append(
                 {
                     "id": _suggestion_id("tag", tag),
                     "kind": "tag",
                     "name": name,
-                    "description": (
-                        f"High-quality discovered traders sharing tag '{tag}'."
-                    ),
+                    "description": (f"High-quality discovered traders sharing tag '{tag}'."),
                     "wallet_count": len(addresses),
                     "wallet_addresses": addresses,
                     "avg_composite_score": round(avg_comp, 4),
@@ -2788,9 +2681,7 @@ async def get_cross_platform_arb():
     between Polymarket and Kalshi on the same underlying events.
     """
     try:
-        activity = (
-            await wallet_intelligence.cross_platform.get_cross_platform_arb_activity()
-        )
+        activity = await wallet_intelligence.cross_platform.get_cross_platform_arb_activity()
         return activity
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

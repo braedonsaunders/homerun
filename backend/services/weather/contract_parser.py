@@ -142,9 +142,7 @@ def _build_temp_range_contract(
     )
 
 
-def _parse_temperature_band(
-    text: str, default_unit: Optional[str]
-) -> tuple[str, float, Optional[float], str] | None:
+def _parse_temperature_band(text: str, default_unit: Optional[str]) -> tuple[str, float, Optional[float], str] | None:
     """Parse threshold/range bands from group labels or market text.
 
     Returns:
@@ -155,13 +153,7 @@ def _parse_temperature_band(
         return None
 
     t = text.strip()
-    t_norm = (
-        t.replace("º", "°")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("−", "-")
-        .replace(" to ", "-")
-    )
+    t_norm = t.replace("º", "°").replace("–", "-").replace("—", "-").replace("−", "-").replace(" to ", "-")
     unit = _detect_unit(t_norm) or default_unit
     if unit is None:
         return None
@@ -184,9 +176,7 @@ def _parse_temperature_band(
         t_norm,
         flags=re.IGNORECASE,
     )
-    if high_match and any(
-        k in t_norm.lower() for k in [">", "above", "over", "at least", "higher", "+"]
-    ):
+    if high_match and any(k in t_norm.lower() for k in [">", "above", "over", "at least", "higher", "+"]):
         val = float(high_match.group(1))
         explicit = high_match.group(2).upper() if high_match.group(2) else None
         return ("threshold_gt", val, None, explicit or unit)
@@ -197,9 +187,7 @@ def _parse_temperature_band(
         t_norm,
         flags=re.IGNORECASE,
     )
-    if low_match and any(
-        k in t_norm.lower() for k in ["<", "below", "under", "at most", "lower"]
-    ):
+    if low_match and any(k in t_norm.lower() for k in ["<", "below", "under", "at most", "lower"]):
         val = float(low_match.group(1))
         explicit = low_match.group(2).upper() if low_match.group(2) else None
         return ("threshold_lt", val, None, explicit or unit)
@@ -264,9 +252,7 @@ def parse_weather_contract(
     if target_time is None:
         if resolution_date is not None:
             target_time = (
-                resolution_date
-                if resolution_date.tzinfo is not None
-                else resolution_date.replace(tzinfo=timezone.utc)
+                resolution_date if resolution_date.tzinfo is not None else resolution_date.replace(tzinfo=timezone.utc)
             )
         else:
             target_time = datetime.now(timezone.utc)
@@ -302,11 +288,7 @@ def parse_weather_contract(
         raw_val = float(postfix_threshold_match.group(1))
         unit = postfix_threshold_match.group(2).upper()
         suffix = postfix_threshold_match.group(0).lower()
-        op_text = (
-            "above"
-            if ("+" in suffix or "higher" in suffix or "above" in suffix)
-            else "below"
-        )
+        op_text = "above" if ("+" in suffix or "higher" in suffix or "above" in suffix) else "below"
         return _build_temp_threshold_contract(
             location=location,
             target_time=target_time,

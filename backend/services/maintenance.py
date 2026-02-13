@@ -47,30 +47,18 @@ class MaintenanceService:
         try:
             async with AsyncSessionLocal() as session:
                 row = (
-                    await session.execute(
-                        select(AppSettings).where(AppSettings.id == "default")
-                    )
+                    await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 ).scalar_one_or_none()
                 if not row:
                     return config
                 config["enabled"] = bool(
-                    row.market_cache_hygiene_enabled
-                    if row.market_cache_hygiene_enabled is not None
-                    else True
+                    row.market_cache_hygiene_enabled if row.market_cache_hygiene_enabled is not None else True
                 )
-                config["interval_hours"] = int(
-                    row.market_cache_hygiene_interval_hours or 6
-                )
+                config["interval_hours"] = int(row.market_cache_hygiene_interval_hours or 6)
                 config["retention_days"] = int(row.market_cache_retention_days or 120)
-                config["reference_lookback_days"] = int(
-                    row.market_cache_reference_lookback_days or 45
-                )
-                config["weak_entry_grace_days"] = int(
-                    row.market_cache_weak_entry_grace_days or 7
-                )
-                config["max_entries_per_slug"] = int(
-                    row.market_cache_max_entries_per_slug or 3
-                )
+                config["reference_lookback_days"] = int(row.market_cache_reference_lookback_days or 45)
+                config["weak_entry_grace_days"] = int(row.market_cache_weak_entry_grace_days or 7)
+                config["max_entries_per_slug"] = int(row.market_cache_max_entries_per_slug or 3)
         except Exception as e:
             logger.warning("Failed to read market cache hygiene settings", error=str(e))
         return config
@@ -82,9 +70,7 @@ class MaintenanceService:
             trade_counts = {}
             for status in TradeStatus:
                 result = await session.execute(
-                    select(func.count(SimulationTrade.id)).where(
-                        SimulationTrade.status == status
-                    )
+                    select(func.count(SimulationTrade.id)).where(SimulationTrade.status == status)
                 )
                 trade_counts[status.value] = result.scalar() or 0
 
@@ -92,38 +78,26 @@ class MaintenanceService:
             total_trades = await session.execute(select(func.count(SimulationTrade.id)))
 
             # Count simulation positions
-            total_positions = await session.execute(
-                select(func.count(SimulationPosition.id))
-            )
+            total_positions = await session.execute(select(func.count(SimulationPosition.id)))
             open_positions = await session.execute(
-                select(func.count(SimulationPosition.id)).where(
-                    SimulationPosition.status == TradeStatus.OPEN
-                )
+                select(func.count(SimulationPosition.id)).where(SimulationPosition.status == TradeStatus.OPEN)
             )
 
             # Count wallet trades
             wallet_trades = await session.execute(select(func.count(WalletTrade.id)))
 
             # Count opportunity history
-            opportunities = await session.execute(
-                select(func.count(OpportunityHistory.id))
-            )
+            opportunities = await session.execute(select(func.count(OpportunityHistory.id)))
 
             # Count anomalies
             anomalies = await session.execute(select(func.count(DetectedAnomaly.id)))
             resolved_anomalies = await session.execute(
-                select(func.count(DetectedAnomaly.id)).where(
-                    DetectedAnomaly.is_resolved
-                )
+                select(func.count(DetectedAnomaly.id)).where(DetectedAnomaly.is_resolved)
             )
 
             # Get oldest and newest trade dates
-            oldest_trade = await session.execute(
-                select(func.min(SimulationTrade.executed_at))
-            )
-            newest_trade = await session.execute(
-                select(func.max(SimulationTrade.executed_at))
-            )
+            oldest_trade = await session.execute(select(func.min(SimulationTrade.executed_at)))
+            newest_trade = await session.execute(select(func.max(SimulationTrade.executed_at)))
 
             return {
                 "simulation_trades": {
@@ -141,12 +115,8 @@ class MaintenanceService:
                     "resolved": resolved_anomalies.scalar() or 0,
                 },
                 "date_range": {
-                    "oldest_trade": oldest_trade.scalar().isoformat()
-                    if oldest_trade.scalar()
-                    else None,
-                    "newest_trade": newest_trade.scalar().isoformat()
-                    if newest_trade.scalar()
-                    else None,
+                    "oldest_trade": oldest_trade.scalar().isoformat() if oldest_trade.scalar() else None,
+                    "newest_trade": newest_trade.scalar().isoformat() if newest_trade.scalar() else None,
                 },
             }
 
@@ -186,9 +156,7 @@ class MaintenanceService:
 
             # Get trade IDs to delete (for position cleanup)
             trades_to_delete = await session.execute(
-                select(SimulationTrade.id, SimulationTrade.opportunity_id).where(
-                    and_(*conditions)
-                )
+                select(SimulationTrade.id, SimulationTrade.opportunity_id).where(and_(*conditions))
             )
             trade_data = trades_to_delete.all()
             trade_ids = [t[0] for t in trade_data]
@@ -199,15 +167,11 @@ class MaintenanceService:
 
             # Delete associated positions
             positions_deleted = await session.execute(
-                delete(SimulationPosition).where(
-                    SimulationPosition.opportunity_id.in_(opportunity_ids)
-                )
+                delete(SimulationPosition).where(SimulationPosition.opportunity_id.in_(opportunity_ids))
             )
 
             # Delete trades
-            trades_deleted = await session.execute(
-                delete(SimulationTrade).where(SimulationTrade.id.in_(trade_ids))
-            )
+            trades_deleted = await session.execute(delete(SimulationTrade).where(SimulationTrade.id.in_(trade_ids)))
 
             await session.commit()
 
@@ -224,9 +188,7 @@ class MaintenanceService:
                 "cutoff_date": cutoff_date.isoformat(),
             }
 
-    async def expire_old_open_trades(
-        self, older_than_days: int = DEFAULT_OPEN_TRADE_EXPIRY
-    ) -> dict:
+    async def expire_old_open_trades(self, older_than_days: int = DEFAULT_OPEN_TRADE_EXPIRY) -> dict:
         """
         Mark old open trades as expired/cancelled.
 
@@ -264,9 +226,7 @@ class MaintenanceService:
                 opportunity_ids = [t.opportunity_id for t in trades if t.opportunity_id]
                 if opportunity_ids:
                     positions = await session.execute(
-                        select(SimulationPosition).where(
-                            SimulationPosition.opportunity_id.in_(opportunity_ids)
-                        )
+                        select(SimulationPosition).where(SimulationPosition.opportunity_id.in_(opportunity_ids))
                     )
                     for pos in positions.scalars():
                         pos.status = TradeStatus.CANCELLED
@@ -321,9 +281,7 @@ class MaintenanceService:
                 "cutoff_date": cutoff_date.isoformat(),
             }
 
-    async def cleanup_anomalies(
-        self, older_than_days: int = DEFAULT_ANOMALY_AGE, resolved_only: bool = True
-    ) -> dict:
+    async def cleanup_anomalies(self, older_than_days: int = DEFAULT_ANOMALY_AGE, resolved_only: bool = True) -> dict:
         """
         Delete old anomalies.
 
@@ -342,9 +300,7 @@ class MaintenanceService:
             if resolved_only:
                 conditions.append(DetectedAnomaly.is_resolved)
 
-            result = await session.execute(
-                delete(DetectedAnomaly).where(and_(*conditions))
-            )
+            result = await session.execute(delete(DetectedAnomaly).where(and_(*conditions)))
             await session.commit()
 
             logger.info(
@@ -359,9 +315,7 @@ class MaintenanceService:
                 "cutoff_date": cutoff_date.isoformat(),
             }
 
-    async def delete_all_trades(
-        self, account_id: Optional[str] = None, confirm: bool = False
-    ) -> dict:
+    async def delete_all_trades(self, account_id: Optional[str] = None, confirm: bool = False) -> dict:
         """
         Delete ALL trades (nuclear option).
 
@@ -380,24 +334,18 @@ class MaintenanceService:
                 # Delete for specific account
                 # Get opportunity IDs first
                 trades = await session.execute(
-                    select(SimulationTrade.opportunity_id).where(
-                        SimulationTrade.account_id == account_id
-                    )
+                    select(SimulationTrade.opportunity_id).where(SimulationTrade.account_id == account_id)
                 )
                 [t[0] for t in trades.all() if t[0]]
 
                 # Delete positions
                 positions_result = await session.execute(
-                    delete(SimulationPosition).where(
-                        SimulationPosition.account_id == account_id
-                    )
+                    delete(SimulationPosition).where(SimulationPosition.account_id == account_id)
                 )
 
                 # Delete trades
                 trades_result = await session.execute(
-                    delete(SimulationTrade).where(
-                        SimulationTrade.account_id == account_id
-                    )
+                    delete(SimulationTrade).where(SimulationTrade.account_id == account_id)
                 )
             else:
                 # Delete everything
@@ -419,9 +367,7 @@ class MaintenanceService:
                 "account_id": account_id,
             }
 
-    async def delete_trades_by_status(
-        self, statuses: list[TradeStatus], account_id: Optional[str] = None
-    ) -> dict:
+    async def delete_trades_by_status(self, statuses: list[TradeStatus], account_id: Optional[str] = None) -> dict:
         """
         Delete trades by status.
 
@@ -439,25 +385,19 @@ class MaintenanceService:
                 conditions.append(SimulationTrade.account_id == account_id)
 
             # Get opportunity IDs for position cleanup
-            trades = await session.execute(
-                select(SimulationTrade.opportunity_id).where(and_(*conditions))
-            )
+            trades = await session.execute(select(SimulationTrade.opportunity_id).where(and_(*conditions)))
             opportunity_ids = [t[0] for t in trades.all() if t[0]]
 
             # Delete positions
             positions_deleted = 0
             if opportunity_ids:
                 positions_result = await session.execute(
-                    delete(SimulationPosition).where(
-                        SimulationPosition.opportunity_id.in_(opportunity_ids)
-                    )
+                    delete(SimulationPosition).where(SimulationPosition.opportunity_id.in_(opportunity_ids))
                 )
                 positions_deleted = positions_result.rowcount
 
             # Delete trades
-            trades_result = await session.execute(
-                delete(SimulationTrade).where(and_(*conditions))
-            )
+            trades_result = await session.execute(delete(SimulationTrade).where(and_(*conditions)))
 
             await session.commit()
 
@@ -498,24 +438,16 @@ class MaintenanceService:
         results = {}
 
         # 1. Expire old open trades first
-        results["expired_trades"] = await self.expire_old_open_trades(
-            older_than_days=open_trade_expiry_days
-        )
+        results["expired_trades"] = await self.expire_old_open_trades(older_than_days=open_trade_expiry_days)
 
         # 2. Clean up resolved trades
-        results["resolved_trades"] = await self.cleanup_resolved_trades(
-            older_than_days=resolved_trade_days
-        )
+        results["resolved_trades"] = await self.cleanup_resolved_trades(older_than_days=resolved_trade_days)
 
         # 3. Clean up wallet trades
-        results["wallet_trades"] = await self.cleanup_wallet_trades(
-            older_than_days=wallet_trade_days
-        )
+        results["wallet_trades"] = await self.cleanup_wallet_trades(older_than_days=wallet_trade_days)
 
         # 4. Clean up anomalies
-        results["anomalies"] = await self.cleanup_anomalies(
-            older_than_days=anomaly_days
-        )
+        results["anomalies"] = await self.cleanup_anomalies(older_than_days=anomaly_days)
 
         # 5. Prune stale/mismatched market metadata cache entries
         try:
@@ -525,9 +457,7 @@ class MaintenanceService:
                     force=True,
                     interval_hours=market_cache_cfg["interval_hours"],
                     retention_days=market_cache_cfg["retention_days"],
-                    reference_lookback_days=market_cache_cfg[
-                        "reference_lookback_days"
-                    ],
+                    reference_lookback_days=market_cache_cfg["reference_lookback_days"],
                     weak_entry_grace_days=market_cache_cfg["weak_entry_grace_days"],
                     max_entries_per_slug=market_cache_cfg["max_entries_per_slug"],
                 )
@@ -541,9 +471,7 @@ class MaintenanceService:
 
         return results
 
-    async def start_background_cleanup(
-        self, interval_hours: int = 24, cleanup_config: Optional[dict] = None
-    ):
+    async def start_background_cleanup(self, interval_hours: int = 24, cleanup_config: Optional[dict] = None):
         """
         Start background cleanup task that runs periodically.
 
@@ -568,15 +496,9 @@ class MaintenanceService:
 
                 # Run full cleanup with configured thresholds
                 await self.full_cleanup(
-                    resolved_trade_days=config.get(
-                        "resolved_trade_days", self.DEFAULT_RESOLVED_TRADE_AGE
-                    ),
-                    open_trade_expiry_days=config.get(
-                        "open_trade_expiry_days", self.DEFAULT_OPEN_TRADE_EXPIRY
-                    ),
-                    wallet_trade_days=config.get(
-                        "wallet_trade_days", self.DEFAULT_WALLET_TRADE_AGE
-                    ),
+                    resolved_trade_days=config.get("resolved_trade_days", self.DEFAULT_RESOLVED_TRADE_AGE),
+                    open_trade_expiry_days=config.get("open_trade_expiry_days", self.DEFAULT_OPEN_TRADE_EXPIRY),
+                    wallet_trade_days=config.get("wallet_trade_days", self.DEFAULT_WALLET_TRADE_AGE),
                     anomaly_days=config.get("anomaly_days", self.DEFAULT_ANOMALY_AGE),
                 )
 

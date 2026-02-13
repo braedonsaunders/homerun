@@ -101,8 +101,9 @@ def _conflict_to_signal(event: ConflictEvent) -> WorldSignal:
         longitude=event.longitude,
         title=f"{event.event_type.title()} in {event.country}",
         description=(
-            f"{event.sub_event_type} — {event.fatalities} fatalities. "
-            f"{event.notes[:200]}" if event.notes else event.sub_event_type
+            f"{event.sub_event_type} — {event.fatalities} fatalities. {event.notes[:200]}"
+            if event.notes
+            else event.sub_event_type
         ),
         source="acled",
         metadata={
@@ -124,8 +125,7 @@ def _tension_to_signal(tension: CountryPairTension) -> WorldSignal:
         country=f"{tension.country_a}-{tension.country_b}",
         title=f"Tension: {tension.country_a}-{tension.country_b} ({tension.tension_score:.0f})",
         description=(
-            f"Trend: {tension.trend}, {tension.event_count} events, "
-            f"Goldstein: {tension.avg_goldstein_scale:.1f}"
+            f"Trend: {tension.trend}, {tension.event_count} events, Goldstein: {tension.avg_goldstein_scale:.1f}"
         ),
         source="gdelt",
         metadata={
@@ -147,11 +147,7 @@ def _instability_to_signal(score: CountryInstabilityScore) -> WorldSignal:
         severity=severity,
         country=score.iso3,
         title=f"Instability: {score.iso3} ({score.score:.0f}/100)",
-        description=(
-            f"Trend: {score.trend}, "
-            f"24h change: {score.change_24h:+.1f}, "
-            f"7d change: {score.change_7d:+.1f}"
-        ),
+        description=(f"Trend: {score.trend}, 24h change: {score.change_24h:+.1f}, 7d change: {score.change_7d:+.1f}"),
         source="cii",
         metadata={
             "components": score.components,
@@ -172,8 +168,7 @@ def _convergence_to_signal(zone: ConvergenceZone) -> WorldSignal:
         longitude=zone.longitude,
         title=f"Convergence: {len(zone.signal_types)} types at {zone.grid_key}",
         description=(
-            f"Signals: {', '.join(sorted(zone.signal_types))}, "
-            f"Count: {zone.signal_count}, Country: {zone.country}"
+            f"Signals: {', '.join(sorted(zone.signal_types))}, Count: {zone.signal_count}, Country: {zone.country}"
         ),
         source="convergence_detector",
         metadata={
@@ -445,9 +440,7 @@ class WorldSignalAggregator:
             health = acled_client.get_health()
             acled_error = str(health.get("last_error") or "").strip() or None
             acled_authenticated = bool(health.get("authenticated"))
-            acled_ok = (not acled_error) or (not acled_authenticated) or _is_benign_provider_error(
-                acled_error
-            )
+            acled_ok = (not acled_error) or (not acled_authenticated) or _is_benign_provider_error(acled_error)
             _record_source(
                 "acled",
                 started,
@@ -564,9 +557,7 @@ class WorldSignalAggregator:
         try:
             gdelt_enabled = bool(getattr(settings, "WORLD_INTEL_GDELT_NEWS_ENABLED", True))
             if gdelt_enabled:
-                gdelt_articles = await gdelt_world_news_service.fetch_all(
-                    consumer="world_intelligence"
-                )
+                gdelt_articles = await gdelt_world_news_service.fetch_all(consumer="world_intelligence")
                 for article in gdelt_articles:
                     signals.append(_gdelt_article_to_signal(article))
             gdelt_health = gdelt_world_news_service.get_health()
@@ -597,9 +588,7 @@ class WorldSignalAggregator:
             if usgs_enabled:
                 earthquakes = await usgs_client.fetch_earthquakes(
                     feed="m4.5_day",
-                    min_magnitude=float(
-                        getattr(settings, "WORLD_INTEL_USGS_MIN_MAGNITUDE", 4.5) or 4.5
-                    ),
+                    min_magnitude=float(getattr(settings, "WORLD_INTEL_USGS_MIN_MAGNITUDE", 4.5) or 4.5),
                 )
                 for quake in earthquakes:
                     signals.append(_earthquake_to_signal(quake))
@@ -689,9 +678,7 @@ class WorldSignalAggregator:
                     },
                 )
 
-            min_types = int(
-                max(2, getattr(settings, "WORLD_INTEL_CONVERGENCE_MIN_TYPES", 2) or 2)
-            )
+            min_types = int(max(2, getattr(settings, "WORLD_INTEL_CONVERGENCE_MIN_TYPES", 2) or 2))
             convergences = convergence_detector.detect_convergences(min_types=min_types)
             for cz in convergences:
                 signals.append(_convergence_to_signal(cz))
@@ -856,9 +843,7 @@ class WorldSignalAggregator:
 
             for market in active_markets:
                 market_id = str(getattr(market, "market_id", getattr(market, "id", "")))
-                question = str(
-                    getattr(market, "question", getattr(market, "title", ""))
-                ).lower()
+                question = str(getattr(market, "question", getattr(market, "title", ""))).lower()
 
                 relevance = 0.0
 
@@ -930,11 +915,7 @@ class WorldSignalAggregator:
             "total": len(self._last_signals),
             "by_type": by_type,
             "by_severity": by_severity,
-            "last_collection_at": (
-                self._last_collection_at.isoformat()
-                if self._last_collection_at
-                else None
-            ),
+            "last_collection_at": (self._last_collection_at.isoformat() if self._last_collection_at else None),
         }
 
     def get_critical_signals(self) -> list[WorldSignal]:
@@ -965,10 +946,7 @@ class WorldSignalAggregator:
 
     def get_signals_for_market(self, market_id: str) -> list[WorldSignal]:
         """Return signals whose related_market_ids contain the given ID."""
-        return [
-            s for s in self._last_signals
-            if market_id in s.related_market_ids
-        ]
+        return [s for s in self._last_signals if market_id in s.related_market_ids]
 
 
 # ---------------------------------------------------------------------------

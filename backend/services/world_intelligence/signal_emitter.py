@@ -127,4 +127,3 @@ async def emit_world_intelligence_signals(
         len(resolved),
     )
     return emitted
-

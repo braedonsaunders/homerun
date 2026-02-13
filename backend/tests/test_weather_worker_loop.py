@@ -24,9 +24,7 @@ class _DummySession:
 @pytest.mark.asyncio
 async def test_worker_respects_pause_without_manual_request(monkeypatch):
     monkeypatch.setattr(weather_worker, "AsyncSessionLocal", lambda: _DummySession())
-    monkeypatch.setattr(
-        weather_worker.shared_state, "write_weather_snapshot", AsyncMock()
-    )
+    monkeypatch.setattr(weather_worker.shared_state, "write_weather_snapshot", AsyncMock())
     monkeypatch.setattr(
         weather_worker.shared_state,
         "read_weather_control",
@@ -44,12 +42,8 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
         AsyncMock(return_value={"enabled": True, "auto_run": True, "scan_interval_seconds": 14400}),
     )
     run_cycle_mock = AsyncMock(return_value={"markets": 0, "opportunities": 0, "intents": 0})
-    monkeypatch.setattr(
-        weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock
-    )
-    monkeypatch.setattr(
-        weather_worker.shared_state, "clear_weather_scan_request", AsyncMock()
-    )
+    monkeypatch.setattr(weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock)
+    monkeypatch.setattr(weather_worker.shared_state, "clear_weather_scan_request", AsyncMock())
     monkeypatch.setattr(
         weather_worker.asyncio,
         "sleep",
@@ -65,9 +59,7 @@ async def test_worker_respects_pause_without_manual_request(monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
     monkeypatch.setattr(weather_worker, "AsyncSessionLocal", lambda: _DummySession())
-    monkeypatch.setattr(
-        weather_worker.shared_state, "write_weather_snapshot", AsyncMock()
-    )
+    monkeypatch.setattr(weather_worker.shared_state, "write_weather_snapshot", AsyncMock())
     monkeypatch.setattr(
         weather_worker.shared_state,
         "read_weather_control",
@@ -85,9 +77,7 @@ async def test_worker_runs_once_when_manual_request_is_set(monkeypatch):
         AsyncMock(return_value={"enabled": True, "auto_run": True, "scan_interval_seconds": 14400}),
     )
     run_cycle_mock = AsyncMock(return_value={"markets": 1, "opportunities": 1, "intents": 1})
-    monkeypatch.setattr(
-        weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock
-    )
+    monkeypatch.setattr(weather_worker.weather_workflow_orchestrator, "run_cycle", run_cycle_mock)
     clear_mock = AsyncMock()
     monkeypatch.setattr(weather_worker.shared_state, "clear_weather_scan_request", clear_mock)
     monkeypatch.setattr(

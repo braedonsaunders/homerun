@@ -242,6 +242,7 @@ BLOCKED_IMPORTS = {
 
 class PluginValidationError(Exception):
     """Raised when plugin source code fails validation."""
+
     pass
 
 
@@ -381,14 +382,10 @@ def validate_plugin_source(source_code: str) -> dict:
     description = _check_description_attribute(tree, class_name)
 
     if not name:
-        result["warnings"].append(
-            f"Class '{class_name}' has no 'name' attribute. "
-            f"A default name will be used."
-        )
+        result["warnings"].append(f"Class '{class_name}' has no 'name' attribute. A default name will be used.")
     if not description:
         result["warnings"].append(
-            f"Class '{class_name}' has no 'description' attribute. "
-            f"A default description will be used."
+            f"Class '{class_name}' has no 'description' attribute. A default description will be used."
         )
 
     result["strategy_name"] = name
@@ -465,9 +462,7 @@ class PluginLoader:
         # Validate first
         validation = validate_plugin_source(source_code)
         if not validation["valid"]:
-            raise PluginValidationError(
-                "Plugin validation failed:\n" + "\n".join(validation["errors"])
-            )
+            raise PluginValidationError("Plugin validation failed:\n" + "\n".join(validation["errors"]))
 
         class_name = validation["class_name"]
 
@@ -500,17 +495,14 @@ class PluginLoader:
             strategy_class = getattr(module, class_name, None)
             if strategy_class is None:
                 raise PluginValidationError(
-                    f"Class '{class_name}' not found after loading. "
-                    f"This is likely a bug in the plugin loader."
+                    f"Class '{class_name}' not found after loading. This is likely a bug in the plugin loader."
                 )
 
             # Verify it's a subclass of BaseStrategy
             from services.strategies.base import BaseStrategy
 
             if not (isinstance(strategy_class, type) and issubclass(strategy_class, BaseStrategy)):
-                raise PluginValidationError(
-                    f"Class '{class_name}' does not extend BaseStrategy."
-                )
+                raise PluginValidationError(f"Class '{class_name}' does not extend BaseStrategy.")
 
             # Set the strategy_type to the plugin's slug
             strategy_class.strategy_type = slug
@@ -535,6 +527,7 @@ class PluginLoader:
 
             # Calculate source hash for change detection
             import hashlib
+
             source_hash = hashlib.sha256(source_code.encode()).hexdigest()[:16]
 
             loaded = LoadedPlugin(
@@ -546,10 +539,7 @@ class PluginLoader:
             )
             self._loaded[slug] = loaded
 
-            logger.info(
-                f"Plugin loaded: {slug} (class={class_name}, "
-                f"name='{instance.name}')"
-            )
+            logger.info(f"Plugin loaded: {slug} (class={class_name}, name='{instance.name}')")
             return loaded
 
         except PluginValidationError:
@@ -559,9 +549,7 @@ class PluginLoader:
         except Exception as e:
             sys.modules.pop(module_name, None)
             tb = traceback.format_exc()
-            raise PluginValidationError(
-                f"Failed to load plugin '{slug}': {e}\n\n{tb}"
-            ) from e
+            raise PluginValidationError(f"Failed to load plugin '{slug}': {e}\n\n{tb}") from e
 
     def unload_plugin(self, slug: str) -> bool:
         """Unload a plugin by slug. Returns True if it was loaded."""

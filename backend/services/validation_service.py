@@ -80,9 +80,7 @@ class ValidationService:
             rows = (
                 (
                     await session.execute(
-                        select(ValidationJob)
-                        .order_by(ValidationJob.created_at.desc())
-                        .limit(max(1, min(limit, 500)))
+                        select(ValidationJob).order_by(ValidationJob.created_at.desc()).limit(max(1, min(limit, 500)))
                     )
                 )
                 .scalars()
@@ -114,9 +112,7 @@ class ValidationService:
         return {
             "enabled": bool(s.validation_guardrails_enabled),
             "min_samples": int(s.validation_min_samples or 25),
-            "min_directional_accuracy": float(
-                s.validation_min_directional_accuracy or 0.52
-            ),
+            "min_directional_accuracy": float(s.validation_min_directional_accuracy or 0.52),
             "max_mae_roi": float(s.validation_max_mae_roi or 12.0),
             "lookback_days": int(s.validation_lookback_days or 90),
             "auto_promote": bool(s.validation_auto_promote),
@@ -133,9 +129,7 @@ class ValidationService:
             if "min_samples" in patch:
                 row.validation_min_samples = max(1, int(patch["min_samples"]))
             if "min_directional_accuracy" in patch:
-                row.validation_min_directional_accuracy = float(
-                    patch["min_directional_accuracy"]
-                )
+                row.validation_min_directional_accuracy = float(patch["min_directional_accuracy"])
             if "max_mae_roi" in patch:
                 row.validation_max_mae_roi = float(patch["max_mae_roi"])
             if "lookback_days" in patch:
@@ -155,18 +149,15 @@ class ValidationService:
         ]
         async with AsyncSessionLocal() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(
-                            OpportunityHistory.strategy_type,
-                            OpportunityHistory.detected_at,
-                            OpportunityHistory.expected_roi,
-                            OpportunityHistory.actual_roi,
-                        ).where(and_(*filters))
-                    )
+                await session.execute(
+                    select(
+                        OpportunityHistory.strategy_type,
+                        OpportunityHistory.detected_at,
+                        OpportunityHistory.expected_roi,
+                        OpportunityHistory.actual_roi,
+                    ).where(and_(*filters))
                 )
-                .all()
-            )
+            ).all()
 
         by_strategy: dict[str, list[tuple[float, float, datetime]]] = {}
         for strategy, detected_at, expected_roi, actual_roi in rows:
@@ -182,11 +173,7 @@ class ValidationService:
                 return {"sample_size": 0}
             errors = [abs(e - a) for e, a, _ in vals]
             sq_errors = [(e - a) ** 2 for e, a, _ in vals]
-            directional_hits = sum(
-                1
-                for e, a, _ in vals
-                if ((e >= 0 and a >= 0) or (e < 0 and a < 0))
-            )
+            directional_hits = sum(1 for e, a, _ in vals if ((e >= 0 and a >= 0) or (e < 0 and a < 0)))
             optimism_bias = sum((e - a) for e, a, _ in vals) / n
             expected_mean = sum(e for e, _, _ in vals) / n
             actual_mean = sum(a for _, a, _ in vals) / n
@@ -211,30 +198,25 @@ class ValidationService:
             "by_strategy": by_strategy_summary,
         }
 
-    async def compute_calibration_trend(
-        self, days: int = 90, bucket_days: int = 7
-    ) -> list[dict[str, Any]]:
+    async def compute_calibration_trend(self, days: int = 90, bucket_days: int = 7) -> list[dict[str, Any]]:
         """Time-bucketed trend of calibration quality."""
         cutoff = utcnow() - timedelta(days=days)
         async with AsyncSessionLocal() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(
-                            OpportunityHistory.detected_at,
-                            OpportunityHistory.expected_roi,
-                            OpportunityHistory.actual_roi,
-                        ).where(
-                            and_(
-                                OpportunityHistory.detected_at >= cutoff,
-                                OpportunityHistory.expected_roi.isnot(None),
-                                OpportunityHistory.actual_roi.isnot(None),
-                            )
+                await session.execute(
+                    select(
+                        OpportunityHistory.detected_at,
+                        OpportunityHistory.expected_roi,
+                        OpportunityHistory.actual_roi,
+                    ).where(
+                        and_(
+                            OpportunityHistory.detected_at >= cutoff,
+                            OpportunityHistory.expected_roi.isnot(None),
+                            OpportunityHistory.actual_roi.isnot(None),
                         )
                     )
                 )
-                .all()
-            )
+            ).all()
 
         buckets: dict[str, list[tuple[float, float]]] = {}
         for detected_at, expected_roi, actual_roi in rows:
@@ -261,30 +243,25 @@ class ValidationService:
             )
         return trend
 
-    async def compute_trader_orchestrator_execution_metrics(
-        self, days: int = 30
-    ) -> dict[str, Any]:
+    async def compute_trader_orchestrator_execution_metrics(self, days: int = 30) -> dict[str, Any]:
         cutoff = utcnow() - timedelta(days=days)
         async with AsyncSessionLocal() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(
-                            TraderOrder.source,
-                            TradeSignal.strategy_type,
-                            TraderOrder.status,
-                            TraderOrder.mode,
-                            TraderOrder.notional_usd,
-                            TraderOrder.actual_profit,
-                            TraderOrder.edge_percent,
-                            TraderOrder.confidence,
-                        )
-                        .join(TradeSignal, TraderOrder.signal_id == TradeSignal.id, isouter=True)
-                        .where(TraderOrder.created_at >= cutoff)
+                await session.execute(
+                    select(
+                        TraderOrder.source,
+                        TradeSignal.strategy_type,
+                        TraderOrder.status,
+                        TraderOrder.mode,
+                        TraderOrder.notional_usd,
+                        TraderOrder.actual_profit,
+                        TraderOrder.edge_percent,
+                        TraderOrder.confidence,
                     )
+                    .join(TradeSignal, TraderOrder.signal_id == TradeSignal.id, isouter=True)
+                    .where(TraderOrder.created_at >= cutoff)
                 )
-                .all()
-            )
+            ).all()
 
         summary = {
             "window_days": int(days),
@@ -375,15 +352,9 @@ class ValidationService:
             strategy_row["realized_pnl_total"] += pnl_value
 
         sample_size = int(summary["sample_size"])
-        summary["failure_rate"] = (
-            float(summary["failed"]) / sample_size if sample_size > 0 else 0.0
-        )
-        summary["avg_edge_percent"] = (
-            sum(edges) / len(edges) if edges else 0.0
-        )
-        summary["avg_confidence"] = (
-            sum(confidences) / len(confidences) if confidences else 0.0
-        )
+        summary["failure_rate"] = float(summary["failed"]) / sample_size if sample_size > 0 else 0.0
+        summary["avg_edge_percent"] = sum(edges) / len(edges) if edges else 0.0
+        summary["avg_confidence"] = sum(confidences) / len(confidences) if confidences else 0.0
         summary["by_source"] = sorted(
             by_source.values(),
             key=lambda row: (
@@ -453,9 +424,7 @@ class ValidationService:
                 entry["tradable"] += 1
         for row in by_type.values():
             total = int(row["candidates"] or 0)
-            row["tradable_rate"] = (
-                float(row["tradable"]) / total if total > 0 else 0.0
-            )
+            row["tradable_rate"] = float(row["tradable"]) / total if total > 0 else 0.0
 
         total_candidates = len(candidates)
         return {
@@ -463,9 +432,7 @@ class ValidationService:
             "signals_sampled": len(signals),
             "candidates": total_candidates,
             "tradable": len(tradable),
-            "tradable_rate": (
-                len(tradable) / total_candidates if total_candidates > 0 else 0.0
-            ),
+            "tradable_rate": (len(tradable) / total_candidates if total_candidates > 0 else 0.0),
             "by_signal_type": sorted(
                 by_type.values(),
                 key=lambda row: int(row["candidates"]),
@@ -510,8 +477,7 @@ class ValidationService:
                     continue
 
                 weak_accuracy = (
-                    directional_accuracy is not None
-                    and directional_accuracy < cfg["min_directional_accuracy"]
+                    directional_accuracy is not None and directional_accuracy < cfg["min_directional_accuracy"]
                 )
                 weak_error = mae_roi is not None and mae_roi > cfg["max_mae_roi"]
                 enough_samples = sample_size >= cfg["min_samples"]
@@ -523,13 +489,10 @@ class ValidationService:
                         row.demoted_at = now
                         if weak_accuracy and weak_error:
                             row.last_reason = (
-                                f"Low directional accuracy ({directional_accuracy:.3f}) "
-                                f"and high MAE ({mae_roi:.2f})"
+                                f"Low directional accuracy ({directional_accuracy:.3f}) and high MAE ({mae_roi:.2f})"
                             )
                         elif weak_accuracy:
-                            row.last_reason = (
-                                f"Low directional accuracy ({directional_accuracy:.3f})"
-                            )
+                            row.last_reason = f"Low directional accuracy ({directional_accuracy:.3f})"
                         else:
                             row.last_reason = f"High MAE ({mae_roi:.2f})"
                         demoted.append(strategy_type)
@@ -537,8 +500,7 @@ class ValidationService:
                     promoted_ok = (
                         enough_samples
                         and directional_accuracy is not None
-                        and directional_accuracy
-                        >= cfg["min_directional_accuracy"] + 0.03
+                        and directional_accuracy >= cfg["min_directional_accuracy"] + 0.03
                         and mae_roi is not None
                         and mae_roi <= cfg["max_mae_roi"] * 0.9
                     )
@@ -564,9 +526,7 @@ class ValidationService:
             rows = (
                 (
                     await session.execute(
-                        select(StrategyValidationProfile).order_by(
-                            StrategyValidationProfile.strategy_type.asc()
-                        )
+                        select(StrategyValidationProfile).order_by(StrategyValidationProfile.strategy_type.asc())
                     )
                 )
                 .scalars()
@@ -626,27 +586,16 @@ class ValidationService:
     async def get_demoted_strategy_types(self) -> set[str]:
         async with AsyncSessionLocal() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(StrategyValidationProfile.strategy_type).where(
-                            StrategyValidationProfile.status == "demoted"
-                        )
-                    )
+                await session.execute(
+                    select(StrategyValidationProfile.strategy_type).where(StrategyValidationProfile.status == "demoted")
                 )
-                .all()
-            )
+            ).all()
         return {r[0] for r in rows}
 
     async def _recover_incomplete_jobs(self) -> None:
         async with AsyncSessionLocal() as session:
             rows = (
-                (
-                    await session.execute(
-                        select(ValidationJob).where(ValidationJob.status == "running")
-                    )
-                )
-                .scalars()
-                .all()
+                (await session.execute(select(ValidationJob).where(ValidationJob.status == "running"))).scalars().all()
             )
             for row in rows:
                 row.status = "queued"
@@ -705,9 +654,7 @@ class ValidationService:
             await session.commit()
             return row
 
-    async def _set_job_progress(
-        self, job_id: str, progress: float, message: Optional[str] = None
-    ) -> bool:
+    async def _set_job_progress(self, job_id: str, progress: float, message: Optional[str] = None) -> bool:
         async with AsyncSessionLocal() as session:
             row = await session.get(ValidationJob, job_id)
             if row is None:
@@ -738,8 +685,7 @@ class ValidationService:
                 if payload.get("save_parameter_set"):
                     params_to_save = payload.get("params") or param_optimizer.get_current_params()
                     saved_parameter_set_id = await param_optimizer.save_parameter_set(
-                        name=payload.get("parameter_set_name")
-                        or f"Backtest {utcnow().isoformat(timespec='seconds')}",
+                        name=payload.get("parameter_set_name") or f"Backtest {utcnow().isoformat(timespec='seconds')}",
                         params=params_to_save,
                         backtest_results=result,
                         is_active=bool(payload.get("activate_saved_set")),
@@ -754,6 +700,7 @@ class ValidationService:
                 }
             elif job_type == "optimize":
                 await self._set_job_progress(job_id, 0.1, "Preparing optimization")
+
                 async def _progress(i: int, t: int):
                     ok = await self._set_job_progress(
                         job_id,
@@ -780,8 +727,7 @@ class ValidationService:
                     best = top[0]
                     best_params = best.get("params", {})
                     saved_set_id = await param_optimizer.save_parameter_set(
-                        name=payload.get("best_set_name")
-                        or f"Optimized Best {utcnow().isoformat(timespec='seconds')}",
+                        name=payload.get("best_set_name") or f"Optimized Best {utcnow().isoformat(timespec='seconds')}",
                         params=best_params,
                         backtest_results=best.get("test_result"),
                         is_active=True,

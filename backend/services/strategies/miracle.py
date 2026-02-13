@@ -183,9 +183,7 @@ class MiracleStrategy(BaseStrategy):
 
                 # Determine category
                 for cat_name, cat_keywords in MIRACLE_CATEGORIES.items():
-                    if any(k in keyword for k in cat_keywords) or any(
-                        k in question_lower for k in cat_keywords
-                    ):
+                    if any(k in keyword for k in cat_keywords) or any(k in question_lower for k in cat_keywords):
                         category = cat_name
                         break
 
@@ -220,9 +218,7 @@ class MiracleStrategy(BaseStrategy):
 
         return score, category, reasons
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Detect miracle betting opportunities"""
         opportunities = []
 
@@ -297,9 +293,7 @@ class MiracleStrategy(BaseStrategy):
                     "outcome": "NO",
                     "market": market.question[:50],
                     "price": no_price,
-                    "token_id": market.clob_token_ids[1]
-                    if len(market.clob_token_ids) > 1
-                    else None,
+                    "token_id": market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else None,
                 }
             ]
 
@@ -337,9 +331,7 @@ class MiracleStrategy(BaseStrategy):
 
         return opportunities
 
-    def find_stale_markets(
-        self, markets: list[Market], resolved_events: list[str]
-    ) -> list[ArbitrageOpportunity]:
+    def find_stale_markets(self, markets: list[Market], resolved_events: list[str]) -> list[ArbitrageOpportunity]:
         """
         Find markets that are now logically impossible due to resolved events.
 
@@ -464,9 +456,7 @@ class MiracleStrategy(BaseStrategy):
                         pass
 
                     yes_price = market.yes_price
-                    if (
-                        yes_price > 0.05
-                    ):  # Only interesting if YES is still priced significantly
+                    if yes_price > 0.05:  # Only interesting if YES is still priced significantly
                         total_cost = no_price
                         expected_payout = 1.0
                         gross_profit = expected_payout - total_cost

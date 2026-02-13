@@ -163,12 +163,8 @@ async def find_profitable_wallets(request: FindProfitableRequest):
 
 @anomaly_router.get("/anomalies")
 async def get_anomalies(
-    severity: Optional[str] = Query(
-        default=None, description="Filter by severity: low, medium, high, critical"
-    ),
-    anomaly_type: Optional[str] = Query(
-        default=None, description="Filter by anomaly type"
-    ),
+    severity: Optional[str] = Query(default=None, description="Filter by severity: low, medium, high, critical"),
+    anomaly_type: Optional[str] = Query(default=None, description="Filter by anomaly type"),
     limit: int = Query(default=100, ge=1, le=500),
 ):
     """Get detected anomalies"""
@@ -186,9 +182,7 @@ async def get_anomalies(
             detail=f"Invalid anomaly type. Must be one of: {[t.value for t in AnomalyType]}",
         )
 
-    anomalies = await anomaly_detector.get_anomalies(
-        severity=severity, anomaly_type=anomaly_type, limit=limit
-    )
+    anomalies = await anomaly_detector.get_anomalies(severity=severity, anomaly_type=anomaly_type, limit=limit)
 
     return {"count": len(anomalies), "anomalies": anomalies}
 
@@ -255,9 +249,7 @@ async def quick_check_wallet(wallet_address: str):
 
 
 @anomaly_router.get("/wallet/{wallet_address}/trades")
-async def get_wallet_trades(
-    wallet_address: str, limit: int = Query(default=100, ge=1, le=500)
-):
+async def get_wallet_trades(wallet_address: str, limit: int = Query(default=100, ge=1, le=500)):
     """
     Get individual trades for a wallet.
 
@@ -293,18 +285,14 @@ async def get_wallet_trades(
                 ),
                 "market_slug": trade.get("market_slug", trade.get("slug", "")),
                 "market_title": trade.get("market_title", trade.get("title", "")),
-                "event_slug": trade.get(
-                    "event_slug", trade.get("eventSlug", "")
-                ),
+                "event_slug": trade.get("event_slug", trade.get("eventSlug", "")),
                 "outcome": trade.get("outcome", trade.get("outcome_index", "")),
                 "side": side,
                 "size": size,
                 "price": price,
                 "cost": cost,
                 "timestamp": _normalize_timestamp(trade),
-                "transaction_hash": trade.get(
-                    "transactionHash", trade.get("transaction_hash", "")
-                ),
+                "transaction_hash": trade.get("transactionHash", trade.get("transaction_hash", "")),
             }
         )
 
@@ -332,11 +320,7 @@ async def get_wallet_positions(wallet_address: str):
     for pos in positions:
         title = pos.get("title", "")
         if not title:
-            cid = (
-                pos.get("conditionId", "")
-                or pos.get("condition_id", "")
-                or pos.get("market", "")
-            )
+            cid = pos.get("conditionId", "") or pos.get("condition_id", "") or pos.get("market", "")
             if cid:
                 condition_ids_to_lookup.add(cid)
 
@@ -358,9 +342,7 @@ async def get_wallet_positions(wallet_address: str):
     for pos in positions:
         size = float(pos.get("size", 0) or 0)
         avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-        current_price = float(
-            pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
-        )
+        current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
 
         # Use API-provided values when available, fallback to manual calculation
         current_value = float(pos.get("currentValue", pos.get("current_value", 0)) or 0)
@@ -378,18 +360,13 @@ async def get_wallet_positions(wallet_address: str):
 
         # Resolve market title from API data or Gamma cache
         condition_id = (
-            pos.get("conditionId", "")
-            or pos.get("condition_id", "")
-            or pos.get("market", "")
-            or pos.get("asset", "")
+            pos.get("conditionId", "") or pos.get("condition_id", "") or pos.get("market", "") or pos.get("asset", "")
         )
         title = pos.get("title", "")
         if not title and condition_id:
             market_info = polymarket_client._market_cache.get(condition_id)
             if market_info:
-                title = market_info.get("groupItemTitle") or market_info.get(
-                    "question", ""
-                )
+                title = market_info.get("groupItemTitle") or market_info.get("question", "")
         market_slug = pos.get("market_slug", pos.get("slug", ""))
         event_slug = pos.get("event_slug", pos.get("eventSlug", ""))
         if (not market_slug or not event_slug) and condition_id:
@@ -469,9 +446,7 @@ async def get_wallet_summary(wallet_address: str):
         if cv == 0 and iv == 0:
             size = float(pos.get("size", 0) or 0)
             avg_price = float(pos.get("avgPrice", pos.get("avg_price", 0)) or 0)
-            current_price = float(
-                pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0
-            )
+            current_price = float(pos.get("currentPrice", pos.get("curPrice", pos.get("price", 0))) or 0)
             cv = size * current_price
             iv = size * avg_price
 

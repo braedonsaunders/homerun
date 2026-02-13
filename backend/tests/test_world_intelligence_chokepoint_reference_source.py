@@ -41,4 +41,3 @@ def test_clean_chokepoint_rows_filters_invalid_and_dedupes():
     assert item["longitude"] == 32.3
     assert item["source"] == "imf_portwatch"
     assert "2026-02-13T10:00:00" in str(item["last_updated"])
-

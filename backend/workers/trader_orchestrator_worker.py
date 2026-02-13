@@ -142,9 +142,7 @@ async def _run_trader_once(
         params = trader.get("params") or {}
         risk_limits = trader.get("risk_limits") or {}
         control_settings = control.get("settings") or {}
-        enable_live_market_context = bool(
-            control_settings.get("enable_live_market_context", True)
-        )
+        enable_live_market_context = bool(control_settings.get("enable_live_market_context", True))
         history_window_seconds = int(
             max(
                 300,

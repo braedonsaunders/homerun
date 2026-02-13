@@ -84,4 +84,3 @@ def test_clusterer_sets_cluster_identity_metadata():
     assert cluster.article_count == 1
     assert cluster.primary_source.lower() == "reuters"
     assert cluster.summary
-

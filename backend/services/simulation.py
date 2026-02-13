@@ -27,17 +27,13 @@ class SlippageModel:
         return base_price * (1 + slippage_bps / 10000)
 
     @staticmethod
-    def linear(
-        base_price: float, size: float, liquidity: float, slippage_bps: float
-    ) -> float:
+    def linear(base_price: float, size: float, liquidity: float, slippage_bps: float) -> float:
         """Linear slippage based on size vs liquidity"""
         impact = (size / liquidity) * slippage_bps / 10000
         return base_price * (1 + impact)
 
     @staticmethod
-    def sqrt(
-        base_price: float, size: float, liquidity: float, slippage_bps: float
-    ) -> float:
+    def sqrt(base_price: float, size: float, liquidity: float, slippage_bps: float) -> float:
         """Square root slippage (more realistic for large orders)"""
         impact = (size / liquidity) ** 0.5 * slippage_bps / 10000
         return base_price * (1 + impact)
@@ -81,9 +77,7 @@ class SimulationService:
     async def get_account(self, account_id: str) -> Optional[SimulationAccount]:
         """Get simulation account by ID"""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(SimulationAccount).where(SimulationAccount.id == account_id)
-            )
+            result = await session.execute(select(SimulationAccount).where(SimulationAccount.id == account_id))
             return result.scalar_one_or_none()
 
     async def get_all_accounts(self) -> list[SimulationAccount]:
@@ -113,15 +107,11 @@ class SimulationService:
             positions = list(pos_result.scalars().all())
 
             # Group positions by account_id
-            positions_by_account: dict[str, list[SimulationPosition]] = {
-                aid: [] for aid in account_ids
-            }
+            positions_by_account: dict[str, list[SimulationPosition]] = {aid: [] for aid in account_ids}
             for pos in positions:
                 positions_by_account.setdefault(pos.account_id, []).append(pos)
 
-            return [
-                (acc, positions_by_account.get(acc.id, [])) for acc in accounts
-            ]
+            return [(acc, positions_by_account.get(acc.id, [])) for acc in accounts]
 
     async def delete_account(self, account_id: str) -> bool:
         """Delete a simulation account and all related records"""
@@ -132,23 +122,15 @@ class SimulationService:
                 return False
 
             # Delete related positions
-            await session.execute(
-                select(SimulationPosition).where(
-                    SimulationPosition.account_id == account_id
-                )
-            )
+            await session.execute(select(SimulationPosition).where(SimulationPosition.account_id == account_id))
             positions = await session.execute(
-                select(SimulationPosition).where(
-                    SimulationPosition.account_id == account_id
-                )
+                select(SimulationPosition).where(SimulationPosition.account_id == account_id)
             )
             for pos in positions.scalars():
                 await session.delete(pos)
 
             # Delete related trades
-            trades = await session.execute(
-                select(SimulationTrade).where(SimulationTrade.account_id == account_id)
-            )
+            trades = await session.execute(select(SimulationTrade).where(SimulationTrade.account_id == account_id))
             for trade in trades.scalars():
                 await session.delete(trade)
 
@@ -156,9 +138,7 @@ class SimulationService:
             await session.delete(account)
             await session.commit()
 
-            logger.info(
-                "Deleted simulation account", account_id=account_id, name=account.name
-            )
+            logger.info("Deleted simulation account", account_id=account_id, name=account.name)
 
             return True
 
@@ -180,15 +160,11 @@ class SimulationService:
 
             # Calculate position size
             if position_size is None:
-                max_size = account.current_capital * (
-                    account.max_position_size_pct / 100
-                )
+                max_size = account.current_capital * (account.max_position_size_pct / 100)
                 position_size = min(max_size, opportunity.max_position_size)
 
             if position_size > account.current_capital:
-                raise ValueError(
-                    f"Insufficient capital: {account.current_capital} < {position_size}"
-                )
+                raise ValueError(f"Insufficient capital: {account.current_capital} < {position_size}")
 
             # Calculate total cost with slippage
             base_cost = opportunity.total_cost * position_size
@@ -219,11 +195,7 @@ class SimulationService:
             # Create position records
             for pos in opportunity.positions_to_take:
                 market_id = pos.get("market_id") or pos.get("market", "")
-                market_question = (
-                    pos.get("market_question")
-                    or pos.get("question")
-                    or market_id
-                )
+                market_question = pos.get("market_question") or pos.get("question") or market_id
                 position = SimulationPosition(
                     id=str(uuid.uuid4()),
                     account_id=account_id,
@@ -231,9 +203,7 @@ class SimulationService:
                     market_id=market_id,
                     market_question=market_question,
                     token_id=pos.get("token_id"),
-                    side=PositionSide.YES
-                    if pos.get("outcome") == "YES"
-                    else PositionSide.NO,
+                    side=PositionSide.YES if pos.get("outcome") == "YES" else PositionSide.NO,
                     quantity=position_size,
                     entry_price=pos.get("price", 0),
                     entry_cost=pos.get("price", 0) * position_size,
@@ -300,9 +270,7 @@ class SimulationService:
             is_win = pnl > 0
 
             # Update trade
-            trade.status = (
-                TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
-            )
+            trade.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
             trade.actual_payout = net_payout
             trade.actual_pnl = pnl
             trade.fees_paid = fee
@@ -318,14 +286,10 @@ class SimulationService:
 
             # Close positions
             positions = await session.execute(
-                select(SimulationPosition).where(
-                    SimulationPosition.opportunity_id == trade.opportunity_id
-                )
+                select(SimulationPosition).where(SimulationPosition.opportunity_id == trade.opportunity_id)
             )
             for pos in positions.scalars():
-                pos.status = (
-                    TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
-                )
+                pos.status = TradeStatus.RESOLVED_WIN if is_win else TradeStatus.RESOLVED_LOSS
 
             await session.commit()
             await session.refresh(trade)
@@ -356,9 +320,7 @@ class SimulationService:
             )
             return list(result.scalars().all())
 
-    async def get_trade_history(
-        self, account_id: str, limit: int = 100
-    ) -> list[SimulationTrade]:
+    async def get_trade_history(self, account_id: str, limit: int = 100) -> list[SimulationTrade]:
         """Get trade history for an account"""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -377,16 +339,8 @@ class SimulationService:
                 return None
 
             # Calculate additional stats
-            win_rate = (
-                account.winning_trades / account.total_trades * 100
-                if account.total_trades > 0
-                else 0
-            )
-            roi = (
-                (account.current_capital - account.initial_capital)
-                / account.initial_capital
-                * 100
-            )
+            win_rate = account.winning_trades / account.total_trades * 100 if account.total_trades > 0 else 0
+            roi = (account.current_capital - account.initial_capital) / account.initial_capital * 100
 
             # Get open positions count
             positions = await self.get_open_positions(account_id)

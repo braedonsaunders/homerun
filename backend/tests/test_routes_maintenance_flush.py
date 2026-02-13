@@ -88,4 +88,3 @@ async def test_flush_data_rolls_back_on_error(monkeypatch):
     assert excinfo.value.status_code == 500
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once()
-

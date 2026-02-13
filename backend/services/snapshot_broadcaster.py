@@ -68,11 +68,7 @@ class SnapshotBroadcaster:
             if analysis is None:
                 signature_rows.append((opp.stable_id or opp.id, None, None, None))
                 continue
-            judged_at = (
-                analysis.judged_at.isoformat()
-                if getattr(analysis, "judged_at", None) is not None
-                else None
-            )
+            judged_at = analysis.judged_at.isoformat() if getattr(analysis, "judged_at", None) is not None else None
             score = round(float(getattr(analysis, "overall_score", 0.0) or 0.0), 6)
             signature_rows.append(
                 (
@@ -138,20 +134,14 @@ class SnapshotBroadcaster:
                     worker_statuses = await list_worker_snapshots(session)
                     orchestrator_status = await read_orchestrator_snapshot(session)
                     signal_rows = (
-                        (
-                            await session.execute(
-                                select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())
-                            )
-                        )
+                        (await session.execute(select(TradeSignalSnapshot).order_by(TradeSignalSnapshot.source.asc())))
                         .scalars()
                         .all()
                     )
                     world_snapshot = (
                         (
                             await session.execute(
-                                select(WorldIntelligenceSnapshot).where(
-                                    WorldIntelligenceSnapshot.id == "latest"
-                                )
+                                select(WorldIntelligenceSnapshot).where(WorldIntelligenceSnapshot.id == "latest")
                             )
                         )
                         .scalars()
@@ -171,28 +161,16 @@ class SnapshotBroadcaster:
                         .scalars()
                         .all()
                     )
-                    event_query = select(OpportunityEvent).order_by(
-                        OpportunityEvent.created_at.asc()
-                    )
+                    event_query = select(OpportunityEvent).order_by(OpportunityEvent.created_at.asc())
                     if self._last_event_ts is not None:
-                        event_query = event_query.where(
-                            OpportunityEvent.created_at > self._last_event_ts
-                        )
+                        event_query = event_query.where(OpportunityEvent.created_at > self._last_event_ts)
                     event_query = event_query.limit(200)
-                    event_rows = (
-                        (await session.execute(event_query)).scalars().all()
-                    )
-                    decision_query = select(TraderDecision).order_by(
-                        TraderDecision.created_at.asc()
-                    )
+                    event_rows = (await session.execute(event_query)).scalars().all()
+                    decision_query = select(TraderDecision).order_by(TraderDecision.created_at.asc())
                     if self._last_trader_decision_ts is not None:
-                        decision_query = decision_query.where(
-                            TraderDecision.created_at > self._last_trader_decision_ts
-                        )
+                        decision_query = decision_query.where(TraderDecision.created_at > self._last_trader_decision_ts)
                     decision_query = decision_query.limit(200)
-                    decision_rows = (
-                        (await session.execute(decision_query)).scalars().all()
-                    )
+                    decision_rows = (await session.execute(decision_query)).scalars().all()
 
                     trader_event_query = select(TraderEvent).order_by(
                         TraderEvent.created_at.asc(),
@@ -203,22 +181,16 @@ class SnapshotBroadcaster:
                             TraderEvent.created_at > self._last_trader_event_ts
                         )
                     trader_event_query = trader_event_query.limit(200)
-                    trader_event_rows = (
-                        (await session.execute(trader_event_query)).scalars().all()
-                    )
+                    trader_event_rows = (await session.execute(trader_event_query)).scalars().all()
 
                     trade_query = select(TraderOrder).order_by(
                         TraderOrder.updated_at.asc(),
                         TraderOrder.id.asc(),
                     )
                     if self._last_trader_order_ts is not None:
-                        trade_query = trade_query.where(
-                            TraderOrder.updated_at > self._last_trader_order_ts
-                        )
+                        trade_query = trade_query.where(TraderOrder.updated_at > self._last_trader_order_ts)
                     trade_query = trade_query.limit(200)
-                    order_rows = (
-                        (await session.execute(trade_query)).scalars().all()
-                    )
+                    order_rows = (await session.execute(trade_query)).scalars().all()
 
                 if event_rows:
                     self._last_event_ts = event_rows[-1].created_at
@@ -233,9 +205,7 @@ class SnapshotBroadcaster:
                                         "run_id": row.run_id,
                                         "event_type": row.event_type,
                                         "opportunity": row.opportunity_json,
-                                        "created_at": row.created_at.isoformat()
-                                        if row.created_at
-                                        else None,
+                                        "created_at": row.created_at.isoformat() if row.created_at else None,
                                     }
                                     for row in event_rows
                                 ]
@@ -262,9 +232,7 @@ class SnapshotBroadcaster:
 
                 if activity != self._last_activity:
                     self._last_activity = activity
-                    await manager.broadcast(
-                        {"type": "scanner_activity", "data": {"activity": activity}}
-                    )
+                    await manager.broadcast({"type": "scanner_activity", "data": {"activity": activity}})
 
                 if status_sig != self._last_status_sig:
                     self._last_status_sig = status_sig
@@ -277,10 +245,7 @@ class SnapshotBroadcaster:
                             "type": "opportunities_update",
                             "data": {
                                 "count": len(opportunities),
-                                "opportunities": [
-                                    serialize_opportunity_with_links(o)
-                                    for o in opportunities[:50]
-                                ],
+                                "opportunities": [serialize_opportunity_with_links(o) for o in opportunities[:50]],
                             },
                         }
                     )
@@ -301,9 +266,7 @@ class SnapshotBroadcaster:
 
                 if weather_status_sig != self._last_weather_status_sig:
                     self._last_weather_status_sig = weather_status_sig
-                    await manager.broadcast(
-                        {"type": "weather_status", "data": weather_status}
-                    )
+                    await manager.broadcast({"type": "weather_status", "data": weather_status})
 
                 if weather_opp_sig != self._last_weather_opp_sig:
                     self._last_weather_opp_sig = weather_opp_sig
@@ -312,10 +275,7 @@ class SnapshotBroadcaster:
                             "type": "weather_update",
                             "data": {
                                 "count": len(weather_opps),
-                                "opportunities": [
-                                    serialize_opportunity_with_links(o)
-                                    for o in weather_opps[:100]
-                                ],
+                                "opportunities": [serialize_opportunity_with_links(o) for o in weather_opps[:100]],
                                 "status": weather_status,
                             },
                         }
@@ -342,9 +302,7 @@ class SnapshotBroadcaster:
 
                 if news_status_sig != self._last_news_status_sig:
                     self._last_news_status_sig = news_status_sig
-                    await manager.broadcast(
-                        {"type": "news_workflow_status", "data": news_status}
-                    )
+                    await manager.broadcast({"type": "news_workflow_status", "data": news_status})
 
                 if news_update_sig != self._last_news_update_sig:
                     self._last_news_update_sig = news_update_sig
@@ -355,9 +313,7 @@ class SnapshotBroadcaster:
                                 "status": news_status,
                                 "findings": int(news_stats.get("findings", 0) or 0),
                                 "intents": int(news_stats.get("intents", 0) or 0),
-                                "pending_intents": int(
-                                    news_status.get("pending_intents", 0) or 0
-                                ),
+                                "pending_intents": int(news_status.get("pending_intents", 0) or 0),
                             },
                         }
                     )
@@ -375,22 +331,14 @@ class SnapshotBroadcaster:
                 )
                 if worker_sig != self._last_worker_status_sig:
                     self._last_worker_status_sig = worker_sig
-                    await manager.broadcast(
-                        {"type": "worker_status_update", "data": {"workers": worker_statuses}}
-                    )
+                    await manager.broadcast({"type": "worker_status_update", "data": {"workers": worker_statuses}})
 
                 crypto_row = next(
-                    (
-                        row
-                        for row in worker_statuses
-                        if row.get("worker_name") == "crypto"
-                    ),
+                    (row for row in worker_statuses if row.get("worker_name") == "crypto"),
                     None,
                 )
                 crypto_stats = (
-                    (crypto_row or {}).get("stats")
-                    if isinstance((crypto_row or {}).get("stats"), dict)
-                    else {}
+                    (crypto_row or {}).get("stats") if isinstance((crypto_row or {}).get("stats"), dict) else {}
                 )
                 crypto_markets = crypto_stats.get("markets")
                 if not isinstance(crypto_markets, list):
@@ -400,16 +348,8 @@ class SnapshotBroadcaster:
                     (crypto_row or {}).get("updated_at"),
                     (crypto_row or {}).get("last_run_at"),
                     len(crypto_markets),
-                    (
-                        (crypto_markets[0] or {}).get("id")
-                        if crypto_markets
-                        else None
-                    ),
-                    (
-                        (crypto_markets[0] or {}).get("oracle_updated_at_ms")
-                        if crypto_markets
-                        else None
-                    ),
+                    ((crypto_markets[0] or {}).get("id") if crypto_markets else None),
+                    ((crypto_markets[0] or {}).get("oracle_updated_at_ms") if crypto_markets else None),
                 )
                 if crypto_sig != self._last_crypto_markets_sig:
                     self._last_crypto_markets_sig = crypto_sig
@@ -430,12 +370,8 @@ class SnapshotBroadcaster:
                         "skipped_count": int(row.skipped_count or 0),
                         "expired_count": int(row.expired_count or 0),
                         "failed_count": int(row.failed_count or 0),
-                        "latest_signal_at": row.latest_signal_at.isoformat()
-                        if row.latest_signal_at
-                        else None,
-                        "updated_at": row.updated_at.isoformat()
-                        if row.updated_at
-                        else None,
+                        "latest_signal_at": row.latest_signal_at.isoformat() if row.latest_signal_at else None,
+                        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                     }
                     for row in signal_rows
                 ]
@@ -455,9 +391,7 @@ class SnapshotBroadcaster:
                 )
                 if signals_sig != self._last_signals_sig:
                     self._last_signals_sig = signals_sig
-                    await manager.broadcast(
-                        {"type": "signals_update", "data": {"sources": signal_sources}}
-                    )
+                    await manager.broadcast({"type": "signals_update", "data": {"sources": signal_sources}})
 
                 world_status = {}
                 world_stats = {}
@@ -468,11 +402,7 @@ class SnapshotBroadcaster:
                     if isinstance(world_snapshot.stats, dict):
                         world_stats = dict(world_snapshot.stats)
                         world_stats.pop("runtime_state", None)
-                    world_updated_at = (
-                        world_snapshot.updated_at.isoformat()
-                        if world_snapshot.updated_at
-                        else None
-                    )
+                    world_updated_at = world_snapshot.updated_at.isoformat() if world_snapshot.updated_at else None
                 world_status_sig = (
                     world_status.get("running"),
                     world_status.get("enabled"),
@@ -505,9 +435,7 @@ class SnapshotBroadcaster:
                         "title": row.title,
                         "description": row.description or "",
                         "source": row.source or "unknown",
-                        "detected_at": row.detected_at.isoformat()
-                        if row.detected_at
-                        else None,
+                        "detected_at": row.detected_at.isoformat() if row.detected_at else None,
                         "metadata": row.metadata_json or {},
                         "related_market_ids": row.related_market_ids or [],
                         "market_relevance_score": row.market_relevance_score,
@@ -573,9 +501,7 @@ class SnapshotBroadcaster:
                                     "checks_summary": row.checks_summary_json or {},
                                     "risk_snapshot": row.risk_snapshot_json or {},
                                     "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat()
-                                    if row.created_at
-                                    else None,
+                                    "created_at": row.created_at.isoformat() if row.created_at else None,
                                 },
                             }
                         )
@@ -596,18 +522,14 @@ class SnapshotBroadcaster:
                                     "message": row.message,
                                     "trace_id": row.trace_id,
                                     "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat()
-                                    if row.created_at
-                                    else None,
+                                    "created_at": row.created_at.isoformat() if row.created_at else None,
                                 },
                             }
                         )
 
                 if order_rows:
                     latest_order = order_rows[-1]
-                    self._last_trader_order_ts = (
-                        latest_order.updated_at or latest_order.created_at
-                    )
+                    self._last_trader_order_ts = latest_order.updated_at or latest_order.created_at
                     for row in order_rows:
                         await manager.broadcast(
                             {
@@ -634,15 +556,9 @@ class SnapshotBroadcaster:
                                     "event_id": row.event_id,
                                     "trace_id": row.trace_id,
                                     "payload": row.payload_json or {},
-                                    "created_at": row.created_at.isoformat()
-                                    if row.created_at
-                                    else None,
-                                    "executed_at": row.executed_at.isoformat()
-                                    if row.executed_at
-                                    else None,
-                                    "updated_at": row.updated_at.isoformat()
-                                    if row.updated_at
-                                    else None,
+                                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                                    "executed_at": row.executed_at.isoformat() if row.executed_at else None,
+                                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                                 },
                             }
                         )

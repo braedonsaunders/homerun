@@ -261,22 +261,16 @@ class ForecasterCommittee:
             CommitteeResult with aggregated probability and agent details.
         """
         # Build context that all agents share
-        context = self._build_context(
-            market_question, market_price, news_context, event_title, category
-        )
+        context = self._build_context(market_question, market_price, news_context, event_title, category)
 
         # Run Outside View and Inside View in parallel
         outside_task = asyncio.create_task(self._run_outside_view(context, model))
         inside_task = asyncio.create_task(self._run_inside_view(context, model))
 
-        outside_estimate, inside_estimate = await asyncio.gather(
-            outside_task, inside_task
-        )
+        outside_estimate, inside_estimate = await asyncio.gather(outside_task, inside_task)
 
         # Run Critic with both estimates as input
-        critic_estimate = await self._run_critic(
-            context, outside_estimate, inside_estimate, model
-        )
+        critic_estimate = await self._run_critic(context, outside_estimate, inside_estimate, model)
 
         # Aggregate
         all_estimates = [outside_estimate, inside_estimate, critic_estimate]
@@ -301,9 +295,7 @@ class ForecasterCommittee:
     # Agent runners
     # ------------------------------------------------------------------
 
-    async def _run_outside_view(
-        self, context: str, model: Optional[str]
-    ) -> AgentEstimate:
+    async def _run_outside_view(self, context: str, model: Optional[str]) -> AgentEstimate:
         """Run the Outside View (base rate) agent."""
         return await self._run_agent(
             agent_name="Outside View",
@@ -313,9 +305,7 @@ class ForecasterCommittee:
             model=model,
         )
 
-    async def _run_inside_view(
-        self, context: str, model: Optional[str]
-    ) -> AgentEstimate:
+    async def _run_inside_view(self, context: str, model: Optional[str]) -> AgentEstimate:
         """Run the Inside View (causal reasoning) agent."""
         return await self._run_agent(
             agent_name="Inside View",
@@ -517,10 +507,7 @@ class ForecasterCommittee:
             parts.append(news_context)
             parts.append("")
 
-        parts.append(
-            "Based on the above, estimate the probability that this "
-            "market resolves YES."
-        )
+        parts.append("Based on the above, estimate the probability that this market resolves YES.")
 
         return "\n".join(parts)
 

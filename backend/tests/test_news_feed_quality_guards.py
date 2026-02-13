@@ -31,7 +31,10 @@ def test_gdelt_summary_ignores_url_like_snippet():
 
 def test_min_text_quality_rejects_short_title_without_summary():
     assert _has_min_text_quality("Quick update", "") is False
-    assert _has_min_text_quality(
-        "South Carolina gubernatorial primary shifts after endorsement news",
-        "A longer summary gives enough content for meaningful matching.",
-    ) is True
+    assert (
+        _has_min_text_quality(
+            "South Carolina gubernatorial primary shifts after endorsement news",
+            "A longer summary gives enough content for meaningful matching.",
+        )
+        is True
+    )

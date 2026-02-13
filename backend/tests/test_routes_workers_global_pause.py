@@ -39,9 +39,7 @@ async def test_set_all_workers_paused_true_clears_requests(monkeypatch):
         "clear_news_scan_request",
         clear_news_scan_request,
     )
-    monkeypatch.setattr(
-        routes_workers.weather_shared_state, "set_weather_paused", set_weather_paused
-    )
+    monkeypatch.setattr(routes_workers.weather_shared_state, "set_weather_paused", set_weather_paused)
     monkeypatch.setattr(
         routes_workers.weather_shared_state,
         "clear_weather_scan_request",
@@ -63,9 +61,7 @@ async def test_set_all_workers_paused_true_clears_requests(monkeypatch):
         update_orchestrator_control,
     )
     monkeypatch.setattr(routes_workers, "set_worker_paused", set_worker_paused)
-    monkeypatch.setattr(
-        routes_workers, "clear_worker_run_request", clear_worker_run_request
-    )
+    monkeypatch.setattr(routes_workers, "clear_worker_run_request", clear_worker_run_request)
     monkeypatch.setattr(
         routes_workers.global_pause_state,
         "pause",
@@ -121,9 +117,7 @@ async def test_set_all_workers_paused_false_resumes_without_clears(monkeypatch):
         "clear_news_scan_request",
         clear_news_scan_request,
     )
-    monkeypatch.setattr(
-        routes_workers.weather_shared_state, "set_weather_paused", AsyncMock()
-    )
+    monkeypatch.setattr(routes_workers.weather_shared_state, "set_weather_paused", AsyncMock())
     monkeypatch.setattr(
         routes_workers.weather_shared_state,
         "clear_weather_scan_request",
@@ -145,9 +139,7 @@ async def test_set_all_workers_paused_false_resumes_without_clears(monkeypatch):
         update_orchestrator_control,
     )
     monkeypatch.setattr(routes_workers, "set_worker_paused", AsyncMock())
-    monkeypatch.setattr(
-        routes_workers, "clear_worker_run_request", clear_worker_run_request
-    )
+    monkeypatch.setattr(routes_workers, "clear_worker_run_request", clear_worker_run_request)
     monkeypatch.setattr(
         routes_workers.global_pause_state,
         "pause",
@@ -197,4 +189,3 @@ async def test_run_worker_once_blocked_when_global_pause_active():
         assert excinfo.value.status_code == 409
     finally:
         routes_workers.global_pause_state.resume()
-

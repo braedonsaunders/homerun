@@ -326,9 +326,7 @@ class Agent:
                     )
 
                     result = {"answer": response.content}
-                    await self._scratchpad.complete_session(
-                        session_id=session_id, result=result
-                    )
+                    await self._scratchpad.complete_session(session_id=session_id, result=result)
 
                     yield AgentEvent(
                         type=AgentEventType.DONE,
@@ -428,10 +426,7 @@ class Agent:
             self._messages.append(
                 LLMMessage(
                     role="tool",
-                    content=(
-                        f"Tool call limit reached ({tool.max_calls}). "
-                        "Use available data to proceed."
-                    ),
+                    content=(f"Tool call limit reached ({tool.max_calls}). Use available data to proceed."),
                     tool_call_id=tc.id,
                     name=tc.name,
                 )
@@ -463,11 +458,7 @@ class Agent:
             )
 
             # Serialize and truncate the result for the LLM context
-            result_str = (
-                json.dumps(result, default=str)
-                if isinstance(result, dict)
-                else str(result)
-            )
+            result_str = json.dumps(result, default=str) if isinstance(result, dict) else str(result)
             if len(result_str) > _MAX_TOOL_RESULT_CHARS:
                 result_str = result_str[:_MAX_TOOL_RESULT_CHARS] + "\n... [truncated]"
 
@@ -551,12 +542,8 @@ class Agent:
             session_id=session_id,
             entry_type="answer",
             output_data={"content": answer_text},
-            input_tokens=(
-                final_response.usage.input_tokens if final_response.usage else 0
-            ),
-            output_tokens=(
-                final_response.usage.output_tokens if final_response.usage else 0
-            ),
+            input_tokens=(final_response.usage.input_tokens if final_response.usage else 0),
+            output_tokens=(final_response.usage.output_tokens if final_response.usage else 0),
         )
 
         await self._scratchpad.complete_session(session_id=session_id, result=result)

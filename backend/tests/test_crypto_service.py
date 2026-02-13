@@ -74,12 +74,12 @@ def _event(slug: str, end_date: str) -> dict:
                 "question": "Bitcoin Up or Down - Test Window",
                 "eventStartTime": "2099-01-01T00:00:00Z",
                 "endDate": end_date,
-                "outcomes": "[\"Up\", \"Down\"]",
-                "outcomePrices": "[\"0.52\", \"0.48\"]",
+                "outcomes": '["Up", "Down"]',
+                "outcomePrices": '["0.52", "0.48"]',
                 "liquidityNum": 1000,
                 "volumeNum": 100,
                 "volume24hr": 50,
-                "clobTokenIds": "[\"tok_up\", \"tok_down\"]",
+                "clobTokenIds": '["tok_up", "tok_down"]',
                 "bestBid": 0.51,
                 "bestAsk": 0.53,
                 "spread": 0.02,
@@ -93,12 +93,8 @@ def _event(slug: str, end_date: str) -> dict:
 def test_fetch_all_requests_events_sorted_by_latest_end_date(monkeypatch):
     fake_events = [_event("btc-updown-5m-test", "2099-01-01T00:05:00Z")]
     fake_client = _FakeClient(fake_events)
-    monkeypatch.setattr(
-        crypto_service.httpx, "Client", lambda timeout=10.0: fake_client
-    )
-    monkeypatch.setattr(
-        crypto_service, "_get_series_configs", lambda: [("10684", "BTC", "5min")]
-    )
+    monkeypatch.setattr(crypto_service.httpx, "Client", lambda timeout=10.0: fake_client)
+    monkeypatch.setattr(crypto_service, "_get_series_configs", lambda: [("10684", "BTC", "5min")])
 
     svc = crypto_service.CryptoService(gamma_url="https://gamma-api.polymarket.com")
     markets = svc._fetch_all()
@@ -127,12 +123,8 @@ def test_fetch_all_overlays_live_clob_prices_on_current_market(monkeypatch):
             ("tok_up", "buy"): 0.99,
         },
     )
-    monkeypatch.setattr(
-        crypto_service.httpx, "Client", lambda timeout=10.0: fake_client
-    )
-    monkeypatch.setattr(
-        crypto_service, "_get_series_configs", lambda: [("10684", "BTC", "5min")]
-    )
+    monkeypatch.setattr(crypto_service.httpx, "Client", lambda timeout=10.0: fake_client)
+    monkeypatch.setattr(crypto_service, "_get_series_configs", lambda: [("10684", "BTC", "5min")])
 
     svc = crypto_service.CryptoService(gamma_url="https://gamma-api.polymarket.com")
     markets = svc._fetch_all()

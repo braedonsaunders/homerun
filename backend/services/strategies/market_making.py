@@ -52,9 +52,7 @@ class MarketMakingStrategy(BaseStrategy):
         self.min_liquidity = 1000.0  # Minimum $1000 liquidity
         self.min_volume = 500.0  # Minimum trading volume
 
-    def _get_prices(
-        self, market: Market, prices: dict[str, dict]
-    ) -> tuple[float, float]:
+    def _get_prices(self, market: Market, prices: dict[str, dict]) -> tuple[float, float]:
         """Get live YES/NO prices, falling back to market snapshot."""
         yes_price = market.yes_price
         no_price = market.no_price
@@ -166,9 +164,7 @@ class MarketMakingStrategy(BaseStrategy):
             days_until = (resolution_aware - utcnow()).days
             if days_until < 2:
                 base_risk += 0.05
-                factors.append(
-                    f"Very near resolution ({days_until}d) - inventory may be stranded"
-                )
+                factors.append(f"Very near resolution ({days_until}d) - inventory may be stranded")
             elif days_until < 7:
                 base_risk += 0.02
                 factors.append(f"Near resolution ({days_until}d)")
@@ -287,9 +283,7 @@ class MarketMakingStrategy(BaseStrategy):
                 continue
             if max_position < settings.MIN_POSITION_SIZE:
                 continue
-            absolute_profit = (
-                max_position * (net_profit / total_cost) if total_cost > 0 else 0
-            )
+            absolute_profit = max_position * (net_profit / total_cost) if total_cost > 0 else 0
             if absolute_profit < settings.MIN_ABSOLUTE_PROFIT:
                 continue
             if market.end_date:
@@ -300,14 +294,10 @@ class MarketMakingStrategy(BaseStrategy):
 
             # --- Risk score ---
             resolution_date = market.end_date
-            risk_score, risk_factors = self._calculate_risk_score(
-                spread, yes_price, market, resolution_date
-            )
+            risk_score, risk_factors = self._calculate_risk_score(spread, yes_price, market, resolution_date)
 
             # --- Build positions ---
-            yes_token_id = (
-                market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
-            )
+            yes_token_id = market.clob_token_ids[0] if len(market.clob_token_ids) > 0 else None
 
             positions = [
                 {
@@ -328,11 +318,7 @@ class MarketMakingStrategy(BaseStrategy):
             event = event_by_market.get(market.id)
             market_platform = str(getattr(market, "platform", "") or "").strip().lower()
             if market_platform not in {"polymarket", "kalshi"}:
-                market_platform = (
-                    "kalshi"
-                    if str(getattr(market, "id", "")).upper().startswith("KX")
-                    else "polymarket"
-                )
+                market_platform = "kalshi" if str(getattr(market, "id", "")).upper().startswith("KX") else "polymarket"
 
             # --- Build the opportunity directly (like Miracle strategy) ---
             opp = ArbitrageOpportunity(
@@ -379,8 +365,6 @@ class MarketMakingStrategy(BaseStrategy):
 
         # --- Rank by expected profit vs risk ---
         # Score = ROI / risk_score (higher ROI and lower risk = better)
-        opportunities.sort(
-            key=lambda o: o.roi_percent / max(o.risk_score, 0.01), reverse=True
-        )
+        opportunities.sort(key=lambda o: o.roi_percent / max(o.risk_score, 0.01), reverse=True)
 
         return opportunities

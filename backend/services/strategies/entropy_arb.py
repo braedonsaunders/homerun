@@ -160,9 +160,7 @@ class EntropyArbStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _expected_entropy_multi(
-        n_outcomes: int, days_remaining: float, total_days: float
-    ) -> float:
+    def _expected_entropy_multi(n_outcomes: int, days_remaining: float, total_days: float) -> float:
         """Expected entropy for a multi-outcome market."""
         h_max = max_entropy(n_outcomes)
         if total_days <= 0:
@@ -297,9 +295,7 @@ class EntropyArbStrategy(BaseStrategy):
         and an overall quality score (0-1, higher = more anomalous).
         """
         h_actual = multi_outcome_entropy(probs)
-        h_expected = self._expected_entropy_multi(
-            n_outcomes, days_remaining, total_days
-        )
+        h_expected = self._expected_entropy_multi(n_outcomes, days_remaining, total_days)
         h_max = max_entropy(n_outcomes)
         deviation = h_actual - h_expected
 
@@ -413,9 +409,7 @@ class EntropyArbStrategy(BaseStrategy):
                     "outcome": "YES",
                     "market": market.question[:50],
                     "price": yes_price,
-                    "token_id": (
-                        market.clob_token_ids[0] if market.clob_token_ids else None
-                    ),
+                    "token_id": (market.clob_token_ids[0] if market.clob_token_ids else None),
                 }
             )
 
@@ -521,19 +515,13 @@ class EntropyArbStrategy(BaseStrategy):
                 )
             elif total_yes < 0.97:
                 opp.risk_factors.append(
-                    f"Total YES ({total_yes:.1%}) below 97% -- "
-                    f"possible unlisted outcomes.",
+                    f"Total YES ({total_yes:.1%}) below 97% -- possible unlisted outcomes.",
                 )
             if is_election:
-                opp.risk_factors.append(
-                    "Election/primary: unlisted candidates may win."
-                )
+                opp.risk_factors.append("Election/primary: unlisted candidates may win.")
             if is_open_ended:
                 opp.risk_factors.append("Open-ended event: outcome universe unbounded.")
             if entropy_info["spike"]:
-                opp.risk_factors.append(
-                    "Entropy spike detected (distribution changed "
-                    "significantly since last scan)."
-                )
+                opp.risk_factors.append("Entropy spike detected (distribution changed significantly since last scan).")
 
         return opp

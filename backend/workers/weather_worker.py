@@ -89,31 +89,20 @@ async def _run_loop() -> None:
         now = datetime.now(timezone.utc)
 
         should_run_scheduled = (
-            enabled
-            and auto_run
-            and not paused
-            and (next_scheduled_run_at is None or now >= next_scheduled_run_at)
+            enabled and auto_run and not paused and (next_scheduled_run_at is None or now >= next_scheduled_run_at)
         )
         should_run = requested or should_run_scheduled
 
         if not should_run:
             try:
                 async with AsyncSessionLocal() as session:
-                    pending = len(
-                        await shared_state.list_weather_intents(
-                            session, status_filter="pending", limit=2000
-                        )
-                    )
+                    pending = len(await shared_state.list_weather_intents(session, status_filter="pending", limit=2000))
                     await write_worker_snapshot(
                         session,
                         "weather",
                         running=True,
                         enabled=enabled and not paused,
-                        current_activity=(
-                            "Paused"
-                            if paused
-                            else "Idle - waiting for next weather workflow cycle."
-                        ),
+                        current_activity=("Paused" if paused else "Idle - waiting for next weather workflow cycle."),
                         interval_seconds=interval,
                         last_run_at=None,
                         last_error=None,
@@ -131,9 +120,7 @@ async def _run_loop() -> None:
             async with AsyncSessionLocal() as session:
                 result = await weather_workflow_orchestrator.run_cycle(session)
                 await shared_state.clear_weather_scan_request(session)
-                pending_rows = await shared_state.list_weather_intents(
-                    session, status_filter="pending", limit=2000
-                )
+                pending_rows = await shared_state.list_weather_intents(session, status_filter="pending", limit=2000)
                 emitted = await emit_weather_intent_signals(
                     session,
                     pending_rows,
@@ -144,9 +131,7 @@ async def _run_loop() -> None:
                         )
                     ),
                 )
-            next_scheduled_run_at = datetime.now(timezone.utc).replace(
-                microsecond=0
-            ) + timedelta(seconds=interval)
+            next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             async with AsyncSessionLocal() as session:
                 await write_worker_snapshot(
                     session,
@@ -189,11 +174,7 @@ async def _run_loop() -> None:
                     },
                     stats=status.get("stats") or {},
                 )
-                pending = len(
-                    await shared_state.list_weather_intents(
-                        session, status_filter="pending", limit=2000
-                    )
-                )
+                pending = len(await shared_state.list_weather_intents(session, status_filter="pending", limit=2000))
                 await write_worker_snapshot(
                     session,
                     "weather",

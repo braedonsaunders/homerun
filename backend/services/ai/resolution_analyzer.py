@@ -457,9 +457,7 @@ class ResolutionAnalyzer:
                     market_index=i,
                     error=str(result),
                 )
-                market_analyses.append(
-                    self._fallback_analysis(f"Analysis failed: {result}")
-                )
+                market_analyses.append(self._fallback_analysis(f"Analysis failed: {result}"))
             else:
                 market_analyses.append(result)
 
@@ -543,9 +541,7 @@ class ResolutionAnalyzer:
                     "summary": row.summary or "",
                     "session_id": row.session_id,
                     "model_used": row.model_used,
-                    "analyzed_at": row.analyzed_at.isoformat()
-                    if row.analyzed_at
-                    else None,
+                    "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else None,
                     "cached": True,
                 }
         except Exception as exc:
@@ -576,9 +572,7 @@ class ResolutionAnalyzer:
         """
         try:
             async with AsyncSessionLocal() as session:
-                query = select(ResolutionAnalysis).order_by(
-                    desc(ResolutionAnalysis.analyzed_at)
-                )
+                query = select(ResolutionAnalysis).order_by(desc(ResolutionAnalysis.analyzed_at))
                 if market_id:
                     query = query.where(ResolutionAnalysis.market_id == market_id)
                 query = query.limit(limit)
@@ -601,9 +595,7 @@ class ResolutionAnalyzer:
                         "resolution_likelihood": row.resolution_likelihood or {},
                         "summary": row.summary or "",
                         "model_used": row.model_used,
-                        "analyzed_at": row.analyzed_at.isoformat()
-                        if row.analyzed_at
-                        else None,
+                        "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else None,
                     }
                     for row in rows
                 ]
@@ -632,9 +624,7 @@ class ResolutionAnalyzer:
         ]
 
         if description:
-            sections.append(
-                f"\n**Full Description / Resolution Rules:**\n{description}"
-            )
+            sections.append(f"\n**Full Description / Resolution Rules:**\n{description}")
         else:
             sections.append(
                 "\n**Description:** Not provided. This itself is a risk factor "
@@ -644,9 +634,7 @@ class ResolutionAnalyzer:
         if resolution_source:
             sections.append(f"\n**Resolution Source:** {resolution_source}")
         else:
-            sections.append(
-                "\n**Resolution Source:** Not specified. Flag this as an ambiguity."
-            )
+            sections.append("\n**Resolution Source:** Not specified. Flag this as an ambiguity.")
 
         if end_date:
             sections.append(f"**End Date:** {end_date}")

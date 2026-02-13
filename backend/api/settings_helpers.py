@@ -160,21 +160,13 @@ def notifications_payload(settings: AppSettings) -> dict[str, Any]:
         "notify_on_opportunity": settings.notify_on_opportunity,
         "notify_on_trade": settings.notify_on_trade,
         "notify_min_roi": settings.notify_min_roi,
-        "notify_autotrader_orders": bool(
-            getattr(settings, "notify_autotrader_orders", False)
-        ),
-        "notify_autotrader_issues": bool(
-            getattr(settings, "notify_autotrader_issues", True)
-        ),
-        "notify_autotrader_timeline": bool(
-            getattr(settings, "notify_autotrader_timeline", True)
-        ),
+        "notify_autotrader_orders": bool(getattr(settings, "notify_autotrader_orders", False)),
+        "notify_autotrader_issues": bool(getattr(settings, "notify_autotrader_issues", True)),
+        "notify_autotrader_timeline": bool(getattr(settings, "notify_autotrader_timeline", True)),
         "notify_autotrader_summary_interval_minutes": int(
             getattr(settings, "notify_autotrader_summary_interval_minutes", 60) or 60
         ),
-        "notify_autotrader_summary_per_trader": bool(
-            getattr(settings, "notify_autotrader_summary_per_trader", False)
-        ),
+        "notify_autotrader_summary_per_trader": bool(getattr(settings, "notify_autotrader_summary_per_trader", False)),
     }
 
 
@@ -218,24 +210,12 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "auto_cleanup_enabled": settings.auto_cleanup_enabled,
         "cleanup_interval_hours": settings.cleanup_interval_hours,
         "cleanup_resolved_trade_days": settings.cleanup_resolved_trade_days,
-        "market_cache_hygiene_enabled": _with_default(
-            settings.market_cache_hygiene_enabled, True
-        ),
-        "market_cache_hygiene_interval_hours": _with_default(
-            settings.market_cache_hygiene_interval_hours, 6
-        ),
-        "market_cache_retention_days": _with_default(
-            settings.market_cache_retention_days, 120
-        ),
-        "market_cache_reference_lookback_days": _with_default(
-            settings.market_cache_reference_lookback_days, 45
-        ),
-        "market_cache_weak_entry_grace_days": _with_default(
-            settings.market_cache_weak_entry_grace_days, 7
-        ),
-        "market_cache_max_entries_per_slug": _with_default(
-            settings.market_cache_max_entries_per_slug, 3
-        ),
+        "market_cache_hygiene_enabled": _with_default(settings.market_cache_hygiene_enabled, True),
+        "market_cache_hygiene_interval_hours": _with_default(settings.market_cache_hygiene_interval_hours, 6),
+        "market_cache_retention_days": _with_default(settings.market_cache_retention_days, 120),
+        "market_cache_reference_lookback_days": _with_default(settings.market_cache_reference_lookback_days, 45),
+        "market_cache_weak_entry_grace_days": _with_default(settings.market_cache_weak_entry_grace_days, 7),
+        "market_cache_max_entries_per_slug": _with_default(settings.market_cache_max_entries_per_slug, 3),
     }
 
 
@@ -314,9 +294,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         if pm.api_secret is not None:
             set_encrypted_secret(settings, "polymarket_api_secret", pm.api_secret)
         if pm.api_passphrase is not None:
-            set_encrypted_secret(
-                settings, "polymarket_api_passphrase", pm.api_passphrase
-            )
+            set_encrypted_secret(settings, "polymarket_api_passphrase", pm.api_passphrase)
         if pm.private_key is not None:
             set_encrypted_secret(settings, "polymarket_private_key", pm.private_key)
 
@@ -367,26 +345,15 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.notify_on_opportunity = notif.notify_on_opportunity
         settings.notify_on_trade = notif.notify_on_trade
         settings.notify_min_roi = notif.notify_min_roi
-        settings.notify_autotrader_orders = bool(
-            getattr(notif, "notify_autotrader_orders", False)
-        )
-        settings.notify_autotrader_issues = bool(
-            getattr(notif, "notify_autotrader_issues", True)
-        )
-        settings.notify_autotrader_timeline = bool(
-            getattr(notif, "notify_autotrader_timeline", True)
-        )
+        settings.notify_autotrader_orders = bool(getattr(notif, "notify_autotrader_orders", False))
+        settings.notify_autotrader_issues = bool(getattr(notif, "notify_autotrader_issues", True))
+        settings.notify_autotrader_timeline = bool(getattr(notif, "notify_autotrader_timeline", True))
         interval_minutes = int(
             max(
                 5,
                 min(
                     1440,
-                    int(
-                        getattr(
-                            notif, "notify_autotrader_summary_interval_minutes", 60
-                        )
-                        or 60
-                    ),
+                    int(getattr(notif, "notify_autotrader_summary_interval_minutes", 60) or 60),
                 ),
             )
         )
@@ -432,33 +399,21 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.cleanup_interval_hours = maint.cleanup_interval_hours
         settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
         settings.market_cache_hygiene_enabled = maint.market_cache_hygiene_enabled
-        settings.market_cache_hygiene_interval_hours = (
-            maint.market_cache_hygiene_interval_hours
-        )
+        settings.market_cache_hygiene_interval_hours = maint.market_cache_hygiene_interval_hours
         settings.market_cache_retention_days = maint.market_cache_retention_days
-        settings.market_cache_reference_lookback_days = (
-            maint.market_cache_reference_lookback_days
-        )
-        settings.market_cache_weak_entry_grace_days = (
-            maint.market_cache_weak_entry_grace_days
-        )
-        settings.market_cache_max_entries_per_slug = (
-            maint.market_cache_max_entries_per_slug
-        )
+        settings.market_cache_reference_lookback_days = maint.market_cache_reference_lookback_days
+        settings.market_cache_weak_entry_grace_days = maint.market_cache_weak_entry_grace_days
+        settings.market_cache_max_entries_per_slug = maint.market_cache_max_entries_per_slug
 
     if request.discovery:
         discovery = request.discovery
         settings.discovery_max_discovered_wallets = discovery.max_discovered_wallets
         settings.discovery_maintenance_enabled = discovery.maintenance_enabled
         settings.discovery_keep_recent_trade_days = discovery.keep_recent_trade_days
-        settings.discovery_keep_new_discoveries_days = (
-            discovery.keep_new_discoveries_days
-        )
+        settings.discovery_keep_new_discoveries_days = discovery.keep_new_discoveries_days
         settings.discovery_maintenance_batch = discovery.maintenance_batch
         settings.discovery_stale_analysis_hours = discovery.stale_analysis_hours
-        settings.discovery_analysis_priority_batch_limit = (
-            discovery.analysis_priority_batch_limit
-        )
+        settings.discovery_analysis_priority_batch_limit = discovery.analysis_priority_batch_limit
         settings.discovery_delay_between_markets = discovery.delay_between_markets
         settings.discovery_delay_between_wallets = discovery.delay_between_wallets
         settings.discovery_max_markets_per_run = discovery.max_markets_per_run

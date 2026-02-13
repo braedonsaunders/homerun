@@ -61,12 +61,8 @@ class RateLimiter:
         "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10),
         "clob_general": RateLimitConfig(requests_per_window=9000, window_seconds=10),
         "clob_market": RateLimitConfig(requests_per_window=1500, window_seconds=10),
-        "clob_markets_batch": RateLimitConfig(
-            requests_per_window=500, window_seconds=10
-        ),
-        "clob_prices_history": RateLimitConfig(
-            requests_per_window=1000, window_seconds=10
-        ),
+        "clob_markets_batch": RateLimitConfig(requests_per_window=500, window_seconds=10),
+        "clob_prices_history": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_general": RateLimitConfig(requests_per_window=1000, window_seconds=10),
         "data_trades": RateLimitConfig(requests_per_window=200, window_seconds=10),
         "data_positions": RateLimitConfig(requests_per_window=150, window_seconds=10),
@@ -82,9 +78,7 @@ class RateLimiter:
             config = self.LIMITS.get(endpoint, RateLimitConfig(1000, 10))
             capacity = config.burst_limit or config.requests_per_window
             refill_rate = config.requests_per_window / config.window_seconds
-            self._buckets[endpoint] = TokenBucket(
-                capacity=capacity, tokens=capacity, refill_rate=refill_rate
-            )
+            self._buckets[endpoint] = TokenBucket(capacity=capacity, tokens=capacity, refill_rate=refill_rate)
         return self._buckets[endpoint]
 
     def _get_lock(self, endpoint: str) -> asyncio.Lock:
@@ -104,9 +98,7 @@ class RateLimiter:
             wait_time = bucket.wait_time(tokens)
 
             if wait_time > 0:
-                logger.debug(
-                    "Rate limit wait", endpoint=endpoint, wait_seconds=wait_time
-                )
+                logger.debug("Rate limit wait", endpoint=endpoint, wait_seconds=wait_time)
                 await asyncio.sleep(wait_time)
                 bucket.refill()
 
@@ -129,9 +121,7 @@ class RateLimiter:
                 "available_tokens": bucket.tokens,
                 "capacity": bucket.capacity,
                 "refill_rate": bucket.refill_rate,
-                "limit": f"{config.requests_per_window}/{config.window_seconds}s"
-                if config
-                else "default",
+                "limit": f"{config.requests_per_window}/{config.window_seconds}s" if config else "default",
             }
         return status
 

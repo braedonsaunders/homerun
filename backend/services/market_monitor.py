@@ -105,9 +105,7 @@ class MarketSnapshot:
     has_thin_book: bool = False
 
     # Internal: rolling price history for stability computation
-    _price_history: list[tuple[datetime, list[float]]] = field(
-        default_factory=list, repr=False
-    )
+    _price_history: list[tuple[datetime, list[float]]] = field(default_factory=list, repr=False)
 
     def age_seconds(self, now: Optional[datetime] = None) -> float:
         """Seconds elapsed since first detection."""
@@ -197,9 +195,7 @@ class NewMarketAlert:
             "outcome_prices": self.market.outcome_prices,
             "liquidity": self.market.liquidity,
             "volume": self.market.volume,
-            "stability_score": (
-                self.snapshot.price_stability_score if self.snapshot else None
-            ),
+            "stability_score": (self.snapshot.price_stability_score if self.snapshot else None),
         }
 
 
@@ -291,9 +287,7 @@ class MarketMonitor:
                 polymarket_client.get_all_markets(active=True),
             )
         except Exception as exc:
-            logger.error(
-                "Failed to fetch markets/events from Polymarket", error=str(exc)
-            )
+            logger.error("Failed to fetch markets/events from Polymarket", error=str(exc))
             return []
 
         # Build a market_id -> Event lookup for enrichment
@@ -317,9 +311,7 @@ class MarketMonitor:
         async with self._lock:
             new_market_alerts = self._detect_new_markets(combined, event_by_market)
             new_event_alerts = self._detect_new_events(events, combined)
-            dislocation_alerts = self._detect_price_dislocations(
-                combined, event_by_market
-            )
+            dislocation_alerts = self._detect_price_dislocations(combined, event_by_market)
             thin_book_alerts = self._detect_thin_books(combined, event_by_market)
 
             alerts.extend(new_market_alerts)
@@ -558,9 +550,7 @@ class MarketMonitor:
                 continue
 
             # Skip markets with zero prices (not yet initialised)
-            if not market.outcome_prices or all(
-                p == 0.0 for p in market.outcome_prices
-            ):
+            if not market.outcome_prices or all(p == 0.0 for p in market.outcome_prices):
                 continue
 
             snapshot = self._registry.get(market.id)
@@ -697,9 +687,7 @@ class MarketMonitor:
         event_cutoff = now - timedelta(seconds=self._retention * 2)
 
         stale_market_ids = [
-            mid
-            for mid, snap in self._registry.items()
-            if snap.first_seen_at.replace(tzinfo=timezone.utc) < cutoff
+            mid for mid, snap in self._registry.items() if snap.first_seen_at.replace(tzinfo=timezone.utc) < cutoff
         ]
         for mid in stale_market_ids:
             del self._registry[mid]
@@ -841,39 +829,19 @@ class MarketMonitor:
     def get_registry_stats(self) -> dict:
         """Return summary statistics about the current registry state."""
         now = datetime.now(timezone.utc)
-        new_count = sum(
-            1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window
-        )
+        new_count = sum(1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window)
         thin_count = sum(1 for s in self._registry.values() if s.has_thin_book)
-        unstable_count = sum(
-            1 for s in self._registry.values() if s.price_stability_score < 0.5
-        )
+        unstable_count = sum(1 for s in self._registry.values() if s.price_stability_score < 0.5)
         return {
             "total_tracked": len(self._registry),
             "total_events": len(self._known_events),
             "new_markets": new_count,
             "thin_book_markets": thin_count,
             "unstable_markets": unstable_count,
-            "btc_next_15m": (
-                self._btc_15m.predict_next(now).isoformat()
-                if self._btc_15m.predict_next(now)
-                else None
-            ),
-            "btc_next_1h": (
-                self._btc_1h.predict_next(now).isoformat()
-                if self._btc_1h.predict_next(now)
-                else None
-            ),
-            "eth_next_15m": (
-                self._eth_15m.predict_next(now).isoformat()
-                if self._eth_15m.predict_next(now)
-                else None
-            ),
-            "eth_next_1h": (
-                self._eth_1h.predict_next(now).isoformat()
-                if self._eth_1h.predict_next(now)
-                else None
-            ),
+            "btc_next_15m": (self._btc_15m.predict_next(now).isoformat() if self._btc_15m.predict_next(now) else None),
+            "btc_next_1h": (self._btc_1h.predict_next(now).isoformat() if self._btc_1h.predict_next(now) else None),
+            "eth_next_15m": (self._eth_15m.predict_next(now).isoformat() if self._eth_15m.predict_next(now) else None),
+            "eth_next_1h": (self._eth_1h.predict_next(now).isoformat() if self._eth_1h.predict_next(now) else None),
         }
 
     def get_snapshot(self, market_id: str) -> Optional[MarketSnapshot]:
@@ -883,9 +851,7 @@ class MarketMonitor:
     def get_new_markets(self) -> list[MarketSnapshot]:
         """Return all snapshots that are still within the 'new' window."""
         now = datetime.now(timezone.utc)
-        return [
-            s for s in self._registry.values() if s.age_seconds(now) <= self._new_window
-        ]
+        return [s for s in self._registry.values() if s.age_seconds(now) <= self._new_window]
 
     def get_high_priority_market_ids(self) -> set[str]:
         """Return IDs of markets that currently warrant elevated scan priority.
@@ -924,12 +890,8 @@ class MarketMonitor:
         now = datetime.now(timezone.utc)
         hp_ids = self.get_high_priority_market_ids()
 
-        new_count = sum(
-            1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window
-        )
-        unstable_count = sum(
-            1 for s in self._registry.values() if s.price_stability_score < 0.5
-        )
+        new_count = sum(1 for s in self._registry.values() if s.age_seconds(now) <= self._new_window)
+        unstable_count = sum(1 for s in self._registry.values() if s.price_stability_score < 0.5)
         thin_count = sum(1 for s in self._registry.values() if s.has_thin_book)
 
         # Predicted crypto creation times
@@ -938,9 +900,7 @@ class MarketMonitor:
 
         # Check if any crypto creation is imminent
         crypto_imminent = False
-        for pred_time in list(btc_predictions.values()) + list(
-            eth_predictions.values()
-        ):
+        for pred_time in list(btc_predictions.values()) + list(eth_predictions.values()):
             if pred_time is not None:
                 seconds_until = (pred_time - now).total_seconds()
                 if 0 <= seconds_until <= 60:
@@ -954,12 +914,8 @@ class MarketMonitor:
             "unstable_count": unstable_count,
             "thin_book_count": thin_count,
             "crypto_imminent": crypto_imminent,
-            "btc_predictions": {
-                k: v.isoformat() if v else None for k, v in btc_predictions.items()
-            },
-            "eth_predictions": {
-                k: v.isoformat() if v else None for k, v in eth_predictions.items()
-            },
+            "btc_predictions": {k: v.isoformat() if v else None for k, v in btc_predictions.items()},
+            "eth_predictions": {k: v.isoformat() if v else None for k, v in eth_predictions.items()},
         }
 
 

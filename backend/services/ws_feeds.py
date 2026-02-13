@@ -71,9 +71,7 @@ async def _load_kalshi_stored_credentials() -> tuple[Optional[str], Optional[str
     """Load Kalshi credentials from DB-backed app settings."""
     try:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(AppSettings).where(AppSettings.id == "default")
-            )
+            result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
             app_settings = result.scalar_one_or_none()
     except Exception as exc:
         logger.warning(
@@ -163,9 +161,7 @@ class PriceCache:
         self._entries: Dict[str, CachedEntry] = {}
         self._on_change_callbacks: List[Callable[[str, float, float], None]] = []
 
-    def add_on_change_callback(
-        self, callback: Callable[[str, float, float], None]
-    ) -> None:
+    def add_on_change_callback(self, callback: Callable[[str, float, float], None]) -> None:
         """Register a callback invoked on significant price changes.
 
         The callback receives ``(token_id, old_mid, new_mid)`` and is called
@@ -189,11 +185,7 @@ class PriceCache:
         best_bid = bids_sorted[0].price if bids_sorted else 0.0
         best_ask = asks_sorted[0].price if asks_sorted else 0.0
 
-        new_mid = (
-            (best_bid + best_ask) / 2.0
-            if best_bid > 0 and best_ask > 0
-            else best_bid or best_ask
-        )
+        new_mid = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask > 0 else best_bid or best_ask
 
         entry = CachedEntry(
             best_bid=best_bid,
@@ -394,16 +386,12 @@ class PolymarketWSFeed:
     async def start(self) -> None:
         """Start the feed in the background.  Idempotent."""
         if not WEBSOCKETS_AVAILABLE:
-            logger.error(
-                "Cannot start PolymarketWSFeed: websockets library not installed"
-            )
+            logger.error("Cannot start PolymarketWSFeed: websockets library not installed")
             return
         if self._run_task is not None and not self._run_task.done():
             return
         self._stop_event.clear()
-        self._run_task = asyncio.create_task(
-            self._run_loop(), name="polymarket-ws-feed"
-        )
+        self._run_task = asyncio.create_task(self._run_loop(), name="polymarket-ws-feed")
         logger.info("PolymarketWSFeed started")
 
     async def stop(self) -> None:
@@ -471,11 +459,7 @@ class PolymarketWSFeed:
         attempt = 0
         while not self._stop_event.is_set():
             try:
-                self._state = (
-                    ConnectionState.CONNECTING
-                    if attempt == 0
-                    else ConnectionState.RECONNECTING
-                )
+                self._state = ConnectionState.CONNECTING if attempt == 0 else ConnectionState.RECONNECTING
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
@@ -485,13 +469,11 @@ class PolymarketWSFeed:
                 attempt += 1
                 self.stats.reconnections += 1
                 delay = min(
-                    self._reconnect_base_delay
-                    * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
+                    self._reconnect_base_delay * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
                     self._reconnect_max_delay,
                 )
                 logger.warning(
-                    f"Polymarket WS disconnected ({exc!r}), reconnecting in {delay:.1f}s "
-                    f"(attempt {attempt})"
+                    f"Polymarket WS disconnected ({exc!r}), reconnecting in {delay:.1f}s (attempt {attempt})"
                 )
                 self._state = ConnectionState.DISCONNECTED
                 try:
@@ -530,9 +512,7 @@ class PolymarketWSFeed:
                     )
 
             # Start heartbeat
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(ws), name="polymarket-ws-heartbeat"
-            )
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws), name="polymarket-ws-heartbeat")
 
             try:
                 async for raw in ws:
@@ -629,9 +609,7 @@ class PolymarketWSFeed:
 
     def _apply_book_update(self, data: dict, recv_time: float) -> None:
         """Parse bids/asks arrays and push into PriceCache."""
-        asset_id = (
-            data.get("asset_id") or data.get("token_id") or data.get("market", "")
-        )
+        asset_id = data.get("asset_id") or data.get("token_id") or data.get("market", "")
         if not asset_id:
             return
 
@@ -736,9 +714,7 @@ class KalshiWSFeed:
         self._auth_headers = await self._load_auth_headers()
         if not self._auth_headers:
             self._state = ConnectionState.CLOSED
-            logger.info(
-                "KalshiWSFeed not started: credentials are not configured in app settings"
-            )
+            logger.info("KalshiWSFeed not started: credentials are not configured in app settings")
             return
         self._stop_event.clear()
         self._run_task = asyncio.create_task(self._run_loop(), name="kalshi-ws-feed")
@@ -791,11 +767,7 @@ class KalshiWSFeed:
         attempt = 0
         while not self._stop_event.is_set():
             try:
-                self._state = (
-                    ConnectionState.CONNECTING
-                    if attempt == 0
-                    else ConnectionState.RECONNECTING
-                )
+                self._state = ConnectionState.CONNECTING if attempt == 0 else ConnectionState.RECONNECTING
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
@@ -808,22 +780,17 @@ class KalshiWSFeed:
                 exc_str = repr(exc)
                 if "401" in exc_str or "403" in exc_str:
                     logger.warning(
-                        f"Kalshi WS auth failure ({exc!r}), "
-                        "stopping reconnect (credentials missing or expired)"
+                        f"Kalshi WS auth failure ({exc!r}), stopping reconnect (credentials missing or expired)"
                     )
                     break
 
                 attempt += 1
                 self.stats.reconnections += 1
                 delay = min(
-                    self._reconnect_base_delay
-                    * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
+                    self._reconnect_base_delay * (DEFAULT_RECONNECT_MULTIPLIER ** (attempt - 1)),
                     self._reconnect_max_delay,
                 )
-                logger.warning(
-                    f"Kalshi WS disconnected ({exc!r}), reconnecting in {delay:.1f}s "
-                    f"(attempt {attempt})"
-                )
+                logger.warning(f"Kalshi WS disconnected ({exc!r}), reconnecting in {delay:.1f}s (attempt {attempt})")
                 self._state = ConnectionState.DISCONNECTED
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
@@ -862,9 +829,7 @@ class KalshiWSFeed:
                     await self._send_subscribe(list(self._subscribed_tickers))
 
             # Heartbeat
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(ws), name="kalshi-ws-heartbeat"
-            )
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws), name="kalshi-ws-heartbeat")
 
             try:
                 async for raw in ws:
@@ -980,9 +945,7 @@ class KalshiWSFeed:
         #   asks = yes_raw (prices you pay to buy YES)
         #   bids = derived from no_raw: if you can buy NO at p, YES implied bid = 1 - p
         implied_bids = [
-            OrderBookLevel(price=round(1.0 - lvl.price, 4), size=lvl.size)
-            for lvl in no_asks
-            if lvl.price < 1.0
+            OrderBookLevel(price=round(1.0 - lvl.price, 4), size=lvl.size) for lvl in no_asks if lvl.price < 1.0
         ]
 
         self._cache.update(ticker, implied_bids, yes_asks)
@@ -1043,9 +1006,7 @@ class FeedManager:
         self._cache = PriceCache()
         self._polymarket_feed = PolymarketWSFeed(cache=self._cache)
         self._kalshi_feed = KalshiWSFeed(cache=self._cache)
-        self._http_fallback_fn: Optional[
-            Callable[[str], Coroutine[Any, Any, Optional[OrderBook]]]
-        ] = None
+        self._http_fallback_fn: Optional[Callable[[str], Coroutine[Any, Any, Optional[OrderBook]]]] = None
         self._started = False
         # Reactive scan: accumulate changed tokens and debounce trigger
         self._changed_tokens: Set[str] = set()

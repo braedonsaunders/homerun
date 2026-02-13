@@ -317,13 +317,9 @@ class OpportunityJudge:
                     )
                     judgment = extracted
                 else:
-                    judgment = self._fallback_judgment(
-                        "LLM returned list with no dict elements"
-                    )
+                    judgment = self._fallback_judgment("LLM returned list with no dict elements")
             elif llm_response:
-                judgment = self._fallback_judgment(
-                    f"LLM returned {type(llm_response).__name__} instead of dict"
-                )
+                judgment = self._fallback_judgment(f"LLM returned {type(llm_response).__name__} instead of dict")
             else:
                 judgment = self._fallback_judgment("LLM returned empty response")
 
@@ -427,15 +423,11 @@ class OpportunityJudge:
                 logger.error(
                     "Batch judgment failed for opportunity",
                     opportunity_index=i,
-                    opportunity_id=opportunities[i].id
-                    if i < len(opportunities)
-                    else "unknown",
+                    opportunity_id=opportunities[i].id if i < len(opportunities) else "unknown",
                     error=str(result),
                 )
                 fallback = self._fallback_judgment(f"Batch judgment failed: {result}")
-                fallback["opportunity_id"] = (
-                    opportunities[i].id if i < len(opportunities) else "unknown"
-                )
+                fallback["opportunity_id"] = opportunities[i].id if i < len(opportunities) else "unknown"
                 judgments.append(fallback)
             else:
                 judgments.append(result)
@@ -473,18 +465,12 @@ class OpportunityJudge:
         """
         try:
             async with AsyncSessionLocal() as session:
-                query = select(OpportunityJudgment).order_by(
-                    desc(OpportunityJudgment.judged_at)
-                )
+                query = select(OpportunityJudgment).order_by(desc(OpportunityJudgment.judged_at))
 
                 if opportunity_id:
-                    query = query.where(
-                        OpportunityJudgment.opportunity_id == opportunity_id
-                    )
+                    query = query.where(OpportunityJudgment.opportunity_id == opportunity_id)
                 if strategy_type:
-                    query = query.where(
-                        OpportunityJudgment.strategy_type == strategy_type
-                    )
+                    query = query.where(OpportunityJudgment.strategy_type == strategy_type)
                 if min_score is not None:
                     query = query.where(OpportunityJudgment.overall_score >= min_score)
 
@@ -509,9 +495,7 @@ class OpportunityJudge:
                         "ml_recommendation": row.ml_recommendation,
                         "agreement": row.agreement,
                         "model_used": row.model_used,
-                        "judged_at": row.judged_at.isoformat()
-                        if row.judged_at
-                        else None,
+                        "judged_at": row.judged_at.isoformat() if row.judged_at else None,
                     }
                     for row in rows
                 ]
@@ -531,9 +515,7 @@ class OpportunityJudge:
             async with AsyncSessionLocal() as session:
                 # Total judgments with ML comparison
                 total_result = await session.execute(
-                    select(func.count(OpportunityJudgment.id)).where(
-                        OpportunityJudgment.agreement.isnot(None)
-                    )
+                    select(func.count(OpportunityJudgment.id)).where(OpportunityJudgment.agreement.isnot(None))
                 )
                 total_with_ml = total_result.scalar() or 0
 
@@ -554,15 +536,11 @@ class OpportunityJudge:
                 disagreements = disagree_result.scalar() or 0
 
                 # Total judgments overall
-                all_result = await session.execute(
-                    select(func.count(OpportunityJudgment.id))
-                )
+                all_result = await session.execute(select(func.count(OpportunityJudgment.id)))
                 total_all = all_result.scalar() or 0
 
                 # Average scores
-                avg_result = await session.execute(
-                    select(func.avg(OpportunityJudgment.overall_score))
-                )
+                avg_result = await session.execute(select(func.avg(OpportunityJudgment.overall_score)))
                 avg_score = avg_result.scalar()
 
                 # Recommendation distribution
@@ -574,9 +552,7 @@ class OpportunityJudge:
                 )
                 recommendation_counts = {row[0]: row[1] for row in rec_result.all()}
 
-                agreement_rate = (
-                    round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
-                )
+                agreement_rate = round(agreements / total_with_ml, 4) if total_with_ml > 0 else None
 
                 avg_overall = round(float(avg_score), 4) if avg_score else 0.0
 
@@ -587,9 +563,7 @@ class OpportunityJudge:
                     "agreements": agreements,
                     "disagreements": disagreements,
                     "ml_overrides": disagreements,
-                    "agreement_rate": agreement_rate
-                    if agreement_rate is not None
-                    else 0.0,
+                    "agreement_rate": agreement_rate if agreement_rate is not None else 0.0,
                     "average_overall_score": avg_overall,
                     "avg_score": avg_overall,
                     "recommendation_distribution": recommendation_counts,
@@ -625,9 +599,7 @@ class OpportunityJudge:
 
         # Core fields
         sections.append(f"**ID:** {opportunity.id}")
-        sections.append(
-            f"**Strategy:** {opportunity.strategy if opportunity.strategy else 'unknown'}"
-        )
+        sections.append(f"**Strategy:** {opportunity.strategy if opportunity.strategy else 'unknown'}")
         sections.append(f"**Title:** {opportunity.title}")
         sections.append(f"**Description:** {opportunity.description}")
 
@@ -649,19 +621,13 @@ class OpportunityJudge:
         # Liquidity
         sections.append("\n### Liquidity & Execution")
         sections.append(f"- Minimum liquidity: ${opportunity.min_liquidity:.2f}")
-        sections.append(
-            f"- Maximum position size: ${opportunity.max_position_size:.2f}"
-        )
+        sections.append(f"- Maximum position size: ${opportunity.max_position_size:.2f}")
 
         # Mispricing classification
         if opportunity.mispricing_type:
-            sections.append(
-                f"\n**Mispricing type:** {opportunity.mispricing_type.value}"
-            )
+            sections.append(f"\n**Mispricing type:** {opportunity.mispricing_type.value}")
         if opportunity.guaranteed_profit is not None:
-            sections.append(
-                f"**Guaranteed profit (Frank-Wolfe):** ${opportunity.guaranteed_profit:.4f}"
-            )
+            sections.append(f"**Guaranteed profit (Frank-Wolfe):** ${opportunity.guaranteed_profit:.4f}")
         if opportunity.capture_ratio is not None:
             sections.append(f"**Capture ratio:** {opportunity.capture_ratio:.4f}")
 
@@ -674,9 +640,7 @@ class OpportunityJudge:
                         sections.append(f"\n**Market {i + 1}:** {mkt}")
                         continue
                     sections.append(f"\n**Market {i + 1}:**")
-                    sections.append(
-                        f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}"
-                    )
+                    sections.append(f"  - ID: {mkt.get('id', mkt.get('condition_id', 'N/A'))}")
                     sections.append(f"  - Question: {mkt.get('question', 'N/A')}")
                     yes_price = mkt.get("yes_price", "N/A")
                     no_price = mkt.get("no_price", "N/A")
@@ -695,9 +659,7 @@ class OpportunityJudge:
                         except (ValueError, TypeError):
                             sections.append(f"  - Liquidity: {liquidity}")
                 except Exception as exc:
-                    sections.append(
-                        f"\n**Market {i + 1}:** (error reading market data: {exc})"
-                    )
+                    sections.append(f"\n**Market {i + 1}:** (error reading market data: {exc})")
 
         # Event context
         if opportunity.event_title:
@@ -707,9 +669,7 @@ class OpportunityJudge:
 
         # Timing
         if opportunity.resolution_date:
-            sections.append(
-                f"**Resolution date:** {opportunity.resolution_date.isoformat()}"
-            )
+            sections.append(f"**Resolution date:** {opportunity.resolution_date.isoformat()}")
         sections.append(f"**Detected at:** {opportunity.detected_at.isoformat()}")
 
         # Positions to take
@@ -725,15 +685,9 @@ class OpportunityJudge:
         # Resolution analysis if available
         if resolution_analysis:
             sections.append("\n### Pre-computed Resolution Analysis")
-            sections.append(
-                f"- Clarity score: {resolution_analysis.get('clarity_score', 'N/A')}"
-            )
-            sections.append(
-                f"- Risk score: {resolution_analysis.get('risk_score', 'N/A')}"
-            )
-            sections.append(
-                f"- Recommendation: {resolution_analysis.get('recommendation', 'N/A')}"
-            )
+            sections.append(f"- Clarity score: {resolution_analysis.get('clarity_score', 'N/A')}")
+            sections.append(f"- Risk score: {resolution_analysis.get('risk_score', 'N/A')}")
+            sections.append(f"- Recommendation: {resolution_analysis.get('recommendation', 'N/A')}")
             ambiguities = resolution_analysis.get("ambiguities", [])
             if ambiguities:
                 sections.append(f"- Ambiguities: {'; '.join(ambiguities[:5])}")
@@ -747,12 +701,8 @@ class OpportunityJudge:
         # ML prediction for comparison
         if ml_prediction:
             sections.append("\n### ML Classifier Assessment")
-            sections.append(
-                f"- Probability of profitability: {ml_prediction.get('probability', 'N/A')}"
-            )
-            sections.append(
-                f"- Recommendation: {ml_prediction.get('recommendation', 'N/A')}"
-            )
+            sections.append(f"- Probability of profitability: {ml_prediction.get('probability', 'N/A')}")
+            sections.append(f"- Recommendation: {ml_prediction.get('recommendation', 'N/A')}")
             sections.append(f"- Confidence: {ml_prediction.get('confidence', 'N/A')}")
 
         sections.append(
@@ -780,10 +730,7 @@ class OpportunityJudge:
                 "execution_feasibility": 0.2,
                 "market_efficiency": 0.2,
                 "recommendation": "strong_skip",
-                "reasoning": (
-                    "LLM returned a non-dict response. "
-                    "Defaulting to strong_skip as a safety measure."
-                ),
+                "reasoning": ("LLM returned a non-dict response. Defaulting to strong_skip as a safety measure."),
                 "risk_factors": ["LLM response format error"],
             }
 
@@ -832,8 +779,7 @@ class OpportunityJudge:
             "market_efficiency": 0.2,
             "recommendation": "strong_skip",
             "reasoning": (
-                f"Automated judgment was unable to complete ({reason}). "
-                "Defaulting to strong_skip as a safety measure."
+                f"Automated judgment was unable to complete ({reason}). Defaulting to strong_skip as a safety measure."
             ),
             "risk_factors": [f"Judgment failed: {reason}"],
         }
@@ -909,9 +855,7 @@ class OpportunityJudge:
                 judgment_row = OpportunityJudgment(
                     id=uuid.uuid4().hex[:16],
                     opportunity_id=opportunity.id,
-                    strategy_type=opportunity.strategy
-                    if opportunity.strategy
-                    else "unknown",
+                    strategy_type=opportunity.strategy if opportunity.strategy else "unknown",
                     overall_score=result["overall_score"],
                     profit_viability=result["profit_viability"],
                     resolution_safety=result["resolution_safety"],
@@ -920,12 +864,8 @@ class OpportunityJudge:
                     reasoning=result["reasoning"],
                     recommendation=result["recommendation"],
                     risk_factors=result.get("risk_factors"),
-                    ml_probability=ml_prediction.get("probability")
-                    if ml_prediction
-                    else None,
-                    ml_recommendation=ml_prediction.get("recommendation")
-                    if ml_prediction
-                    else None,
+                    ml_probability=ml_prediction.get("probability") if ml_prediction else None,
+                    ml_recommendation=ml_prediction.get("recommendation") if ml_prediction else None,
                     agreement=result.get("ml_agreement"),
                     session_id=session_id,
                     model_used=model_used,

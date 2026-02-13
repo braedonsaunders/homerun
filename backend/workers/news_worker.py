@@ -72,9 +72,7 @@ async def _run_loop() -> None:
         from services.ai import initialize_ai
 
         llm_manager = await initialize_ai()
-        logger.info(
-            "AI initialized in news worker (available=%s)", llm_manager.is_available()
-        )
+        logger.info("AI initialized in news worker (available=%s)", llm_manager.is_available())
     except Exception as exc:
         logger.warning("AI init in news worker failed (fallback mode): %s", exc)
 
@@ -95,9 +93,7 @@ async def _run_loop() -> None:
             wf_settings = await shared_state.get_news_settings(session)
             interval = _interval_from_control_and_settings(control, wf_settings)
             paused = bool(control.get("is_paused", False))
-            enabled = bool(control.get("is_enabled", True)) and bool(
-                wf_settings.get("enabled", True)
-            )
+            enabled = bool(control.get("is_enabled", True)) and bool(wf_settings.get("enabled", True))
             auto_run = bool(wf_settings.get("auto_run", True))
             next_scan_at = _next_scan_for_state(
                 now=datetime.now(timezone.utc),
@@ -143,9 +139,7 @@ async def _run_loop() -> None:
         interval = _interval_from_control_and_settings(control, wf_settings)
         paused = bool(control.get("is_paused", False))
         requested = control.get("requested_scan_at") is not None
-        enabled = bool(control.get("is_enabled", True)) and bool(
-            wf_settings.get("enabled", True)
-        )
+        enabled = bool(control.get("is_enabled", True)) and bool(wf_settings.get("enabled", True))
         auto_run = bool(wf_settings.get("auto_run", True))
         now = datetime.now(timezone.utc)
 
@@ -164,10 +158,7 @@ async def _run_loop() -> None:
             logger.debug("News intent expiry pass failed: %s", exc)
 
         should_run_scheduled = (
-            enabled
-            and auto_run
-            and not paused
-            and (next_scheduled_run_at is None or now >= next_scheduled_run_at)
+            enabled and auto_run and not paused and (next_scheduled_run_at is None or now >= next_scheduled_run_at)
         )
         should_run = requested or should_run_scheduled
 
@@ -192,13 +183,9 @@ async def _run_loop() -> None:
                             "running": True,
                             "enabled": enabled,
                             "interval_seconds": interval,
-                            "next_scan": next_scan_at.isoformat()
-                            if next_scan_at
-                            else None,
+                            "next_scan": next_scan_at.isoformat() if next_scan_at else None,
                             "current_activity": (
-                                "Paused"
-                                if paused
-                                else "Idle - waiting for next news workflow cycle."
+                                "Paused" if paused else "Idle - waiting for next news workflow cycle."
                             ),
                             "degraded_mode": False,
                         },
@@ -209,11 +196,7 @@ async def _run_loop() -> None:
                         "news",
                         running=True,
                         enabled=enabled and not paused,
-                        current_activity=(
-                            "Paused"
-                            if paused
-                            else "Idle - waiting for next news workflow cycle."
-                        ),
+                        current_activity=("Paused" if paused else "Idle - waiting for next news workflow cycle."),
                         interval_seconds=interval,
                         last_run_at=None,
                         last_error=None,
@@ -278,9 +261,7 @@ async def _run_loop() -> None:
                 cycle_stats = dict(result.get("stats") or {})
                 cycle_stats["pending_intents"] = pending
                 cycle_stats["expired_intents"] = expired
-                cycle_stats["budget_skip_count"] = int(
-                    cycle_stats.get("llm_calls_skipped", 0) or 0
-                )
+                cycle_stats["budget_skip_count"] = int(cycle_stats.get("llm_calls_skipped", 0) or 0)
                 await shared_state.write_news_snapshot(
                     session,
                     status={
@@ -289,22 +270,16 @@ async def _run_loop() -> None:
                         "interval_seconds": interval,
                         "last_scan": completed_at.isoformat(),
                         "next_scan": (
-                            next_scheduled_run_at.isoformat()
-                            if enabled and auto_run and not paused
-                            else None
+                            next_scheduled_run_at.isoformat() if enabled and auto_run and not paused else None
                         ),
                         "current_activity": "Idle - waiting for next news workflow cycle.",
-                        "last_error": result.get("error")
-                        if result.get("status") == "error"
-                        else None,
+                        "last_error": result.get("error") if result.get("status") == "error" else None,
                         "degraded_mode": bool(result.get("degraded_mode", False)),
                         "budget_remaining": result.get("budget_remaining"),
                     },
                     stats=cycle_stats,
                 )
-                pending_rows = await shared_state.list_news_intents(
-                    session, status_filter="pending", limit=2000
-                )
+                pending_rows = await shared_state.list_news_intents(session, status_filter="pending", limit=2000)
                 emitted = await emit_news_intent_signals(
                     session,
                     pending_rows,
@@ -345,9 +320,7 @@ async def _run_loop() -> None:
             raise
         except Exception as exc:
             logger.exception("News workflow cycle failed: %s", exc)
-            next_scheduled_run_at = datetime.now(timezone.utc).replace(
-                microsecond=0
-            ) + timedelta(seconds=interval)
+            next_scheduled_run_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=interval)
             try:
                 async with AsyncSessionLocal() as session:
                     await shared_state.clear_news_scan_request(session)

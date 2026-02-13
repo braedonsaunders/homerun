@@ -124,9 +124,7 @@ class USGSClient:
                     latitude=float(coords[1]) if len(coords) > 1 else 0.0,
                     longitude=float(coords[0]) if len(coords) > 0 else 0.0,
                     depth_km=float(coords[2]) if len(coords) > 2 else 0.0,
-                    timestamp=datetime.fromtimestamp(
-                        (props.get("time", 0) or 0) / 1000, tz=timezone.utc
-                    ),
+                    timestamp=datetime.fromtimestamp((props.get("time", 0) or 0) / 1000, tz=timezone.utc),
                     url=props.get("url", ""),
                     felt=props.get("felt"),
                     tsunami=bool(props.get("tsunami", 0)),
@@ -162,10 +160,7 @@ class USGSClient:
     def get_recent(self, hours: int = 24) -> list[Earthquake]:
         """Get recent earthquakes from cache."""
         cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
-        quakes = [
-            q for q in self._earthquakes.values()
-            if q.timestamp.timestamp() > cutoff
-        ]
+        quakes = [q for q in self._earthquakes.values() if q.timestamp.timestamp() > cutoff]
         quakes.sort(key=lambda q: q.magnitude, reverse=True)
         return quakes
 
@@ -194,6 +189,7 @@ class USGSClient:
         self._consecutive_failures += 1
         if self._consecutive_failures >= 3:
             from datetime import timedelta
+
             self._cooldown_until = datetime.now(timezone.utc) + timedelta(minutes=5)
             logger.warning("USGS client in cooldown after %d failures", self._consecutive_failures)
 
@@ -209,10 +205,7 @@ class USGSClient:
 
     def _prune_old(self) -> None:
         cutoff = datetime.now(timezone.utc).timestamp() - (7 * 24 * 3600)  # 7 days
-        to_remove = [
-            eid for eid, q in self._earthquakes.items()
-            if q.timestamp.timestamp() < cutoff
-        ]
+        to_remove = [eid for eid, q in self._earthquakes.items() if q.timestamp.timestamp() < cutoff]
         for eid in to_remove:
             del self._earthquakes[eid]
 

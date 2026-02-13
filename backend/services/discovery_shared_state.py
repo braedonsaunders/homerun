@@ -66,9 +66,7 @@ async def write_discovery_snapshot(
     else:
         last_run = None
 
-    result = await session.execute(
-        select(DiscoverySnapshot).where(DiscoverySnapshot.id == DISCOVERY_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(DiscoverySnapshot).where(DiscoverySnapshot.id == DISCOVERY_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = DiscoverySnapshot(id=DISCOVERY_SNAPSHOT_ID)
@@ -85,16 +83,12 @@ async def write_discovery_snapshot(
     row.wallets_discovered_last_run = int(
         status.get("wallets_discovered_last_run", row.wallets_discovered_last_run or 0)
     )
-    row.wallets_analyzed_last_run = int(
-        status.get("wallets_analyzed_last_run", row.wallets_analyzed_last_run or 0)
-    )
+    row.wallets_analyzed_last_run = int(status.get("wallets_analyzed_last_run", row.wallets_analyzed_last_run or 0))
     await session.commit()
 
 
 async def read_discovery_snapshot(session: AsyncSession) -> dict[str, Any]:
-    result = await session.execute(
-        select(DiscoverySnapshot).where(DiscoverySnapshot.id == DISCOVERY_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(DiscoverySnapshot).where(DiscoverySnapshot.id == DISCOVERY_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return _default_status()
@@ -116,17 +110,13 @@ async def get_discovery_status_from_db(session: AsyncSession) -> dict[str, Any]:
     status["paused"] = bool(control.get("is_paused", False))
     status["priority_backlog_mode"] = bool(control.get("priority_backlog_mode", True))
     status["requested_run_at"] = (
-        _format_iso_utc_z(control.get("requested_run_at"))
-        if control.get("requested_run_at")
-        else None
+        _format_iso_utc_z(control.get("requested_run_at")) if control.get("requested_run_at") else None
     )
     return status
 
 
 async def ensure_discovery_control(session: AsyncSession) -> DiscoveryControl:
-    result = await session.execute(
-        select(DiscoveryControl).where(DiscoveryControl.id == DISCOVERY_CONTROL_ID)
-    )
+    result = await session.execute(select(DiscoveryControl).where(DiscoveryControl.id == DISCOVERY_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = DiscoveryControl(id=DISCOVERY_CONTROL_ID)
@@ -137,9 +127,7 @@ async def ensure_discovery_control(session: AsyncSession) -> DiscoveryControl:
 
 
 async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
-    result = await session.execute(
-        select(DiscoveryControl).where(DiscoveryControl.id == DISCOVERY_CONTROL_ID)
-    )
+    result = await session.execute(select(DiscoveryControl).where(DiscoveryControl.id == DISCOVERY_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return {
@@ -152,14 +140,8 @@ async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
     return {
         "is_enabled": bool(row.is_enabled),
         "is_paused": bool(row.is_paused),
-        "run_interval_minutes": int(
-            row.run_interval_minutes or settings.DISCOVERY_RUN_INTERVAL_MINUTES
-        ),
-        "priority_backlog_mode": bool(
-            row.priority_backlog_mode
-            if row.priority_backlog_mode is not None
-            else True
-        ),
+        "run_interval_minutes": int(row.run_interval_minutes or settings.DISCOVERY_RUN_INTERVAL_MINUTES),
+        "priority_backlog_mode": bool(row.priority_backlog_mode if row.priority_backlog_mode is not None else True),
         "requested_run_at": row.requested_run_at,
     }
 

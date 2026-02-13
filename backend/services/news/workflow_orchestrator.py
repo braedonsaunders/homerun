@@ -143,9 +143,11 @@ class WorkflowOrchestrator:
                 max_age_hours=min(wf_settings.get("article_max_age_hours", 6), 48)
             )
             articles.sort(
-                key=lambda a: self._coerce_datetime(getattr(a, "published", None))
-                or self._coerce_datetime(getattr(a, "fetched_at", None))
-                or datetime.min.replace(tzinfo=timezone.utc),
+                key=lambda a: (
+                    self._coerce_datetime(getattr(a, "published", None))
+                    or self._coerce_datetime(getattr(a, "fetched_at", None))
+                    or datetime.min.replace(tzinfo=timezone.utc)
+                ),
                 reverse=True,
             )
             articles = articles[: settings.NEWS_MAX_ARTICLES_PER_SCAN]
@@ -187,12 +189,8 @@ class WorkflowOrchestrator:
                     },
                 }
 
-            market_min_liquidity = float(
-                wf_settings.get("market_min_liquidity", 500.0) or 500.0
-            )
-            market_max_days_to_resolution = int(
-                wf_settings.get("market_max_days_to_resolution", 365) or 365
-            )
+            market_min_liquidity = float(wf_settings.get("market_min_liquidity", 500.0) or 500.0)
+            market_max_days_to_resolution = int(wf_settings.get("market_max_days_to_resolution", 365) or 365)
             # 2) Market universe from live markets first, scanner snapshot fallback.
             market_infos = await self._build_market_infos(
                 session,
@@ -269,19 +267,13 @@ class WorkflowOrchestrator:
                     if spend_limit <= 0:
                         global_remaining = float("inf")
                     else:
-                        global_remaining = float(
-                            usage.get("spend_remaining_usd", 0.0) or 0.0
-                        )
+                        global_remaining = float(usage.get("spend_remaining_usd", 0.0) or 0.0)
                 else:
                     # If usage read fails but provider is up, don't hard-disable LLM.
                     global_remaining = float("inf") if llm_available else 0.0
                 hourly_news_spend = await self._hourly_news_spend_usd(session)
-                cycle_spend_cap = float(
-                    wf_settings.get("cycle_spend_cap_usd", 0.25) or 0.25
-                )
-                hourly_spend_cap = float(
-                    wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0
-                )
+                cycle_spend_cap = float(wf_settings.get("cycle_spend_cap_usd", 0.25) or 0.25)
+                hourly_spend_cap = float(wf_settings.get("hourly_spend_cap_usd", 2.0) or 2.0)
                 effective_call_cap = cycle_llm_call_cap
                 estimated_cost_per_call = 0.02
 
@@ -302,14 +294,10 @@ class WorkflowOrchestrator:
                 rerank_llm_quota = len(clusters)
             else:
                 event_llm_quota = (
-                    max(0, min(len(clusters), int(effective_call_cap * 0.25)))
-                    if effective_call_cap >= 5
-                    else 0
+                    max(0, min(len(clusters), int(effective_call_cap * 0.25))) if effective_call_cap >= 5 else 0
                 )
                 rerank_llm_quota = (
-                    max(0, min(len(clusters), int(effective_call_cap * 0.3)))
-                    if effective_call_cap >= 5
-                    else 0
+                    max(0, min(len(clusters), int(effective_call_cap * 0.3))) if effective_call_cap >= 5 else 0
                 )
             event_llm_used = 0
             rerank_llm_used = 0
@@ -339,17 +327,11 @@ class WorkflowOrchestrator:
             sem_weight = float(wf_settings.get("semantic_weight", 0.45) or 0.45)
             evt_weight = float(wf_settings.get("event_weight", 0.30) or 0.30)
             sim_threshold = float(wf_settings.get("similarity_threshold", 0.42) or 0.42)
-            min_keyword_signal = float(
-                wf_settings.get("min_keyword_signal", 0.04) or 0.04
-            )
-            min_semantic_signal = float(
-                wf_settings.get("min_semantic_signal", 0.22) or 0.22
-            )
+            min_keyword_signal = float(wf_settings.get("min_keyword_signal", 0.04) or 0.04)
+            min_semantic_signal = float(wf_settings.get("min_semantic_signal", 0.22) or 0.22)
             min_edge = float(wf_settings.get("min_edge_percent", 8.0) or 8.0)
             min_conf = float(wf_settings.get("min_confidence", 0.6) or 0.6)
-            max_edge_evals_per_cluster = int(
-                wf_settings.get("max_edge_evals_per_article", 3) or 3
-            )
+            max_edge_evals_per_cluster = int(wf_settings.get("max_edge_evals_per_article", 3) or 3)
             cache_ttl_minutes = int(wf_settings.get("cache_ttl_minutes", 30) or 30)
 
             all_findings: list[WorkflowFinding] = []
@@ -395,11 +377,7 @@ class WorkflowOrchestrator:
 
                 use_llm_rerank = self._should_use_llm_rerank(candidates)
                 allow_llm_rerank = False
-                if (
-                    use_llm_rerank
-                    and rerank_llm_used < rerank_llm_quota
-                    and budget.reserve_calls(1) == 1
-                ):
+                if use_llm_rerank and rerank_llm_used < rerank_llm_quota and budget.reserve_calls(1) == 1:
                     allow_llm_rerank = True
                     rerank_llm_used += 1
                 reranked = await reranker.rerank(
@@ -413,9 +391,7 @@ class WorkflowOrchestrator:
                 if not reranked:
                     continue
 
-                reranked = [
-                    r for r in reranked if r.rerank_score >= max(0.2, sim_threshold * 0.7)
-                ]
+                reranked = [r for r in reranked if r.rerank_score >= max(0.2, sim_threshold * 0.7)]
                 if not reranked:
                     continue
 
@@ -444,10 +420,10 @@ class WorkflowOrchestrator:
                     else:
                         rejected = self._build_rejected_finding(
                             article=article,
-                                event=event,
-                                rc=rc,
-                                reason="entity_alignment_mismatch",
-                            )
+                            event=event,
+                            rc=rc,
+                            reason="entity_alignment_mismatch",
+                        )
                         self._attach_cluster_metadata(rejected, cluster)
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
@@ -472,8 +448,7 @@ class WorkflowOrchestrator:
 
                 # Reuse recent cached findings (article+market+price bucket) before LLM.
                 cache_keys = [
-                    self._cache_key(cluster.article_key, rc.market_id, rc.candidate.yes_price)
-                    for rc in diversity_gated
+                    self._cache_key(cluster.article_key, rc.market_id, rc.candidate.yes_price) for rc in diversity_gated
                 ]
                 cached = await self._load_cached_findings(
                     session,
@@ -517,9 +492,7 @@ class WorkflowOrchestrator:
                 for finding in article_findings:
                     self._attach_cluster_metadata(finding, cluster)
                     self._assign_finding_keys(finding)
-                    market_sources_seen[finding.market_id].update(
-                        self._finding_sources(finding)
-                    )
+                    market_sources_seen[finding.market_id].update(self._finding_sources(finding))
                 all_findings.extend(article_findings)
 
             deduped_findings = self._dedupe_findings(all_findings)
@@ -716,12 +689,9 @@ class WorkflowOrchestrator:
                 or {}
             )
             tags = self._normalize_tags(
-                list(getattr(market, "tags", []) or [])
-                + list(event_meta.get("tags", []) or [])
+                list(getattr(market, "tags", []) or []) + list(event_meta.get("tags", []) or [])
             )
-            token_ids = [
-                str(t) for t in list(getattr(market, "clob_token_ids", []) or []) if t
-            ]
+            token_ids = [str(t) for t in list(getattr(market, "clob_token_ids", []) or []) if t]
 
             infos.append(
                 {
@@ -800,9 +770,7 @@ class WorkflowOrchestrator:
                     now = datetime.now(timezone.utc)
                     if market_end < now:
                         continue
-                    if max_days_to_resolution > 0 and (
-                        market_end - now
-                    ) > timedelta(days=max_days_to_resolution):
+                    if max_days_to_resolution > 0 and (market_end - now) > timedelta(days=max_days_to_resolution):
                         continue
 
                 seen.add(market_id)
@@ -1026,9 +994,7 @@ class WorkflowOrchestrator:
     def _is_local_model_mode(model: Optional[str], usage: dict[str, Any]) -> bool:
         model_name = str(model or usage.get("active_model") or "").strip().lower()
         configured = {
-            str(provider).strip().lower()
-            for provider in list(usage.get("configured_providers", []) or [])
-            if provider
+            str(provider).strip().lower() for provider in list(usage.get("configured_providers", []) or []) if provider
         }
 
         if model_name.startswith("ollama/") or model_name.startswith("lmstudio/"):
@@ -1101,14 +1067,10 @@ class WorkflowOrchestrator:
                 return True
             if "." in text and " " not in text:
                 return True
-            return bool(
-                re.search(r"\b(news|media|times|post|observer|press|radio|tv|herald)\b", text)
-            )
+            return bool(re.search(r"\b(news|media|times|post|observer|press|radio|tv|herald)\b", text))
 
         event_terms = []
-        for value in list(getattr(event, "key_entities", []) or []) + list(
-            getattr(event, "actors", []) or []
-        ):
+        for value in list(getattr(event, "key_entities", []) or []) + list(getattr(event, "actors", []) or []):
             if isinstance(value, str) and value.strip():
                 if _source_like(value):
                     continue
@@ -1120,9 +1082,7 @@ class WorkflowOrchestrator:
         if not event_terms:
             return False
 
-        event_tokens = {
-            tok for tok in _tokenize(" ".join(event_terms)) if tok not in generic_tokens
-        }
+        event_tokens = {tok for tok in _tokenize(" ".join(event_terms)) if tok not in generic_tokens}
         if not event_tokens:
             return False
 
@@ -1257,52 +1217,56 @@ class WorkflowOrchestrator:
 
         count = 0
         for f in findings:
-            stmt = sqlite_insert(NewsWorkflowFinding).values(
-                id=f.id,
-                article_id=f.article_id,
-                market_id=f.market_id,
-                article_title=f.article_title,
-                article_source=f.article_source,
-                article_url=f.article_url,
-                signal_key=getattr(f, "signal_key", None),
-                cache_key=getattr(f, "cache_key", None),
-                market_question=f.market_question,
-                market_price=f.market_price,
-                model_probability=f.model_probability,
-                edge_percent=f.edge_percent,
-                direction=f.direction,
-                confidence=f.confidence,
-                retrieval_score=f.retrieval_score,
-                semantic_score=f.semantic_score,
-                keyword_score=f.keyword_score,
-                event_score=f.event_score,
-                rerank_score=f.rerank_score,
-                event_graph=f.event_graph,
-                evidence=f.evidence,
-                reasoning=f.reasoning,
-                actionable=f.actionable,
-                created_at=f.created_at,
-            ).on_conflict_do_update(
-                index_elements=["id"],
-                set_={
-                    "signal_key": getattr(f, "signal_key", None),
-                    "cache_key": getattr(f, "cache_key", None),
-                    "market_price": f.market_price,
-                    "model_probability": f.model_probability,
-                    "edge_percent": f.edge_percent,
-                    "direction": f.direction,
-                    "confidence": f.confidence,
-                    "retrieval_score": f.retrieval_score,
-                    "semantic_score": f.semantic_score,
-                    "keyword_score": f.keyword_score,
-                    "event_score": f.event_score,
-                    "rerank_score": f.rerank_score,
-                    "event_graph": f.event_graph,
-                    "evidence": f.evidence,
-                    "reasoning": f.reasoning,
-                    "actionable": f.actionable,
-                    "created_at": f.created_at,
-                },
+            stmt = (
+                sqlite_insert(NewsWorkflowFinding)
+                .values(
+                    id=f.id,
+                    article_id=f.article_id,
+                    market_id=f.market_id,
+                    article_title=f.article_title,
+                    article_source=f.article_source,
+                    article_url=f.article_url,
+                    signal_key=getattr(f, "signal_key", None),
+                    cache_key=getattr(f, "cache_key", None),
+                    market_question=f.market_question,
+                    market_price=f.market_price,
+                    model_probability=f.model_probability,
+                    edge_percent=f.edge_percent,
+                    direction=f.direction,
+                    confidence=f.confidence,
+                    retrieval_score=f.retrieval_score,
+                    semantic_score=f.semantic_score,
+                    keyword_score=f.keyword_score,
+                    event_score=f.event_score,
+                    rerank_score=f.rerank_score,
+                    event_graph=f.event_graph,
+                    evidence=f.evidence,
+                    reasoning=f.reasoning,
+                    actionable=f.actionable,
+                    created_at=f.created_at,
+                )
+                .on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "signal_key": getattr(f, "signal_key", None),
+                        "cache_key": getattr(f, "cache_key", None),
+                        "market_price": f.market_price,
+                        "model_probability": f.model_probability,
+                        "edge_percent": f.edge_percent,
+                        "direction": f.direction,
+                        "confidence": f.confidence,
+                        "retrieval_score": f.retrieval_score,
+                        "semantic_score": f.semantic_score,
+                        "keyword_score": f.keyword_score,
+                        "event_score": f.event_score,
+                        "rerank_score": f.rerank_score,
+                        "event_graph": f.event_graph,
+                        "evidence": f.evidence,
+                        "reasoning": f.reasoning,
+                        "actionable": f.actionable,
+                        "created_at": f.created_at,
+                    },
+                )
             )
             await session.execute(stmt)
             count += 1
@@ -1321,9 +1285,7 @@ class WorkflowOrchestrator:
                 query = query.where(NewsTradeIntent.signal_key == signal_key)
             else:
                 query = query.where(NewsTradeIntent.id == intent["id"])
-            existing_result = await session.execute(
-                query
-            )
+            existing_result = await session.execute(query)
             existing = existing_result.scalar_one_or_none()
             if existing is None:
                 session.add(NewsTradeIntent(**intent))

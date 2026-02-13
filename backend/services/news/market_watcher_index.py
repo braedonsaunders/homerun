@@ -101,13 +101,71 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 _STOP_WORDS = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "and", "but", "or",
-    "if", "while", "this", "that", "these", "those", "it", "its", "he",
-    "she", "they", "them", "what", "which", "who", "whom", "not", "no",
-    "yes", "will", "about", "up", "out", "than", "more", "very", "so",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "shall",
+    "can",
+    "to",
+    "of",
+    "in",
+    "for",
+    "on",
+    "with",
+    "at",
+    "by",
+    "from",
+    "as",
+    "into",
+    "and",
+    "but",
+    "or",
+    "if",
+    "while",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "he",
+    "she",
+    "they",
+    "them",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "not",
+    "no",
+    "yes",
+    "will",
+    "about",
+    "up",
+    "out",
+    "than",
+    "more",
+    "very",
+    "so",
 }
 
 
@@ -176,9 +234,7 @@ class MarketWatcherIndex:
                     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
                     device = os.environ.get("EMBEDDING_DEVICE", "cpu")
                     self._model = SentenceTransformer(self._model_name, device=device)
-                    self._model.encode(
-                        ["test"], show_progress_bar=False, normalize_embeddings=True
-                    )
+                    self._model.encode(["test"], show_progress_bar=False, normalize_embeddings=True)
                     self._initialized = True
                     logger.info("Market watcher index initialized (ML mode)")
                     return True
@@ -215,14 +271,9 @@ class MarketWatcherIndex:
 
         # Embed for semantic search
         if self._model is not None and markets:
-            texts = [
-                f"{m.question} {m.event_title} {m.category} {' '.join(m.tags or [])} {m.slug}"
-                for m in markets
-            ]
+            texts = [f"{m.question} {m.event_title} {m.category} {' '.join(m.tags or [])} {m.slug}" for m in markets]
             try:
-                embs = self._model.encode(
-                    texts, show_progress_bar=False, normalize_embeddings=True
-                )
+                embs = self._model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
                 embs = np.array(embs, dtype=np.float32)
 
                 with self._lock:
@@ -292,11 +343,7 @@ class MarketWatcherIndex:
 
         # Pre-compute semantic scores if we have embeddings
         semantic_scores: Optional[np.ndarray] = None
-        if (
-            query_embedding is not None
-            and self._embeddings is not None
-            and self._model is not None
-        ):
+        if query_embedding is not None and self._embeddings is not None and self._model is not None:
             qe = np.array(query_embedding, dtype=np.float32)
             if qe.ndim == 1:
                 qe = qe.reshape(1, -1)
@@ -359,9 +406,7 @@ class MarketWatcherIndex:
         if self._model is None:
             return None
         try:
-            emb = self._model.encode(
-                [text], show_progress_bar=False, normalize_embeddings=True
-            )
+            emb = self._model.encode([text], show_progress_bar=False, normalize_embeddings=True)
             return emb[0]
         except Exception:
             return None

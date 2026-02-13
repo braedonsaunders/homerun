@@ -190,11 +190,7 @@ def _oracle_price_map_payload(feed, asset: str) -> dict[str, dict[str, object]]:
             "source": source,
             "price": float(getattr(snap, "price", 0.0)),
             "updated_at_ms": int(updated_at) if updated_at else None,
-            "age_seconds": (
-                round((now_ms - int(updated_at)) / 1000, 1)
-                if updated_at
-                else None
-            ),
+            "age_seconds": (round((now_ms - int(updated_at)) / 1000, 1) if updated_at else None),
         }
     return out
 
@@ -236,9 +232,7 @@ async def _build_live_markets_from_source(snapshot_markets: list[dict]) -> list[
             row["oracle_source"] = getattr(oracle, "source", None)
             row["oracle_updated_at_ms"] = oracle.updated_at_ms
             row["oracle_age_seconds"] = (
-                round((now_ms - oracle.updated_at_ms) / 1000, 1)
-                if oracle.updated_at_ms
-                else None
+                round((now_ms - oracle.updated_at_ms) / 1000, 1) if oracle.updated_at_ms else None
             )
         else:
             row["oracle_price"] = None
@@ -274,9 +268,7 @@ async def get_crypto_markets(
 
     snapshot = await read_worker_snapshot(session, "crypto")
     markets = _snapshot_markets(snapshot)
-    snapshot_timeframes = {
-        _normalize_timeframe(m.get("timeframe")) for m in markets if isinstance(m, dict)
-    }
+    snapshot_timeframes = {_normalize_timeframe(m.get("timeframe")) for m in markets if isinstance(m, dict)}
     expected_timeframes = _configured_timeframes()
 
     if (

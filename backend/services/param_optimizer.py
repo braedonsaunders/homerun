@@ -45,9 +45,7 @@ class ParameterSpec:
     max_bound: float
     step: float
     description: str
-    category: (
-        str  # entry_criteria | risk_management | position_sizing | strategy_specific
-    )
+    category: str  # entry_criteria | risk_management | position_sizing | strategy_specific
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -209,9 +207,7 @@ DEFAULT_PARAM_SPECS: list[ParameterSpec] = [
         "Consecutive losses before circuit breaker triggers",
         "risk_management",
     ),
-    ParameterSpec(
-        "max_daily_trades", 50, 10, 200, 10, "Maximum trades per day", "risk_management"
-    ),
+    ParameterSpec("max_daily_trades", 50, 10, 200, 10, "Maximum trades per day", "risk_management"),
     ParameterSpec(
         "max_daily_loss_usd",
         100.0,
@@ -396,9 +392,7 @@ class BacktestResult:
 
     @staticmethod
     def from_dict(d: dict) -> "BacktestResult":
-        return BacktestResult(
-            **{k: v for k, v in d.items() if k in BacktestResult.__dataclass_fields__}
-        )
+        return BacktestResult(**{k: v for k, v in d.items() if k in BacktestResult.__dataclass_fields__})
 
 
 class SearchMethod(str, Enum):
@@ -466,9 +460,7 @@ def _replay_opportunities(
         positions_data = opp.get("positions_data") or []
         min_liq = 0.0
         if isinstance(positions_data, list):
-            liqs = [
-                p.get("liquidity", 0) for p in positions_data if isinstance(p, dict)
-            ]
+            liqs = [p.get("liquidity", 0) for p in positions_data if isinstance(p, dict)]
             min_liq = min(liqs) if liqs else 0.0
         elif isinstance(positions_data, dict):
             min_liq = positions_data.get("liquidity", 0)
@@ -530,9 +522,7 @@ def _replay_opportunities(
                         except (ValueError, TypeError):
                             detected_at = None
                     if detected_at is not None:
-                        circuit_breaker_until = detected_at + timedelta(
-                            seconds=params.cooldown_after_loss_seconds
-                        )
+                        circuit_breaker_until = detected_at + timedelta(seconds=params.cooldown_after_loss_seconds)
 
         roi_values.append(pnl / pos_size if pos_size > 0 else 0.0)
 
@@ -559,13 +549,7 @@ def _replay_opportunities(
         sharpe = 0.0
 
     avg_roi = float(np.mean(roi_values)) * 100 if roi_values else 0.0
-    profit_factor = (
-        gross_wins / gross_losses
-        if gross_losses > 0
-        else float("inf")
-        if gross_wins > 0
-        else 0.0
-    )
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf") if gross_wins > 0 else 0.0
 
     return BacktestResult(
         total_profit=round(total_profit, 4),
@@ -766,9 +750,7 @@ class ParameterOptimizer:
     async def load_parameter_set(self, set_id: str) -> Optional[dict]:
         """Load a parameter set from the database."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(ParameterSet).where(ParameterSet.id == set_id)
-            )
+            result = await session.execute(select(ParameterSet).where(ParameterSet.id == set_id))
             row = result.scalar_one_or_none()
             if row is None:
                 return None
@@ -784,9 +766,7 @@ class ParameterOptimizer:
     async def load_active_parameter_set(self) -> Optional[dict]:
         """Load the currently active parameter set."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(ParameterSet).where(ParameterSet.is_active)
-            )
+            result = await session.execute(select(ParameterSet).where(ParameterSet.is_active))
             row = result.scalar_one_or_none()
             if row is None:
                 return None
@@ -802,9 +782,7 @@ class ParameterOptimizer:
     async def list_parameter_sets(self) -> list[dict]:
         """List all saved parameter sets."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(ParameterSet).order_by(ParameterSet.created_at.desc())
-            )
+            result = await session.execute(select(ParameterSet).order_by(ParameterSet.created_at.desc()))
             rows = result.scalars().all()
             return [
                 {
@@ -824,9 +802,7 @@ class ParameterOptimizer:
             async with session.begin():
                 await session.execute(update(ParameterSet).values(is_active=False))
                 result = await session.execute(
-                    update(ParameterSet)
-                    .where(ParameterSet.id == set_id)
-                    .values(is_active=True)
+                    update(ParameterSet).where(ParameterSet.id == set_id).values(is_active=True)
                 )
                 if result.rowcount == 0:
                     return False
@@ -837,9 +813,7 @@ class ParameterOptimizer:
         """Delete a parameter set from the database."""
         async with AsyncSessionLocal() as session:
             async with session.begin():
-                result = await session.execute(
-                    delete(ParameterSet).where(ParameterSet.id == set_id)
-                )
+                result = await session.execute(delete(ParameterSet).where(ParameterSet.id == set_id))
                 return result.rowcount > 0
 
     # ------------------------------------------------------------------
@@ -849,11 +823,7 @@ class ParameterOptimizer:
     async def _load_opportunity_history(self) -> list[dict]:
         """Load all opportunity history records sorted by detected_at."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(OpportunityHistory).order_by(
-                    OpportunityHistory.detected_at.asc()
-                )
-            )
+            result = await session.execute(select(OpportunityHistory).order_by(OpportunityHistory.detected_at.asc()))
             rows = result.scalars().all()
             return [
                 {
@@ -951,9 +921,7 @@ class ParameterOptimizer:
         if method == "grid":
             candidates = _build_param_sets_grid(base, param_ranges)
         elif method == "random":
-            candidates = _build_param_sets_random(
-                base, param_ranges, n_samples=n_random_samples, seed=random_seed
-            )
+            candidates = _build_param_sets_random(base, param_ranges, n_samples=n_random_samples, seed=random_seed)
         else:
             logger.error("Unknown search method", method=method)
             return []
@@ -964,13 +932,9 @@ class ParameterOptimizer:
         scored: list[dict] = []
 
         if walk_forward:
-            folds = _split_walk_forward(
-                opportunities, n_windows=n_windows, train_ratio=train_ratio
-            )
+            folds = _split_walk_forward(opportunities, n_windows=n_windows, train_ratio=train_ratio)
             if not folds:
-                logger.warning(
-                    "Could not create walk-forward folds, falling back to full history"
-                )
+                logger.warning("Could not create walk-forward folds, falling back to full history")
                 walk_forward = False
 
         total_candidates = len(candidates)
@@ -987,27 +951,15 @@ class ParameterOptimizer:
 
                 # Aggregate test results
                 avg_test = BacktestResult(
-                    total_profit=round(
-                        sum(r.total_profit for r in test_results) / len(test_results), 4
-                    ),
-                    total_cost=round(
-                        sum(r.total_cost for r in test_results) / len(test_results), 4
-                    ),
-                    num_trades=sum(r.num_trades for r in test_results)
-                    // len(test_results),
+                    total_profit=round(sum(r.total_profit for r in test_results) / len(test_results), 4),
+                    total_cost=round(sum(r.total_cost for r in test_results) / len(test_results), 4),
+                    num_trades=sum(r.num_trades for r in test_results) // len(test_results),
                     num_wins=sum(r.num_wins for r in test_results) // len(test_results),
-                    num_losses=sum(r.num_losses for r in test_results)
-                    // len(test_results),
-                    win_rate=round(
-                        sum(r.win_rate for r in test_results) / len(test_results), 4
-                    ),
+                    num_losses=sum(r.num_losses for r in test_results) // len(test_results),
+                    win_rate=round(sum(r.win_rate for r in test_results) / len(test_results), 4),
                     max_drawdown=round(max(r.max_drawdown for r in test_results), 4),
-                    sharpe_ratio=round(
-                        sum(r.sharpe_ratio for r in test_results) / len(test_results), 4
-                    ),
-                    avg_roi=round(
-                        sum(r.avg_roi for r in test_results) / len(test_results), 4
-                    ),
+                    sharpe_ratio=round(sum(r.sharpe_ratio for r in test_results) / len(test_results), 4),
+                    avg_roi=round(sum(r.avg_roi for r in test_results) / len(test_results), 4),
                     profit_factor=round(
                         sum(r.profit_factor for r in test_results) / len(test_results),
                         4,
@@ -1018,29 +970,19 @@ class ParameterOptimizer:
                         sum(r.total_profit for r in train_results) / len(train_results),
                         4,
                     ),
-                    total_cost=round(
-                        sum(r.total_cost for r in train_results) / len(train_results), 4
-                    ),
-                    num_trades=sum(r.num_trades for r in train_results)
-                    // len(train_results),
-                    num_wins=sum(r.num_wins for r in train_results)
-                    // len(train_results),
-                    num_losses=sum(r.num_losses for r in train_results)
-                    // len(train_results),
-                    win_rate=round(
-                        sum(r.win_rate for r in train_results) / len(train_results), 4
-                    ),
+                    total_cost=round(sum(r.total_cost for r in train_results) / len(train_results), 4),
+                    num_trades=sum(r.num_trades for r in train_results) // len(train_results),
+                    num_wins=sum(r.num_wins for r in train_results) // len(train_results),
+                    num_losses=sum(r.num_losses for r in train_results) // len(train_results),
+                    win_rate=round(sum(r.win_rate for r in train_results) / len(train_results), 4),
                     max_drawdown=round(max(r.max_drawdown for r in train_results), 4),
                     sharpe_ratio=round(
                         sum(r.sharpe_ratio for r in train_results) / len(train_results),
                         4,
                     ),
-                    avg_roi=round(
-                        sum(r.avg_roi for r in train_results) / len(train_results), 4
-                    ),
+                    avg_roi=round(sum(r.avg_roi for r in train_results) / len(train_results), 4),
                     profit_factor=round(
-                        sum(r.profit_factor for r in train_results)
-                        / len(train_results),
+                        sum(r.profit_factor for r in train_results) / len(train_results),
                         4,
                     ),
                 )
@@ -1115,9 +1057,7 @@ class ParameterOptimizer:
 
         Returns BacktestResult as a dict.
         """
-        trading_params = (
-            TradingParameters.from_dict(params) if params else self._current_params
-        )
+        trading_params = TradingParameters.from_dict(params) if params else self._current_params
         opportunities = await self._load_opportunity_history()
         result = _replay_opportunities(opportunities, trading_params)
         return result.to_dict()

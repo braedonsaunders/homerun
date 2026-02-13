@@ -126,4 +126,3 @@ def test_infer_direction_from_anomaly_zscore():
         "metadata": {"z_score": -3.0},
     }
     assert resolver.infer_direction(signal) == "buy_no"
-

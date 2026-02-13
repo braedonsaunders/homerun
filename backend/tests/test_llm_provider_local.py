@@ -48,41 +48,27 @@ def test_detect_provider_prefers_selected_local_provider_for_generic_model_names
 
 
 def test_model_normalization_strips_local_provider_prefixes():
+    assert _normalize_model_name_for_provider("ollama/llama3.2:latest", LLMProvider.OLLAMA) == "llama3.2:latest"
     assert (
-        _normalize_model_name_for_provider("ollama/llama3.2:latest", LLMProvider.OLLAMA)
-        == "llama3.2:latest"
-    )
-    assert (
-        _normalize_model_name_for_provider(
-            "lmstudio/qwen2.5-7b-instruct", LLMProvider.LMSTUDIO
-        )
+        _normalize_model_name_for_provider("lmstudio/qwen2.5-7b-instruct", LLMProvider.LMSTUDIO)
         == "qwen2.5-7b-instruct"
     )
-    assert (
-        _normalize_model_name_for_provider("gpt-4o-mini", LLMProvider.OPENAI)
-        == "gpt-4o-mini"
-    )
+    assert _normalize_model_name_for_provider("gpt-4o-mini", LLMProvider.OPENAI) == "gpt-4o-mini"
 
 
 def test_openai_compatible_base_url_normalization():
     assert (
-        _ensure_openai_compatible_base_url(
-            "http://localhost:11434", "http://localhost:11434/v1"
-        )
+        _ensure_openai_compatible_base_url("http://localhost:11434", "http://localhost:11434/v1")
         == "http://localhost:11434/v1"
     )
     assert (
-        _ensure_openai_compatible_base_url(
-            "http://localhost:1234/v1", "http://localhost:1234/v1"
-        )
+        _ensure_openai_compatible_base_url("http://localhost:1234/v1", "http://localhost:1234/v1")
         == "http://localhost:1234/v1"
     )
 
 
 def test_openai_format_messages_normalizes_internal_tool_calls():
-    provider = OpenAIProvider(
-        api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None
-    )
+    provider = OpenAIProvider(api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None)
     messages = [
         LLMMessage(
             role="assistant",
@@ -105,15 +91,11 @@ def test_openai_format_messages_normalizes_internal_tool_calls():
     assert tc["type"] == "function"
     assert tc["function"]["name"] == "get_market_details"
     assert isinstance(tc["function"]["arguments"], str)
-    assert json.loads(tc["function"]["arguments"]) == {
-        "market_id": "PM_2024_Fed_Rate_Cut_April"
-    }
+    assert json.loads(tc["function"]["arguments"]) == {"market_id": "PM_2024_Fed_Rate_Cut_April"}
 
 
 def test_openai_parse_tool_calls_accepts_dict_arguments():
-    provider = OpenAIProvider(
-        api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None
-    )
+    provider = OpenAIProvider(api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None)
     raw_tool_calls = [
         {
             "id": "abc123",
@@ -135,9 +117,7 @@ def test_openai_parse_tool_calls_accepts_dict_arguments():
 
 @pytest.mark.asyncio
 async def test_openai_structured_output_handles_string_error_payload(monkeypatch):
-    provider = OpenAIProvider(
-        api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None
-    )
+    provider = OpenAIProvider(api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None)
     responses = [_FakeResponse(400, {"error": "Model not loaded"})]
 
     async def fake_retry(coro_factory, max_retries=3, base_delay=1.0):
@@ -159,9 +139,7 @@ async def test_openai_structured_output_handles_string_error_payload(monkeypatch
 
 @pytest.mark.asyncio
 async def test_openai_structured_output_uses_json_schema_response_format(monkeypatch):
-    provider = OpenAIProvider(
-        api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None
-    )
+    provider = OpenAIProvider(api_key=None, base_url="http://localhost:1234/v1", model_prefixes=None)
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
     responses = [_FakeResponse(200, {"choices": [{"message": {"content": '{"ok": true}'}}]})]
     requests = []
@@ -197,6 +175,7 @@ async def test_openai_structured_output_uses_json_schema_response_format(monkeyp
     assert requests[0]["json"]["response_format"]["json_schema"]["schema"] == schema
     assert requests[0]["json"]["response_format"]["json_schema"]["strict"] is True
     assert result == {"ok": True}
+
 
 @pytest.mark.asyncio
 async def test_lmstudio_structured_output_uses_json_schema_response_format(monkeypatch):

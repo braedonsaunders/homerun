@@ -30,18 +30,12 @@ logger = logging.getLogger(__name__)
 ACLED_API_URL = "https://acleddata.com/api/acled/read"
 
 # Rate limiting: max 5 requests per minute
-_RATE_LIMIT_MAX_REQUESTS = int(
-    max(1, getattr(settings, "WORLD_INTEL_ACLED_RATE_LIMIT_PER_MIN", 5) or 5)
-)
+_RATE_LIMIT_MAX_REQUESTS = int(max(1, getattr(settings, "WORLD_INTEL_ACLED_RATE_LIMIT_PER_MIN", 5) or 5))
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 # Circuit breaker
-_CB_MAX_FAILURES = int(
-    max(1, getattr(settings, "WORLD_INTEL_ACLED_CB_MAX_FAILURES", 8) or 8)
-)
-_CB_COOLDOWN_SECONDS = float(
-    max(30.0, getattr(settings, "WORLD_INTEL_ACLED_CB_COOLDOWN_SECONDS", 180.0) or 180.0)
-)
+_CB_MAX_FAILURES = int(max(1, getattr(settings, "WORLD_INTEL_ACLED_CB_MAX_FAILURES", 8) or 8))
+_CB_COOLDOWN_SECONDS = float(max(30.0, getattr(settings, "WORLD_INTEL_ACLED_CB_COOLDOWN_SECONDS", 180.0) or 180.0))
 
 _DEFAULT_EVENT_TYPE_WEIGHT = 0.2
 
@@ -138,10 +132,7 @@ class ACLEDClient:
             )
         now = time.monotonic()
         # Prune timestamps older than the rate-limit window
-        self._request_timestamps = [
-            ts for ts in self._request_timestamps
-            if now - ts < _RATE_LIMIT_WINDOW_SECONDS
-        ]
+        self._request_timestamps = [ts for ts in self._request_timestamps if now - ts < _RATE_LIMIT_WINDOW_SECONDS]
         if len(self._request_timestamps) >= budget:
             oldest = self._request_timestamps[0]
             wait = _RATE_LIMIT_WINDOW_SECONDS - (now - oldest) + 0.1
@@ -205,10 +196,7 @@ class ACLEDClient:
 
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days_back)
-        date_range = (
-            f"{start_date.strftime('%Y-%m-%d')}"
-            f"|{end_date.strftime('%Y-%m-%d')}"
-        )
+        date_range = f"{start_date.strftime('%Y-%m-%d')}|{end_date.strftime('%Y-%m-%d')}"
 
         params: dict[str, str | int] = {
             "event_date": date_range,
@@ -233,11 +221,9 @@ class ACLEDClient:
                 self._record_failure()
                 retry_after = resp.headers.get("Retry-After")
                 try:
-                    delay = float(retry_after) if retry_after is not None else min(
-                        60.0, 2 ** self._consecutive_failures
-                    )
+                    delay = float(retry_after) if retry_after is not None else min(60.0, 2**self._consecutive_failures)
                 except ValueError:
-                    delay = min(60.0, 2 ** self._consecutive_failures)
+                    delay = min(60.0, 2**self._consecutive_failures)
                 self._last_error = f"HTTP 429 rate-limited ({delay:.0f}s backoff)"
                 logger.warning(
                     "ACLED rate-limited (failure %d), backing off %.0fs",
@@ -251,7 +237,7 @@ class ACLEDClient:
         except (httpx.HTTPError, ValueError) as exc:
             self._record_failure()
             self._last_error = str(exc)
-            backoff = min(2 ** self._consecutive_failures, 60)
+            backoff = min(2**self._consecutive_failures, 60)
             logger.error(
                 "ACLED API error (failure %d, backoff %ds): %s",
                 self._consecutive_failures,

@@ -141,9 +141,7 @@ class TensionTracker:
     def _prune_history(self, pair: tuple[str, str]) -> None:
         """Remove snapshots older than 90 days."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=_HISTORY_MAX_DAYS)
-        self._history[pair] = [
-            s for s in self._history[pair] if s.date >= cutoff
-        ]
+        self._history[pair] = [s for s in self._history[pair] if s.date >= cutoff]
 
     def _compute_trend(self, pair: tuple[str, str], current_score: float) -> str:
         """Determine if tension is rising, falling, or stable.
@@ -219,7 +217,7 @@ class TensionTracker:
                 resp = await self._client.get(GDELT_DOC_API, params=params)
                 if resp.status_code == 429:
                     if attempt < max_retries:
-                        backoff = max(1.0, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
+                        backoff = max(1.0, _RATE_LIMIT_DELAY_SECONDS) * (2**attempt)
                         logger.debug("GDELT 429 for %s-%s, retrying in %.0fs", country_a, country_b, backoff)
                         await asyncio.sleep(backoff)
                         continue
@@ -229,7 +227,7 @@ class TensionTracker:
                 text = (resp.text or "").strip()
                 if rate_limit_hint in text:
                     if attempt < max_retries:
-                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
+                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2**attempt)
                         logger.debug(
                             "GDELT soft rate-limit for %s-%s, retrying in %.0fs",
                             country_a,
@@ -251,7 +249,7 @@ class TensionTracker:
                     data = resp.json()
                 except ValueError as exc:
                     if attempt < max_retries:
-                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2 ** attempt)
+                        backoff = max(_GDELT_MIN_DELAY_SECONDS, _RATE_LIMIT_DELAY_SECONDS) * (2**attempt)
                         logger.debug(
                             "GDELT non-JSON payload for %s-%s, retrying in %.0fs",
                             country_a,
@@ -338,9 +336,7 @@ class TensionTracker:
         stores the result, and returns all updated tensions.
         """
         pairs = country_pairs or self._default_pairs()
-        concurrency = int(
-            max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3)
-        )
+        concurrency = int(max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3))
         semaphore = asyncio.Semaphore(concurrency)
 
         async def _compute_pair(country_a: str, country_b: str) -> Optional[CountryPairTension]:
@@ -424,10 +420,7 @@ class TensionTracker:
 
     def get_high_tension_pairs(self, threshold: float = 60.0) -> list[CountryPairTension]:
         """Return all tracked pairs whose tension score is at or above *threshold*."""
-        return [
-            t for t in self._current.values()
-            if t.tension_score >= threshold
-        ]
+        return [t for t in self._current.values() if t.tension_score >= threshold]
 
     def get_tension_trajectory(
         self,
@@ -458,9 +451,7 @@ class TensionTracker:
             "enabled": True,
             "tracked_pairs": len(self._current),
             "request_spacing_seconds": _RATE_LIMIT_DELAY_SECONDS,
-            "max_concurrency": int(
-                max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3)
-            ),
+            "max_concurrency": int(max(1, getattr(settings, "WORLD_INTEL_GDELT_MAX_CONCURRENCY", 3) or 3)),
             "last_error": self._last_error,
         }
 

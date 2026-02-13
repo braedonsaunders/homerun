@@ -82,11 +82,7 @@ class OpportunityRecorder:
                         continue
 
                     # Check DB as well (handles restart dedup)
-                    exists = await session.execute(
-                        select(OpportunityHistory.id).where(
-                            OpportunityHistory.id == opp.id
-                        )
-                    )
+                    exists = await session.execute(select(OpportunityHistory.id).where(OpportunityHistory.id == opp.id))
                     if exists.scalar_one_or_none() is not None:
                         self._known_ids.add(opp.id)
                         continue
@@ -182,9 +178,7 @@ class OpportunityRecorder:
         if resolved_count:
             logger.info("Resolved opportunities", resolved=resolved_count)
 
-    async def _resolve_opportunity(
-        self, record: OpportunityHistory
-    ) -> Optional[tuple[bool, float]]:
+    async def _resolve_opportunity(self, record: OpportunityHistory) -> Optional[tuple[bool, float]]:
         """
         Determine if a recorded opportunity was actually profitable.
 
@@ -197,9 +191,7 @@ class OpportunityRecorder:
 
         # Gather the condition_ids we need to look up
         condition_ids = [
-            m.get("condition_id") or m.get("id", "")
-            for m in markets_data
-            if m.get("condition_id") or m.get("id")
+            m.get("condition_id") or m.get("id", "") for m in markets_data if m.get("condition_id") or m.get("id")
         ]
         if not condition_ids:
             return None
@@ -237,10 +229,7 @@ class OpportunityRecorder:
 
                 # Parse final outcome prices
                 try:
-                    outcome_prices = [
-                        float(p)
-                        for p in json.loads(market_raw.get("outcomePrices", "[]"))
-                    ]
+                    outcome_prices = [float(p) for p in json.loads(market_raw.get("outcomePrices", "[]"))]
                 except (json.JSONDecodeError, TypeError):
                     outcome_prices = []
 
@@ -280,9 +269,7 @@ class OpportunityRecorder:
             # final prices would have delivered that.
             actual_payout = self._heuristic_payout(markets_data, final_prices)
 
-        actual_roi = (
-            ((actual_payout - total_cost) / total_cost * 100) if total_cost > 0 else 0.0
-        )
+        actual_roi = ((actual_payout - total_cost) / total_cost * 100) if total_cost > 0 else 0.0
         was_profitable = actual_payout > total_cost
 
         return (was_profitable, round(actual_roi, 4))
@@ -341,12 +328,8 @@ class OpportunityRecorder:
                 "resolved": resolved,
                 "profitable": profitable,
                 "unprofitable": unprofitable,
-                "true_positive_rate": round(tp_rate, 4)
-                if tp_rate is not None
-                else None,
-                "false_positive_rate": round(fp_rate, 4)
-                if fp_rate is not None
-                else None,
+                "true_positive_rate": round(tp_rate, 4) if tp_rate is not None else None,
+                "false_positive_rate": round(fp_rate, 4) if fp_rate is not None else None,
             }
 
         return out
@@ -398,9 +381,7 @@ class OpportunityRecorder:
 
             # All ROIs for median calculation
             roi_result = await session.execute(
-                select(OpportunityHistory.actual_roi)
-                .where(and_(*filters))
-                .order_by(OpportunityHistory.actual_roi)
+                select(OpportunityHistory.actual_roi).where(and_(*filters)).order_by(OpportunityHistory.actual_roi)
             )
             roi_values = [r[0] for r in roi_result.all() if r[0] is not None]
 
@@ -438,12 +419,8 @@ class OpportunityRecorder:
             "count": agg_row.cnt or 0,
             "mean_roi": round(agg_row.mean, 4) if agg_row.mean is not None else None,
             "median_roi": median_roi,
-            "min_roi": round(agg_row.min_roi, 4)
-            if agg_row.min_roi is not None
-            else None,
-            "max_roi": round(agg_row.max_roi, 4)
-            if agg_row.max_roi is not None
-            else None,
+            "min_roi": round(agg_row.min_roi, 4) if agg_row.min_roi is not None else None,
+            "max_roi": round(agg_row.max_roi, 4) if agg_row.max_roi is not None else None,
             "buckets": buckets,
         }
 
@@ -467,9 +444,7 @@ class OpportunityRecorder:
             total_detected = total.scalar() or 0
 
             resolved = await session.execute(
-                select(func.count(OpportunityHistory.id)).where(
-                    OpportunityHistory.was_profitable.isnot(None)
-                )
+                select(func.count(OpportunityHistory.id)).where(OpportunityHistory.was_profitable.isnot(None))
             )
             total_resolved = resolved.scalar() or 0
 
@@ -488,9 +463,7 @@ class OpportunityRecorder:
             total_unprofitable = unprofitable.scalar() or 0
 
         by_strategy = await self.get_strategy_accuracy()
-        profitable_rate = (
-            round(total_profitable / total_resolved, 4) if total_resolved > 0 else None
-        )
+        profitable_rate = round(total_profitable / total_resolved, 4) if total_resolved > 0 else None
 
         return {
             "total_detected": total_detected,
@@ -518,9 +491,7 @@ class OpportunityRecorder:
         """
         async with AsyncSessionLocal() as session:
             total = await session.execute(
-                select(func.count(OpportunityHistory.id)).where(
-                    OpportunityHistory.strategy_type == strategy
-                )
+                select(func.count(OpportunityHistory.id)).where(OpportunityHistory.strategy_type == strategy)
             )
             total_detected = total.scalar() or 0
 
@@ -544,9 +515,7 @@ class OpportunityRecorder:
             )
             false_positives = fp.scalar() or 0
 
-        fp_rate = (
-            round(false_positives / total_resolved, 4) if total_resolved > 0 else None
-        )
+        fp_rate = round(false_positives / total_resolved, 4) if total_resolved > 0 else None
 
         return {
             "strategy": strategy,
@@ -669,9 +638,7 @@ class OpportunityRecorder:
             async with AsyncSessionLocal() as session:
                 cutoff = utcnow() - timedelta(days=7)
                 result = await session.execute(
-                    select(OpportunityHistory.id).where(
-                        OpportunityHistory.detected_at >= cutoff
-                    )
+                    select(OpportunityHistory.id).where(OpportunityHistory.detected_at >= cutoff)
                 )
                 self._known_ids = {row[0] for row in result.all()}
             logger.info("Loaded known opportunity IDs", count=len(self._known_ids))
@@ -683,17 +650,10 @@ class OpportunityRecorder:
         """Convert opportunity data to a JSON-serialisable dict for storage."""
         return {
             "markets": [
-                {
-                    k: (v.isoformat() if isinstance(v, datetime) else v)
-                    for k, v in m.items()
-                }
-                for m in opp.markets
+                {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in m.items()} for m in opp.markets
             ],
             "positions_to_take": [
-                {
-                    k: (v.isoformat() if isinstance(v, datetime) else v)
-                    for k, v in p.items()
-                }
+                {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in p.items()}
                 for p in opp.positions_to_take
             ],
             "expected_payout": opp.expected_payout,
@@ -701,9 +661,7 @@ class OpportunityRecorder:
             "fee": opp.fee,
             "net_profit": opp.net_profit,
             "risk_factors": opp.risk_factors,
-            "mispricing_type": opp.mispricing_type.value
-            if opp.mispricing_type
-            else None,
+            "mispricing_type": opp.mispricing_type.value if opp.mispricing_type else None,
             "category": opp.category,
             "min_liquidity": opp.min_liquidity,
             "max_position_size": opp.max_position_size,

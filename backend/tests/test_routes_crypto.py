@@ -16,12 +16,8 @@ from api import routes_crypto
 @pytest.mark.asyncio
 async def test_get_crypto_markets_uses_fresh_worker_snapshot(monkeypatch):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    near_future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace(
-        "+00:00", "Z"
-    )
-    snapshot_markets = [
-        {"id": "m1", "asset": "BTC", "timeframe": "15min", "end_time": near_future}
-    ]
+    near_future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+    snapshot_markets = [{"id": "m1", "asset": "BTC", "timeframe": "15min", "end_time": near_future}]
 
     monkeypatch.setattr(
         routes_crypto,
@@ -44,9 +40,7 @@ async def test_get_crypto_markets_uses_fresh_worker_snapshot(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_crypto_markets_falls_back_when_snapshot_stale(monkeypatch):
-    stale = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat().replace(
-        "+00:00", "Z"
-    )
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
     snapshot_markets = [{"id": "stale-market", "asset": "BTC"}]
     live_markets = [{"id": "live-market", "asset": "BTC"}]
 
@@ -72,12 +66,8 @@ async def test_get_crypto_markets_falls_back_when_snapshot_stale(monkeypatch):
 async def test_get_crypto_markets_falls_back_when_snapshot_only_far_future(monkeypatch):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     # Nearest expiry ~22h out should fail the snapshot sanity check.
-    far_future = (datetime.now(timezone.utc) + timedelta(hours=22)).isoformat().replace(
-        "+00:00", "Z"
-    )
-    snapshot_markets = [
-        {"id": "future-market", "asset": "BTC", "timeframe": "15min", "end_time": far_future}
-    ]
+    far_future = (datetime.now(timezone.utc) + timedelta(hours=22)).isoformat().replace("+00:00", "Z")
+    snapshot_markets = [{"id": "future-market", "asset": "BTC", "timeframe": "15min", "end_time": far_future}]
     live_markets = [{"id": "live-market", "asset": "BTC", "timeframe": "15min"}]
 
     monkeypatch.setattr(
@@ -131,8 +121,6 @@ async def test_source_fallback_hydrates_price_to_beat_from_snapshot(monkeypatch)
     monkeypatch.setattr(routes_crypto, "get_crypto_service", lambda: svc)
     monkeypatch.setattr(routes_crypto, "get_chainlink_feed", lambda: feed)
 
-    out = await routes_crypto._build_live_markets_from_source(
-        [{"slug": "btc-updown-123", "price_to_beat": 67890.12}]
-    )
+    out = await routes_crypto._build_live_markets_from_source([{"slug": "btc-updown-123", "price_to_beat": 67890.12}])
     assert out and out[0]["price_to_beat"] == 67890.12
     assert svc._price_to_beat["btc-updown-123"] == 67890.12

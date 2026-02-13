@@ -90,9 +90,7 @@ async def write_news_snapshot(
         except Exception:
             next_scan = None
 
-    result = await session.execute(
-        select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == NEWS_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == NEWS_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = NewsWorkflowSnapshot(id=NEWS_SNAPSHOT_ID)
@@ -117,9 +115,7 @@ async def write_news_snapshot(
 
 
 async def read_news_snapshot(session: AsyncSession) -> dict[str, Any]:
-    result = await session.execute(
-        select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == NEWS_SNAPSHOT_ID)
-    )
+    result = await session.execute(select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == NEWS_SNAPSHOT_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return _default_status()
@@ -145,17 +141,13 @@ async def get_news_status_from_db(session: AsyncSession) -> dict[str, Any]:
     status["pending_intents"] = pending
     status["paused"] = bool(control.get("is_paused", False))
     status["requested_scan_at"] = (
-        control.get("requested_scan_at").isoformat()
-        if control.get("requested_scan_at")
-        else None
+        control.get("requested_scan_at").isoformat() if control.get("requested_scan_at") else None
     )
     return status
 
 
 async def ensure_news_control(session: AsyncSession) -> NewsWorkflowControl:
-    result = await session.execute(
-        select(NewsWorkflowControl).where(NewsWorkflowControl.id == NEWS_CONTROL_ID)
-    )
+    result = await session.execute(select(NewsWorkflowControl).where(NewsWorkflowControl.id == NEWS_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         row = NewsWorkflowControl(id=NEWS_CONTROL_ID)
@@ -166,9 +158,7 @@ async def ensure_news_control(session: AsyncSession) -> NewsWorkflowControl:
 
 
 async def read_news_control(session: AsyncSession) -> dict[str, Any]:
-    result = await session.execute(
-        select(NewsWorkflowControl).where(NewsWorkflowControl.id == NEWS_CONTROL_ID)
-    )
+    result = await session.execute(select(NewsWorkflowControl).where(NewsWorkflowControl.id == NEWS_CONTROL_ID))
     row = result.scalar_one_or_none()
     if row is None:
         return {
@@ -302,18 +292,14 @@ async def mark_news_intent(
     intent_id: str,
     status: str,
 ) -> bool:
-    result = await session.execute(
-        select(NewsTradeIntent).where(NewsTradeIntent.id == intent_id)
-    )
+    result = await session.execute(select(NewsTradeIntent).where(NewsTradeIntent.id == intent_id))
     row = result.scalar_one_or_none()
     if row is None:
         return False
     row.status = status
     row.consumed_at = datetime.now(timezone.utc)
     if row.finding_id and status != "pending":
-        finding = await session.execute(
-            select(NewsWorkflowFinding).where(NewsWorkflowFinding.id == row.finding_id)
-        )
+        finding = await session.execute(select(NewsWorkflowFinding).where(NewsWorkflowFinding.id == row.finding_id))
         finding_row = finding.scalar_one_or_none()
         if finding_row is not None:
             finding_row.consumed_by_orchestrator = True
@@ -391,84 +377,40 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
 async def get_news_settings(session: AsyncSession) -> dict[str, Any]:
     db = await _get_or_create_app_settings(session)
     raw_custom_feeds = getattr(db, "news_rss_feeds_json", None)
-    custom_rss_feeds = (
-        normalize_custom_rss_feeds(raw_custom_feeds)
-        if raw_custom_feeds
-        else default_custom_rss_feeds()
-    )
+    custom_rss_feeds = normalize_custom_rss_feeds(raw_custom_feeds) if raw_custom_feeds else default_custom_rss_feeds()
     raw_gov_feeds = getattr(db, "news_gov_rss_feeds_json", None)
-    rss_sources = (
-        normalize_gov_rss_feeds(raw_gov_feeds)
-        if raw_gov_feeds
-        else default_gov_rss_feeds()
-    )
+    rss_sources = normalize_gov_rss_feeds(raw_gov_feeds) if raw_gov_feeds else default_gov_rss_feeds()
     raw_gov_enabled = getattr(db, "news_gov_rss_enabled", None)
     rss_enabled = True if raw_gov_enabled is None else bool(raw_gov_enabled)
 
     return {
         "enabled": bool(getattr(db, "news_workflow_enabled", True)),
         "auto_run": bool(getattr(db, "news_workflow_auto_run", True)),
-        "scan_interval_seconds": int(
-            getattr(db, "news_workflow_scan_interval_seconds", 120) or 120
-        ),
+        "scan_interval_seconds": int(getattr(db, "news_workflow_scan_interval_seconds", 120) or 120),
         "top_k": int(getattr(db, "news_workflow_top_k", 20) or 20),
         "rerank_top_n": int(getattr(db, "news_workflow_rerank_top_n", 8) or 8),
-        "similarity_threshold": float(
-            getattr(db, "news_workflow_similarity_threshold", 0.20) or 0.20
-        ),
+        "similarity_threshold": float(getattr(db, "news_workflow_similarity_threshold", 0.20) or 0.20),
         "keyword_weight": float(getattr(db, "news_workflow_keyword_weight", 0.25) or 0.25),
-        "semantic_weight": float(
-            getattr(db, "news_workflow_semantic_weight", 0.45) or 0.45
-        ),
+        "semantic_weight": float(getattr(db, "news_workflow_semantic_weight", 0.45) or 0.45),
         "event_weight": float(getattr(db, "news_workflow_event_weight", 0.30) or 0.30),
-        "require_verifier": bool(
-            getattr(db, "news_workflow_require_verifier", True)
-        ),
-        "market_min_liquidity": float(
-            getattr(db, "news_workflow_market_min_liquidity", 500.0) or 500.0
-        ),
-        "market_max_days_to_resolution": int(
-            getattr(db, "news_workflow_market_max_days_to_resolution", 365) or 365
-        ),
-        "min_keyword_signal": float(
-            getattr(db, "news_workflow_min_keyword_signal", 0.04) or 0.04
-        ),
-        "min_semantic_signal": float(
-            getattr(db, "news_workflow_min_semantic_signal", 0.05) or 0.05
-        ),
-        "min_edge_percent": float(
-            getattr(db, "news_workflow_min_edge_percent", 8.0) or 8.0
-        ),
+        "require_verifier": bool(getattr(db, "news_workflow_require_verifier", True)),
+        "market_min_liquidity": float(getattr(db, "news_workflow_market_min_liquidity", 500.0) or 500.0),
+        "market_max_days_to_resolution": int(getattr(db, "news_workflow_market_max_days_to_resolution", 365) or 365),
+        "min_keyword_signal": float(getattr(db, "news_workflow_min_keyword_signal", 0.04) or 0.04),
+        "min_semantic_signal": float(getattr(db, "news_workflow_min_semantic_signal", 0.05) or 0.05),
+        "min_edge_percent": float(getattr(db, "news_workflow_min_edge_percent", 8.0) or 8.0),
         "min_confidence": float(getattr(db, "news_workflow_min_confidence", 0.6) or 0.6),
-        "require_second_source": bool(
-            getattr(db, "news_workflow_require_second_source", False)
-        ),
-        "orchestrator_enabled": bool(
-            getattr(db, "news_workflow_orchestrator_enabled", True)
-        ),
-        "orchestrator_min_edge": float(
-            getattr(db, "news_workflow_orchestrator_min_edge", 10.0) or 10.0
-        ),
-        "orchestrator_max_age_minutes": int(
-            getattr(db, "news_workflow_orchestrator_max_age_minutes", 120) or 120
-        ),
+        "require_second_source": bool(getattr(db, "news_workflow_require_second_source", False)),
+        "orchestrator_enabled": bool(getattr(db, "news_workflow_orchestrator_enabled", True)),
+        "orchestrator_min_edge": float(getattr(db, "news_workflow_orchestrator_min_edge", 10.0) or 10.0),
+        "orchestrator_max_age_minutes": int(getattr(db, "news_workflow_orchestrator_max_age_minutes", 120) or 120),
         "model": getattr(db, "news_workflow_model", None),
         "article_max_age_hours": min(int(app_settings.NEWS_ARTICLE_TTL_HOURS), 48),
-        "cycle_spend_cap_usd": float(
-            getattr(db, "news_workflow_cycle_spend_cap_usd", 0.25) or 0.25
-        ),
-        "hourly_spend_cap_usd": float(
-            getattr(db, "news_workflow_hourly_spend_cap_usd", 2.0) or 2.0
-        ),
-        "cycle_llm_call_cap": int(
-            getattr(db, "news_workflow_cycle_llm_call_cap", 30) or 30
-        ),
-        "cache_ttl_minutes": int(
-            getattr(db, "news_workflow_cache_ttl_minutes", 30) or 30
-        ),
-        "max_edge_evals_per_article": int(
-            getattr(db, "news_workflow_max_edge_evals_per_article", 6) or 6
-        ),
+        "cycle_spend_cap_usd": float(getattr(db, "news_workflow_cycle_spend_cap_usd", 0.25) or 0.25),
+        "hourly_spend_cap_usd": float(getattr(db, "news_workflow_hourly_spend_cap_usd", 2.0) or 2.0),
+        "cycle_llm_call_cap": int(getattr(db, "news_workflow_cycle_llm_call_cap", 30) or 30),
+        "cache_ttl_minutes": int(getattr(db, "news_workflow_cache_ttl_minutes", 30) or 30),
+        "max_edge_evals_per_article": int(getattr(db, "news_workflow_max_edge_evals_per_article", 6) or 6),
         "rss_feeds": custom_rss_feeds,
         "rss_enabled": rss_enabled,
         "rss_sources": rss_sources,
@@ -529,13 +471,9 @@ async def update_news_settings(
     if "rss_feeds" in updates:
         db.news_rss_feeds_json = normalize_custom_rss_feeds(updates.get("rss_feeds"))
     if "rss_sources" in updates:
-        db.news_gov_rss_feeds_json = normalize_gov_rss_feeds(
-            updates.get("rss_sources")
-        )
+        db.news_gov_rss_feeds_json = normalize_gov_rss_feeds(updates.get("rss_sources"))
     elif "gov_rss_feeds" in updates:
-        db.news_gov_rss_feeds_json = normalize_gov_rss_feeds(
-            updates.get("gov_rss_feeds")
-        )
+        db.news_gov_rss_feeds_json = normalize_gov_rss_feeds(updates.get("gov_rss_feeds"))
 
     db.updated_at = utcnow()
     await session.commit()

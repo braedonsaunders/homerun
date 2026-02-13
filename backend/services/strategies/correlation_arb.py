@@ -115,9 +115,7 @@ _STOP_WORDS = frozenset(
 )
 
 
-def _pearson_correlation(
-    xs: list[float], ys: list[float]
-) -> tuple[float, float, float]:
+def _pearson_correlation(xs: list[float], ys: list[float]) -> tuple[float, float, float]:
     """
     Calculate Pearson correlation coefficient between two lists.
 
@@ -196,14 +194,10 @@ class CorrelationArbStrategy(BaseStrategy):
         # market_id -> Market (latest snapshot)
         self._market_cache: dict[str, Market] = {}
         # Cache of already-checked pairs (reset periodically)
-        self._pair_cache: dict[
-            tuple[str, str], float
-        ] = {}  # (id_a, id_b) -> correlation
+        self._pair_cache: dict[tuple[str, str], float] = {}  # (id_a, id_b) -> correlation
         self._pair_cache_time: float = 0.0
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         if not settings.CORRELATION_ARB_ENABLED:
             return []
 
@@ -306,10 +300,7 @@ class CorrelationArbStrategy(BaseStrategy):
                 opportunities.append(opp)
 
         if opportunities:
-            logger.info(
-                f"Correlation Arb: found {len(opportunities)} "
-                f"divergence opportunity/ies"
-            )
+            logger.info(f"Correlation Arb: found {len(opportunities)} divergence opportunity/ies")
 
         return opportunities
 
@@ -460,9 +451,7 @@ class CorrelationArbStrategy(BaseStrategy):
 
             buy_token = market_b.clob_token_ids[0] if market_b.clob_token_ids else None
             fade_token = (
-                market_a.clob_token_ids[1]
-                if market_a.clob_token_ids and len(market_a.clob_token_ids) > 1
-                else None
+                market_a.clob_token_ids[1] if market_a.clob_token_ids and len(market_a.clob_token_ids) > 1 else None
             )
 
             positions = [
@@ -491,9 +480,7 @@ class CorrelationArbStrategy(BaseStrategy):
 
             buy_token = market_a.clob_token_ids[0] if market_a.clob_token_ids else None
             fade_token = (
-                market_b.clob_token_ids[1]
-                if market_b.clob_token_ids and len(market_b.clob_token_ids) > 1
-                else None
+                market_b.clob_token_ids[1] if market_b.clob_token_ids and len(market_b.clob_token_ids) > 1 else None
             )
 
             positions = [
@@ -546,25 +533,19 @@ class CorrelationArbStrategy(BaseStrategy):
             opp.risk_score = risk_score
             opp.risk_factors.insert(
                 0,
-                "STATISTICAL EDGE — not arbitrage. "
-                "Convergence is not guaranteed; losses possible.",
+                "STATISTICAL EDGE — not arbitrage. Convergence is not guaranteed; losses possible.",
             )
             opp.risk_factors.append(
-                f"Statistical edge (not risk-free): "
-                f"correlation r={correlation:.2f}, z-score={zscore:.2f}"
+                f"Statistical edge (not risk-free): correlation r={correlation:.2f}, z-score={zscore:.2f}"
             )
-            opp.risk_factors.append(
-                "Pair correlation may break down (regime change risk)"
-            )
+            opp.risk_factors.append("Pair correlation may break down (regime change risk)")
             if abs(zscore) > 3.0:
                 opp.risk_factors.append(
-                    f"Extreme divergence (z={zscore:.2f}): "
-                    f"may indicate structural break, not mean-reversion"
+                    f"Extreme divergence (z={zscore:.2f}): may indicate structural break, not mean-reversion"
                 )
             if correlation > 0.95:
                 opp.risk_factors.append(
-                    f"Very high correlation (r={correlation:.2f}): "
-                    f"verify pair has genuine economic relationship"
+                    f"Very high correlation (r={correlation:.2f}): verify pair has genuine economic relationship"
                 )
 
         return opp

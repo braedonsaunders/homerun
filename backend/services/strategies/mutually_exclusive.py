@@ -72,9 +72,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         ),
     ]
 
-    def detect(
-        self, events: list[Event], markets: list[Market], prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         opportunities = []
 
         # Group markets by potential mutual exclusivity
@@ -94,9 +92,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
 
         return opportunities
 
-    def _find_exclusive_pairs_in_event(
-        self, event: Event, prices: dict[str, dict]
-    ) -> list[ArbitrageOpportunity]:
+    def _find_exclusive_pairs_in_event(self, event: Event, prices: dict[str, dict]) -> list[ArbitrageOpportunity]:
         """Find mutually exclusive pairs within an event"""
         opportunities = []
         active_markets = [m for m in event.markets if m.active and not m.closed]
@@ -146,9 +142,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
             b_matches_first = any(p in q_b for p in pattern_a)
 
             # Check if they're opposite patterns
-            if (a_matches_first and b_matches_second) or (
-                a_matches_second and b_matches_first
-            ):
+            if (a_matches_first and b_matches_second) or (a_matches_second and b_matches_first):
                 # Additional check: questions should be about the same topic
                 # Simple heuristic: share significant words
                 words_a = set(q_a.split())
@@ -244,18 +238,14 @@ class MutuallyExclusiveStrategy(BaseStrategy):
                 "outcome": "YES",
                 "market": market_a.question[:50],
                 "price": yes_a,
-                "token_id": market_a.clob_token_ids[0]
-                if market_a.clob_token_ids
-                else None,
+                "token_id": market_a.clob_token_ids[0] if market_a.clob_token_ids else None,
             },
             {
                 "action": "BUY",
                 "outcome": "YES",
                 "market": market_b.question[:50],
                 "price": yes_b,
-                "token_id": market_b.clob_token_ids[0]
-                if market_b.clob_token_ids
-                else None,
+                "token_id": market_b.clob_token_ids[0] if market_b.clob_token_ids else None,
             },
         ]
 
@@ -269,9 +259,7 @@ class MutuallyExclusiveStrategy(BaseStrategy):
         )
 
         if opp:
-            opp.risk_factors.insert(
-                0, "REQUIRES MANUAL VERIFICATION - check for third-party outcomes"
-            )
+            opp.risk_factors.insert(0, "REQUIRES MANUAL VERIFICATION - check for third-party outcomes")
             q_combined = (market_a.question + market_b.question).lower()
             if any(p in q_combined for p in ["win", "lose", "victory", "defeat"]):
                 opp.risk_factors.insert(1, "Win/lose market: Draw/tie outcome possible")

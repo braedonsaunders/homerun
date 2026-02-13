@@ -48,9 +48,7 @@ async def ensure_worker_control(
     *,
     default_interval: Optional[int] = None,
 ) -> WorkerControl:
-    result = await session.execute(
-        select(WorkerControl).where(WorkerControl.worker_name == worker_name)
-    )
+    result = await session.execute(select(WorkerControl).where(WorkerControl.worker_name == worker_name))
     row = result.scalar_one_or_none()
     if row is None:
         row = WorkerControl(
@@ -73,9 +71,7 @@ async def read_worker_control(
     *,
     default_interval: Optional[int] = None,
 ) -> dict[str, Any]:
-    result = await session.execute(
-        select(WorkerControl).where(WorkerControl.worker_name == worker_name)
-    )
+    result = await session.execute(select(WorkerControl).where(WorkerControl.worker_name == worker_name))
     row = result.scalar_one_or_none()
     if row is None:
         return {
@@ -145,9 +141,7 @@ async def write_worker_snapshot(
     last_error: Optional[str] = None,
     stats: Optional[dict[str, Any]] = None,
 ) -> None:
-    result = await session.execute(
-        select(WorkerSnapshot).where(WorkerSnapshot.worker_name == worker_name)
-    )
+    result = await session.execute(select(WorkerSnapshot).where(WorkerSnapshot.worker_name == worker_name))
     row = result.scalar_one_or_none()
     if row is None:
         row = WorkerSnapshot(worker_name=worker_name)
@@ -171,9 +165,7 @@ async def read_worker_snapshot(
     session: AsyncSession,
     worker_name: str,
 ) -> dict[str, Any]:
-    result = await session.execute(
-        select(WorkerSnapshot).where(WorkerSnapshot.worker_name == worker_name)
-    )
+    result = await session.execute(select(WorkerSnapshot).where(WorkerSnapshot.worker_name == worker_name))
     row = result.scalar_one_or_none()
     if row is None:
         control = await read_worker_control(session, worker_name)
@@ -205,9 +197,7 @@ async def read_worker_snapshot(
 
 
 async def list_worker_snapshots(session: AsyncSession) -> list[dict[str, Any]]:
-    result = await session.execute(
-        select(WorkerSnapshot).order_by(WorkerSnapshot.worker_name.asc())
-    )
+    result = await session.execute(select(WorkerSnapshot).order_by(WorkerSnapshot.worker_name.asc()))
     rows = list(result.scalars().all())
 
     out: list[dict[str, Any]] = []

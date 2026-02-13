@@ -99,9 +99,7 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
     def __init__(self, timeout_seconds: float = 15.0):
         self._timeout = timeout_seconds
 
-    async def forecast_probability(
-        self, contract: WeatherForecastInput
-    ) -> WeatherForecastResult:
+    async def forecast_probability(self, contract: WeatherForecastInput) -> WeatherForecastResult:
         try:
             headers = {"User-Agent": "homerun-weather-workflow/1.0"}
             async with httpx.AsyncClient(
@@ -109,9 +107,7 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                 follow_redirects=True,
                 headers=headers,
             ) as client:
-                lat, lon, resolved_name, country_code, tz_name = await self._resolve_location(
-                    client, contract.location
-                )
+                lat, lon, resolved_name, country_code, tz_name = await self._resolve_location(client, contract.location)
 
                 model_tasks = [
                     self._fetch_model_value(
@@ -127,11 +123,7 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
                 model_results = await asyncio.gather(*model_tasks, return_exceptions=True)
 
                 nws_value_c: Optional[float] = None
-                if (
-                    country_code
-                    and country_code.upper() in {"US", "USA", "PR"}
-                    and contract.metric.startswith("temp")
-                ):
+                if country_code and country_code.upper() in {"US", "USA", "PR"} and contract.metric.startswith("temp"):
                     nws_value_c = await self._fetch_nws_temperature_c(
                         client=client,
                         lat=lat,
@@ -365,7 +357,7 @@ class OpenMeteoWeatherAdapter(WeatherModelAdapter):
             hourly_resp = await client.get(hourly_url)
             hourly_resp.raise_for_status()
             payload = hourly_resp.json() or {}
-            periods = ((payload.get("properties") or {}).get("periods") or [])
+            periods = (payload.get("properties") or {}).get("periods") or []
             if not periods:
                 return None
 

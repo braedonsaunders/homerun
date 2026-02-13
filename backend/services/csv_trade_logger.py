@@ -49,9 +49,7 @@ class TradeLogEntry:
     bot_shares: float = 0.0
     whale_price: float = 0.0
     bot_price: float = 0.0
-    status: str = (
-        ""  # SUCCESS, EXEC_FAIL, CB_BLOCKED, SKIPPED_SMALL, PROB_SKIP, DEPTH_BLOCKED
-    )
+    status: str = ""  # SUCCESS, EXEC_FAIL, CB_BLOCKED, SKIPPED_SMALL, PROB_SKIP, DEPTH_BLOCKED
     fill_percent: float = 0.0
     slippage_bps: float = 0.0
     opportunity_id: str = ""

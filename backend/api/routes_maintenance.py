@@ -89,15 +89,9 @@ class DeleteTradesRequest(BaseModel):
         default=None,
         description="Delete trades with these statuses (e.g., ['resolved_win', 'resolved_loss'])",
     )
-    account_id: Optional[str] = Field(
-        default=None, description="Only delete trades for this account"
-    )
-    delete_all: bool = Field(
-        default=False, description="Delete ALL trades (dangerous!)"
-    )
-    confirm: bool = Field(
-        default=False, description="Must be True to proceed with delete_all"
-    )
+    account_id: Optional[str] = Field(default=None, description="Only delete trades for this account")
+    delete_all: bool = Field(default=False, description="Delete ALL trades (dangerous!)")
+    confirm: bool = Field(default=False, description="Must be True to proceed with delete_all")
 
 
 FlushTarget = Literal["scanner", "weather", "news", "trader_orchestrator", "all"]
@@ -128,15 +122,7 @@ async def _delete_rows(session: AsyncSession, model) -> int:
 
 
 async def _flush_scanner_data(session: AsyncSession) -> dict[str, int]:
-    snapshot = (
-        (
-            await session.execute(
-                select(ScannerSnapshot).where(ScannerSnapshot.id == "latest")
-            )
-        )
-        .scalars()
-        .first()
-    )
+    snapshot = (await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))).scalars().first()
 
     snapshot_opportunities = len(snapshot.opportunities_json or []) if snapshot else 0
     if snapshot is not None:
@@ -160,11 +146,7 @@ async def _flush_news_data(session: AsyncSession) -> dict[str, int]:
 
     memory_cache_cleared = int(news_feed_service.clear() or 0)
     snapshot = (
-        (
-            await session.execute(
-                select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == "latest")
-            )
-        )
+        (await session.execute(select(NewsWorkflowSnapshot).where(NewsWorkflowSnapshot.id == "latest")))
         .scalars()
         .first()
     )
@@ -187,24 +169,14 @@ async def _flush_news_data(session: AsyncSession) -> dict[str, int]:
 
 
 async def _flush_weather_data(session: AsyncSession) -> dict[str, int]:
-    snapshot = (
-        (
-            await session.execute(
-                select(WeatherSnapshot).where(WeatherSnapshot.id == "latest")
-            )
-        )
-        .scalars()
-        .first()
-    )
+    snapshot = (await session.execute(select(WeatherSnapshot).where(WeatherSnapshot.id == "latest"))).scalars().first()
 
     snapshot_opportunities = len(snapshot.opportunities_json or []) if snapshot else 0
     if snapshot is not None:
         snapshot.last_scan_at = None
         snapshot.opportunities_json = []
         snapshot.stats_json = {}
-        snapshot.current_activity = (
-            "Weather workflow snapshot cleared by manual maintenance flush."
-        )
+        snapshot.current_activity = "Weather workflow snapshot cleared by manual maintenance flush."
 
     return {
         "weather_snapshot_opportunities": snapshot_opportunities,
@@ -213,42 +185,22 @@ async def _flush_weather_data(session: AsyncSession) -> dict[str, int]:
 
 
 async def _flush_trader_orchestrator_runtime_data(session: AsyncSession) -> dict[str, int]:
-    signal_id_subquery = (
-        select(TraderOrder.signal_id)
-        .where(TraderOrder.signal_id.is_not(None))
-        .distinct()
-    )
-    orphan_signal_delete = await session.execute(
-        delete(TradeSignal).where(~TradeSignal.id.in_(signal_id_subquery))
-    )
+    signal_id_subquery = select(TraderOrder.signal_id).where(TraderOrder.signal_id.is_not(None)).distinct()
+    orphan_signal_delete = await session.execute(delete(TradeSignal).where(~TradeSignal.id.in_(signal_id_subquery)))
     orphan_signals_cleared = max(0, int(orphan_signal_delete.rowcount or 0))
 
     snapshot = (
-        (
-            await session.execute(
-                select(TraderOrchestratorSnapshot).where(
-                    TraderOrchestratorSnapshot.id == "latest"
-                )
-            )
-        )
+        (await session.execute(select(TraderOrchestratorSnapshot).where(TraderOrchestratorSnapshot.id == "latest")))
         .scalars()
         .first()
     )
     if snapshot is not None:
         snapshot.last_error = None
         snapshot.stats_json = {}
-        snapshot.current_activity = (
-            "Trader orchestrator runtime caches cleared by manual maintenance flush."
-        )
+        snapshot.current_activity = "Trader orchestrator runtime caches cleared by manual maintenance flush."
 
     control = (
-        (
-            await session.execute(
-                select(TraderOrchestratorControl).where(
-                    TraderOrchestratorControl.id == "default"
-                )
-            )
-        )
+        (await session.execute(select(TraderOrchestratorControl).where(TraderOrchestratorControl.id == "default")))
         .scalars()
         .first()
     )
@@ -400,9 +352,7 @@ async def expire_old_trades(
     This handles markets that were cancelled or never resolved.
     """
     try:
-        result = await maintenance_service.expire_old_open_trades(
-            older_than_days=older_than_days
-        )
+        result = await maintenance_service.expire_old_open_trades(older_than_days=older_than_days)
         return {
             "status": "success",
             "timestamp": utcnow().isoformat(),
@@ -428,11 +378,7 @@ async def delete_trades(request: DeleteTradesRequest):
     """
     try:
         # Validate request
-        if (
-            not request.older_than_days
-            and not request.statuses
-            and not request.delete_all
-        ):
+        if not request.older_than_days and not request.statuses and not request.delete_all:
             raise HTTPException(
                 status_code=400,
                 detail="Must specify older_than_days, statuses, or delete_all",
@@ -442,12 +388,8 @@ async def delete_trades(request: DeleteTradesRequest):
 
         if request.delete_all:
             if not request.confirm:
-                raise HTTPException(
-                    status_code=400, detail="Must set confirm=True to delete all trades"
-                )
-            results = await maintenance_service.delete_all_trades(
-                account_id=request.account_id, confirm=True
-            )
+                raise HTTPException(status_code=400, detail="Must set confirm=True to delete all trades")
+            results = await maintenance_service.delete_all_trades(account_id=request.account_id, confirm=True)
         elif request.statuses:
             # Convert status strings to enums
             try:
@@ -487,9 +429,7 @@ async def delete_wallet_trades(
         le=365,
         description="Delete wallet trades older than this many days",
     ),
-    wallet_address: Optional[str] = Query(
-        default=None, description="Only delete for specific wallet"
-    ),
+    wallet_address: Optional[str] = Query(default=None, description="Only delete for specific wallet"),
 ):
     """
     Delete old wallet trades.
@@ -518,9 +458,7 @@ async def delete_anomalies(
         le=365,
         description="Delete anomalies older than this many days",
     ),
-    resolved_only: bool = Query(
-        default=True, description="Only delete resolved anomalies"
-    ),
+    resolved_only: bool = Query(default=True, description="Only delete resolved anomalies"),
 ):
     """
     Delete old anomaly records.
@@ -558,9 +496,7 @@ async def cleanup_resolved_only(
     Does NOT touch open trades.
     """
     try:
-        result = await maintenance_service.cleanup_resolved_trades(
-            older_than_days=older_than_days
-        )
+        result = await maintenance_service.cleanup_resolved_trades(older_than_days=older_than_days)
         return {
             "status": "success",
             "timestamp": utcnow().isoformat(),
@@ -574,9 +510,7 @@ async def cleanup_resolved_only(
 @router.post("/reset")
 async def reset_all_trades(
     confirm: bool = Query(default=False, description="Must be True to proceed"),
-    account_id: Optional[str] = Query(
-        default=None, description="Only reset specific account"
-    ),
+    account_id: Optional[str] = Query(default=None, description="Only reset specific account"),
 ):
     """
     Reset/delete ALL trades.
@@ -591,14 +525,10 @@ async def reset_all_trades(
         )
 
     try:
-        result = await maintenance_service.delete_all_trades(
-            account_id=account_id, confirm=True
-        )
+        result = await maintenance_service.delete_all_trades(account_id=account_id, confirm=True)
         return {
             "status": "success",
-            "message": "All trades deleted"
-            if not account_id
-            else f"All trades for account {account_id} deleted",
+            "message": "All trades deleted" if not account_id else f"All trades for account {account_id} deleted",
             "timestamp": utcnow().isoformat(),
             **result,
         }

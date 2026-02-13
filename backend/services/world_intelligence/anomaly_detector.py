@@ -30,9 +30,7 @@ logger = logging.getLogger(__name__)
 # Signal types that the anomaly detector monitors
 MONITORED_SIGNAL_TYPES = taxonomy_catalog.anomaly_monitored_signal_types()
 
-_BASE_MEDIUM_Z = float(
-    max(0.5, getattr(settings, "WORLD_INTEL_ANOMALY_THRESHOLD", 1.8) or 1.8)
-)
+_BASE_MEDIUM_Z = float(max(0.5, getattr(settings, "WORLD_INTEL_ANOMALY_THRESHOLD", 1.8) or 1.8))
 
 # Z-score severity thresholds
 SEVERITY_THRESHOLDS = {
@@ -139,9 +137,7 @@ class AnomalyDetector:
     def _prune_baselines(self, key: tuple[str, str]) -> None:
         """Remove observations older than 90 days."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=_MAX_RETENTION_DAYS)
-        self._baselines[key] = [
-            obs for obs in self._baselines[key] if obs.date >= cutoff
-        ]
+        self._baselines[key] = [obs for obs in self._baselines[key] if obs.date >= cutoff]
 
     # -- Baseline computation ------------------------------------------------
 
@@ -164,11 +160,7 @@ class AnomalyDetector:
         observations = self._baselines.get(key, [])
 
         # Filter by time window and weekday type
-        filtered = [
-            obs for obs in observations
-            if obs.date >= cutoff
-            and (obs.weekday >= 5) == is_weekend
-        ]
+        filtered = [obs for obs in observations if obs.date >= cutoff and (obs.weekday >= 5) == is_weekend]
 
         if len(filtered) < _MIN_BASELINE_POINTS:
             # Use whatever signal history exists so anomalies can surface
@@ -263,10 +255,7 @@ class AnomalyDetector:
     def get_critical_anomalies(self) -> list[TemporalAnomaly]:
         """Return only anomalies with z >= 3.0 (high or critical)."""
         all_anomalies = self.detect_anomalies()
-        return [
-            a for a in all_anomalies
-            if abs(a.z_score) >= SEVERITY_THRESHOLDS["high"]
-        ]
+        return [a for a in all_anomalies if abs(a.z_score) >= SEVERITY_THRESHOLDS["high"]]
 
     def export_state(self) -> dict[str, Any]:
         baselines: list[dict[str, Any]] = []
@@ -330,9 +319,7 @@ class AnomalyDetector:
                     weekday = int(row.get("weekday") or dt.weekday())
                 except Exception:
                     continue
-                next_baselines[(signal_type, country)].append(
-                    DailyObservation(date=dt, value=value, weekday=weekday)
-                )
+                next_baselines[(signal_type, country)].append(DailyObservation(date=dt, value=value, weekday=weekday))
 
         for item in current_values:
             if not isinstance(item, dict):

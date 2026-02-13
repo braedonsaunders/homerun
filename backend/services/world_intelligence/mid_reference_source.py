@@ -64,7 +64,7 @@ def _admin_candidates(name: str) -> list[str]:
     for item in list(out):
         for prefix in prefixes:
             if item.startswith(prefix):
-                out.append(item[len(prefix):].strip())
+                out.append(item[len(prefix) :].strip())
     # Deduplicate preserving order
     seen: set[str] = set()
     deduped: list[str] = []
@@ -155,9 +155,7 @@ async def load_mid_reference_from_db(session: AsyncSession) -> dict[str, Any]:
         "source": source,
         "count": len(mapping),
         "last_synced_at": (
-            row.world_intel_mid_synced_at.isoformat()
-            if isinstance(row.world_intel_mid_synced_at, datetime)
-            else None
+            row.world_intel_mid_synced_at.isoformat() if isinstance(row.world_intel_mid_synced_at, datetime) else None
         ),
     }
 
@@ -177,13 +175,9 @@ async def sync_mid_reference_from_itu(
     due = force or not existing
     if not due and enabled and isinstance(last_sync, datetime):
         last_sync_utc = (
-            last_sync.astimezone(timezone.utc).replace(tzinfo=None)
-            if last_sync.tzinfo is not None
-            else last_sync
+            last_sync.astimezone(timezone.utc).replace(tzinfo=None) if last_sync.tzinfo is not None else last_sync
         )
-        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(
-            hours=interval_hours
-        )
+        due = (datetime.now(timezone.utc).replace(tzinfo=None) - last_sync_utc) >= timedelta(hours=interval_hours)
 
     if not due:
         source = str(getattr(row, "world_intel_mid_source", "") or "").strip() or "db"
@@ -244,7 +238,5 @@ async def get_mid_reference_source_status(session: AsyncSession) -> dict[str, An
         "count": len(mapping),
         "last_synced_at": last_sync.isoformat() if isinstance(last_sync, datetime) else None,
         "sync_enabled": bool(getattr(settings, "WORLD_INTEL_MID_SYNC_ENABLED", True)),
-        "sync_interval_hours": int(
-            max(1, getattr(settings, "WORLD_INTEL_MID_SYNC_HOURS", 168) or 168)
-        ),
+        "sync_interval_hours": int(max(1, getattr(settings, "WORLD_INTEL_MID_SYNC_HOURS", 168) or 168)),
     }

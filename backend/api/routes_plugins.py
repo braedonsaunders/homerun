@@ -251,8 +251,7 @@ async def get_plugin_docs():
                 "event": "Event | None — The parent event (optional, used for category/metadata)",
                 "expected_payout": "float — Expected payout if the trade succeeds (default $1.00)",
                 "is_guaranteed": (
-                    "bool — True for structural arbitrage (guaranteed profit), "
-                    "False for directional/statistical bets"
+                    "bool — True for structural arbitrage (guaranteed profit), False for directional/statistical bets"
                 ),
                 "vwap_total_cost": "float | None — VWAP-adjusted realistic cost from order book analysis",
                 "spread_bps": "float | None — Actual spread in basis points",
@@ -375,9 +374,7 @@ async def list_plugins():
     """List all strategy plugins with their current status."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(StrategyPlugin).order_by(
-                StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc()
-            )
+            select(StrategyPlugin).order_by(StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc())
         )
         plugins = result.scalars().all()
         return [_plugin_to_response(p) for p in plugins]
@@ -390,9 +387,7 @@ async def create_plugin(req: PluginCreateRequest):
 
     # Check slug uniqueness
     async with AsyncSessionLocal() as session:
-        existing = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.slug == slug)
-        )
+        existing = await session.execute(select(StrategyPlugin).where(StrategyPlugin.slug == slug))
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=409,
@@ -455,9 +450,7 @@ async def create_plugin(req: PluginCreateRequest):
 async def get_plugin(plugin_id: str):
     """Get a single plugin by ID."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.id == plugin_id)
-        )
+        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -468,9 +461,7 @@ async def get_plugin(plugin_id: str):
 async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
     """Update a plugin. Source code changes trigger re-validation and reload."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.id == plugin_id)
-        )
+        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -516,9 +507,7 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
         if enabled_changed or code_changed:
             if plugin.enabled:
                 try:
-                    plugin_loader.load_plugin(
-                        plugin.slug, plugin.source_code, plugin.config or None
-                    )
+                    plugin_loader.load_plugin(plugin.slug, plugin.source_code, plugin.config or None)
                     plugin.status = "loaded"
                     plugin.error_message = None
                 except PluginValidationError as e:
@@ -539,9 +528,7 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
 async def delete_plugin(plugin_id: str):
     """Delete a plugin and unload it from the runtime."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.id == plugin_id)
-        )
+        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -559,9 +546,7 @@ async def delete_plugin(plugin_id: str):
 async def reload_plugin(plugin_id: str):
     """Force reload a plugin from its stored source code."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.id == plugin_id)
-        )
+        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -573,9 +558,7 @@ async def reload_plugin(plugin_id: str):
             )
 
         try:
-            plugin_loader.load_plugin(
-                plugin.slug, plugin.source_code, plugin.config or None
-            )
+            plugin_loader.load_plugin(plugin.slug, plugin.source_code, plugin.config or None)
             plugin.status = "loaded"
             plugin.error_message = None
             await session.commit()

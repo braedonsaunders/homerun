@@ -114,10 +114,7 @@ class TelegramNotifier:
         await self._prime_cursors()
 
         if not self._bot_token or not self._chat_id:
-            logger.info(
-                "Telegram credentials not configured -- "
-                "notifier will stay dormant until credentials are set"
-            )
+            logger.info("Telegram credentials not configured -- notifier will stay dormant until credentials are set")
         else:
             logger.info("Telegram notifier credentials loaded")
 
@@ -151,9 +148,7 @@ class TelegramNotifier:
         row: Optional[AppSettings] = None
         try:
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(AppSettings).where(AppSettings.id == "default")
-                )
+                result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
                 row = result.scalar_one_or_none()
         except Exception as exc:
             logger.warning(
@@ -177,12 +172,8 @@ class TelegramNotifier:
         self._notifications_enabled = bool(row.notifications_enabled)
 
         # Legacy bridge: if new toggles are missing for any reason, fall back to old flags.
-        self._notify_autotrader_orders = bool(
-            getattr(row, "notify_autotrader_orders", bool(row.notify_on_trade))
-        )
-        self._notify_autotrader_issues = bool(
-            getattr(row, "notify_autotrader_issues", True)
-        )
+        self._notify_autotrader_orders = bool(getattr(row, "notify_autotrader_orders", bool(row.notify_on_trade)))
+        self._notify_autotrader_issues = bool(getattr(row, "notify_autotrader_issues", True))
         self._notify_autotrader_timeline = bool(
             getattr(row, "notify_autotrader_timeline", bool(row.notify_on_opportunity))
         )
@@ -196,9 +187,7 @@ class TelegramNotifier:
             1440,
             DEFAULT_SUMMARY_INTERVAL_MINUTES,
         )
-        self._summary_per_trader = bool(
-            getattr(row, "notify_autotrader_summary_per_trader", False)
-        )
+        self._summary_per_trader = bool(getattr(row, "notify_autotrader_summary_per_trader", False))
 
     async def reload_settings(self) -> None:
         await self._load_settings()
@@ -230,15 +219,11 @@ class TelegramNotifier:
 
                 snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
                 if snapshot is not None:
-                    self._last_snapshot_error = (
-                        str(snapshot.last_error).strip() if snapshot.last_error else None
-                    )
+                    self._last_snapshot_error = str(snapshot.last_error).strip() if snapshot.last_error else None
 
                 control = await session.get(TraderOrchestratorControl, "default")
                 self._autotrader_active = bool(
-                    control is not None
-                    and bool(control.is_enabled)
-                    and not bool(control.is_paused)
+                    control is not None and bool(control.is_enabled) and not bool(control.is_paused)
                 )
                 if self._autotrader_active:
                     self._last_summary_at = utcnow()
@@ -250,16 +235,11 @@ class TelegramNotifier:
         while self._running:
             try:
                 now_monotonic = time.monotonic()
-                if (
-                    now_monotonic - self._last_settings_reload_monotonic
-                    >= SETTINGS_REFRESH_SECONDS
-                ):
+                if now_monotonic - self._last_settings_reload_monotonic >= SETTINGS_REFRESH_SECONDS:
                     await self._load_settings()
                     self._last_settings_reload_monotonic = now_monotonic
 
-                delivery_ready = bool(
-                    self._notifications_enabled and self._bot_token and self._chat_id
-                )
+                delivery_ready = bool(self._notifications_enabled and self._bot_token and self._chat_id)
 
                 if delivery_ready and not self._delivery_ready:
                     # Avoid replaying stale history when notifications are
@@ -276,19 +256,11 @@ class TelegramNotifier:
                     control = await session.get(TraderOrchestratorControl, "default")
                     snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
 
-                    active = bool(
-                        control is not None
-                        and bool(control.is_enabled)
-                        and not bool(control.is_paused)
-                    )
+                    active = bool(control is not None and bool(control.is_enabled) and not bool(control.is_paused))
                     mode = str(getattr(control, "mode", "paper") or "paper").upper()
 
-                    traders_running = int(
-                        getattr(snapshot, "traders_running", 0) if snapshot else 0
-                    )
-                    traders_total = int(
-                        getattr(snapshot, "traders_total", 0) if snapshot else 0
-                    )
+                    traders_running = int(getattr(snapshot, "traders_running", 0) if snapshot else 0)
+                    traders_total = int(getattr(snapshot, "traders_total", 0) if snapshot else 0)
 
                     if active and not self._autotrader_active:
                         await self._enqueue(
@@ -365,11 +337,7 @@ class TelegramNotifier:
                 )
             )
 
-        rows = (
-            (await session.execute(query.limit(200)))
-            .scalars()
-            .all()
-        )
+        rows = (await session.execute(query.limit(200))).scalars().all()
         if rows:
             last = rows[-1]
             if last.created_at is not None:
@@ -394,11 +362,7 @@ class TelegramNotifier:
                 )
             )
 
-        rows = (
-            (await session.execute(query.limit(200)))
-            .scalars()
-            .all()
-        )
+        rows = (await session.execute(query.limit(200))).scalars().all()
         if rows:
             last = rows[-1]
             if last.created_at is not None:
@@ -438,14 +402,7 @@ class TelegramNotifier:
     ) -> dict[str, str]:
         if not trader_ids:
             return {}
-        rows = (
-            (
-                await session.execute(
-                    select(Trader.id, Trader.name).where(Trader.id.in_(tuple(trader_ids)))
-                )
-            )
-            .all()
-        )
+        rows = (await session.execute(select(Trader.id, Trader.name).where(Trader.id.in_(tuple(trader_ids))))).all()
         return {str(row[0]): str(row[1]) for row in rows}
 
     async def _send_issue_alerts(
@@ -456,26 +413,18 @@ class TelegramNotifier:
         orders: list[TraderOrder],
         snapshot: Optional[TraderOrchestratorSnapshot],
     ) -> None:
-        trader_ids = {
-            str(item.trader_id)
-            for item in list(events) + list(orders)
-            if getattr(item, "trader_id", None)
-        }
+        trader_ids = {str(item.trader_id) for item in list(events) + list(orders) if getattr(item, "trader_id", None)}
         trader_names = await self._load_trader_name_map(session, trader_ids)
 
         for event in events:
             if not self._is_issue_event(event):
                 continue
-            await self._enqueue(
-                self._format_issue_event_message(event=event, trader_names=trader_names)
-            )
+            await self._enqueue(self._format_issue_event_message(event=event, trader_names=trader_names))
 
         for order in orders:
             if not self._is_issue_order(order):
                 continue
-            await self._enqueue(
-                self._format_issue_order_message(order=order, trader_names=trader_names)
-            )
+            await self._enqueue(self._format_issue_order_message(order=order, trader_names=trader_names))
 
         snapshot_error = None
         if snapshot is not None and snapshot.last_error:
@@ -483,9 +432,7 @@ class TelegramNotifier:
 
         if snapshot_error != self._last_snapshot_error:
             if snapshot_error:
-                await self._enqueue(
-                    self._format_worker_issue_message(snapshot_error)
-                )
+                await self._enqueue(self._format_worker_issue_message(snapshot_error))
             self._last_snapshot_error = snapshot_error
 
     async def _send_order_activity_alert(
@@ -515,8 +462,7 @@ class TelegramNotifier:
         trader_names = await self._load_trader_name_map(session, trader_ids)
 
         status_parts = [
-            f"{_escape_md(status)}: {_escape_md(str(count))}"
-            for status, count in sorted(status_counts.items())
+            f"{_escape_md(status)}: {_escape_md(str(count))}" for status, count in sorted(status_counts.items())
         ]
 
         top_traders = sorted(
@@ -525,8 +471,7 @@ class TelegramNotifier:
             reverse=True,
         )[:3]
         trader_parts = [
-            f"{_escape_md(trader_names.get(tid, tid[:8]))} {_escape_md(str(count))}"
-            for tid, count in top_traders
+            f"{_escape_md(trader_names.get(tid, tid[:8]))} {_escape_md(str(count))}" for tid, count in top_traders
         ]
 
         lines = [
@@ -538,9 +483,7 @@ class TelegramNotifier:
             f"{_bold('Notional:')} {_escape_md(_format_money(notional))}",
         ]
         if trader_parts:
-            lines.append(
-                f"{_bold('Top Traders:')} {_escape_md(', '.join(trader_parts))}"
-            )
+            lines.append(f"{_bold('Top Traders:')} {_escape_md(', '.join(trader_parts))}")
 
         await self._enqueue("\n".join(lines))
 
@@ -587,44 +530,32 @@ class TelegramNotifier:
         end_naive = _to_utc(end).replace(tzinfo=None)
 
         decision_rows = (
-            (
-                await session.execute(
-                    select(TraderDecision.decision, func.count(TraderDecision.id))
-                    .where(
-                        TraderDecision.created_at >= start_naive,
-                        TraderDecision.created_at < end_naive,
-                    )
-                    .group_by(TraderDecision.decision)
+            await session.execute(
+                select(TraderDecision.decision, func.count(TraderDecision.id))
+                .where(
+                    TraderDecision.created_at >= start_naive,
+                    TraderDecision.created_at < end_naive,
                 )
+                .group_by(TraderDecision.decision)
             )
-            .all()
-        )
-        decision_counts = {
-            str(row[0] or "unknown").lower(): int(row[1] or 0)
-            for row in decision_rows
-        }
+        ).all()
+        decision_counts = {str(row[0] or "unknown").lower(): int(row[1] or 0) for row in decision_rows}
 
         order_rows = (
-            (
-                await session.execute(
-                    select(
-                        TraderOrder.status,
-                        func.count(TraderOrder.id),
-                        func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
-                    )
-                    .where(
-                        TraderOrder.created_at >= start_naive,
-                        TraderOrder.created_at < end_naive,
-                    )
-                    .group_by(TraderOrder.status)
+            await session.execute(
+                select(
+                    TraderOrder.status,
+                    func.count(TraderOrder.id),
+                    func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
                 )
+                .where(
+                    TraderOrder.created_at >= start_naive,
+                    TraderOrder.created_at < end_naive,
+                )
+                .group_by(TraderOrder.status)
             )
-            .all()
-        )
-        order_counts = {
-            str(row[0] or "unknown").lower(): int(row[1] or 0)
-            for row in order_rows
-        }
+        ).all()
+        order_counts = {str(row[0] or "unknown").lower(): int(row[1] or 0) for row in order_rows}
         total_notional = float(sum(float(row[2] or 0.0) for row in order_rows))
 
         resolved_pnl = float(
@@ -646,9 +577,7 @@ class TelegramNotifier:
                     select(func.count(TraderEvent.id)).where(
                         TraderEvent.created_at >= start_naive,
                         TraderEvent.created_at < end_naive,
-                        func.lower(TraderEvent.severity).in_(
-                            ("warn", "warning", "error", "critical")
-                        ),
+                        func.lower(TraderEvent.severity).in_(("warn", "warning", "error", "critical")),
                     )
                 )
             ).scalar()
@@ -693,57 +622,46 @@ class TelegramNotifier:
         end_naive: datetime,
     ) -> list[str]:
         order_rows = (
-            (
-                await session.execute(
-                    select(
-                        TraderOrder.trader_id,
-                        func.count(TraderOrder.id),
-                        func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
-                    )
-                    .where(
-                        TraderOrder.created_at >= start_naive,
-                        TraderOrder.created_at < end_naive,
-                    )
-                    .group_by(TraderOrder.trader_id)
+            await session.execute(
+                select(
+                    TraderOrder.trader_id,
+                    func.count(TraderOrder.id),
+                    func.coalesce(func.sum(TraderOrder.notional_usd), 0.0),
                 )
+                .where(
+                    TraderOrder.created_at >= start_naive,
+                    TraderOrder.created_at < end_naive,
+                )
+                .group_by(TraderOrder.trader_id)
             )
-            .all()
-        )
+        ).all()
 
         decision_rows = (
-            (
-                await session.execute(
-                    select(
-                        TraderDecision.trader_id,
-                        TraderDecision.decision,
-                        func.count(TraderDecision.id),
-                    )
-                    .where(
-                        TraderDecision.created_at >= start_naive,
-                        TraderDecision.created_at < end_naive,
-                    )
-                    .group_by(TraderDecision.trader_id, TraderDecision.decision)
+            await session.execute(
+                select(
+                    TraderDecision.trader_id,
+                    TraderDecision.decision,
+                    func.count(TraderDecision.id),
                 )
+                .where(
+                    TraderDecision.created_at >= start_naive,
+                    TraderDecision.created_at < end_naive,
+                )
+                .group_by(TraderDecision.trader_id, TraderDecision.decision)
             )
-            .all()
-        )
+        ).all()
 
         issue_rows = (
-            (
-                await session.execute(
-                    select(TraderEvent.trader_id, func.count(TraderEvent.id))
-                    .where(
-                        TraderEvent.created_at >= start_naive,
-                        TraderEvent.created_at < end_naive,
-                        func.lower(TraderEvent.severity).in_(
-                            ("warn", "warning", "error", "critical")
-                        ),
-                    )
-                    .group_by(TraderEvent.trader_id)
+            await session.execute(
+                select(TraderEvent.trader_id, func.count(TraderEvent.id))
+                .where(
+                    TraderEvent.created_at >= start_naive,
+                    TraderEvent.created_at < end_naive,
+                    func.lower(TraderEvent.severity).in_(("warn", "warning", "error", "critical")),
                 )
+                .group_by(TraderEvent.trader_id)
             )
-            .all()
-        )
+        ).all()
 
         trader_ids: set[str] = set()
         for row in order_rows:
@@ -767,10 +685,7 @@ class TelegramNotifier:
             decision = str(row[1] or "unknown").lower()
             decision_map[trader_id][decision] += int(row[2] or 0)
 
-        issue_map = {
-            (str(row[0]) if row[0] else "unknown"): int(row[1] or 0)
-            for row in issue_rows
-        }
+        issue_map = {(str(row[0]) if row[0] else "unknown"): int(row[1] or 0) for row in issue_rows}
 
         lines: list[str] = []
         sorted_orders = sorted(order_rows, key=lambda row: int(row[1] or 0), reverse=True)
@@ -803,10 +718,7 @@ class TelegramNotifier:
     def _format_counts(counts: dict[str, int]) -> str:
         if not counts:
             return "none"
-        return ", ".join(
-            f"{key}={value}"
-            for key, value in sorted(counts.items(), key=lambda item: item[0])
-        )
+        return ", ".join(f"{key}={value}" for key, value in sorted(counts.items(), key=lambda item: item[0]))
 
     def _format_runtime_state_message(
         self,
@@ -965,9 +877,7 @@ class TelegramNotifier:
             if resp.status_code == 429:
                 body = resp.json()
                 retry_after = body.get("parameters", {}).get("retry_after", 5)
-                logger.warning(
-                    "Telegram rate limited, will retry", retry_after=retry_after
-                )
+                logger.warning("Telegram rate limited, will retry", retry_after=retry_after)
                 await asyncio.sleep(retry_after)
                 await self._message_queue.put(text)
                 return False

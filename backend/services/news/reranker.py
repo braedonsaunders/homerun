@@ -102,9 +102,7 @@ class Reranker:
         # Try LLM reranking
         reranked = None
         if allow_llm:
-            reranked = await self._rerank_llm(
-                article_title, article_summary, candidates, model=model
-            )
+            reranked = await self._rerank_llm(article_title, article_summary, candidates, model=model)
 
         if reranked is not None:
             reranked.sort(key=lambda r: r.rerank_score, reverse=True)
@@ -165,10 +163,7 @@ class Reranker:
                 + (f" [{c.category}]" if c.category else "")
             )
 
-        user_prompt = (
-            f"NEWS ARTICLE:\n"
-            f"  Title: {article_title}\n"
-        )
+        user_prompt = f"NEWS ARTICLE:\n  Title: {article_title}\n"
         if article_summary:
             user_prompt += f"  Summary: {article_summary[:400]}\n"
 

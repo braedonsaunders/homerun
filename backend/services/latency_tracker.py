@@ -103,11 +103,7 @@ class FillQuality:
         actual_price: float,
     ) -> "FillQuality":
         fill_pct = (filled_size / requested_size * 100) if requested_size > 0 else 0
-        slippage = (
-            abs(actual_price - expected_price) / expected_price * 10000
-            if expected_price > 0
-            else 0
-        )
+        slippage = abs(actual_price - expected_price) / expected_price * 10000 if expected_price > 0 else 0
 
         if fill_pct >= 80:
             quality = "excellent"
@@ -190,13 +186,9 @@ class LatencyTracker:
                         order_placement_ms=stages.get("order_placement"),
                         fill_confirmation_ms=stages.get("fill_confirmation"),
                         total_ms=stages.get("total"),
-                        fill_percent=fill_quality.fill_percent
-                        if fill_quality
-                        else None,
+                        fill_percent=fill_quality.fill_percent if fill_quality else None,
                         fill_quality=fill_quality.quality if fill_quality else None,
-                        slippage_bps=fill_quality.slippage_bps
-                        if fill_quality
-                        else None,
+                        slippage_bps=fill_quality.slippage_bps if fill_quality else None,
                         success=success,
                         error=error,
                     )
@@ -216,14 +208,9 @@ class LatencyTracker:
                     func.max(PipelineLatencyLog.total_ms).label("max_total_ms"),
                     func.avg(PipelineLatencyLog.fill_percent).label("avg_fill_pct"),
                     func.avg(PipelineLatencyLog.slippage_bps).label("avg_slippage_bps"),
-                ).where(
-                    PipelineLatencyLog.recorded_at
-                    >= utcnow() - __import__("datetime").timedelta(hours=hours)
-                )
+                ).where(PipelineLatencyLog.recorded_at >= utcnow() - __import__("datetime").timedelta(hours=hours))
                 if trade_context:
-                    query = query.where(
-                        PipelineLatencyLog.trade_context == trade_context
-                    )
+                    query = query.where(PipelineLatencyLog.trade_context == trade_context)
 
                 result = await session.execute(query)
                 row = result.one()
@@ -241,21 +228,11 @@ class LatencyTracker:
 
                 return {
                     "total_executions": row.total or 0,
-                    "avg_total_ms": round(row.avg_total_ms, 2)
-                    if row.avg_total_ms
-                    else 0,
-                    "min_total_ms": round(row.min_total_ms, 2)
-                    if row.min_total_ms
-                    else 0,
-                    "max_total_ms": round(row.max_total_ms, 2)
-                    if row.max_total_ms
-                    else 0,
-                    "avg_fill_percent": round(row.avg_fill_pct, 2)
-                    if row.avg_fill_pct
-                    else 0,
-                    "avg_slippage_bps": round(row.avg_slippage_bps, 2)
-                    if row.avg_slippage_bps
-                    else 0,
+                    "avg_total_ms": round(row.avg_total_ms, 2) if row.avg_total_ms else 0,
+                    "min_total_ms": round(row.min_total_ms, 2) if row.min_total_ms else 0,
+                    "max_total_ms": round(row.max_total_ms, 2) if row.max_total_ms else 0,
+                    "avg_fill_percent": round(row.avg_fill_pct, 2) if row.avg_fill_pct else 0,
+                    "avg_slippage_bps": round(row.avg_slippage_bps, 2) if row.avg_slippage_bps else 0,
                     "fill_quality_breakdown": quality_counts,
                 }
         except Exception as e:

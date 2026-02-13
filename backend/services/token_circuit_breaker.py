@@ -88,9 +88,7 @@ class TokenCircuitBreaker:
         self._api_errors: dict[str, list[datetime]] = {}  # token_id -> error timestamps
         self._max_consecutive_api_errors = 5
 
-    def record_trade(
-        self, token_id: str, size: float, price: float, side: str
-    ) -> Optional[TokenTripEvent]:
+    def record_trade(self, token_id: str, size: float, price: float, side: str) -> Optional[TokenTripEvent]:
         """
         Record a trade and check if it triggers a trip.
         Returns TokenTripEvent if tripped, None otherwise.
@@ -118,15 +116,11 @@ class TokenCircuitBreaker:
 
         # Clean up trades older than the detection window
         cutoff = now - timedelta(seconds=self.config.detection_window_seconds)
-        self._recent_trades[token_id] = [
-            t for t in self._recent_trades[token_id] if t["timestamp"] >= cutoff
-        ]
+        self._recent_trades[token_id] = [t for t in self._recent_trades[token_id] if t["timestamp"] >= cutoff]
 
         # Count large trades within the window
         large_trades = [
-            t
-            for t in self._recent_trades[token_id]
-            if t["size"] >= self.config.large_trade_threshold_shares
+            t for t in self._recent_trades[token_id] if t["size"] >= self.config.large_trade_threshold_shares
         ]
 
         if len(large_trades) >= self.config.consecutive_trigger:
@@ -197,9 +191,7 @@ class TokenCircuitBreaker:
 
         # Keep only recent errors (within detection window)
         cutoff = now - timedelta(seconds=self.config.detection_window_seconds)
-        self._api_errors[token_id] = [
-            t for t in self._api_errors[token_id] if t > cutoff
-        ]
+        self._api_errors[token_id] = [t for t in self._api_errors[token_id] if t > cutoff]
 
         if len(self._api_errors[token_id]) >= self._max_consecutive_api_errors:
             logger.warning(

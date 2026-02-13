@@ -72,13 +72,7 @@ async def handle_websocket(websocket: WebSocket):
         orchestrator_status = await read_orchestrator_snapshot(session)
         traders = await list_traders(session)
         world_snapshot = (
-            (
-                await session.execute(
-                    select(WorldIntelligenceSnapshot).where(
-                        WorldIntelligenceSnapshot.id == "latest"
-                    )
-                )
-            )
+            (await session.execute(select(WorldIntelligenceSnapshot).where(WorldIntelligenceSnapshot.id == "latest")))
             .scalars()
             .one_or_none()
         )
@@ -87,13 +81,8 @@ async def handle_websocket(websocket: WebSocket):
         {
             "type": "init",
             "data": {
-                "opportunities": [
-                    serialize_opportunity_with_links(o) for o in opportunities[:20]
-                ],
-                "weather_opportunities": [
-                    serialize_opportunity_with_links(o)
-                    for o in weather_opportunities[:20]
-                ],
+                "opportunities": [serialize_opportunity_with_links(o) for o in opportunities[:20]],
+                "weather_opportunities": [serialize_opportunity_with_links(o) for o in weather_opportunities[:20]],
                 "scanner_status": {
                     "running": status.get("running", False),
                     "last_scan": status.get("last_scan"),
@@ -107,9 +96,7 @@ async def handle_websocket(websocket: WebSocket):
                     "status": (world_snapshot.status if world_snapshot else {}) or {},
                     "stats": (world_snapshot.stats if world_snapshot else {}) or {},
                     "updated_at": (
-                        world_snapshot.updated_at.isoformat()
-                        if world_snapshot and world_snapshot.updated_at
-                        else None
+                        world_snapshot.updated_at.isoformat() if world_snapshot and world_snapshot.updated_at else None
                     ),
                 },
             },
@@ -163,9 +150,7 @@ async def broadcast_opportunities(opportunities):
             "type": "opportunities_update",
             "data": {
                 "count": len(opportunities),
-                "opportunities": [
-                    serialize_opportunity_with_links(o) for o in opportunities[:20]
-                ],
+                "opportunities": [serialize_opportunity_with_links(o) for o in opportunities[:20]],
             },
         }
     )
@@ -183,23 +168,17 @@ async def broadcast_scanner_status(status):
 
 async def broadcast_scanner_activity(activity: str):
     """Callback to broadcast scanning activity updates (live status line)"""
-    await manager.broadcast(
-        {"type": "scanner_activity", "data": {"activity": activity}}
-    )
+    await manager.broadcast({"type": "scanner_activity", "data": {"activity": activity}})
 
 
 async def broadcast_news_update(article_count: int):
     """Callback to broadcast new news articles arriving"""
-    await manager.broadcast(
-        {"type": "news_update", "data": {"new_count": article_count}}
-    )
+    await manager.broadcast({"type": "news_update", "data": {"new_count": article_count}})
 
 
 async def broadcast_crypto_markets(markets_data: list[dict]):
     """Broadcast live crypto market data to all connected clients."""
-    await manager.broadcast(
-        {"type": "crypto_markets_update", "data": {"markets": markets_data}}
-    )
+    await manager.broadcast({"type": "crypto_markets_update", "data": {"markets": markets_data}})
 
 
 async def broadcast_copy_trade_event(message: dict):

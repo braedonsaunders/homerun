@@ -103,8 +103,7 @@ async def get_articles(
         articles = [
             article
             for article in articles
-            if _normalize_feed_source(getattr(article, "feed_source", None))
-            == filter_key
+            if _normalize_feed_source(getattr(article, "feed_source", None)) == filter_key
         ]
 
     articles.sort(key=_article_recency_timestamp, reverse=True)

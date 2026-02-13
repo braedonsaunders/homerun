@@ -51,43 +51,43 @@ async def _persist_signals(signals) -> int:
         persisted = 0
         async with AsyncSessionLocal() as session:
             for s in signals:
-                iso3 = (
-                    s.country
-                    if isinstance(s.country, str) and len(s.country) == 3
-                    else None
-                )
-                stmt = sqlite_insert(WorldIntelligenceSignal).values(
-                    id=s.signal_id,
-                    signal_type=s.signal_type,
-                    severity=s.severity,
-                    country=s.country,
-                    iso3=iso3,
-                    latitude=s.latitude,
-                    longitude=s.longitude,
-                    title=s.title,
-                    description=s.description,
-                    source=s.source,
-                    detected_at=s.detected_at,
-                    metadata_json=s.metadata,
-                    related_market_ids=s.related_market_ids,
-                    market_relevance_score=s.market_relevance_score,
-                ).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "signal_type": s.signal_type,
-                        "severity": s.severity,
-                        "country": s.country,
-                        "iso3": iso3,
-                        "latitude": s.latitude,
-                        "longitude": s.longitude,
-                        "title": s.title,
-                        "description": s.description,
-                        "source": s.source,
-                        "detected_at": s.detected_at,
-                        "metadata_json": s.metadata,
-                        "related_market_ids": s.related_market_ids,
-                        "market_relevance_score": s.market_relevance_score,
-                    },
+                iso3 = s.country if isinstance(s.country, str) and len(s.country) == 3 else None
+                stmt = (
+                    sqlite_insert(WorldIntelligenceSignal)
+                    .values(
+                        id=s.signal_id,
+                        signal_type=s.signal_type,
+                        severity=s.severity,
+                        country=s.country,
+                        iso3=iso3,
+                        latitude=s.latitude,
+                        longitude=s.longitude,
+                        title=s.title,
+                        description=s.description,
+                        source=s.source,
+                        detected_at=s.detected_at,
+                        metadata_json=s.metadata,
+                        related_market_ids=s.related_market_ids,
+                        market_relevance_score=s.market_relevance_score,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={
+                            "signal_type": s.signal_type,
+                            "severity": s.severity,
+                            "country": s.country,
+                            "iso3": iso3,
+                            "latitude": s.latitude,
+                            "longitude": s.longitude,
+                            "title": s.title,
+                            "description": s.description,
+                            "source": s.source,
+                            "detected_at": s.detected_at,
+                            "metadata_json": s.metadata,
+                            "related_market_ids": s.related_market_ids,
+                            "market_relevance_score": s.market_relevance_score,
+                        },
+                    )
                 )
                 await session.execute(stmt)
                 persisted += 1
@@ -109,17 +109,21 @@ async def _persist_instability_scores(scores) -> int:
         async with AsyncSessionLocal() as session:
             for iso3, score in scores.items():
                 record_id = f"cii_{iso3}_{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
-                stmt = sqlite_insert(CountryInstabilityRecord).values(
-                    id=record_id,
-                    country=score.country,
-                    iso3=score.iso3,
-                    score=score.score,
-                    components=score.components,
-                    trend=score.trend,
-                    computed_at=score.last_updated or datetime.now(timezone.utc),
-                ).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={"score": score.score, "components": score.components, "trend": score.trend},
+                stmt = (
+                    sqlite_insert(CountryInstabilityRecord)
+                    .values(
+                        id=record_id,
+                        country=score.country,
+                        iso3=score.iso3,
+                        score=score.score,
+                        components=score.components,
+                        trend=score.trend,
+                        computed_at=score.last_updated or datetime.now(timezone.utc),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={"score": score.score, "components": score.components, "trend": score.trend},
+                    )
                 )
                 await session.execute(stmt)
                 persisted += 1
@@ -141,18 +145,22 @@ async def _persist_tension_pairs(pairs) -> int:
         async with AsyncSessionLocal() as session:
             for p in pairs:
                 record_id = f"tension_{p.country_a}_{p.country_b}_{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
-                stmt = sqlite_insert(TensionPairRecord).values(
-                    id=record_id,
-                    country_a=p.country_a,
-                    country_b=p.country_b,
-                    tension_score=p.tension_score,
-                    event_count=p.event_count,
-                    avg_goldstein_scale=p.avg_goldstein_scale,
-                    trend=p.trend,
-                    computed_at=p.last_updated or datetime.now(timezone.utc),
-                ).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={"tension_score": p.tension_score, "trend": p.trend},
+                stmt = (
+                    sqlite_insert(TensionPairRecord)
+                    .values(
+                        id=record_id,
+                        country_a=p.country_a,
+                        country_b=p.country_b,
+                        tension_score=p.tension_score,
+                        event_count=p.event_count,
+                        avg_goldstein_scale=p.avg_goldstein_scale,
+                        trend=p.trend,
+                        computed_at=p.last_updated or datetime.now(timezone.utc),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={"tension_score": p.tension_score, "trend": p.trend},
+                    )
                 )
                 await session.execute(stmt)
                 persisted += 1
@@ -188,21 +196,25 @@ async def _persist_conflict_events(events) -> int:
                     severity_score = float(ACLEDClient.get_severity_score(evt))
                 except Exception:
                     severity_score = None
-                stmt = sqlite_insert(ConflictEventRecord).values(
-                    id=str(evt.event_id),
-                    event_type=evt.event_type,
-                    sub_event_type=evt.sub_event_type,
-                    country=evt.country,
-                    iso3=evt.iso3,
-                    latitude=evt.latitude,
-                    longitude=evt.longitude,
-                    fatalities=evt.fatalities,
-                    event_date=event_date,
-                    source=evt.source,
-                    notes=evt.notes[:500] if evt.notes else None,
-                    severity_score=severity_score,
-                    fetched_at=datetime.now(timezone.utc),
-                ).on_conflict_do_nothing()
+                stmt = (
+                    sqlite_insert(ConflictEventRecord)
+                    .values(
+                        id=str(evt.event_id),
+                        event_type=evt.event_type,
+                        sub_event_type=evt.sub_event_type,
+                        country=evt.country,
+                        iso3=evt.iso3,
+                        latitude=evt.latitude,
+                        longitude=evt.longitude,
+                        fatalities=evt.fatalities,
+                        event_date=event_date,
+                        source=evt.source,
+                        notes=evt.notes[:500] if evt.notes else None,
+                        severity_score=severity_score,
+                        fetched_at=datetime.now(timezone.utc),
+                    )
+                    .on_conflict_do_nothing()
+                )
                 await session.execute(stmt)
                 persisted += 1
             await session.commit()
@@ -229,9 +241,7 @@ async def _write_snapshot(
                 if preserve_existing:
                     existing = await session.get(WorldIntelligenceSnapshot, "latest")
 
-                existing_status = (
-                    existing.status if existing and isinstance(existing.status, dict) else {}
-                )
+                existing_status = existing.status if existing and isinstance(existing.status, dict) else {}
                 next_status = dict(existing_status) if preserve_existing else {}
                 next_status.update(status or {})
 
@@ -246,20 +256,24 @@ async def _write_snapshot(
                     else signals
                 )
 
-                stmt = sqlite_insert(WorldIntelligenceSnapshot).values(
-                    id="latest",
-                    status=next_status,
-                    signals_json=next_signals,
-                    stats=next_stats,
-                    updated_at=datetime.now(timezone.utc),
-                ).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "status": next_status,
-                        "signals_json": next_signals,
-                        "stats": next_stats,
-                        "updated_at": datetime.now(timezone.utc),
-                    },
+                stmt = (
+                    sqlite_insert(WorldIntelligenceSnapshot)
+                    .values(
+                        id="latest",
+                        status=next_status,
+                        signals_json=next_signals,
+                        stats=next_stats,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={
+                            "status": next_status,
+                            "signals_json": next_signals,
+                            "stats": next_stats,
+                            "updated_at": datetime.now(timezone.utc),
+                        },
+                    )
                 )
                 await session.execute(stmt)
                 await session.commit()
@@ -444,17 +458,11 @@ async def _run_loop() -> None:
             enabled = settings_enabled and control_enabled and not paused
 
             now = datetime.now(timezone.utc)
-            should_run_scheduled = enabled and (
-                next_scheduled_run_at is None or now >= next_scheduled_run_at
-            )
+            should_run_scheduled = enabled and (next_scheduled_run_at is None or now >= next_scheduled_run_at)
             should_run = requested or should_run_scheduled
 
             if not should_run:
-                next_scan = (
-                    next_scheduled_run_at.isoformat()
-                    if next_scheduled_run_at and enabled
-                    else None
-                )
+                next_scan = next_scheduled_run_at.isoformat() if next_scheduled_run_at and enabled else None
                 activity = (
                     "Disabled by WORLD_INTELLIGENCE_ENABLED setting"
                     if not settings_enabled
@@ -574,6 +582,7 @@ async def _run_loop() -> None:
 
             # Persist instability scores
             from services.world_intelligence import instability_scorer, tension_tracker
+
             scores = instability_scorer.get_all_scores()
             persisted_scores = await _persist_instability_scores(scores)
 
@@ -582,6 +591,7 @@ async def _run_loop() -> None:
 
             # Persist conflict events from ACLED
             from services.world_intelligence import acled_client
+
             # Events were already fetched during collection cycle, just grab cached
             conflict_events = getattr(acled_client, "_last_events", [])
             persisted_conflicts = await _persist_conflict_events(conflict_events)
@@ -635,9 +645,7 @@ async def _run_loop() -> None:
             }
 
             completed_at = datetime.now(timezone.utc)
-            next_scheduled_run_at = completed_at.replace(microsecond=0) + timedelta(
-                seconds=interval
-            )
+            next_scheduled_run_at = completed_at.replace(microsecond=0) + timedelta(seconds=interval)
             top_signals = [
                 {
                     "signal_id": s.signal_id,
@@ -649,14 +657,10 @@ async def _run_loop() -> None:
                     "title": s.title,
                     "description": s.description,
                     "source": s.source,
-                    "detected_at": s.detected_at.isoformat()
-                    if s.detected_at
-                    else None,
+                    "detected_at": s.detected_at.isoformat() if s.detected_at else None,
                     "related_market_ids": list(s.related_market_ids or []),
                     "market_relevance_score": (
-                        round(float(s.market_relevance_score), 3)
-                        if s.market_relevance_score is not None
-                        else None
+                        round(float(s.market_relevance_score), 3) if s.market_relevance_score is not None else None
                     ),
                     "metadata": s.metadata,
                 }

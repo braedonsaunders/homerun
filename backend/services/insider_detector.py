@@ -128,9 +128,7 @@ class InsiderDetectorService:
                 .group_by(DiscoveredWallet.cluster_id)
             )
             cluster_sizes = {
-                str(cluster_id): int(count or 0)
-                for cluster_id, count in cluster_counts_rows.all()
-                if cluster_id
+                str(cluster_id): int(count or 0) for cluster_id, count in cluster_counts_rows.all() if cluster_id
             }
 
             query = (
@@ -248,21 +246,11 @@ class InsiderDetectorService:
                     continue
 
                 wallet_count = len(wallet_rows)
-                cluster_count = len(
-                    {
-                        w.cluster_id
-                        for w in wallet_rows
-                        if w.cluster_id
-                    }
-                )
+                cluster_count = len({w.cluster_id for w in wallet_rows if w.cluster_id})
                 avg_insider_score = sum(_safe_float(w.insider_score) for w in wallet_rows) / wallet_count
                 avg_insider_conf = sum(_safe_float(w.insider_confidence) for w in wallet_rows) / wallet_count
 
-                entry_prices = [
-                    _safe_float(e.price)
-                    for e in group_events
-                    if e.price is not None and e.price > 0
-                ]
+                entry_prices = [_safe_float(e.price) for e in group_events if e.price is not None and e.price > 0]
                 entry_price = (sum(entry_prices) / len(entry_prices)) if entry_prices else None
 
                 pre_news_lead_values: list[float] = []
@@ -286,27 +274,13 @@ class InsiderDetectorService:
                     if isinstance(timing_short, (int, float)):
                         timing_short_values.append(float(timing_short))
 
-                pre_news_lead = (
-                    sum(pre_news_lead_values) / len(pre_news_lead_values)
-                    if pre_news_lead_values
-                    else 0.0
-                )
-                pre_news_component = (
-                    sum(pre_news_components) / len(pre_news_components)
-                    if pre_news_components
-                    else 0.0
-                )
-                timing_alpha_short = (
-                    sum(timing_short_values) / len(timing_short_values)
-                    if timing_short_values
-                    else 0.5
-                )
+                pre_news_lead = sum(pre_news_lead_values) / len(pre_news_lead_values) if pre_news_lead_values else 0.0
+                pre_news_component = sum(pre_news_components) / len(pre_news_components) if pre_news_components else 0.0
+                timing_alpha_short = sum(timing_short_values) / len(timing_short_values) if timing_short_values else 0.5
 
                 market_context = await self._get_market_context(market_id)
                 liquidity = _safe_float(market_context.get("liquidity"), 0.0)
-                market_question = (
-                    str(market_context.get("question") or "").strip() or f"Market {market_id}"
-                )
+                market_question = str(market_context.get("question") or "").strip() or f"Market {market_id}"
                 if not bool(market_context.get("is_tradable", True)):
                     continue
 
@@ -333,9 +307,7 @@ class InsiderDetectorService:
                 edge_percent = (model_side_prob - side_market_prob) * 100.0
 
                 strong_single_wallet_override = (
-                    wallet_count == 1
-                    and avg_insider_score >= 0.82
-                    and pre_news_component >= 0.70
+                    wallet_count == 1 and avg_insider_score >= 0.82 and pre_news_component >= 0.70
                 )
 
                 if liquidity < 300:
@@ -352,10 +324,7 @@ class InsiderDetectorService:
                 signal_key = _intent_signal_key(market_id, direction, bucket_10m, wallets)
 
                 suggested_size = _clamp(
-                    18.0
-                    + confidence * 45.0
-                    + min(wallet_count, 4) * 6.0
-                    + _clamp(edge_percent / 6.0, 0.0, 12.0),
+                    18.0 + confidence * 45.0 + min(wallet_count, 4) * 6.0 + _clamp(edge_percent / 6.0, 0.0, 12.0),
                     10.0,
                     180.0,
                 )
@@ -424,9 +393,7 @@ class InsiderDetectorService:
         offset: int = 0,
     ) -> dict[str, Any]:
         async with AsyncSessionLocal() as session:
-            query = select(InsiderTradeIntent).where(
-                InsiderTradeIntent.status.in_(("pending", "submitted"))
-            )
+            query = select(InsiderTradeIntent).where(InsiderTradeIntent.status.in_(("pending", "submitted")))
 
             if min_confidence > 0:
                 query = query.where(InsiderTradeIntent.confidence >= min_confidence)
@@ -441,13 +408,7 @@ class InsiderDetectorService:
                 InsiderTradeIntent.created_at.desc(),
             )
 
-            intents_all = list(
-                (
-                    await session.execute(
-                        query.limit(2000)
-                    )
-                ).scalars().all()
-            )
+            intents_all = list((await session.execute(query.limit(2000))).scalars().all())
             now = utcnow()
 
             intents: list[InsiderTradeIntent] = []
@@ -475,7 +436,7 @@ class InsiderDetectorService:
 
             address_set: set[str] = set()
             for row in intents:
-                for addr in (row.wallet_addresses_json or []):
+                for addr in row.wallet_addresses_json or []:
                     if isinstance(addr, str):
                         address_set.add(addr.lower())
 
@@ -489,9 +450,7 @@ class InsiderDetectorService:
             opportunities: list[dict[str, Any]] = []
             for row in intents:
                 wallet_addresses = [
-                    str(addr).lower()
-                    for addr in (row.wallet_addresses_json or [])
-                    if isinstance(addr, str)
+                    str(addr).lower() for addr in (row.wallet_addresses_json or []) if isinstance(addr, str)
                 ]
                 wallets_payload = []
                 for addr in wallet_addresses:
@@ -501,9 +460,7 @@ class InsiderDetectorService:
                             "address": addr,
                             "username": profile.username if profile else None,
                             "insider_score": _safe_float(profile.insider_score if profile else 0.0),
-                            "insider_confidence": _safe_float(
-                                profile.insider_confidence if profile else 0.0
-                            ),
+                            "insider_confidence": _safe_float(profile.insider_confidence if profile else 0.0),
                         }
                     )
 
@@ -525,9 +482,7 @@ class InsiderDetectorService:
                         "market_id": row.market_id,
                         "market_question": row.market_question,
                         "market_slug": (
-                            str(metadata.get("market_slug")).strip()
-                            if metadata.get("market_slug")
-                            else None
+                            str(metadata.get("market_slug")).strip() if metadata.get("market_slug") else None
                         ),
                         "direction": row.direction,
                         "entry_price": row.entry_price,
@@ -606,11 +561,7 @@ class InsiderDetectorService:
             events=events,
         )
 
-        cluster_size = (
-            cluster_sizes.get(wallet.cluster_id, 0)
-            if wallet.cluster_id
-            else 0
-        )
+        cluster_size = cluster_sizes.get(wallet.cluster_id, 0) if wallet.cluster_id else 0
         funding_overlap_component = self._funding_overlap_proxy_component(
             cluster_correlation_component=cluster_component,
             cluster_size=cluster_size,
@@ -664,11 +615,7 @@ class InsiderDetectorService:
         )
 
         sorted_components = sorted(
-            [
-                (k, v)
-                for k, v in components.items()
-                if isinstance(v, (int, float))
-            ],
+            [(k, v) for k, v in components.items() if isinstance(v, (int, float))],
             key=lambda item: float(item[1]),
             reverse=True,
         )
@@ -695,9 +642,7 @@ class InsiderDetectorService:
             "raw": {
                 "resolved_sample": resolved_sample,
                 "timing_alpha_short": round(timing_short_raw, 6) if timing_short_raw is not None else None,
-                "pre_news_lead_minutes": round(pre_news_lead_minutes, 3)
-                if pre_news_lead_minutes is not None
-                else None,
+                "pre_news_lead_minutes": round(pre_news_lead_minutes, 3) if pre_news_lead_minutes is not None else None,
                 "cluster_size": cluster_size,
                 "funding_overlap_method": "proxy_cluster_timing",
             },
@@ -983,11 +928,7 @@ class InsiderDetectorService:
             and sample_size >= FLAGGED_SAMPLE
         ):
             return "flagged_insider"
-        if (
-            insider_score >= WATCH_THRESHOLD
-            and insider_confidence >= WATCH_CONFIDENCE
-            and sample_size >= WATCH_SAMPLE
-        ):
+        if insider_score >= WATCH_THRESHOLD and insider_confidence >= WATCH_CONFIDENCE and sample_size >= WATCH_SAMPLE:
             return "watch_insider"
         return "none"
 
@@ -1062,9 +1003,7 @@ class InsiderDetectorService:
         suggested_size_usd: float,
         metadata: dict[str, Any],
     ) -> bool:
-        result = await session.execute(
-            select(InsiderTradeIntent).where(InsiderTradeIntent.signal_key == signal_key)
-        )
+        result = await session.execute(select(InsiderTradeIntent).where(InsiderTradeIntent.signal_key == signal_key))
         existing = result.scalar_one_or_none()
         if existing is None:
             session.add(

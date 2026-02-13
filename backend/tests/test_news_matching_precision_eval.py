@@ -12,9 +12,7 @@ def _candidate_passes(candidate: dict) -> bool:
     if overlap_tokens < 1:
         return False
 
-    score = 0.25 * keyword_score + 0.45 * semantic_score + 0.30 * float(
-        candidate.get("event_score", 0.0)
-    )
+    score = 0.25 * keyword_score + 0.45 * semantic_score + 0.30 * float(candidate.get("event_score", 0.0))
     return score >= 0.42
 
 
@@ -28,11 +26,7 @@ def _candidate_score(candidate: dict) -> float:
 
 def test_news_matching_precision_eval_thresholds():
     dataset_path = Path(__file__).with_name("news_eval_dataset.jsonl")
-    rows = [
-        json.loads(line)
-        for line in dataset_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    rows = [json.loads(line) for line in dataset_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert rows, "dataset must not be empty"
 
     tp = 0

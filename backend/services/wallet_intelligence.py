@@ -62,9 +62,7 @@ class ConfluenceDetector:
         if not self._ws_broadcast_callback:
             return
         try:
-            await self._ws_broadcast_callback(
-                {"type": "tracked_trader_signal", "data": payload}
-            )
+            await self._ws_broadcast_callback({"type": "tracked_trader_signal", "data": payload})
         except Exception:
             pass
 
@@ -108,11 +106,7 @@ class ConfluenceDetector:
 
         signals_created = 0
         for (market_id, side), side_events in grouped.items():
-            unique_wallets = {
-                e.wallet_address.lower()
-                for e in side_events
-                if e.wallet_address
-            }
+            unique_wallets = {e.wallet_address.lower() for e in side_events if e.wallet_address}
             if len(unique_wallets) < self.MIN_WALLETS_WATCH:
                 continue
 
@@ -320,13 +314,9 @@ class ConfluenceDetector:
         # Market context (10)
         context_factor = 0.5
         if market_liquidity and market_liquidity > 0:
-            context_factor = max(
-                context_factor, min(math.log10(market_liquidity + 1.0) / 6.0, 1.0)
-            )
+            context_factor = max(context_factor, min(math.log10(market_liquidity + 1.0) / 6.0, 1.0))
         if market_volume_24h and market_volume_24h > 0:
-            context_factor = max(
-                context_factor, min(math.log10(market_volume_24h + 1.0) / 6.0, 1.0)
-            )
+            context_factor = max(context_factor, min(math.log10(market_volume_24h + 1.0) / 6.0, 1.0))
         context_component = 10.0 * context_factor
 
         base = (
@@ -358,14 +348,11 @@ class ConfluenceDetector:
         opposite = "SELL" if side == "BUY" else "BUY"
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(func.sum(WalletActivityRollup.notional))
-                .where(
+                select(func.sum(WalletActivityRollup.notional)).where(
                     WalletActivityRollup.market_id == market_id,
                     WalletActivityRollup.wallet_address.in_(addresses),
                     WalletActivityRollup.traded_at >= cutoff,
-                    WalletActivityRollup.side.in_(
-                        [opposite, "YES" if opposite == "BUY" else "NO"]
-                    ),
+                    WalletActivityRollup.side.in_([opposite, "YES" if opposite == "BUY" else "NO"]),
                 )
             )
             value = result.scalar() or 0.0
@@ -523,17 +510,11 @@ class ConfluenceDetector:
             )
             raw_signals = list(result.scalars().all())
 
-            signals = [
-                s
-                for s in raw_signals
-                if tier_rank.get((s.tier or "WATCH").upper(), 1) >= required_rank
-            ][:limit]
+            signals = [s for s in raw_signals if tier_rank.get((s.tier or "WATCH").upper(), 1) >= required_rank][:limit]
 
             actionable = [s for s in signals if s.market_id]
             if actionable:
-                tradability = await get_market_tradability_map(
-                    [str(s.market_id) for s in actionable]
-                )
+                tradability = await get_market_tradability_map([str(s.market_id) for s in actionable])
                 now = utcnow()
                 changed = False
                 kept: list[MarketConfluenceSignal] = []
@@ -561,8 +542,7 @@ class ConfluenceDetector:
                     "conviction_score": s.conviction_score or 0.0,
                     "window_minutes": s.window_minutes or 60,
                     "wallet_count": s.wallet_count,
-                    "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count
-                    or 0,
+                    "cluster_adjusted_wallet_count": s.cluster_adjusted_wallet_count or 0,
                     "unique_core_wallets": s.unique_core_wallets or 0,
                     "weighted_wallet_score": s.weighted_wallet_score or 0.0,
                     "wallets": s.wallets or [],
@@ -575,9 +555,7 @@ class ConfluenceDetector:
                     "market_liquidity": s.market_liquidity,
                     "market_volume_24h": s.market_volume_24h,
                     "is_active": s.is_active,
-                    "first_seen_at": s.first_seen_at.isoformat()
-                    if s.first_seen_at
-                    else None,
+                    "first_seen_at": s.first_seen_at.isoformat() if s.first_seen_at else None,
                     "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
                     "detected_at": s.detected_at.isoformat() if s.detected_at else None,
                 }
@@ -643,20 +621,14 @@ class EntityClusterer:
         async def fetch_wallet_data(wallet: dict):
             async with semaphore:
                 try:
-                    trades = await polymarket_client.get_wallet_trades(
-                        wallet["address"], limit=200
-                    )
+                    trades = await polymarket_client.get_wallet_trades(wallet["address"], limit=200)
                     markets = set()
                     trade_timestamps = []
                     for t in trades:
                         mid = t.get("market", t.get("condition_id", ""))
                         if mid:
                             markets.add(mid)
-                        ts = (
-                            t.get("timestamp")
-                            or t.get("created_at")
-                            or t.get("match_time")
-                        )
+                        ts = t.get("timestamp") or t.get("created_at") or t.get("match_time")
                         if ts:
                             trade_timestamps.append(self._parse_timestamp(ts))
 
@@ -719,17 +691,13 @@ class EntityClusterer:
 
                     p_compared += 1
 
-                    market_overlap = clusterer._calculate_market_overlap(
-                        a_d["markets"], b_d["markets"]
-                    )
+                    market_overlap = clusterer._calculate_market_overlap(a_d["markets"], b_d["markets"])
                     timing_sim = clusterer._calculate_timing_similarity(
                         a_d["trade_timestamps"], b_d["trade_timestamps"]
                     )
                     pattern_sim = clusterer._calculate_pattern_similarity(a_d, b_d)
 
-                    combined = (
-                        0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
-                    )
+                    combined = 0.4 * market_overlap + 0.35 * timing_sim + 0.25 * pattern_sim
 
                     if combined >= 0.5:
                         union(a_addr, b_addr)
@@ -745,9 +713,7 @@ class EntityClusterer:
             multi = {k: v for k, v in clusters.items() if len(v) >= 2}
             return multi, p_compared, p_linked
 
-        multi_clusters, pairs_compared, pairs_linked = await asyncio.to_thread(
-            _pairwise_cluster, self, wallet_data
-        )
+        multi_clusters, pairs_compared, pairs_linked = await asyncio.to_thread(_pairwise_cluster, self, wallet_data)
 
         logger.info(
             "Clustering complete",
@@ -807,9 +773,7 @@ class EntityClusterer:
         intersection = markets_a & markets_b
         return len(intersection) / len(union)
 
-    def _calculate_timing_similarity(
-        self, trades_a: list[float], trades_b: list[float]
-    ) -> float:
+    def _calculate_timing_similarity(self, trades_a: list[float], trades_b: list[float]) -> float:
         """
         How often do two wallets trade within the same time window?
         Count trades from A that have a matching trade from B within
@@ -894,12 +858,8 @@ class EntityClusterer:
         async with AsyncSessionLocal() as session:
             for root_addr, member_addrs in clusters.items():
                 # Aggregate stats
-                total_pnl = sum(
-                    wallet_data.get(a, {}).get("total_pnl", 0.0) for a in member_addrs
-                )
-                total_trades = sum(
-                    wallet_data.get(a, {}).get("total_trades", 0) for a in member_addrs
-                )
+                total_pnl = sum(wallet_data.get(a, {}).get("total_pnl", 0.0) for a in member_addrs)
+                total_trades = sum(wallet_data.get(a, {}).get("total_trades", 0) for a in member_addrs)
                 win_rates = [
                     wallet_data.get(a, {}).get("win_rate", 0.0)
                     for a in member_addrs
@@ -930,9 +890,7 @@ class EntityClusterer:
                 # Update wallet records with cluster_id
                 for addr in member_addrs:
                     await session.execute(
-                        update(DiscoveredWallet)
-                        .where(DiscoveredWallet.address == addr)
-                        .values(cluster_id=cluster_id)
+                        update(DiscoveredWallet).where(DiscoveredWallet.address == addr).values(cluster_id=cluster_id)
                     )
 
             await session.commit()
@@ -970,9 +928,7 @@ class EntityClusterer:
                         "avg_win_rate": c.avg_win_rate,
                         "detection_method": c.detection_method,
                         "evidence": c.evidence,
-                        "created_at": c.created_at.isoformat()
-                        if c.created_at
-                        else None,
+                        "created_at": c.created_at.isoformat() if c.created_at else None,
                         "wallets": [
                             {
                                 "address": m.address,
@@ -991,18 +947,14 @@ class EntityClusterer:
     async def get_cluster_detail(self, cluster_id: str) -> dict:
         """Get detailed info about a specific cluster."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(WalletCluster).where(WalletCluster.id == cluster_id)
-            )
+            result = await session.execute(select(WalletCluster).where(WalletCluster.id == cluster_id))
             cluster = result.scalars().first()
 
             if not cluster:
                 return {}
 
             members_result = await session.execute(
-                select(DiscoveredWallet).where(
-                    DiscoveredWallet.cluster_id == cluster_id
-                )
+                select(DiscoveredWallet).where(DiscoveredWallet.cluster_id == cluster_id)
             )
             members = list(members_result.scalars().all())
 
@@ -1016,12 +968,8 @@ class EntityClusterer:
                 "avg_win_rate": cluster.avg_win_rate,
                 "detection_method": cluster.detection_method,
                 "evidence": cluster.evidence,
-                "created_at": cluster.created_at.isoformat()
-                if cluster.created_at
-                else None,
-                "updated_at": cluster.updated_at.isoformat()
-                if cluster.updated_at
-                else None,
+                "created_at": cluster.created_at.isoformat() if cluster.created_at else None,
+                "updated_at": cluster.updated_at.isoformat() if cluster.updated_at else None,
                 "wallets": [
                     {
                         "address": m.address,
@@ -1125,9 +1073,7 @@ class WalletTagger:
         """Ensure all tag definitions exist in the DB."""
         async with AsyncSessionLocal() as session:
             for tag_def in self.TAG_DEFINITIONS:
-                result = await session.execute(
-                    select(WalletTag).where(WalletTag.name == tag_def["name"])
-                )
+                result = await session.execute(select(WalletTag).where(WalletTag.name == tag_def["name"]))
                 existing = result.scalars().first()
                 if not existing:
                     tag = WalletTag(
@@ -1190,12 +1136,7 @@ class WalletTagger:
         insider_sample = wallet.insider_sample_size or 0
 
         # smart_predictor
-        if (
-            total_trades >= 100
-            and win_rate >= 0.6
-            and total_pnl > 0
-            and anomaly_score < 0.5
-        ):
+        if total_trades >= 100 and win_rate >= 0.6 and total_pnl > 0 and anomaly_score < 0.5:
             tags.append("smart_predictor")
 
         # arb_specialist
@@ -1253,9 +1194,7 @@ class WalletTagger:
                 if tags != (wallet.tags or []):
                     async with AsyncSessionLocal() as session:
                         await session.execute(
-                            update(DiscoveredWallet)
-                            .where(DiscoveredWallet.address == wallet.address)
-                            .values(tags=tags)
+                            update(DiscoveredWallet).where(DiscoveredWallet.address == wallet.address).values(tags=tags)
                         )
                         await session.commit()
                     tagged_count += 1
@@ -1279,9 +1218,7 @@ class WalletTagger:
         and filter in Python. For larger datasets, consider a join table.
         """
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(DiscoveredWallet).order_by(DiscoveredWallet.rank_score.desc())
-            )
+            result = await session.execute(select(DiscoveredWallet).order_by(DiscoveredWallet.rank_score.desc()))
             wallets = list(result.scalars().all())
 
         matches = []
@@ -1309,18 +1246,14 @@ class WalletTagger:
     async def get_all_tags(self) -> list[dict]:
         """Get all tag definitions with wallet counts. Uses one aggregated query for counts."""
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(WalletTag).order_by(WalletTag.category, WalletTag.name)
-            )
+            result = await session.execute(select(WalletTag).order_by(WalletTag.category, WalletTag.name))
             tags = list(result.scalars().all())
 
         # Ensure tag definitions exist (e.g. first request before initialize_tags ran)
         if not tags:
             await self.initialize_tags()
             async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(WalletTag).order_by(WalletTag.category, WalletTag.name)
-                )
+                result = await session.execute(select(WalletTag).order_by(WalletTag.category, WalletTag.name))
                 tags = list(result.scalars().all())
 
         async with AsyncSessionLocal() as session:
@@ -1384,9 +1317,7 @@ class CrossPlatformTracker:
             )
             from config import settings
 
-            kalshi_cache = _KalshiMarketCache(
-                api_url=settings.KALSHI_API_URL, ttl_seconds=120
-            )
+            kalshi_cache = _KalshiMarketCache(api_url=settings.KALSHI_API_URL, ttl_seconds=120)
             # Kalshi cache uses synchronous HTTP — run in thread pool
             kalshi_markets = await asyncio.to_thread(kalshi_cache.get_markets)
 
@@ -1446,9 +1377,7 @@ class CrossPlatformTracker:
                         )
                 return pairs
 
-            matched_pairs = await asyncio.to_thread(
-                _match_markets, poly_markets, kalshi_markets, _MATCH_THRESHOLD
-            )
+            matched_pairs = await asyncio.to_thread(_match_markets, poly_markets, kalshi_markets, _MATCH_THRESHOLD)
 
             logger.info(
                 "Cross-platform market matches found",
@@ -1460,9 +1389,7 @@ class CrossPlatformTracker:
 
             # For each matched pair, look for wallets active on both sides
             # Get top wallets from DiscoveredWallet that trade these markets
-            active_wallets = await self._get_active_wallets_for_markets(
-                [p["polymarket_id"] for p in matched_pairs]
-            )
+            active_wallets = await self._get_active_wallets_for_markets([p["polymarket_id"] for p in matched_pairs])
 
             # Build cross-platform entity records for wallets that trade
             # matched markets
@@ -1499,15 +1426,11 @@ class CrossPlatformTracker:
             )
 
         except ImportError:
-            logger.warning(
-                "Cross-platform strategy module not available, skipping scan"
-            )
+            logger.warning("Cross-platform strategy module not available, skipping scan")
         except Exception as e:
             logger.error("Cross-platform scan failed", error=str(e))
 
-    async def _get_active_wallets_for_markets(
-        self, market_ids: list[str]
-    ) -> dict[str, set[str]]:
+    async def _get_active_wallets_for_markets(self, market_ids: list[str]) -> dict[str, set[str]]:
         """Get wallets that are active in the specified markets.
 
         Returns a dict of wallet_address -> set of market_ids they trade.
@@ -1530,16 +1453,10 @@ class CrossPlatformTracker:
         async def check_wallet(wallet_addr: str):
             async with semaphore:
                 try:
-                    positions = await polymarket_client.get_wallet_positions(
-                        wallet_addr
-                    )
+                    positions = await polymarket_client.get_wallet_positions(wallet_addr)
                     traded = set()
                     for pos in positions:
-                        mid = (
-                            pos.get("market", "")
-                            or pos.get("condition_id", "")
-                            or pos.get("asset", "")
-                        )
+                        mid = pos.get("market", "") or pos.get("condition_id", "") or pos.get("asset", "")
                         if mid in market_id_set:
                             traded.add(mid)
                     if traded:
@@ -1559,9 +1476,7 @@ class CrossPlatformTracker:
         """Create or update a cross-platform entity record."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(CrossPlatformEntity).where(
-                    CrossPlatformEntity.polymarket_address == polymarket_address
-                )
+                select(CrossPlatformEntity).where(CrossPlatformEntity.polymarket_address == polymarket_address)
             )
             existing = result.scalars().first()
 
@@ -1572,9 +1487,7 @@ class CrossPlatformTracker:
             else:
                 # Try to get PnL from DiscoveredWallet
                 wallet_result = await session.execute(
-                    select(DiscoveredWallet).where(
-                        DiscoveredWallet.address == polymarket_address
-                    )
+                    select(DiscoveredWallet).where(DiscoveredWallet.address == polymarket_address)
                 )
                 wallet = wallet_result.scalars().first()
                 poly_pnl = wallet.total_pnl if wallet else 0.0
@@ -1599,9 +1512,7 @@ class CrossPlatformTracker:
         """Get entities tracked across platforms."""
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(CrossPlatformEntity)
-                .order_by(CrossPlatformEntity.combined_pnl.desc())
-                .limit(limit)
+                select(CrossPlatformEntity).order_by(CrossPlatformEntity.combined_pnl.desc()).limit(limit)
             )
             entities = list(result.scalars().all())
 
@@ -1637,11 +1548,7 @@ class CrossPlatformTracker:
 
             activity = []
             for e in entities:
-                arb_markets = [
-                    m
-                    for m in (e.matching_markets or [])
-                    if m.get("potential_arb", False)
-                ]
+                arb_markets = [m for m in (e.matching_markets or []) if m.get("potential_arb", False)]
                 activity.append(
                     {
                         "entity_id": e.id,
@@ -1650,9 +1557,7 @@ class CrossPlatformTracker:
                         "arb_market_count": len(arb_markets),
                         "arb_markets": arb_markets,
                         "combined_pnl": e.combined_pnl,
-                        "updated_at": e.updated_at.isoformat()
-                        if e.updated_at
-                        else None,
+                        "updated_at": e.updated_at.isoformat() if e.updated_at else None,
                     }
                 )
             return activity

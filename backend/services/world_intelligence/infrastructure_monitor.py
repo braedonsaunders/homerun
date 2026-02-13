@@ -67,6 +67,7 @@ class InfrastructureEvent:
 # Infrastructure dependency graph
 # ---------------------------------------------------------------------------
 
+
 def _graph_state() -> tuple[
     set[str],
     dict[str, list[tuple[str, float]]],
@@ -134,10 +135,7 @@ class InfrastructureMonitor:
             return []
 
         now = time.monotonic()
-        if (
-            self._cached_outages
-            and now - self._cache_timestamp < _CACHE_TTL_SECONDS
-        ):
+        if self._cached_outages and now - self._cache_timestamp < _CACHE_TTL_SECONDS:
             return list(self._cached_outages)
 
         events: list[InfrastructureEvent] = []
@@ -164,7 +162,9 @@ class InfrastructureMonitor:
 
         try:
             resp = await self._client.get(
-                CLOUDFLARE_API_URL, headers=headers, params=params,
+                CLOUDFLARE_API_URL,
+                headers=headers,
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -198,9 +198,7 @@ class InfrastructureMonitor:
 
         # The response structure varies between endpoints; handle both
         annotations = (
-            data.get("result", {}).get("annotations", [])
-            or data.get("annotations", [])
-            or data.get("data", [])
+            data.get("result", {}).get("annotations", []) or data.get("annotations", []) or data.get("data", [])
         )
 
         for ann in annotations:
@@ -213,16 +211,12 @@ class InfrastructureMonitor:
                 country = ann["locations"][0] if ann["locations"] else "unknown"
             country_iso3 = self._normalize_iso3(country) or str(country).upper()
 
-            description = str(
-                ann.get("description", ann.get("text", "Internet outage"))
-            )
+            description = str(ann.get("description", ann.get("text", "Internet outage")))
 
             # Parse start time
             start_str = ann.get("startDate", ann.get("start", ""))
             try:
-                started_at = datetime.fromisoformat(
-                    str(start_str).replace("Z", "+00:00")
-                )
+                started_at = datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 started_at = datetime.now(timezone.utc)
 
@@ -361,13 +355,15 @@ class InfrastructureMonitor:
                                 affected.append(country_iso3)
                                 break
 
-                risks.append({
-                    "disrupted_node": node,
-                    "source_event": event.description,
-                    "cascade_impacts": cascade,
-                    "affected_countries": sorted(set(affected)),
-                    "max_impact": max(cascade.values()) if cascade else 0.0,
-                })
+                risks.append(
+                    {
+                        "disrupted_node": node,
+                        "source_event": event.description,
+                        "cascade_impacts": cascade,
+                        "affected_countries": sorted(set(affected)),
+                        "max_impact": max(cascade.values()) if cascade else 0.0,
+                    }
+                )
 
         return sorted(risks, key=lambda r: r["max_impact"], reverse=True)
 
@@ -396,9 +392,7 @@ class InfrastructureMonitor:
             "authenticated": bool(self._cf_api_token),
             "cached_outages": len(self._cached_outages),
             "cache_age_seconds": (
-                round(max(0.0, time.monotonic() - self._cache_timestamp), 1)
-                if self._cache_timestamp
-                else None
+                round(max(0.0, time.monotonic() - self._cache_timestamp), 1) if self._cache_timestamp else None
             ),
             "last_error": self._last_error,
         }

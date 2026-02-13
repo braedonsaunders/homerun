@@ -497,12 +497,8 @@ class _KalshiMarketCache:
             last_price = (data.get("last_price", 0) or 0) / 100.0
 
             # Use midpoint of bid/ask when available; fall back to last_price
-            yes_price = (
-                (yes_bid + yes_ask) / 2.0 if (yes_bid + yes_ask) > 0 else last_price
-            )
-            no_price = (
-                (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
-            )
+            yes_price = (yes_bid + yes_ask) / 2.0 if (yes_bid + yes_ask) > 0 else last_price
+            no_price = (no_bid + no_ask) / 2.0 if (no_bid + no_ask) > 0 else (1.0 - yes_price)
 
             # Skip markets with zero prices (no liquidity)
             if yes_price <= 0 and no_price <= 0:
@@ -534,9 +530,7 @@ class _KalshiMarketCache:
                         pass
 
             volume_raw = data.get("volume", 0) or 0
-            liquidity_raw = (
-                data.get("liquidity", 0) or data.get("open_interest", 0) or 0
-            )
+            liquidity_raw = data.get("liquidity", 0) or data.get("open_interest", 0) or 0
 
             from models.market import Token
 
@@ -743,9 +737,7 @@ class CrossPlatformStrategy(BaseStrategy):
         # Pre-compute token sets for Kalshi markets (refreshed with cache)
         self._kalshi_tokens: dict[str, set[str]] = {}
 
-    def _refresh_kalshi_tokens(
-        self, kalshi_markets: list[Market]
-    ) -> dict[str, set[str]]:
+    def _refresh_kalshi_tokens(self, kalshi_markets: list[Market]) -> dict[str, set[str]]:
         """Build/update the tokenized question index for Kalshi markets."""
         token_index: dict[str, set[str]] = {}
         for km in kalshi_markets:
@@ -785,9 +777,7 @@ class CrossPlatformStrategy(BaseStrategy):
                 is_multiway = km_prefix is not None and km_prefix in multiway_events
 
                 # Check sport-outcome compatibility (strict for multiway)
-                if not _sport_outcomes_compatible(
-                    pm_market, km, is_multiway_event=is_multiway
-                ):
+                if not _sport_outcomes_compatible(pm_market, km, is_multiway_event=is_multiway):
                     logger.debug(
                         "Cross-platform: outcome mismatch rejected",
                         pm_question=pm_market.question[:60],
@@ -863,12 +853,8 @@ class CrossPlatformStrategy(BaseStrategy):
 
             # Guaranteed payout is $1.00 (one side always wins).
             # Profit depends on which side wins (different fees apply).
-            profit_if_a_wins = (1.0 - leg["cost_a"]) * (1.0 - leg["fee_a"]) - leg[
-                "cost_b"
-            ]
-            profit_if_b_wins = (1.0 - leg["cost_b"]) * (1.0 - leg["fee_b"]) - leg[
-                "cost_a"
-            ]
+            profit_if_a_wins = (1.0 - leg["cost_a"]) * (1.0 - leg["fee_a"]) - leg["cost_b"]
+            profit_if_b_wins = (1.0 - leg["cost_b"]) * (1.0 - leg["fee_b"]) - leg["cost_a"]
 
             # Guaranteed profit is the minimum of both scenarios
             guaranteed = min(profit_if_a_wins, profit_if_b_wins)
@@ -925,9 +911,7 @@ class CrossPlatformStrategy(BaseStrategy):
         # them, but this strategy must NOT match Kalshi markets against the
         # Kalshi cache — that produces false "cross-platform" signals where
         # the same platform is compared to itself.
-        pm_only_markets = [
-            m for m in markets if getattr(m, "platform", "polymarket") == "polymarket"
-        ]
+        pm_only_markets = [m for m in markets if getattr(m, "platform", "polymarket") == "polymarket"]
 
         logger.info(
             "Cross-platform scan starting",
@@ -944,8 +928,7 @@ class CrossPlatformStrategy(BaseStrategy):
         multiway_events = _detect_multiway_kalshi_events(kalshi_markets)
         if multiway_events:
             logger.info(
-                "Cross-platform: detected %d multiway Kalshi events "
-                "(strict outcome matching will be enforced)",
+                "Cross-platform: detected %d multiway Kalshi events (strict outcome matching will be enforced)",
                 len(multiway_events),
             )
 
@@ -969,16 +952,8 @@ class CrossPlatformStrategy(BaseStrategy):
             pm_no = pm_market.no_price
 
             if pm_market.clob_token_ids:
-                yes_token = (
-                    pm_market.clob_token_ids[0]
-                    if len(pm_market.clob_token_ids) > 0
-                    else None
-                )
-                no_token = (
-                    pm_market.clob_token_ids[1]
-                    if len(pm_market.clob_token_ids) > 1
-                    else None
-                )
+                yes_token = pm_market.clob_token_ids[0] if len(pm_market.clob_token_ids) > 0 else None
+                no_token = pm_market.clob_token_ids[1] if len(pm_market.clob_token_ids) > 1 else None
                 if yes_token and yes_token in prices:
                     pm_yes = prices[yes_token].get("mid", pm_yes)
                 if no_token and no_token in prices:
@@ -1098,18 +1073,16 @@ class CrossPlatformStrategy(BaseStrategy):
                 confidence_penalty = max(0.0, 0.30 * (1.0 - similarity))
                 opp.risk_score = min(1.0, opp.risk_score + confidence_penalty)
                 if similarity < 0.6:
-                    opp.risk_factors.append(
-                        f"Moderate match confidence ({similarity:.2f})"
-                    )
+                    opp.risk_factors.append(f"Moderate match confidence ({similarity:.2f})")
 
                 # Resolution divergence risk for player props and contingent markets.
                 # Different platforms often have different rules for DNP (Did Not
                 # Play), void, and cancellation — e.g., Polymarket may void and
                 # refund while Kalshi resolves as NO.  This breaks the "guaranteed
                 # profit" assumption because one leg can lose without the hedge.
-                if _has_resolution_divergence_risk(
-                    pm_market.question
-                ) or _has_resolution_divergence_risk(kalshi_market.question):
+                if _has_resolution_divergence_risk(pm_market.question) or _has_resolution_divergence_risk(
+                    kalshi_market.question
+                ):
                     opp.risk_score = min(1.0, opp.risk_score + 0.25)
                     opp.risk_factors.insert(
                         0,
@@ -1121,9 +1094,7 @@ class CrossPlatformStrategy(BaseStrategy):
                 # "who advances" (includes extra time + penalties).  A tie
                 # is possible in 90-min but NOT in "who advances", so the
                 # hedge breaks completely.
-                if _has_soccer_resolution_divergence_risk(
-                    pm_market.question, kalshi_market.question
-                ):
+                if _has_soccer_resolution_divergence_risk(pm_market.question, kalshi_market.question):
                     opp.risk_score = min(1.0, opp.risk_score + 0.35)
                     opp.risk_factors.insert(
                         0,
@@ -1138,8 +1109,7 @@ class CrossPlatformStrategy(BaseStrategy):
                 k_prefix = _parse_kalshi_event_prefix(kalshi_market.id)
                 if k_prefix and k_prefix in multiway_events:
                     opp.risk_factors.append(
-                        "Part of a 3-way sports event (Win/Draw/Away) — "
-                        "outcome type verified as matching"
+                        "Part of a 3-way sports event (Win/Draw/Away) — outcome type verified as matching"
                     )
 
                 opportunities.append(opp)

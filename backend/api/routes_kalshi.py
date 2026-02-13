@@ -52,9 +52,7 @@ async def get_kalshi_status():
 
         # Add email from settings for display
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(AppSettings).where(AppSettings.id == "default")
-            )
+            result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
             settings = result.scalar_one_or_none()
             if settings:
                 status["email"] = settings.kalshi_email
@@ -160,9 +158,7 @@ async def _try_auto_login():
     """Try to authenticate using stored credentials from settings."""
     try:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(AppSettings).where(AppSettings.id == "default")
-            )
+            result = await session.execute(select(AppSettings).where(AppSettings.id == "default"))
             settings = result.scalar_one_or_none()
             if not settings:
                 return

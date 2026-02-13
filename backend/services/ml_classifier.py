@@ -114,14 +114,8 @@ def extract_features(opp: ArbitrageOpportunity) -> dict[str, float]:
     num_markets = len(markets)
     features["num_markets"] = float(num_markets)
 
-    yes_prices = [
-        float(m.get("yes_price", 0.0))
-        for m in markets
-        if m.get("yes_price") is not None
-    ]
-    no_prices = [
-        float(m.get("no_price", 0.0)) for m in markets if m.get("no_price") is not None
-    ]
+    yes_prices = [float(m.get("yes_price", 0.0)) for m in markets if m.get("yes_price") is not None]
+    no_prices = [float(m.get("no_price", 0.0)) for m in markets if m.get("no_price") is not None]
 
     features["avg_yes_price"] = float(np.mean(yes_prices)) if yes_prices else 0.0
     features["avg_no_price"] = float(np.mean(no_prices)) if no_prices else 0.0
@@ -137,12 +131,8 @@ def extract_features(opp: ArbitrageOpportunity) -> dict[str, float]:
     features["spread"] = 1.0 - price_sum if best_prices else 0.0
 
     # Profit guarantee from Frank-Wolfe
-    features["guaranteed_profit"] = (
-        float(opp.guaranteed_profit) if opp.guaranteed_profit is not None else 0.0
-    )
-    features["capture_ratio"] = (
-        float(opp.capture_ratio) if opp.capture_ratio is not None else 0.0
-    )
+    features["guaranteed_profit"] = float(opp.guaranteed_profit) if opp.guaranteed_profit is not None else 0.0
+    features["capture_ratio"] = float(opp.capture_ratio) if opp.capture_ratio is not None else 0.0
 
     # Time to resolution
     if opp.resolution_date and opp.detected_at:
@@ -152,9 +142,7 @@ def extract_features(opp: ArbitrageOpportunity) -> dict[str, float]:
         features["time_to_resolution_days"] = -1.0  # sentinel for unknown
 
     # Risk factors count
-    features["num_risk_factors"] = (
-        float(len(opp.risk_factors)) if opp.risk_factors else 0.0
-    )
+    features["num_risk_factors"] = float(len(opp.risk_factors)) if opp.risk_factors else 0.0
 
     # Temporal
     now = opp.detected_at or utcnow()
@@ -221,9 +209,7 @@ def _extract_features_from_history(row: OpportunityHistory) -> dict[str, float]:
         features["guaranteed_profit"] = float(positions.get("guaranteed_profit", 0.0))
         features["capture_ratio"] = float(positions.get("capture_ratio", 0.0))
         risk_factors = positions.get("risk_factors", [])
-        features["num_risk_factors"] = (
-            float(len(risk_factors)) if isinstance(risk_factors, list) else 0.0
-        )
+        features["num_risk_factors"] = float(len(risk_factors)) if isinstance(risk_factors, list) else 0.0
     else:
         features["guaranteed_profit"] = 0.0
         features["capture_ratio"] = 0.0
@@ -256,13 +242,9 @@ def _extract_features_from_history(row: OpportunityHistory) -> dict[str, float]:
     return features
 
 
-def _features_dict_to_array(
-    feat_dict: dict[str, float], feature_names: list[str]
-) -> np.ndarray:
+def _features_dict_to_array(feat_dict: dict[str, float], feature_names: list[str]) -> np.ndarray:
     """Convert a feature dict to a numpy array following the canonical feature order."""
-    return np.array(
-        [feat_dict.get(name, 0.0) for name in feature_names], dtype=np.float64
-    )
+    return np.array([feat_dict.get(name, 0.0) for name in feature_names], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -305,18 +287,10 @@ class _LogisticRegression:
     def from_dict(cls, d: dict) -> "_LogisticRegression":
         """Deserialize from a dict."""
         model = cls()
-        model.weights = (
-            np.array(d["weights"], dtype=np.float64)
-            if d.get("weights") is not None
-            else None
-        )
+        model.weights = np.array(d["weights"], dtype=np.float64) if d.get("weights") is not None else None
         model.bias = float(d.get("bias", 0.0))
-        model.mean = (
-            np.array(d["mean"], dtype=np.float64) if d.get("mean") is not None else None
-        )
-        model.std = (
-            np.array(d["std"], dtype=np.float64) if d.get("std") is not None else None
-        )
+        model.mean = np.array(d["mean"], dtype=np.float64) if d.get("mean") is not None else None
+        model.std = np.array(d["std"], dtype=np.float64) if d.get("std") is not None else None
         model.feature_names = d.get("feature_names", [])
         model.is_trained = d.get("is_trained", False)
         model._train_metrics = d.get("metrics", {})
@@ -368,8 +342,7 @@ class _LogisticRegression:
             # Binary cross-entropy + L2 regularization
             eps = 1e-15
             loss = -np.mean(
-                y_train * np.log(predictions + eps)
-                + (1 - y_train) * np.log(1 - predictions + eps)
+                y_train * np.log(predictions + eps) + (1 - y_train) * np.log(1 - predictions + eps)
             ) + _REGULARIZATION * np.sum(self.weights**2)
 
             # Check convergence
@@ -401,9 +374,7 @@ class _LogisticRegression:
         metrics["train_samples"] = int(n_train)
         metrics["test_samples"] = int(n_test)
         metrics["total_samples"] = int(n_samples)
-        metrics["iterations"] = (
-            iteration + 1 if "iteration" in dir() else _MAX_ITERATIONS
-        )
+        metrics["iterations"] = iteration + 1 if "iteration" in dir() else _MAX_ITERATIONS
         self._train_metrics = metrics
 
         return metrics
@@ -468,10 +439,7 @@ class _LogisticRegression:
         if total < 1e-12:
             return {name: 0.0 for name in self.feature_names}
         importances = abs_w / total
-        return {
-            name: round(float(imp), 4)
-            for name, imp in zip(self.feature_names, importances)
-        }
+        return {name: round(float(imp), 4) for name, imp in zip(self.feature_names, importances)}
 
 
 # ---------------------------------------------------------------------------
@@ -697,8 +665,7 @@ class MLClassifier:
             total_contrib = float(np.sum(abs_contrib))
             if total_contrib > 1e-12:
                 per_feature = {
-                    name: round(float(c / total_contrib), 4)
-                    for name, c in zip(self._feature_names, abs_contrib)
+                    name: round(float(c / total_contrib), 4) for name, c in zip(self._feature_names, abs_contrib)
                 }
             else:
                 per_feature = importances
@@ -727,9 +694,7 @@ class MLClassifier:
         result = await self.predict(opportunity)
         return result["probability"] >= _EXECUTE_THRESHOLD
 
-    async def filter_opportunity(
-        self, opportunity: ArbitrageOpportunity
-    ) -> tuple[bool, str, dict]:
+    async def filter_opportunity(self, opportunity: ArbitrageOpportunity) -> tuple[bool, str, dict]:
         """
         Integration point for trader orchestrator.
 
@@ -762,9 +727,7 @@ class MLClassifier:
     # Prediction logging
     # ------------------------------------------------------------------
 
-    async def _log_prediction(
-        self, opp: ArbitrageOpportunity, features: dict, result: dict
-    ) -> None:
+    async def _log_prediction(self, opp: ArbitrageOpportunity, features: dict, result: dict) -> None:
         """Write a prediction record to the database for auditing."""
         try:
             async with AsyncSessionLocal() as session:
@@ -776,9 +739,7 @@ class MLClassifier:
                     probability=result["probability"],
                     recommendation=result["recommendation"],
                     confidence=result["confidence"],
-                    model_version=self._model_version
-                    if self._model.is_trained
-                    else None,
+                    model_version=self._model_version if self._model.is_trained else None,
                 )
                 session.add(log_entry)
                 await session.commit()
@@ -813,17 +774,13 @@ class MLClassifier:
         else:
             stats["metrics"] = {}
             stats["feature_importances"] = {}
-            stats["message"] = (
-                "Model is in cold-start mode. Call train_model() to train."
-            )
+            stats["message"] = "Model is in cold-start mode. Call train_model() to train."
 
         # Count historical records available for training
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(func.count(OpportunityHistory.id)).where(
-                        OpportunityHistory.was_profitable.isnot(None)
-                    )
+                    select(func.count(OpportunityHistory.id)).where(OpportunityHistory.was_profitable.isnot(None))
                 )
                 stats["available_training_samples"] = result.scalar() or 0
         except Exception:
@@ -847,9 +804,7 @@ class MLClassifier:
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(MLPredictionLog)
-                    .order_by(desc(MLPredictionLog.predicted_at))
-                    .limit(limit)
+                    select(MLPredictionLog).order_by(desc(MLPredictionLog.predicted_at)).limit(limit)
                 )
                 rows = result.scalars().all()
 
@@ -862,9 +817,7 @@ class MLClassifier:
                         "recommendation": row.recommendation,
                         "confidence": row.confidence,
                         "model_version": row.model_version,
-                        "predicted_at": row.predicted_at.isoformat()
-                        if row.predicted_at
-                        else None,
+                        "predicted_at": row.predicted_at.isoformat() if row.predicted_at else None,
                         "actual_outcome": row.actual_outcome,
                         "actual_roi": row.actual_roi,
                     }
@@ -874,9 +827,7 @@ class MLClassifier:
             logger.error("Failed to fetch prediction log", error=str(exc))
             return []
 
-    async def update_prediction_outcome(
-        self, opportunity_id: str, was_profitable: bool, actual_roi: float
-    ) -> None:
+    async def update_prediction_outcome(self, opportunity_id: str, was_profitable: bool, actual_roi: float) -> None:
         """
         Update prediction log entries with actual outcomes for future analysis.
         """
