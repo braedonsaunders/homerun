@@ -5,7 +5,6 @@ import {
   TrendingDown,
   RefreshCw,
   ExternalLink,
-  Activity,
   ChevronRight,
   ArrowUpDown,
   Settings,
@@ -18,6 +17,7 @@ import { Card } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import Sparkline from './Sparkline'
+import OpportunityEmptyState from './OpportunityEmptyState'
 
 // ─── Constants ────────────────────────────────────────────
 
@@ -763,15 +763,18 @@ export default function CryptoMarketsPanel({ onExecute, onOpenCopilot, onOpenCry
           <span className="ml-3 text-muted-foreground">Loading crypto markets...</span>
         </div>
       ) : filteredMarkets.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16">
-          <Activity className="w-12 h-12 text-muted-foreground/30 mb-4" />
-          <p className="text-muted-foreground font-medium">
-            No live crypto markets found for this timeframe
-          </p>
-          <p className="text-sm text-muted-foreground/70 mt-1">
-            Check that series IDs are configured correctly in Settings
-          </p>
-        </div>
+        <OpportunityEmptyState
+          title={
+            timeframeFilter === 'all'
+              ? 'No executable crypto opportunities found'
+              : 'No crypto opportunities found for this timeframe'
+          }
+          description={
+            timeframeFilter === 'all'
+              ? 'Try waiting for new windows or verify series IDs in Settings'
+              : 'Try switching timeframe filters or wait for new windows'
+          }
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           {filteredMarkets.map((market) => (

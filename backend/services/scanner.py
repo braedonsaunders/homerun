@@ -1020,6 +1020,7 @@ class ArbitrageScanner:
             # ----------------------------------------------------------
             all_opportunities = self._deduplicate_cross_strategy(all_opportunities)
             all_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
+            all_opportunities = self._apply_opportunity_caps(all_opportunities)
 
             # Attach existing AI judgments from the database
             try:
@@ -1237,6 +1238,7 @@ class ArbitrageScanner:
 
             fast_opportunities = self._deduplicate_cross_strategy(fast_opportunities)
             fast_opportunities.sort(key=lambda x: x.roi_percent, reverse=True)
+            fast_opportunities = self._apply_opportunity_caps(fast_opportunities)
 
             # 8. Update prioritizer state (CPU-bound, run in thread)
             def _update_prioritizer_state(prioritizer, mkts, ts):
@@ -1368,6 +1370,34 @@ class ArbitrageScanner:
             print(f"  Deduplicated: removed {removed} cross-strategy duplicates")
         return deduped
 
+    def _apply_opportunity_caps(self, opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
+        """Limit pool size globally and per strategy to prevent strategy flood."""
+        total_cap = int(getattr(settings, "SCANNER_MAX_OPPORTUNITIES_TOTAL", 0) or 0)
+        per_strategy_cap = int(getattr(settings, "SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY", 0) or 0)
+        if total_cap <= 0 and per_strategy_cap <= 0:
+            return opportunities
+
+        kept: list[ArbitrageOpportunity] = []
+        by_strategy: dict[str, int] = {}
+
+        for opp in opportunities:
+            strategy = str(getattr(opp, "strategy", "") or "unknown")
+            if per_strategy_cap > 0 and by_strategy.get(strategy, 0) >= per_strategy_cap:
+                continue
+            by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
+            kept.append(opp)
+            if total_cap > 0 and len(kept) >= total_cap:
+                break
+
+        removed = len(opportunities) - len(kept)
+        if removed > 0:
+            print(
+                "  Opportunity caps applied: "
+                f"{len(kept)} kept, {removed} removed "
+                f"(total_cap={total_cap or 'off'}, per_strategy_cap={per_strategy_cap or 'off'})"
+            )
+        return kept
+
     def _merge_opportunities(self, new_opportunities: list[ArbitrageOpportunity]) -> list[ArbitrageOpportunity]:
         """Merge newly detected opportunities into the existing pool.
 
@@ -1422,6 +1452,7 @@ class ArbitrageScanner:
 
         # Sort by ROI
         merged.sort(key=lambda x: x.roi_percent, reverse=True)
+        merged = self._apply_opportunity_caps(merged)
 
         retained = len(merged) - new_count - updated_count
         if retained < 0:

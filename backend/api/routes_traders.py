@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import get_db_session
 from services.pause_state import global_pause_state
+from services.trader_orchestrator.position_lifecycle import reconcile_paper_positions
 from services.trader_orchestrator_state import (
+    cleanup_trader_open_orders,
     create_config_revision,
     create_trader,
     create_trader_event,
@@ -19,14 +21,16 @@ from services.trader_orchestrator_state import (
     delete_trader,
     get_trader,
     get_trader_decision_detail,
-    get_open_order_summary_for_trader,
+    get_open_position_summary_for_trader,
     list_serialized_trader_decisions,
     list_serialized_trader_events,
     list_serialized_trader_orders,
     list_trader_templates,
     list_traders,
+    read_orchestrator_control,
     request_trader_run,
     set_trader_paused,
+    sync_trader_position_inventory,
     update_trader,
 )
 
@@ -73,6 +77,27 @@ class TraderDeleteAction(str, Enum):
     block = "block"
     disable = "disable"
     force_delete = "force_delete"
+
+
+class TraderPositionCleanupScope(str, Enum):
+    paper = "paper"
+    live = "live"
+    all = "all"
+
+
+class TraderPositionCleanupMethod(str, Enum):
+    mark_to_market = "mark_to_market"
+    cancel = "cancel"
+
+
+class TraderPositionCleanupRequest(BaseModel):
+    scope: TraderPositionCleanupScope = TraderPositionCleanupScope.paper
+    method: TraderPositionCleanupMethod = TraderPositionCleanupMethod.mark_to_market
+    max_age_hours: Optional[int] = Field(default=None, ge=1, le=24 * 365)
+    dry_run: bool = False
+    target_status: str = Field(default="cancelled", min_length=1, max_length=64)
+    reason: Optional[str] = None
+    confirm_live: bool = False
 
 
 def _assert_not_globally_paused() -> None:
@@ -171,7 +196,10 @@ async def update_trader_route(
         raise HTTPException(status_code=404, detail="Trader not found")
 
     payload = request.model_dump(exclude_none=True, exclude={"requested_by", "reason"})
-    after = await update_trader(session, trader_id, payload)
+    try:
+        after = await update_trader(session, trader_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if after is None:
         raise HTTPException(status_code=404, detail="Trader not found")
 
@@ -207,11 +235,12 @@ async def delete_trader_route(
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
 
-    open_summary = await get_open_order_summary_for_trader(session, trader_id)
-    open_live_orders = int(open_summary.get("live", 0))
-    open_paper_orders = int(open_summary.get("paper", 0))
-    open_other_orders = int(open_summary.get("other", 0))
-    open_total_orders = int(open_summary.get("total", 0))
+    await sync_trader_position_inventory(session, trader_id=trader_id)
+    open_summary = await get_open_position_summary_for_trader(session, trader_id)
+    open_live_positions = int(open_summary.get("live", 0))
+    open_paper_positions = int(open_summary.get("paper", 0))
+    open_other_positions = int(open_summary.get("other", 0))
+    open_total_positions = int(open_summary.get("total", 0))
 
     if action == TraderDeleteAction.disable:
         updated = await update_trader(
@@ -232,44 +261,54 @@ async def delete_trader_route(
             source="operator",
             message="Trader disabled instead of deleted",
             payload={
-                "open_live_orders": open_live_orders,
-                "open_paper_orders": open_paper_orders,
-                "open_other_orders": open_other_orders,
+                "open_live_positions": open_live_positions,
+                "open_paper_positions": open_paper_positions,
+                "open_other_positions": open_other_positions,
             },
         )
         return {
             "status": "disabled",
             "trader_id": trader_id,
-            "open_live_orders": open_live_orders,
-            "open_paper_orders": open_paper_orders,
-            "open_other_orders": open_other_orders,
+            "open_live_positions": open_live_positions,
+            "open_paper_positions": open_paper_positions,
+            "open_other_positions": open_other_positions,
+            # Keep legacy response keys for clients that still read *_orders.
+            "open_live_orders": open_live_positions,
+            "open_paper_orders": open_paper_positions,
+            "open_other_orders": open_other_positions,
             "message": "Trader disabled and paused. Resolve open positions before permanent deletion.",
         }
 
-    if open_live_orders > 0 and action != TraderDeleteAction.force_delete:
+    if open_live_positions > 0 and action != TraderDeleteAction.force_delete:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "open_live_positions",
                 "message": "Trader has open live positions. Disable trader and flatten positions before deletion.",
                 "trader_id": trader_id,
-                "open_live_orders": open_live_orders,
-                "open_paper_orders": open_paper_orders,
-                "open_other_orders": open_other_orders,
+                "open_live_positions": open_live_positions,
+                "open_paper_positions": open_paper_positions,
+                "open_other_positions": open_other_positions,
+                "open_live_orders": open_live_positions,
+                "open_paper_orders": open_paper_positions,
+                "open_other_orders": open_other_positions,
                 "suggested_action": TraderDeleteAction.disable.value,
             },
         )
 
-    if open_total_orders > 0 and action != TraderDeleteAction.force_delete:
+    if open_total_positions > 0 and action != TraderDeleteAction.force_delete:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "open_positions",
                 "message": "Trader has open positions. Close/resolve open orders before deletion.",
                 "trader_id": trader_id,
-                "open_live_orders": open_live_orders,
-                "open_paper_orders": open_paper_orders,
-                "open_other_orders": open_other_orders,
+                "open_live_positions": open_live_positions,
+                "open_paper_positions": open_paper_positions,
+                "open_other_positions": open_other_positions,
+                "open_live_orders": open_live_positions,
+                "open_paper_orders": open_paper_positions,
+                "open_other_orders": open_other_positions,
                 "suggested_action": TraderDeleteAction.disable.value,
             },
         )
@@ -286,18 +325,21 @@ async def delete_trader_route(
         message="Trader deleted",
         payload={
             "action": action.value,
-            "open_live_orders_at_delete": open_live_orders,
-            "open_paper_orders_at_delete": open_paper_orders,
-            "open_other_orders_at_delete": open_other_orders,
+            "open_live_positions_at_delete": open_live_positions,
+            "open_paper_positions_at_delete": open_paper_positions,
+            "open_other_positions_at_delete": open_other_positions,
         },
     )
     return {
         "status": "deleted",
         "trader_id": trader_id,
         "action": action.value,
-        "open_live_orders": open_live_orders,
-        "open_paper_orders": open_paper_orders,
-        "open_other_orders": open_other_orders,
+        "open_live_positions": open_live_positions,
+        "open_paper_positions": open_paper_positions,
+        "open_other_positions": open_other_positions,
+        "open_live_orders": open_live_positions,
+        "open_paper_orders": open_paper_positions,
+        "open_other_orders": open_other_positions,
     }
 
 
@@ -307,6 +349,38 @@ async def start_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
     trader = await set_trader_paused(session, trader_id, False)
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+
+    control = await read_orchestrator_control(session)
+    mode = str(control.get("mode") or "paper").strip().lower()
+    await sync_trader_position_inventory(session, trader_id=trader_id, mode=mode if mode in {"paper", "live"} else None)
+    open_summary = await get_open_position_summary_for_trader(session, trader_id)
+    open_live = int(open_summary.get("live", 0))
+    open_paper = int(open_summary.get("paper", 0))
+    if mode == "live" and open_live > 0:
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="trader_start_warning",
+            severity="warn",
+            source="operator",
+            message="Trader started with existing live open positions",
+            payload={
+                "open_live_positions": open_live,
+                "open_paper_positions": open_paper,
+                "open_live_orders": open_live,
+                "open_paper_orders": open_paper,
+            },
+        )
+    elif mode == "paper" and open_paper > 0:
+        await create_trader_event(
+            session,
+            trader_id=trader_id,
+            event_type="trader_start_notice",
+            source="operator",
+            message="Trader started with existing paper open positions",
+            payload={"open_paper_positions": open_paper, "open_paper_orders": open_paper},
+        )
+
     await create_trader_event(
         session,
         trader_id=trader_id,
@@ -330,6 +404,93 @@ async def pause_trader(trader_id: str, session: AsyncSession = Depends(get_db_se
         message="Trader paused",
     )
     return trader
+
+
+@router.post("/{trader_id}/positions/cleanup")
+async def cleanup_trader_positions(
+    trader_id: str,
+    request: TraderPositionCleanupRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    trader = await get_trader(session, trader_id)
+    if trader is None:
+        raise HTTPException(status_code=404, detail="Trader not found")
+
+    if request.scope in {TraderPositionCleanupScope.live, TraderPositionCleanupScope.all} and not request.confirm_live:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "confirm_live_required",
+                "message": "Live cleanup requires explicit confirmation. Re-submit with confirm_live=true.",
+                "scope": request.scope.value,
+            },
+        )
+
+    if (
+        request.method == TraderPositionCleanupMethod.mark_to_market
+        and request.scope != TraderPositionCleanupScope.paper
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="mark_to_market cleanup currently supports paper scope only",
+        )
+
+    if request.method == TraderPositionCleanupMethod.cancel:
+        try:
+            result = await cleanup_trader_open_orders(
+                session,
+                trader_id=trader_id,
+                scope=request.scope.value,
+                max_age_hours=request.max_age_hours,
+                dry_run=request.dry_run,
+                target_status=request.target_status,
+                reason=request.reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    else:
+        lifecycle_result = await reconcile_paper_positions(
+            session,
+            trader_id=trader_id,
+            trader_params={},
+            dry_run=request.dry_run,
+            force_mark_to_market=True,
+            max_age_hours=request.max_age_hours,
+            reason=str(request.reason or "manual_mark_to_market_cleanup"),
+        )
+        if not request.dry_run:
+            await sync_trader_position_inventory(session, trader_id=trader_id, mode="paper")
+        result = {
+            "trader_id": trader_id,
+            "scope": request.scope.value,
+            "method": request.method.value,
+            "dry_run": request.dry_run,
+            "max_age_hours": request.max_age_hours,
+            "matched": int(lifecycle_result.get("matched", 0)),
+            "would_close": int(lifecycle_result.get("would_close", 0)),
+            "updated": int(lifecycle_result.get("closed", 0)),
+            "skipped": int(lifecycle_result.get("skipped", 0)),
+            "held": int(lifecycle_result.get("held", 0)),
+            "total_realized_pnl": float(lifecycle_result.get("total_realized_pnl", 0.0)),
+            "by_status": lifecycle_result.get("by_status", {}),
+            "skipped_reasons": lifecycle_result.get("skipped_reasons", {}),
+            "details": lifecycle_result.get("details", []),
+        }
+
+    await create_trader_event(
+        session,
+        trader_id=trader_id,
+        event_type="trader_positions_cleanup",
+        severity=(
+            "warn"
+            if request.scope in {TraderPositionCleanupScope.live, TraderPositionCleanupScope.all}
+            else "info"
+        ),
+        source="operator",
+        message="Trader position cleanup executed" if not request.dry_run else "Trader position cleanup dry-run",
+        payload=result,
+    )
+    return result
 
 
 @router.post("/{trader_id}/run-once")

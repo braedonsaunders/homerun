@@ -16,6 +16,7 @@ from models.database import (
     WalletTrade,
     OpportunityHistory,
     DetectedAnomaly,
+    LLMUsageLog,
     TradeStatus,
     AsyncSessionLocal,
     AppSettings,
@@ -34,6 +35,7 @@ class MaintenanceService:
     DEFAULT_OPEN_TRADE_EXPIRY = 90  # Mark open trades as expired after 90 days
     DEFAULT_WALLET_TRADE_AGE = 60  # Delete wallet trades older than 60 days
     DEFAULT_ANOMALY_AGE = 30  # Delete resolved anomalies older than 30 days
+    DEFAULT_LLM_USAGE_RETENTION_DAYS = 30  # Delete raw LLM usage logs older than 30 days
 
     async def _market_cache_hygiene_settings(self) -> dict:
         config = {
@@ -62,6 +64,19 @@ class MaintenanceService:
         except Exception as e:
             logger.warning("Failed to read market cache hygiene settings", error=str(e))
         return config
+
+    async def _llm_usage_retention_days_setting(self) -> int:
+        retention_days = self.DEFAULT_LLM_USAGE_RETENTION_DAYS
+        try:
+            async with AsyncSessionLocal() as session:
+                row = (
+                    await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+                ).scalar_one_or_none()
+                if row and row.llm_usage_retention_days is not None:
+                    retention_days = max(0, int(row.llm_usage_retention_days))
+        except Exception as e:
+            logger.warning("Failed to read LLM usage retention setting", error=str(e))
+        return retention_days
 
     async def get_database_stats(self) -> dict:
         """Get statistics about database contents"""
@@ -315,6 +330,59 @@ class MaintenanceService:
                 "cutoff_date": cutoff_date.isoformat(),
             }
 
+    async def cleanup_llm_usage_logs(
+        self,
+        older_than_days: int = DEFAULT_LLM_USAGE_RETENTION_DAYS,
+        preserve_current_month: bool = True,
+    ) -> dict:
+        """
+        Delete old LLM usage logs.
+
+        Args:
+            older_than_days: Delete LLM usage rows older than this many days.
+                `0` disables cleanup.
+            preserve_current_month: Keep current-month rows even if older than cutoff
+                so monthly spend tracking stays accurate.
+
+        Returns:
+            Dict with deletion count and retention metadata.
+        """
+        if older_than_days <= 0:
+            return {
+                "status": "disabled",
+                "llm_usage_logs_deleted": 0,
+                "older_than_days": int(older_than_days),
+                "preserve_current_month": bool(preserve_current_month),
+            }
+
+        now = utcnow()
+        cutoff_date = now - timedelta(days=older_than_days)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        async with AsyncSessionLocal() as session:
+            conditions = [LLMUsageLog.requested_at < cutoff_date]
+            if preserve_current_month:
+                conditions.append(LLMUsageLog.requested_at < month_start)
+
+            result = await session.execute(delete(LLMUsageLog).where(and_(*conditions)))
+            await session.commit()
+
+            logger.info(
+                "Cleaned up LLM usage logs",
+                deleted_count=result.rowcount,
+                older_than_days=older_than_days,
+                preserve_current_month=preserve_current_month,
+            )
+
+            return {
+                "status": "success",
+                "llm_usage_logs_deleted": int(result.rowcount or 0),
+                "cutoff_date": cutoff_date.isoformat(),
+                "month_start": month_start.isoformat(),
+                "older_than_days": int(older_than_days),
+                "preserve_current_month": bool(preserve_current_month),
+            }
+
     async def delete_all_trades(self, account_id: Optional[str] = None, confirm: bool = False) -> dict:
         """
         Delete ALL trades (nuclear option).
@@ -420,6 +488,7 @@ class MaintenanceService:
         open_trade_expiry_days: int = DEFAULT_OPEN_TRADE_EXPIRY,
         wallet_trade_days: int = DEFAULT_WALLET_TRADE_AGE,
         anomaly_days: int = DEFAULT_ANOMALY_AGE,
+        llm_usage_retention_days: Optional[int] = None,
     ) -> dict:
         """
         Run full database cleanup with all maintenance tasks.
@@ -429,6 +498,8 @@ class MaintenanceService:
             open_trade_expiry_days: Expire open trades older than this
             wallet_trade_days: Delete wallet trades older than this
             anomaly_days: Delete resolved anomalies older than this
+            llm_usage_retention_days: Delete LLM usage logs older than this.
+                `None` reads from AppSettings.
 
         Returns:
             Dict with all cleanup results
@@ -449,7 +520,20 @@ class MaintenanceService:
         # 4. Clean up anomalies
         results["anomalies"] = await self.cleanup_anomalies(older_than_days=anomaly_days)
 
-        # 5. Prune stale/mismatched market metadata cache entries
+        # 5. Prune old LLM usage logs
+        try:
+            retention_days = llm_usage_retention_days
+            if retention_days is None:
+                retention_days = await self._llm_usage_retention_days_setting()
+            results["llm_usage_logs"] = await self.cleanup_llm_usage_logs(
+                older_than_days=int(retention_days),
+                preserve_current_month=True,
+            )
+        except Exception as e:
+            logger.warning("LLM usage log cleanup failed during full maintenance run", error=str(e))
+            results["llm_usage_logs"] = {"status": "error", "error": str(e)}
+
+        # 6. Prune stale/mismatched market metadata cache entries
         try:
             market_cache_cfg = await self._market_cache_hygiene_settings()
             if market_cache_cfg["enabled"]:
@@ -500,6 +584,7 @@ class MaintenanceService:
                     open_trade_expiry_days=config.get("open_trade_expiry_days", self.DEFAULT_OPEN_TRADE_EXPIRY),
                     wallet_trade_days=config.get("wallet_trade_days", self.DEFAULT_WALLET_TRADE_AGE),
                     anomaly_days=config.get("anomaly_days", self.DEFAULT_ANOMALY_AGE),
+                    llm_usage_retention_days=config.get("llm_usage_retention_days"),
                 )
 
             except asyncio.CancelledError:

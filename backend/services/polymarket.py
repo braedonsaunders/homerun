@@ -1640,11 +1640,14 @@ class PolymarketClient:
         )
 
     async def get_market_trades(
-        self, condition_id: str, limit: int = 100
+        self, condition_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict]:
         """Get recent trades for a market"""
+        params = {"market": condition_id, "limit": limit}
+        if offset > 0:
+            params["offset"] = offset
         response = await self._rate_limited_get(
-            f"{self.data_url}/trades", params={"market": condition_id, "limit": limit}
+            f"{self.data_url}/trades", params=params
         )
         response.raise_for_status()
         data = response.json()

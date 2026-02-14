@@ -9,6 +9,93 @@ from urllib.parse import urlparse
 from config import settings
 
 _PRIORITY_VALUES = {"critical", "high", "medium", "low"}
+_DEFAULT_CUSTOM_RSS_FEEDS: tuple[dict[str, str], ...] = (
+    {
+        "name": "Reuters World",
+        "url": "https://feeds.reuters.com/reuters/worldNews",
+        "category": "world",
+    },
+    {
+        "name": "Reuters Politics",
+        "url": "https://feeds.reuters.com/Reuters/PoliticsNews",
+        "category": "politics",
+    },
+    {
+        "name": "Reuters Business",
+        "url": "https://feeds.reuters.com/reuters/businessNews",
+        "category": "business",
+    },
+    {
+        "name": "AP Top News",
+        "url": "https://feeds.apnews.com/apf-topnews",
+        "category": "world",
+    },
+    {
+        "name": "AP Politics",
+        "url": "https://feeds.apnews.com/apf-politics",
+        "category": "politics",
+    },
+    {
+        "name": "AP Business",
+        "url": "https://feeds.apnews.com/apf-business",
+        "category": "business",
+    },
+    {
+        "name": "BBC World",
+        "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "category": "world",
+    },
+    {
+        "name": "BBC Business",
+        "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+        "category": "business",
+    },
+    {
+        "name": "BBC US & Canada",
+        "url": "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
+        "category": "politics",
+    },
+    {
+        "name": "NPR News",
+        "url": "https://feeds.npr.org/1001/rss.xml",
+        "category": "world",
+    },
+    {
+        "name": "Politico Politics",
+        "url": "https://www.politico.com/rss/politics08.xml",
+        "category": "politics",
+    },
+    {
+        "name": "The Hill",
+        "url": "https://thehill.com/feed/",
+        "category": "politics",
+    },
+    {
+        "name": "WSJ World News",
+        "url": "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+        "category": "world",
+    },
+    {
+        "name": "CNBC Top News",
+        "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "category": "business",
+    },
+    {
+        "name": "MarketWatch Top Stories",
+        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",
+        "category": "business",
+    },
+    {
+        "name": "CoinDesk",
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "category": "cryptocurrency",
+    },
+    {
+        "name": "Cointelegraph",
+        "url": "https://cointelegraph.com/rss",
+        "category": "cryptocurrency",
+    },
+)
 _DEFAULT_GOV_RSS_FEEDS: tuple[dict[str, str], ...] = (
     {
         "agency": "white_house",
@@ -187,8 +274,9 @@ def normalize_custom_rss_feeds(rows: Any) -> list[dict[str, Any]]:
 
 
 def default_custom_rss_feeds() -> list[dict[str, Any]]:
-    """Derive custom RSS defaults from legacy env config."""
-    return normalize_custom_rss_feeds(list(getattr(settings, "NEWS_RSS_FEEDS", []) or []))
+    """Derive custom RSS defaults from bundled + legacy env config."""
+    env_rows = normalize_custom_rss_feeds(list(getattr(settings, "NEWS_RSS_FEEDS", []) or []))
+    return merge_custom_rss_feeds(env_rows)
 
 
 def normalize_gov_rss_feeds(rows: Any) -> list[dict[str, Any]]:
@@ -241,3 +329,42 @@ def normalize_gov_rss_feeds(rows: Any) -> list[dict[str, Any]]:
 
 def default_gov_rss_feeds() -> list[dict[str, Any]]:
     return normalize_gov_rss_feeds(list(_DEFAULT_GOV_RSS_FEEDS))
+
+
+def merge_custom_rss_feeds(rows: Any) -> list[dict[str, Any]]:
+    """Append bundled default custom feeds without overriding existing rows."""
+    existing = normalize_custom_rss_feeds(rows)
+    default_rows = normalize_custom_rss_feeds(list(_DEFAULT_CUSTOM_RSS_FEEDS))
+    existing_urls = {str(row.get("url") or "").strip().lower() for row in existing}
+    merged = list(existing)
+    for row in default_rows:
+        url = str(row.get("url") or "").strip().lower()
+        if not url or url in existing_urls:
+            continue
+        merged.append(row)
+        existing_urls.add(url)
+    return merged
+
+
+def merge_gov_rss_feeds(rows: Any) -> list[dict[str, Any]]:
+    """Append bundled default gov feeds without overriding existing rows."""
+    existing = normalize_gov_rss_feeds(rows)
+    default_rows = default_gov_rss_feeds()
+    existing_keys = {
+        (
+            str(row.get("agency") or "").strip().lower(),
+            str(row.get("url") or "").strip().lower(),
+        )
+        for row in existing
+    }
+    merged = list(existing)
+    for row in default_rows:
+        key = (
+            str(row.get("agency") or "").strip().lower(),
+            str(row.get("url") or "").strip().lower(),
+        )
+        if not key[0] or not key[1] or key in existing_keys:
+            continue
+        merged.append(row)
+        existing_keys.add(key)
+    return merged

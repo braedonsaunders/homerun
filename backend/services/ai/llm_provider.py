@@ -1795,6 +1795,14 @@ class LLMManager:
         the corresponding provider instances. Also loads the current month's
         spend from the LLMUsageLog table.
         """
+        # Keep a snapshot of the previous state so transient DB or runtime
+        # failures during re-init do not disable AI unexpectedly.
+        previous_providers = dict(self._providers)
+        previous_preferred_provider = self._preferred_provider
+        previous_default_model = self._default_model
+        previous_monthly_spend = self._monthly_spend
+        previous_spend_limit = self._spend_limit
+
         # Reset providers so re-initialization picks up removed keys
         self._providers.clear()
         self._preferred_provider = None
@@ -1919,7 +1927,15 @@ class LLMManager:
 
         except Exception as exc:
             logger.error("Failed to initialize LLM providers: %s", exc)
-            # Don't crash -- just run without AI features
+            # Preserve the previous known-good runtime state when available.
+            if previous_providers:
+                self._providers = previous_providers
+                self._preferred_provider = previous_preferred_provider
+                self._default_model = previous_default_model
+                self._monthly_spend = previous_monthly_spend
+                self._spend_limit = previous_spend_limit
+                logger.warning("Restored previous LLM provider state after failed re-initialization")
+            # Don't crash -- keep running with the best available AI state.
 
         self._initialized = True
         logger.info(

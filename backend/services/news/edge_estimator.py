@@ -15,6 +15,7 @@ Pattern from: KalshiBench (calibration), Quant-tool (evidence trail).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from services.news.event_extractor import ExtractedEvent
 from services.news.reranker import RerankedCandidate
 
 logger = logging.getLogger(__name__)
+
+_LLM_CALL_TIMEOUT_SECONDS = 20.0
 
 
 @dataclass
@@ -133,6 +136,34 @@ class EdgeEstimator:
 
     _CONCURRENCY = 3
 
+    @staticmethod
+    def _normalize_probability(value: object, fallback: float = 0.5) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = fallback
+        if parsed > 1.0:
+            parsed = parsed / 100.0
+        if parsed < 0.0:
+            parsed = 0.0
+        if parsed > 1.0:
+            parsed = 1.0
+        return parsed
+
+    @staticmethod
+    def _normalize_confidence(value: object, fallback: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = fallback
+        if parsed > 1.0:
+            parsed = parsed / 100.0
+        if parsed < 0.0:
+            parsed = 0.0
+        if parsed > 1.0:
+            parsed = 1.0
+        return parsed
+
     async def estimate_batch(
         self,
         article_title: str,
@@ -150,10 +181,9 @@ class EdgeEstimator:
     ) -> list[WorkflowFinding]:
         """Estimate edges for a batch of reranked candidates.
 
-        Returns only findings that pass the edge and confidence thresholds.
+        Returns both actionable and non-actionable findings so debug views can
+        show why candidates were filtered.
         """
-        import asyncio
-
         if not reranked:
             return []
 
@@ -234,54 +264,100 @@ class EdgeEstimator:
             "key_entities": event.key_entities,
         }
 
-        # Try LLM estimation
-        llm_result = None
-        if allow_llm:
-            llm_result = await self._call_llm(
+        def _rejected(reason: str, reasoning: Optional[str] = None) -> WorkflowFinding:
+            merged_evidence = dict(evidence)
+            existing_reasons = merged_evidence.get("rejection_reasons")
+            reason_list = list(existing_reasons) if isinstance(existing_reasons, list) else []
+            if reason not in reason_list:
+                reason_list.append(reason)
+            merged_evidence["rejection_reasons"] = reason_list
+            return WorkflowFinding(
+                id=uuid.uuid4().hex[:16],
+                article_id=article_id,
+                market_id=c.market_id,
                 article_title=article_title,
-                article_summary=article_summary,
+                article_source=article_source,
+                article_url=article_url,
                 market_question=c.question,
-                event_title=c.event_title,
-                category=c.category,
-                yes_price=c.yes_price,
-                no_price=c.no_price,
-                model=model,
+                market_price=float(c.yes_price or 0.5),
+                model_probability=float(c.yes_price or 0.5),
+                edge_percent=0.0,
+                direction="buy_yes",
+                confidence=0.0,
+                retrieval_score=float(c.combined_score or 0.0),
+                semantic_score=float(c.semantic_score or 0.0),
+                keyword_score=float(c.keyword_score or 0.0),
+                event_score=float(c.event_score or 0.0),
+                rerank_score=float(rc.rerank_score or 0.0),
+                event_graph=event_graph,
+                evidence=merged_evidence,
+                reasoning=reasoning or f"Rejected before actionable edge: {reason}.",
+                actionable=False,
             )
 
+        if not allow_llm:
+            return _rejected("llm_budget_exhausted")
+
+        # Try LLM estimation
+        llm_result = None
+        llm_result = await self._call_llm(
+            article_title=article_title,
+            article_summary=article_summary,
+            market_question=c.question,
+            event_title=c.event_title,
+            category=c.category,
+            yes_price=c.yes_price,
+            no_price=c.no_price,
+            model=model,
+        )
+
         if llm_result is None:
-            # No probability estimate means no actionable signal.
-            return None
+            return _rejected("llm_unavailable_or_failed")
 
-        # Filter irrelevant
-        if llm_result.get("news_relevance") in {"none", "low"}:
-            return None
-
-        # Filter stale info (likely already priced in)
-        if llm_result.get("information_novelty") == "stale":
-            return None
-
-        prob_yes = float(llm_result.get("probability_yes", 0.5))
-        confidence = float(llm_result.get("confidence", 0.0))
-        reasoning = llm_result.get("reasoning", "")
-
-        # Compute edge
-        market_price = c.yes_price
-        edge = abs(prob_yes - market_price) * 100
-        direction = "buy_yes" if prob_yes > market_price else "buy_no"
-
-        # Novelty-adjusted confidence
-        novelty = llm_result.get("information_novelty", "known")
-        novelty_mult = {"breaking": 1.0, "recent": 0.85, "known": 0.5, "stale": 0.1}
-        confidence *= novelty_mult.get(novelty, 0.5)
-        if confidence < 0.2:
-            return None
+        news_relevance = str(llm_result.get("news_relevance") or "").strip().lower()
+        novelty = str(llm_result.get("information_novelty") or "known").strip().lower()
+        prob_yes = self._normalize_probability(llm_result.get("probability_yes"), fallback=float(c.yes_price or 0.5))
+        confidence = self._normalize_confidence(llm_result.get("confidence"), fallback=0.0)
+        reasoning = str(llm_result.get("reasoning") or "").strip()
+        if not reasoning:
+            reasoning = "Model returned no reasoning."
 
         evidence["llm"] = {
             "probability_yes": prob_yes,
             "confidence": confidence,
-            "news_relevance": llm_result.get("news_relevance"),
+            "news_relevance": news_relevance,
             "information_novelty": novelty,
+            "raw": llm_result,
         }
+
+        # Filter irrelevant
+        if news_relevance in {"none", "low"}:
+            return _rejected(
+                "low_news_relevance",
+                reasoning=f"{reasoning} Filtered: news_relevance={news_relevance}.",
+            )
+
+        # Filter stale info (likely already priced in)
+        if novelty == "stale":
+            return _rejected(
+                "stale_information",
+                reasoning=f"{reasoning} Filtered: information_novelty=stale.",
+            )
+
+        # Compute edge
+        market_price = float(c.yes_price or 0.5)
+        edge = abs(prob_yes - market_price) * 100
+        direction = "buy_yes" if prob_yes > market_price else "buy_no"
+
+        # Novelty-adjusted confidence
+        novelty_mult = {"breaking": 1.0, "recent": 0.85, "known": 0.5, "stale": 0.1}
+        confidence *= novelty_mult.get(novelty, 0.5)
+        confidence = self._normalize_confidence(confidence, fallback=0.0)
+        if confidence < 0.2:
+            return _rejected(
+                "low_confidence",
+                reasoning=f"{reasoning} Filtered: confidence={confidence:.2f} after novelty adjustment.",
+            )
 
         return WorkflowFinding(
             id=uuid.uuid4().hex[:16],
@@ -296,11 +372,11 @@ class EdgeEstimator:
             edge_percent=edge,
             direction=direction,
             confidence=confidence,
-            retrieval_score=c.combined_score,
-            semantic_score=c.semantic_score,
-            keyword_score=c.keyword_score,
-            event_score=c.event_score,
-            rerank_score=rc.rerank_score,
+            retrieval_score=float(c.combined_score or 0.0),
+            semantic_score=float(c.semantic_score or 0.0),
+            keyword_score=float(c.keyword_score or 0.0),
+            event_score=float(c.event_score or 0.0),
+            rerank_score=float(rc.rerank_score or 0.0),
             event_graph=event_graph,
             evidence=evidence,
             reasoning=reasoning,
@@ -361,15 +437,24 @@ class EdgeEstimator:
         )
 
         try:
-            return await manager.structured_output(
-                messages=[
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ],
-                schema=EDGE_ESTIMATION_SCHEMA,
-                model=model,
-                purpose="news_workflow_edge_estimation",
+            return await asyncio.wait_for(
+                manager.structured_output(
+                    messages=[
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ],
+                    schema=EDGE_ESTIMATION_SCHEMA,
+                    model=model,
+                    purpose="news_workflow_edge_estimation",
+                ),
+                timeout=_LLM_CALL_TIMEOUT_SECONDS,
             )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Edge estimation LLM call timed out after %.1fs",
+                _LLM_CALL_TIMEOUT_SECONDS,
+            )
+            return None
         except Exception as e:
             logger.debug("Edge estimation LLM call failed: %s", e)
             return None

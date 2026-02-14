@@ -82,6 +82,19 @@ Everything boots with **SQLite** out of the box, auto-creates schema on first la
 
 > **Windows?** Run `.\run.ps1` in PowerShell.
 
+### One-Click Launchers (No CLI typing)
+
+You can launch Homerun by double-clicking these files in the repo root:
+
+- **macOS:** `Homerun.command`
+- **Windows:** `Homerun.bat`
+- **Linux:** `Homerun.desktop`
+
+Linux notes:
+
+- Run `chmod +x run.sh Homerun.desktop` once.
+- In some desktop environments, right-click `Homerun.desktop` and choose **Allow Launching** the first time.
+
 <details>
 <summary><strong>Requirements</strong></summary>
 <br/>

@@ -17,6 +17,7 @@ from services.trader_orchestrator_state import (
     create_trader,
     delete_trader,
     get_orchestrator_overview,
+    update_trader,
 )
 from workers import trader_orchestrator_worker
 
@@ -101,5 +102,50 @@ async def test_worker_loop_does_not_seed_default_traders(tmp_path, monkeypatch):
             count = int((await session.execute(select(func.count(Trader.id)))).scalar() or 0)
 
         assert count == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_trader_normalizes_legacy_default_strategy_key(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            trader = await create_trader(
+                session,
+                {
+                    "name": "Legacy Default Trader",
+                    "strategy_key": "strategy.default",
+                    "sources": ["crypto"],
+                },
+            )
+
+        assert trader["strategy_key"] == "crypto_15m"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_trader_rejects_unknown_strategy_key(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    try:
+        async with session_factory() as session:
+            trader = await create_trader(
+                session,
+                {
+                    "name": "Strict Strategy Trader",
+                    "strategy_key": "crypto_15m",
+                    "sources": ["crypto"],
+                },
+            )
+
+            with pytest.raises(ValueError, match="Unknown strategy_key"):
+                await update_trader(
+                    session,
+                    trader["id"],
+                    {
+                        "strategy_key": "not_a_real_strategy",
+                    },
+                )
     finally:
         await engine.dispose()

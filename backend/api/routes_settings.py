@@ -229,7 +229,13 @@ class DiscoverySettings(BaseModel):
         le=500,
         description="Max wallets to extract from each market",
     )
-    trader_opps_source_filter: Literal["all", "confluence", "insider"] = Field(
+    trader_opps_source_filter: Literal[
+        "all",
+        "tracked",
+        "pool",
+        "confluence",
+        "insider",
+    ] = Field(
         default="all",
         description="Opportunities -> Traders source view filter",
     )
@@ -265,6 +271,154 @@ class DiscoverySettings(BaseModel):
         le=1440,
         description="Maximum insider opportunity freshness window in minutes",
     )
+    pool_recompute_mode: Literal["quality_only", "balanced"] = Field(
+        default="quality_only",
+        description="Smart-wallet pool recompute mode",
+    )
+    pool_target_size: int = Field(
+        default=500,
+        ge=10,
+        le=5000,
+        description="Target smart-wallet pool size",
+    )
+    pool_min_size: int = Field(
+        default=400,
+        ge=0,
+        le=5000,
+        description="Minimum desired pool size in balanced mode",
+    )
+    pool_max_size: int = Field(
+        default=600,
+        ge=1,
+        le=10000,
+        description="Hard upper bound for pool size",
+    )
+    pool_active_window_hours: int = Field(
+        default=72,
+        ge=1,
+        le=720,
+        description="Recency window (hours) used by activity-aware gating",
+    )
+    pool_selection_score_floor: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description="Selection score floor for quality-only pool sizing",
+    )
+    pool_max_hourly_replacement_rate: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="Maximum fraction of pool replaced per churn cycle",
+    )
+    pool_replacement_score_cutoff: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        description="Minimum score delta required to replace an existing wallet",
+    )
+    pool_max_cluster_share: float = Field(
+        default=0.08,
+        ge=0.01,
+        le=1.0,
+        description="Max share of pool allocated to a single cluster",
+    )
+    pool_high_conviction_threshold: float = Field(
+        default=0.72,
+        ge=0.0,
+        le=1.0,
+        description="Selection score threshold for high-conviction reason tagging",
+    )
+    pool_insider_priority_threshold: float = Field(
+        default=0.62,
+        ge=0.0,
+        le=1.0,
+        description="Insider-score threshold for priority reason tagging",
+    )
+    pool_min_eligible_trades: int = Field(
+        default=50,
+        ge=1,
+        le=100000,
+        description="Minimum total trades required for pool eligibility",
+    )
+    pool_max_eligible_anomaly: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=5.0,
+        description="Maximum anomaly score allowed for pool entry",
+    )
+    pool_core_min_win_rate: float = Field(
+        default=0.60,
+        ge=0.0,
+        le=1.0,
+        description="Core tier minimum win rate (ratio)",
+    )
+    pool_core_min_sharpe: float = Field(
+        default=1.0,
+        ge=-10.0,
+        le=20.0,
+        description="Core tier minimum Sharpe ratio",
+    )
+    pool_core_min_profit_factor: float = Field(
+        default=1.5,
+        ge=0.0,
+        le=20.0,
+        description="Core tier minimum profit factor",
+    )
+    pool_rising_min_win_rate: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description="Rising tier minimum win rate (ratio)",
+    )
+    pool_slo_min_analyzed_pct: float = Field(
+        default=95.0,
+        ge=0.0,
+        le=100.0,
+        description="SLO minimum analyzed percent for active pool",
+    )
+    pool_slo_min_profitable_pct: float = Field(
+        default=80.0,
+        ge=0.0,
+        le=100.0,
+        description="SLO minimum profitable percent for active pool",
+    )
+    pool_leaderboard_wallet_trade_sample: int = Field(
+        default=160,
+        ge=1,
+        le=5000,
+        description="Wallet-trade sample size used during full sweeps",
+    )
+    pool_incremental_wallet_trade_sample: int = Field(
+        default=80,
+        ge=1,
+        le=5000,
+        description="Wallet-trade sample size used during incremental refresh",
+    )
+    pool_full_sweep_interval_seconds: int = Field(
+        default=1800,
+        ge=10,
+        le=86400,
+        description="Smart-pool full sweep cadence in seconds",
+    )
+    pool_incremental_refresh_interval_seconds: int = Field(
+        default=120,
+        ge=10,
+        le=86400,
+        description="Smart-pool incremental refresh cadence in seconds",
+    )
+    pool_activity_reconciliation_interval_seconds: int = Field(
+        default=120,
+        ge=10,
+        le=86400,
+        description="Smart-pool activity reconciliation cadence in seconds",
+    )
+    pool_recompute_interval_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=86400,
+        description="Smart-pool recompute cadence in seconds",
+    )
 
 
 class MaintenanceSettings(BaseModel):
@@ -278,6 +432,15 @@ class MaintenanceSettings(BaseModel):
     )
     cleanup_resolved_trade_days: int = Field(
         default=30, ge=1, le=365, description="Delete resolved trades older than X days"
+    )
+    llm_usage_retention_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description=(
+            "Delete LLM usage log rows older than this many days "
+            "(0 disables). Current-month rows are always retained."
+        ),
     )
     market_cache_hygiene_enabled: bool = Field(
         default=True,

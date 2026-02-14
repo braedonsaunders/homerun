@@ -1,9 +1,12 @@
+import asyncio
 import uuid
 from utils.utcnow import utcnow
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from models.database import (
     SimulationAccount,
     SimulationPosition,
@@ -43,6 +46,15 @@ class SimulationService:
     """Paper trading simulation service"""
 
     POLYMARKET_FEE = 0.02  # 2% winner fee
+    SQLITE_LOCK_BUSY_TIMEOUT_MS = 1500
+    SQLITE_LOCK_RETRY_ATTEMPTS = 8
+    SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.2
+    SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS = 1.5
+
+    @staticmethod
+    def is_sqlite_lock_error(exc: Exception) -> bool:
+        message = str(getattr(exc, "orig", exc)).lower()
+        return "database is locked" in message or "database table is locked" in message
 
     async def create_account(
         self,
@@ -51,28 +63,62 @@ class SimulationService:
         max_position_pct: float = 10.0,
         max_positions: int = 10,
     ) -> SimulationAccount:
-        """Create a new simulation account"""
-        async with AsyncSessionLocal() as session:
-            account = SimulationAccount(
-                id=str(uuid.uuid4()),
-                name=name,
-                initial_capital=initial_capital,
-                current_capital=initial_capital,
-                max_position_size_pct=max_position_pct,
-                max_open_positions=max_positions,
-            )
-            session.add(account)
-            await session.commit()
-            await session.refresh(account)
+        """Create a new simulation account.
 
-            logger.info(
-                "Created simulation account",
-                account_id=account.id,
-                name=name,
-                capital=initial_capital,
-            )
+        SQLite can briefly lock writes while background workers flush updates.
+        Retry short lock windows so account creation remains responsive.
+        """
+        is_sqlite = "sqlite" in settings.DATABASE_URL.lower()
 
-            return account
+        for attempt in range(self.SQLITE_LOCK_RETRY_ATTEMPTS):
+            async with AsyncSessionLocal() as session:
+                try:
+                    if is_sqlite:
+                        await session.execute(
+                            text(f"PRAGMA busy_timeout={self.SQLITE_LOCK_BUSY_TIMEOUT_MS}")
+                        )
+
+                    account = SimulationAccount(
+                        id=str(uuid.uuid4()),
+                        name=name,
+                        initial_capital=initial_capital,
+                        current_capital=initial_capital,
+                        max_position_size_pct=max_position_pct,
+                        max_open_positions=max_positions,
+                    )
+                    session.add(account)
+                    await session.commit()
+                    await session.refresh(account)
+
+                    logger.info(
+                        "Created simulation account",
+                        account_id=account.id,
+                        name=name,
+                        capital=initial_capital,
+                        retry_attempt=attempt + 1,
+                    )
+                    return account
+                except OperationalError as exc:
+                    await session.rollback()
+                    is_retryable_lock = is_sqlite and self.is_sqlite_lock_error(exc)
+                    is_last_attempt = attempt >= self.SQLITE_LOCK_RETRY_ATTEMPTS - 1
+                    if not is_retryable_lock or is_last_attempt:
+                        raise
+
+                    delay = min(
+                        self.SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS * (2**attempt),
+                        self.SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS,
+                    )
+                    logger.warning(
+                        "Simulation account create hit SQLite lock; retrying",
+                        attempt=attempt + 1,
+                        max_attempts=self.SQLITE_LOCK_RETRY_ATTEMPTS,
+                        retry_in_seconds=delay,
+                    )
+
+            await asyncio.sleep(delay)
+
+        raise RuntimeError("Failed to create simulation account after retries")
 
     async def get_account(self, account_id: str) -> Optional[SimulationAccount]:
         """Get simulation account by ID"""

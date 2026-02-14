@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Single-thread executor for CPU-bound embedding/index work.
 _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="news_wf")
+_MAX_WORKFLOW_CYCLE_SECONDS = 90.0
 
 
 @dataclass
@@ -173,7 +174,28 @@ class WorkflowOrchestrator:
                     max(12, int(cycle_llm_call_cap * 2)),
                 ),
             )
-            clusters = article_clusterer.cluster(articles, max_clusters=cluster_limit)
+            clusters = article_clusterer.cluster(articles, max_clusters=None)
+            if len(clusters) > cluster_limit:
+                def _cluster_rank(cluster):
+                    newest = self._coerce_datetime(getattr(cluster, "newest_ts", None))
+                    recency = newest.timestamp() if newest else 0.0
+                    source_count = len(getattr(cluster, "source_list", []) or [])
+                    article_count = int(getattr(cluster, "article_count", 0) or 0)
+                    # Prioritize clusters with corroboration across outlets, then size, then recency.
+                    return (
+                        1 if source_count >= 2 else 0,
+                        article_count,
+                        recency,
+                    )
+
+                clusters = sorted(clusters, key=_cluster_rank, reverse=True)[:cluster_limit]
+                clusters.sort(
+                    key=lambda c: (
+                        self._coerce_datetime(getattr(c, "newest_ts", None))
+                        or datetime.min.replace(tzinfo=timezone.utc)
+                    ),
+                    reverse=True,
+                )
             if not clusters:
                 return {
                     "status": "no_clusters",
@@ -338,8 +360,19 @@ class WorkflowOrchestrator:
 
             all_findings: list[WorkflowFinding] = []
             market_sources_seen: dict[str, set[str]] = defaultdict(set)
+            cycle_deadline = started_at + timedelta(
+                seconds=float(wf_settings.get("max_cycle_seconds", _MAX_WORKFLOW_CYCLE_SECONDS) or _MAX_WORKFLOW_CYCLE_SECONDS)
+            )
+            time_budget_exhausted = False
 
             for cluster in clusters:
+                if datetime.now(timezone.utc) >= cycle_deadline:
+                    time_budget_exhausted = True
+                    logger.warning(
+                        "News workflow cycle hit time budget (%.1fs); ending current cycle early.",
+                        float(wf_settings.get("max_cycle_seconds", _MAX_WORKFLOW_CYCLE_SECONDS) or _MAX_WORKFLOW_CYCLE_SECONDS),
+                    )
+                    break
                 article = cluster.representative
                 allow_llm = False
                 if event_llm_used < event_llm_quota and budget.reserve_calls(1) == 1:
@@ -397,6 +430,24 @@ class WorkflowOrchestrator:
                 if not reranked:
                     continue
 
+                if bool(wf_settings.get("require_verifier", True)):
+                    verified, rejected = self._split_verified_candidates(
+                        article=article,
+                        event=event,
+                        reranked=reranked,
+                    )
+                    for rejected_finding in rejected:
+                        self._attach_cluster_metadata(rejected_finding, cluster)
+                        self._attach_market_metadata(
+                            rejected_finding,
+                            market_metadata_by_id.get(rejected_finding.market_id),
+                        )
+                        self._assign_finding_keys(rejected_finding)
+                        all_findings.append(rejected_finding)
+                    reranked = verified
+                    if not reranked:
+                        continue
+
                 aligned_reranked = []
                 for rc in reranked:
                     if not self._is_temporally_compatible(article, event, rc.candidate):
@@ -407,6 +458,10 @@ class WorkflowOrchestrator:
                             reason="temporal_mismatch",
                         )
                         self._attach_cluster_metadata(rejected, cluster)
+                        self._attach_market_metadata(
+                            rejected,
+                            market_metadata_by_id.get(rejected.market_id),
+                        )
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
@@ -427,6 +482,10 @@ class WorkflowOrchestrator:
                             reason="entity_alignment_mismatch",
                         )
                         self._attach_cluster_metadata(rejected, cluster)
+                        self._attach_market_metadata(
+                            rejected,
+                            market_metadata_by_id.get(rejected.market_id),
+                        )
                         self._assign_finding_keys(rejected)
                         all_findings.append(rejected)
                         alignment_dropped += 1
@@ -510,6 +569,38 @@ class WorkflowOrchestrator:
                 for f in deduped_findings:
                     if len(by_market_sources.get(f.market_id, set())) < 2:
                         f.actionable = False
+                        self._mark_finding_rejected(
+                            f,
+                            reason="insufficient_source_diversity",
+                            details="Need at least two independent sources for actionable signal.",
+                        )
+
+            # Actionable findings must be backed by multiple corroborating articles.
+            for finding in deduped_findings:
+                if not finding.actionable:
+                    continue
+                article_count, source_count = self._supporting_evidence_counts(finding)
+                if article_count < 2:
+                    finding.actionable = False
+                    self._mark_finding_rejected(
+                        finding,
+                        reason="insufficient_article_support",
+                        details=(
+                            "Need at least two corroborating articles in the supporting cluster "
+                            f"(got {article_count})."
+                        ),
+                    )
+                    continue
+                if source_count < 2:
+                    finding.actionable = False
+                    self._mark_finding_rejected(
+                        finding,
+                        reason="insufficient_source_diversity",
+                        details=(
+                            "Need at least two distinct outlets in supporting evidence "
+                            f"(got {source_count})."
+                        ),
+                    )
 
             actionable = [f for f in deduped_findings if f.actionable]
             intents: list[dict] = []
@@ -548,6 +639,7 @@ class WorkflowOrchestrator:
                 "local_model_mode": local_model_mode,
                 "cluster_limit": cluster_limit,
                 "alignment_dropped": alignment_dropped,
+                "time_budget_exhausted": time_budget_exhausted,
                 "elapsed_seconds": round(elapsed, 2),
                 "market_index": {
                     "initialized": market_watcher_index._initialized,
@@ -970,7 +1062,7 @@ class WorkflowOrchestrator:
                     "published": _iso(WorkflowOrchestrator._coerce_datetime(getattr(article, "published", None))),
                     "fetched_at": _iso(WorkflowOrchestrator._coerce_datetime(getattr(article, "fetched_at", None))),
                 }
-                for article in list(getattr(cluster, "articles", []) or [])[:8]
+                for article in list(getattr(cluster, "articles", []) or [])[:16]
             ],
             "newest_ts": _iso(getattr(cluster, "newest_ts", None)),
             "oldest_ts": _iso(getattr(cluster, "oldest_ts", None)),
@@ -1043,6 +1135,80 @@ class WorkflowOrchestrator:
                 if value:
                     sources.add(value)
         return sources
+
+    @staticmethod
+    def _supporting_evidence_counts(finding) -> tuple[int, int]:
+        evidence = getattr(finding, "evidence", {}) or {}
+        cluster = evidence.get("cluster") if isinstance(evidence, dict) else None
+
+        article_keys: set[str] = set()
+        source_keys: set[str] = set()
+
+        if isinstance(cluster, dict):
+            refs = cluster.get("article_refs")
+            if isinstance(refs, list):
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    article_key = (
+                        str(ref.get("article_id") or "").strip()
+                        or str(ref.get("url") or "").strip()
+                        or str(ref.get("title") or "").strip().lower()
+                    )
+                    if article_key:
+                        article_keys.add(article_key)
+                    source = str(ref.get("source") or "").strip().lower()
+                    if source:
+                        source_keys.add(source)
+
+            if not article_keys:
+                for raw_id in list(cluster.get("article_ids") or []):
+                    article_id = str(raw_id or "").strip()
+                    if article_id:
+                        article_keys.add(article_id)
+            if not source_keys:
+                for raw_source in list(cluster.get("sources") or []):
+                    source = str(raw_source or "").strip().lower()
+                    if source:
+                        source_keys.add(source)
+
+        if not article_keys:
+            fallback_article = (
+                str(getattr(finding, "article_id", "") or "").strip()
+                or str(getattr(finding, "article_url", "") or "").strip()
+                or str(getattr(finding, "article_title", "") or "").strip().lower()
+            )
+            if fallback_article:
+                article_keys.add(fallback_article)
+
+        if not source_keys:
+            source = str(getattr(finding, "article_source", "") or "").strip().lower()
+            if source:
+                source_keys.add(source)
+
+        return len(article_keys), len(source_keys)
+
+    @staticmethod
+    def _mark_finding_rejected(finding, reason: str, details: str = "") -> None:
+        if finding is None:
+            return
+        evidence = dict(getattr(finding, "evidence", {}) or {})
+        reasons = evidence.get("rejection_reasons")
+        reason_list = list(reasons) if isinstance(reasons, list) else []
+        if reason not in reason_list:
+            reason_list.append(reason)
+        evidence["rejection_reasons"] = reason_list
+        finding.evidence = evidence
+
+        details = details.strip()
+        if not details:
+            details = f"Rejected: {reason}."
+        current_reasoning = str(getattr(finding, "reasoning", "") or "").strip()
+        if current_reasoning:
+            if details not in current_reasoning:
+                finding.reasoning = f"{current_reasoning} {details}".strip()
+        else:
+            finding.reasoning = details
 
     @staticmethod
     def _is_local_model_mode(model: Optional[str], usage: dict[str, Any]) -> bool:

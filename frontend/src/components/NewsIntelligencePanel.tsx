@@ -20,7 +20,6 @@ import { cn } from '../lib/utils'
 import {
   getNewsFeedStatus,
   getNewsArticles,
-  triggerNewsFetch,
   clearNewsArticles,
   getNewsWorkflowStatus,
   getNewsWorkflowFindings,
@@ -51,6 +50,7 @@ import { Badge } from './ui/badge'
 import { Card } from './ui/card'
 import { Input } from './ui/input'
 import Sparkline from './Sparkline'
+import OpportunityEmptyState from './OpportunityEmptyState'
 
 type SubView = 'workflow' | 'feed'
 
@@ -877,6 +877,7 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   const [searchFilter, setSearchFilter] = useState(initialSearchQuery || '')
   const [feedSourceFilter, setFeedSourceFilter] = useState<string | null>(null)
   const [workflowSettingsOpen, setWorkflowSettingsOpen] = useState(false)
+  const [showFilteredWorkflow, setShowFilteredWorkflow] = useState(false)
 
   useEffect(() => {
     if (initialSearchQuery !== undefined) {
@@ -892,10 +893,10 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
   })
 
   const { data: workflowFindingsData, isLoading: findingsLoading } = useQuery({
-    queryKey: ['news-workflow-findings'],
+    queryKey: ['news-workflow-findings', showFilteredWorkflow],
     queryFn: () => getNewsWorkflowFindings({
-      actionable_only: false,
-      include_debug_rejections: false,
+      actionable_only: !showFilteredWorkflow,
+      include_debug_rejections: showFilteredWorkflow,
       max_age_hours: 24,
       limit: 150,
     }),
@@ -910,12 +911,23 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     enabled: subView === 'workflow',
   })
 
-  const runWorkflowMutation = useMutation({
+  const refreshMutation = useMutation({
     mutationFn: runNewsWorkflow,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] })
-      queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] }),
+        queryClient.invalidateQueries({ queryKey: ['news-workflow-intents'] }),
+        queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['news-articles'] }),
+        queryClient.invalidateQueries({ queryKey: ['news-feed-status'] }),
+      ])
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['news-workflow-status'] }),
+        queryClient.refetchQueries({ queryKey: ['news-workflow-findings'] }),
+        queryClient.refetchQueries({ queryKey: ['news-workflow-intents'] }),
+        queryClient.refetchQueries({ queryKey: ['news-articles'] }),
+        queryClient.refetchQueries({ queryKey: ['news-feed-status'] }),
+      ])
     },
   })
 
@@ -969,15 +981,6 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
     },
     initialPageParam: 0,
     refetchInterval: 120000,
-  })
-
-  const fetchMutation = useMutation({
-    mutationFn: triggerNewsFetch,
-    onSuccess: () => {
-      queryClient.removeQueries({ queryKey: ['news-articles'] })
-      queryClient.invalidateQueries({ queryKey: ['news-articles'] })
-      queryClient.invalidateQueries({ queryKey: ['news-feed-status'] })
-    },
   })
 
   const clearMutation = useMutation({
@@ -1166,22 +1169,12 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-xs h-8 gap-1 text-purple-400 border-purple-500/20 hover:bg-purple-500/10 hover:text-purple-400"
-                  onClick={() => runWorkflowMutation.mutate()}
-                  disabled={runWorkflowMutation.isPending}
+                  className="text-xs h-8 gap-1.5"
+                  onClick={() => refreshMutation.mutate()}
+                  disabled={refreshMutation.isPending}
                 >
-                  {runWorkflowMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                  Run
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-xs h-8 gap-1"
-                  onClick={() => fetchMutation.mutate()}
-                  disabled={fetchMutation.isPending}
-                >
-                  {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                  Fetch
+                  <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
+                  Refresh
                 </Button>
                 <Button
                   variant="outline"
@@ -1192,18 +1185,31 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
                   <Settings className="w-3.5 h-3.5" />
                   Settings
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "text-xs h-8 gap-1.5",
+                    showFilteredWorkflow
+                      ? "text-amber-300 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20"
+                      : "",
+                  )}
+                  onClick={() => setShowFilteredWorkflow((prev) => !prev)}
+                >
+                  {showFilteredWorkflow ? 'Hide Filtered' : 'Show Filtered'}
+                </Button>
               </>
             ) : (
               <>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-xs h-8 gap-1"
-                  onClick={() => fetchMutation.mutate()}
-                  disabled={fetchMutation.isPending}
+                  className="text-xs h-8 gap-1.5"
+                  onClick={() => refreshMutation.mutate()}
+                  disabled={refreshMutation.isPending}
                 >
-                  {fetchMutation.isPending ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                  Fetch
+                  <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
+                  Refresh
                 </Button>
                 <Button
                   variant="ghost"
@@ -1242,20 +1248,30 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
             </div>
           )}
 
-          {findingsLoading || runWorkflowMutation.isPending ? (
+          {findingsLoading || refreshMutation.isPending ? (
             <div className="flex flex-col items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {runWorkflowMutation.isPending ? 'Queueing workflow cycle...' : 'Loading findings...'}
+                {refreshMutation.isPending ? 'Refreshing news workflow...' : 'Loading findings...'}
               </p>
             </div>
           ) : filteredFindings.length === 0 ? (
-            <div className="text-center py-16">
-              <Target className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-              <p className="text-muted-foreground">
-                {searchFilter ? 'No findings match your filter' : 'No findings yet'}
-              </p>
-            </div>
+            <OpportunityEmptyState
+              title={
+                searchFilter
+                  ? 'No findings match your filter'
+                  : showFilteredWorkflow
+                    ? 'No scanned news opportunities found'
+                    : 'No executable news opportunities found'
+              }
+              description={
+                searchFilter
+                  ? 'Try broadening the filter or clear it to view all findings'
+                  : showFilteredWorkflow
+                    ? 'No raw workflow findings are currently available from recent news'
+                    : 'Try toggling Show Filtered or wait for new signals'
+              }
+            />
           ) : (
             <>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -1290,11 +1306,11 @@ export default function NewsIntelligencePanel({ initialSearchQuery }: NewsIntell
                   variant="outline"
                   size="sm"
                   className="text-xs h-8 gap-1.5 mt-3"
-                  onClick={() => fetchMutation.mutate()}
-                  disabled={fetchMutation.isPending}
+                  onClick={() => refreshMutation.mutate()}
+                  disabled={refreshMutation.isPending}
                 >
-                  {fetchMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Newspaper className="w-3.5 h-3.5" />}
-                  Fetch News
+                  <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
+                  Refresh
                 </Button>
               )}
             </div>

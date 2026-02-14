@@ -11,6 +11,7 @@ KALSHI_BASE_URL = "https://kalshi.com"
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-fA-F]+$")
 _KALSHI_TICKER_RE = re.compile(r"^KX[A-Z0-9-]+$")
 _POLYMARKET_SLUG_RE = re.compile(r"^(?=.*[a-z])[a-z0-9-]+$")
+_KALSHI_OUTCOME_SEGMENT_RE = re.compile(r"^[A-Z0-9]{1,5}$")
 
 
 def _clean_text(value: Any) -> str:
@@ -40,16 +41,30 @@ def _normalize_kalshi_ticker(value: Any) -> str:
 
 
 def derive_kalshi_event_ticker(market_ticker: Any) -> str:
-    ticker = _normalize_kalshi_ticker(market_ticker)
+    ticker = _normalize_kalshi_ticker(market_ticker).upper()
     if not ticker:
         return ""
 
-    # Kalshi event tickers are the first hyphen-separated segment of the
-    # market ticker (e.g. "KXBTCD" from "KXBTCD-26FEB1314",
-    # "KXATPCHALLENGERMATCH" from "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS").
+    # Kalshi market tickers for multi-outcome events often append a short
+    # outcome segment to the event ticker (e.g. "...-MOR"). Strip only that
+    # trailing segment when it looks like an outcome code.
     parts = [p for p in ticker.split("-") if p]
-    if len(parts) <= 1:
-        return ticker
+    if len(parts) >= 3:
+        last = parts[-1]
+        if _KALSHI_OUTCOME_SEGMENT_RE.fullmatch(last):
+            candidate = "-".join(parts[:-1])
+            if _is_likely_kalshi_ticker(candidate):
+                return candidate
+    return ticker
+
+
+def derive_kalshi_series_ticker(value: Any) -> str:
+    ticker = _normalize_kalshi_ticker(value).upper()
+    if not ticker:
+        return ""
+    parts = [p for p in ticker.split("-") if p]
+    if not parts:
+        return ""
     return parts[0]
 
 
@@ -108,17 +123,30 @@ def build_kalshi_market_url(
     market_ticker: Any = None,
     event_ticker: Any = None,
     event_slug: Any = None,
+    series_ticker: Any = None,
 ) -> str | None:
-    # Kalshi website URLs resolve via the event ticker (lowercase), e.g.
-    # https://kalshi.com/markets/kxbtcmaxy  — full market tickers 404.
-    # Prefer the explicit event_ticker / event_slug from the API, then
-    # fall back to deriving the event portion from the market ticker.
-    event_ticker_text = (
-        _clean_segment(event_ticker)
-        or _clean_segment(event_slug)
-        or derive_kalshi_event_ticker(_normalize_kalshi_ticker(market_ticker))
-    )
+    # Kalshi market pages are canonically addressed as:
+    # /markets/{series_ticker}/{event_ticker}
+    # (which redirects to /markets/{series}/{human-readable-title}/{event}).
+    explicit_event = _clean_segment(event_ticker) or _clean_segment(event_slug)
+    if _is_likely_kalshi_ticker(explicit_event):
+        event_ticker_text = explicit_event.upper()
+    else:
+        event_ticker_text = derive_kalshi_event_ticker(market_ticker)
+
+    explicit_series = _clean_segment(series_ticker)
+    if _is_likely_kalshi_ticker(explicit_series):
+        series_ticker_text = explicit_series.upper()
+    else:
+        series_ticker_text = derive_kalshi_series_ticker(event_ticker_text or market_ticker)
+
     if _is_likely_kalshi_ticker(event_ticker_text):
+        if _is_likely_kalshi_ticker(series_ticker_text) and series_ticker_text != event_ticker_text:
+            return (
+                f"{KALSHI_BASE_URL}/markets/"
+                f"{quote(series_ticker_text.lower(), safe='')}/"
+                f"{quote(event_ticker_text.lower(), safe='')}"
+            )
         return f"{KALSHI_BASE_URL}/markets/{quote(event_ticker_text.lower(), safe='')}"
 
     return None
@@ -143,6 +171,9 @@ def build_market_url(
             ),
             event_slug=(
                 market.get("event_slug") or market.get("eventSlug")
+            ),
+            series_ticker=(
+                market.get("series_ticker") or market.get("seriesTicker")
             ),
         )
 

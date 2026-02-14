@@ -15,7 +15,11 @@ import httpx
 from sqlalchemy import select
 
 from models.database import AppSettings, AsyncSessionLocal
-from services.news.rss_config import default_gov_rss_feeds, normalize_gov_rss_feeds
+from services.news.rss_config import (
+    default_gov_rss_feeds,
+    merge_gov_rss_feeds,
+    normalize_gov_rss_feeds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +81,11 @@ class GovRSSFeedService:
                 enabled = default_enabled if raw_enabled is None else bool(raw_enabled)
                 raw_rows = getattr(row, "news_gov_rss_feeds_json", None)
                 rows = normalize_gov_rss_feeds(raw_rows) if raw_rows else []
-                if not rows:
-                    rows = default_feeds
+                merged_rows = merge_gov_rss_feeds(rows)
+                if not merged_rows:
+                    merged_rows = default_feeds
+                if merged_rows != rows:
+                    rows = merged_rows
                     row.news_gov_rss_feeds_json = rows
                     await session.commit()
         except Exception as exc:

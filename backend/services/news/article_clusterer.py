@@ -192,7 +192,7 @@ class ArticleClusterer:
     def __init__(
         self,
         *,
-        similarity_threshold: float = 0.34,
+        similarity_threshold: float = 0.28,
         recency_window_hours: int = 72,
         max_cluster_size: int = 12,
     ) -> None:

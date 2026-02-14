@@ -210,7 +210,7 @@ def test_require_verifier_rejects_non_llm_rerank_candidates():
     assert reasons == ["verifier_unavailable"]
 
 
-def test_edge_estimator_skips_results_when_llm_not_used():
+def test_edge_estimator_records_rejection_when_llm_not_used():
     estimator = EdgeEstimator()
     event = ExtractedEvent(
         event_type="election",
@@ -257,7 +257,10 @@ def test_edge_estimator_skips_results_when_llm_not_used():
         )
     )
 
-    assert finding is None
+    assert finding is not None
+    assert finding.actionable is False
+    rejection_reasons = finding.evidence.get("rejection_reasons", [])
+    assert "llm_budget_exhausted" in rejection_reasons
 
 
 def test_local_model_mode_detection():

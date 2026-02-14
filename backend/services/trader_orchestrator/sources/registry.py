@@ -64,22 +64,36 @@ _SOURCE_ADAPTERS: dict[str, SourceAdapter] = {
     ),
 }
 
+_SOURCE_ALIASES: dict[str, str] = {
+    # Legacy UI/source keys mapped to canonical adapters.
+    "pool_traders": "tracked_traders",
+}
+
+
+def _normalize_source_key(value: str) -> str:
+    key = str(value or "").strip().lower()
+    return _SOURCE_ALIASES.get(key, key)
+
 
 def list_source_adapters() -> list[SourceAdapter]:
     return sorted(_SOURCE_ADAPTERS.values(), key=lambda item: item.key)
 
 
+def list_source_aliases() -> dict[str, str]:
+    return dict(_SOURCE_ALIASES)
+
+
 def get_source_adapter(source_key: str) -> SourceAdapter | None:
-    return _SOURCE_ADAPTERS.get(str(source_key or "").strip().lower())
+    return _SOURCE_ADAPTERS.get(_normalize_source_key(source_key))
 
 
 def normalize_sources(raw_sources: list[str] | None) -> list[str]:
-    if not raw_sources:
+    if raw_sources is None:
         return [adapter.key for adapter in list_source_adapters()]
     out: list[str] = []
     seen: set[str] = set()
     for raw in raw_sources:
-        key = str(raw or "").strip().lower()
+        key = _normalize_source_key(str(raw or ""))
         if not key or key in seen:
             continue
         if key not in _SOURCE_ADAPTERS:

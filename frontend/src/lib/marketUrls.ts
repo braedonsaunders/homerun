@@ -21,6 +21,10 @@ function isLikelyKalshiTicker(value: NullableString): boolean {
   return /^KX[A-Z0-9-]+$/.test(ticker)
 }
 
+function isLikelyKalshiOutcomeSegment(value: string): boolean {
+  return /^[A-Z0-9]{1,5}$/.test(value)
+}
+
 function isLikelyPolymarketSlug(value: NullableString): boolean {
   const slug = cleanSegment(value).toLowerCase()
   return /^(?=.*[a-z])[a-z0-9-]+$/.test(slug)
@@ -31,14 +35,27 @@ function normalizeKalshiTicker(value: NullableString): string {
 }
 
 export function deriveKalshiEventTicker(marketTicker: NullableString): string {
-  const ticker = normalizeKalshiTicker(marketTicker)
+  const ticker = normalizeKalshiTicker(marketTicker).toUpperCase()
   if (!ticker) return ''
 
-  // Kalshi event tickers are the first hyphen-separated segment of the
-  // market ticker (e.g. "KXBTCD" from "KXBTCD-26FEB1314",
-  // "KXATPCHALLENGERMATCH" from "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS").
+  // Multi-outcome market tickers often append a short outcome code segment
+  // to the event ticker (e.g. "...-MOR"). Strip that segment when present.
   const parts = ticker.split('-').filter(Boolean)
-  if (parts.length <= 1) return ticker
+  if (parts.length >= 3) {
+    const maybeOutcome = parts[parts.length - 1]
+    if (isLikelyKalshiOutcomeSegment(maybeOutcome)) {
+      const candidate = parts.slice(0, -1).join('-')
+      if (isLikelyKalshiTicker(candidate)) return candidate
+    }
+  }
+  return ticker
+}
+
+export function deriveKalshiSeriesTicker(value: NullableString): string {
+  const ticker = normalizeKalshiTicker(value).toUpperCase()
+  if (!ticker) return ''
+  const parts = ticker.split('-').filter(Boolean)
+  if (!parts.length) return ''
   return parts[0]
 }
 
@@ -99,15 +116,25 @@ export function buildKalshiMarketUrl(params: {
   marketTicker?: NullableString
   eventTicker?: NullableString
   eventSlug?: NullableString
+  seriesTicker?: NullableString
 }): string | null {
-  // Kalshi website URLs resolve via the event ticker (lowercase), e.g.
-  // https://kalshi.com/markets/kxbtcmaxy — full market tickers 404.
-  // Prefer explicit event_ticker / event_slug, then derive from market ticker.
-  const eventTicker =
-    cleanSegment(params.eventTicker) ||
-    cleanSegment(params.eventSlug) ||
-    deriveKalshiEventTicker(params.marketTicker)
+  // Kalshi market pages resolve via:
+  // /markets/{series_ticker}/{event_ticker}
+  // which redirects to the full canonical path with title slug.
+  const explicitEvent = cleanSegment(params.eventTicker) || cleanSegment(params.eventSlug)
+  const eventTicker = isLikelyKalshiTicker(explicitEvent)
+    ? explicitEvent.toUpperCase()
+    : deriveKalshiEventTicker(params.marketTicker)
+
+  const explicitSeries = cleanSegment(params.seriesTicker)
+  const seriesTicker = isLikelyKalshiTicker(explicitSeries)
+    ? explicitSeries.toUpperCase()
+    : deriveKalshiSeriesTicker(eventTicker || params.marketTicker)
+
   if (isLikelyKalshiTicker(eventTicker)) {
+    if (isLikelyKalshiTicker(seriesTicker) && seriesTicker !== eventTicker) {
+      return `${KALSHI_BASE_URL}/markets/${encodeSegment(seriesTicker.toLowerCase())}/${encodeSegment(eventTicker.toLowerCase())}`
+    }
     return `${KALSHI_BASE_URL}/markets/${encodeSegment(eventTicker.toLowerCase())}`
   }
 
@@ -129,6 +156,8 @@ type OpportunityMarketForLinks = {
   market_slug?: NullableString
   event_slug?: NullableString
   event_ticker?: NullableString
+  series_ticker?: NullableString
+  seriesTicker?: NullableString
   condition_id?: NullableString
   conditionId?: NullableString
   platform?: NullableString
@@ -177,6 +206,7 @@ export function getOpportunityPlatformLinks(opportunity: OpportunityForLinks | n
           marketTicker: market.id || market.market_id || market.ticker,
           eventTicker: market.event_ticker,
           eventSlug: market.event_slug,
+          seriesTicker: market.series_ticker || market.seriesTicker,
         })
       : buildPolymarketMarketUrl({
           eventSlug: market.event_slug || eventSlug,

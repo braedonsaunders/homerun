@@ -130,7 +130,22 @@ def test_weather_prompt_includes_compact_weather_context():
 
     prompt = judge._build_judgment_prompt(opp)
 
+    assert "### Temporal Anchors (Canonical)" in prompt
+    assert "Current UTC time (today)" in prompt
+    assert "Days until resolution (from current UTC)" in prompt
     assert "### Weather Context" in prompt
     assert "Report-only mode: yes" in prompt
     assert "Forecast source snapshots" in prompt
     assert "nws:hourly" in prompt
+
+
+def test_weather_compact_prompt_includes_temporal_anchors():
+    opp = _build_weather_opportunity(max_position_size=0.0)
+    judge = OpportunityJudge()
+
+    prompt = judge._build_weather_judgment_prompt(opp)
+
+    assert "### Temporal Anchors (Canonical)" in prompt
+    assert "Current UTC time (today)" in prompt
+    assert "Days until resolution (from current UTC)" in prompt
+    assert "Independent related-market quotes provided: no" in prompt

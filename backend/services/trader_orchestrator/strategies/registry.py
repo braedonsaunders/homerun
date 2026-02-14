@@ -14,6 +14,12 @@ _STRATEGIES: dict[str, TraderStrategy] = {
     OmniAggressiveStrategy.key: OmniAggressiveStrategy(),
 }
 
+_STRATEGY_ALIASES: dict[str, str] = {
+    # Backward compatibility for older UI defaults.
+    "strategy.default": Crypto15mStrategy.key,
+    "default": Crypto15mStrategy.key,
+}
+
 
 def list_strategy_keys() -> list[str]:
     return sorted(_STRATEGIES.keys())
@@ -21,4 +27,5 @@ def list_strategy_keys() -> list[str]:
 
 def get_strategy(strategy_key: str) -> TraderStrategy:
     key = str(strategy_key or "").strip().lower()
+    key = _STRATEGY_ALIASES.get(key, key)
     return _STRATEGIES.get(key, BaseTraderStrategy())

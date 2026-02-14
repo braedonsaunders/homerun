@@ -129,7 +129,9 @@ class WeatherWorkflowOrchestrator:
 
         await session.commit()
         all_opportunities = opportunities + report_only_findings
-        await self._attach_market_price_history(opportunities)
+        # Weather UI intentionally shows both executable opportunities and
+        # report-only findings, so hydrate sparklines for the full visible set.
+        await self._attach_market_price_history(all_opportunities)
 
         self._cycle_count += 1
         self._last_run = datetime.now(timezone.utc)

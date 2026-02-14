@@ -15,7 +15,7 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 
 export type TraderOpportunitiesSettingsForm = {
-  source_filter: 'all' | 'confluence' | 'insider'
+  source_filter: 'all' | 'tracked' | 'pool'
   min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
   side_filter: 'all' | 'BUY' | 'SELL'
   confluence_limit: number
@@ -172,8 +172,8 @@ export default function TraderOpportunitiesSettingsFlyout({
                   className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
                 >
                   <option value="all">All sources</option>
-                  <option value="confluence">Tracked Traders</option>
-                  <option value="insider">Pool Traders</option>
+                  <option value="tracked">Tracked Traders (Individuals + Groups)</option>
+                  <option value="pool">Pool Traders</option>
                 </select>
               </div>
 

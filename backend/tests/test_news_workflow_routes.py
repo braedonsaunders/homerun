@@ -128,6 +128,6 @@ def test_build_market_link_payload_handles_kalshi_ticker():
     )
 
     assert payload["market_platform"] == "kalshi"
-    assert payload["market_url"] == "https://kalshi.com/markets/KXELONMARS-99"
+    assert payload["market_url"] == "https://kalshi.com/markets/kxelonmars/kxelonmars-99"
     assert payload["polymarket_url"] is None
     assert payload["kalshi_url"] == payload["market_url"]

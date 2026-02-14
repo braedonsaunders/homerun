@@ -1,51 +1,42 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Search,
-  TrendingUp,
-  TrendingDown,
-  RefreshCw,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  ArrowUpRight,
-  ArrowDownRight,
-  Wallet,
-  BarChart3,
-  History,
-  Briefcase,
-  DollarSign,
   Activity,
-  ArrowRight,
-  CheckCircle2,
-  Clock,
-  User,
+  ArrowUpRight,
+  BarChart3,
+  Briefcase,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  History,
+  Percent,
+  RefreshCw,
+  Search,
   ShieldAlert,
   ShieldCheck,
-  AlertTriangle,
-  Zap,
-  Eye
+  TrendingDown,
+  TrendingUp,
+  User,
+  Wallet,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { buildPolymarketMarketUrl } from '../lib/marketUrls'
-import { Card, CardContent } from './ui/card'
-import { Button } from './ui/button'
 import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Card, CardContent } from './ui/card'
 import { Input } from './ui/input'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import {
-  getWalletTradesAnalysis,
-  getWalletPositionsAnalysis,
-  getWalletSummary,
-  getWalletWinRate,
-  analyzeWalletPnL,
-  getWalletProfile,
   analyzeWallet,
-  WalletTrade,
-  WalletPosition,
-  WalletSummary,
-  WalletWinRate,
-  WalletPnL,
-  WalletAnalysis,
+  analyzeWalletPnL,
+  getWalletPositionsAnalysis,
+  getWalletProfile,
+  getWalletSummary,
+  getWalletTradesAnalysis,
+  getWalletWinRate,
+  type WalletAnalysis,
+  type WalletPosition,
+  type WalletTrade,
 } from '../services/api'
 
 interface WalletAnalysisPanelProps {
@@ -54,148 +45,857 @@ interface WalletAnalysisPanelProps {
   onWalletAnalyzed?: () => void
 }
 
-// Large Sparkline Component for hero section
-function LargeSparkline({ data, color = '#22c55e', height = 80 }: { data: number[]; color?: string; height?: number }) {
-  if (!data || data.length < 2) return null
-
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
-
-  const padding = 4
-  const viewBoxWidth = 400
-  const viewBoxHeight = height
-
-  const points = data.map((value, index) => {
-    const x = padding + (index / (data.length - 1)) * (viewBoxWidth - padding * 2)
-    const y = viewBoxHeight - padding - ((value - min) / range) * (viewBoxHeight - padding * 2)
-    return `${x},${y}`
-  }).join(' ')
-
-  const areaPath = `M ${padding},${viewBoxHeight - padding} L ${points} L ${viewBoxWidth - padding},${viewBoxHeight - padding} Z`
-
-  const lastY = viewBoxHeight - padding - ((data[data.length - 1] - min) / range) * (viewBoxHeight - padding * 2)
-
-  return (
-    <svg
-      width="100%"
-      height={height}
-      viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
-      preserveAspectRatio="none"
-      className="overflow-visible"
-    >
-      <defs>
-        <linearGradient id={`large-sparkline-gradient-${color.replace('#', '')}`} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor={color} stopOpacity="0.4" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.05" />
-        </linearGradient>
-      </defs>
-      <path
-        d={areaPath}
-        fill={`url(#large-sparkline-gradient-${color.replace('#', '')})`}
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-      <circle
-        cx={viewBoxWidth - padding}
-        cy={lastY}
-        r="6"
-        fill={color}
-        stroke="hsl(var(--card))"
-        strokeWidth="2"
-      />
-    </svg>
-  )
-}
-
-// Circular Progress Component
-function CircularProgress({ percentage, size = 80, strokeWidth = 6, color = '#22c55e' }: {
-  percentage: number
-  size?: number
-  strokeWidth?: number
-  color?: string
-}) {
-  const radius = (size - strokeWidth) / 2
-  const circumference = radius * 2 * Math.PI
-  const offset = circumference - (Math.min(100, Math.max(0, percentage)) / 100) * circumference
-
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="transform -rotate-90">
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="currentColor" opacity={0.1}
-          strokeWidth={strokeWidth}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          className="transition-all duration-500"
-        />
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-lg font-bold" style={{ color }}>
-          {percentage.toFixed(0)}%
-        </span>
-      </div>
-    </div>
-  )
-}
-
+type AnalysisTab = 'overview' | 'trades' | 'positions' | 'risk'
 type TimePeriod = 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
 
-const TIME_PERIOD_OPTIONS: { value: TimePeriod; label: string }[] = [
+const TIME_PERIOD_OPTIONS: Array<{ value: TimePeriod; label: string }> = [
   { value: 'DAY', label: '24H' },
   { value: 'WEEK', label: '7D' },
   { value: 'MONTH', label: '30D' },
   { value: 'ALL', label: 'All Time' },
 ]
 
+const TAB_OPTIONS: Array<{ id: AnalysisTab; label: string; icon: ComponentType<{ className?: string }> }> = [
+  { id: 'overview', label: 'Overview', icon: BarChart3 },
+  { id: 'trades', label: 'Trades', icon: History },
+  { id: 'positions', label: 'Positions', icon: Briefcase },
+  { id: 'risk', label: 'Risk', icon: ShieldAlert },
+]
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
+
+function formatCurrency(value: number, decimals = 2): string {
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`
+}
+
+function formatSignedCurrency(value: number, decimals = 2): string {
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : ''
+  return `${prefix}${formatCurrency(Math.abs(value), decimals)}`
+}
+
+function formatSignedPercent(value: number, decimals = 1): string {
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : ''
+  return `${prefix}${Math.abs(value).toFixed(decimals)}%`
+}
+
+function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+}
+
+function shortAddress(address: string): string {
+  if (address.length <= 12) return address
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function formatTimestamp(timestamp: string): string {
+  if (!timestamp) return '--'
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '--'
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function readErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error && 'message' in error) {
+    return String((error as { message?: unknown }).message ?? 'Request failed')
+  }
+  return 'Request failed'
+}
+
+function riskModel(score: number): {
+  label: string
+  badgeClass: string
+  textClass: string
+  borderClass: string
+} {
+  if (score >= 0.7) {
+    return {
+      label: 'High Risk',
+      badgeClass: 'bg-red-500/15 text-red-300 border-red-500/30',
+      textClass: 'text-red-300',
+      borderClass: 'border-red-500/25',
+    }
+  }
+  if (score >= 0.3) {
+    return {
+      label: 'Moderate Risk',
+      badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+      textClass: 'text-amber-300',
+      borderClass: 'border-amber-500/25',
+    }
+  }
+  return {
+    label: 'Low Risk',
+    badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+    textClass: 'text-emerald-300',
+    borderClass: 'border-emerald-500/25',
+  }
+}
+
+function Sparkline({ values, positive }: { values: number[]; positive: boolean }) {
+  if (values.length < 2) {
+    return (
+      <div className="flex h-[84px] items-center justify-center text-xs text-muted-foreground/70">
+        Not enough trade history for trend line.
+      </div>
+    )
+  }
+
+  const width = 420
+  const height = 84
+  const padding = 4
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+
+  const points = values
+    .map((value, index) => {
+      const x = padding + (index / (values.length - 1)) * (width - padding * 2)
+      const y = height - padding - ((value - min) / range) * (height - padding * 2)
+      return `${x},${y}`
+    })
+    .join(' ')
+
+  const strokeColor = positive ? '#34d399' : '#f87171'
+
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  )
+}
+
+function StatTile({
+  label,
+  value,
+  delta,
+  positive,
+  icon: Icon,
+}: {
+  label: string
+  value: string
+  delta?: string
+  positive?: boolean
+  icon: ComponentType<{ className?: string }>
+}) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-background/40 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
+        <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+      </div>
+      <p className="mt-1 text-lg font-semibold text-foreground">{value}</p>
+      {delta && (
+        <p className={cn('text-xs', positive ? 'text-emerald-300' : 'text-red-300')}>
+          {delta}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function SectionLoading() {
+  return (
+    <div className="flex h-full min-h-[180px] items-center justify-center">
+      <RefreshCw className="h-7 w-7 animate-spin text-muted-foreground" />
+    </div>
+  )
+}
+
+interface PaginationControlsProps {
+  page: number
+  pageSize: number
+  total: number
+  itemLabel: string
+  onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
+}
+
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  itemLabel,
+  onPageChange,
+  onPageSizeChange,
+}: PaginationControlsProps) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1
+  const end = total === 0 ? 0 : Math.min(total, page * pageSize)
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-muted-foreground">
+        {start}-{end} of {total} {itemLabel}
+      </span>
+      <select
+        value={pageSize}
+        onChange={(event) => onPageSizeChange(Number(event.target.value))}
+        className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+      >
+        {PAGE_SIZE_OPTIONS.map((size) => (
+          <option key={size} value={size}>
+            {size}/page
+          </option>
+        ))}
+      </select>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 px-2"
+        onClick={() => onPageChange(Math.max(1, page - 1))}
+        disabled={page <= 1}
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </Button>
+      <span className="w-[74px] text-center text-muted-foreground">
+        Page {page}/{totalPages}
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 px-2"
+        onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+        disabled={page >= totalPages}
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  )
+}
+
+function EmptyData({ icon: Icon, title, subtitle }: { icon: ComponentType<{ className?: string }>; title: string; subtitle: string }) {
+  return (
+    <div className="flex h-full min-h-[220px] flex-col items-center justify-center px-6 text-center">
+      <Icon className="mb-3 h-10 w-10 text-muted-foreground/35" />
+      <p className="text-sm text-foreground">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>
+    </div>
+  )
+}
+
+function OverviewHeroPanel({
+  isLoading,
+  activeWallet,
+  username,
+  timePeriod,
+  anomalyScore,
+  riskLabel,
+  riskBadgeClass,
+  totalPnl,
+  roiPercent,
+  isProfitable,
+  winRate,
+  wins,
+  losses,
+  volume,
+  totalTrades,
+  sparklineValues,
+  realizedPnl,
+  unrealizedPnl,
+  isHeaderLoading,
+  positionsCount,
+  anomaliesCount,
+}: {
+  isLoading: boolean
+  activeWallet: string
+  username: string | null
+  timePeriod: TimePeriod
+  anomalyScore: number
+  riskLabel: string
+  riskBadgeClass: string
+  totalPnl: number
+  roiPercent: number
+  isProfitable: boolean
+  winRate: number
+  wins: number
+  losses: number
+  volume: number
+  totalTrades: number
+  sparklineValues: number[]
+  realizedPnl: number
+  unrealizedPnl: number
+  isHeaderLoading: boolean
+  positionsCount: number
+  anomaliesCount: number
+}) {
+  if (isLoading) {
+    return <SectionLoading />
+  }
+
+  return (
+    <div className="h-full p-4">
+      <section className="grid grid-cols-12 gap-4">
+        <Card className="col-span-12 border-border/80 bg-card/75 lg:col-span-8">
+          <CardContent className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-3">
+                  {username ? <User className="h-5 w-5 text-cyan-200" /> : <Wallet className="h-5 w-5 text-cyan-200" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-semibold text-foreground">
+                      {username || shortAddress(activeWallet)}
+                    </h3>
+                    <a
+                      href={`https://polymarket.com/profile/${activeWallet}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
+                      title="Open profile"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                  <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{activeWallet}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className={riskBadgeClass}>
+                  {(anomalyScore * 100).toFixed(0)}% anomaly
+                </Badge>
+                <Badge variant="outline" className="border-border bg-background/60 text-muted-foreground">
+                  {TIME_PERIOD_OPTIONS.find((option) => option.value === timePeriod)?.label}
+                </Badge>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatTile
+                label="Total P&L"
+                value={formatSignedCurrency(totalPnl)}
+                delta={formatSignedPercent(roiPercent)}
+                positive={isProfitable}
+                icon={isProfitable ? TrendingUp : TrendingDown}
+              />
+              <StatTile
+                label="Win Rate"
+                value={`${winRate.toFixed(1)}%`}
+                delta={`${wins}W / ${losses}L`}
+                positive={winRate >= 50}
+                icon={Percent}
+              />
+              <StatTile
+                label="Volume"
+                value={formatCurrency(volume, 0)}
+                delta={`${formatCompact(totalTrades)} trades`}
+                positive
+                icon={Activity}
+              />
+              <StatTile
+                label="Risk Score"
+                value={`${(anomalyScore * 100).toFixed(0)}%`}
+                delta={riskLabel}
+                positive={anomalyScore < 0.3}
+                icon={ShieldAlert}
+              />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-border/70 bg-background/40 p-3">
+              <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>PnL Trend</span>
+                <span>{totalTrades} sampled trades</span>
+              </div>
+              <Sparkline values={sparklineValues} positive={isProfitable} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="col-span-12 border-border/80 bg-card/75 lg:col-span-4">
+          <CardContent className="space-y-3 p-5">
+            <div className="rounded-xl border border-border/70 bg-background/40 p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Realized P&L</p>
+              <p className={cn('mt-1 text-lg font-semibold', realizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+                {formatSignedCurrency(realizedPnl)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/70 bg-background/40 p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Unrealized P&L</p>
+              <p className={cn('mt-1 text-lg font-semibold', unrealizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+                {formatSignedCurrency(unrealizedPnl)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border/70 bg-background/40 p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Data Health</p>
+              <p className="mt-1 text-sm text-foreground">
+                {isHeaderLoading ? 'Loading fresh metrics...' : 'Metrics synchronized'}
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Trades: {totalTrades} loaded, Positions: {positionsCount}, Anomalies: {anomaliesCount}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+    </div>
+  )
+}
+
+function TradesPanel({
+  isLoading,
+  trades,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  isLoading: boolean
+  trades: WalletTrade[]
+  page: number
+  pageSize: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
+}) {
+  if (isLoading) return <SectionLoading />
+
+  if (trades.length === 0) {
+    return <EmptyData icon={History} title="No trades found" subtitle="This wallet does not currently expose trade history." />
+  }
+
+  const totalPages = Math.max(1, Math.ceil(trades.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const startIndex = (safePage - 1) * pageSize
+  const pageRows = trades.slice(startIndex, startIndex + pageSize)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-between border-b border-border/70 px-4 py-3">
+        <p className="text-xs text-muted-foreground">Latest executed trades with direct market and transaction links.</p>
+        <PaginationControls
+          page={safePage}
+          pageSize={pageSize}
+          total={trades.length}
+          itemLabel="trades"
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table className="text-xs">
+          <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+            <TableRow className="border-b border-border/80 bg-muted/40">
+              <TableHead className="h-9 px-3">Time</TableHead>
+              <TableHead className="h-9 px-3 min-w-[240px]">Market</TableHead>
+              <TableHead className="h-9 px-3">Side</TableHead>
+              <TableHead className="h-9 px-3">Outcome</TableHead>
+              <TableHead className="h-9 px-3 text-right">Size</TableHead>
+              <TableHead className="h-9 px-3 text-right">Price</TableHead>
+              <TableHead className="h-9 px-3 text-right">Notional</TableHead>
+              <TableHead className="h-9 px-3 text-right">Links</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pageRows.map((trade) => {
+              const marketUrl = buildPolymarketMarketUrl({
+                eventSlug: trade.event_slug,
+                marketSlug: trade.market_slug,
+                marketId: trade.market,
+              })
+              const isBuy = trade.side === 'BUY'
+
+              return (
+                <TableRow key={trade.id} className="border-border/70">
+                  <TableCell className="px-3 py-2.5 font-mono text-[11px] text-muted-foreground">
+                    {formatTimestamp(trade.timestamp)}
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5">
+                    <div className="space-y-0.5">
+                      <p className="max-w-[360px] truncate text-foreground" title={trade.market_title || trade.market}>
+                        {trade.market_title || trade.market}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground">{shortAddress(trade.market)}</p>
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5">
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        'text-[10px]',
+                        isBuy ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300' : 'border-red-500/30 bg-red-500/15 text-red-300',
+                      )}
+                    >
+                      {trade.side}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5 text-foreground/90">{trade.outcome || '--'}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">{trade.size.toFixed(2)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">${trade.price.toFixed(4)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">{formatCurrency(trade.cost)}</TableCell>
+                  <TableCell className="px-3 py-2.5">
+                    <div className="flex items-center justify-end gap-2">
+                      {marketUrl && (
+                        <a
+                          href={marketUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
+                          title="Open market"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                      {trade.transaction_hash && (
+                        <a
+                          href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
+                          title="Open transaction"
+                        >
+                          <ArrowUpRight className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
+function PositionsPanel({
+  isLoading,
+  data,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  isLoading: boolean
+  data?: {
+    wallet: string
+    total_positions: number
+    total_value: number
+    total_unrealized_pnl: number
+    positions: WalletPosition[]
+  }
+  page: number
+  pageSize: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
+}) {
+  if (isLoading) return <SectionLoading />
+
+  const positions = data?.positions ?? []
+
+  if (positions.length === 0) {
+    return <EmptyData icon={Briefcase} title="No open positions" subtitle="This wallet currently has no open risk on tracked markets." />
+  }
+
+  const totalPages = Math.max(1, Math.ceil(positions.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const startIndex = (safePage - 1) * pageSize
+  const pageRows = positions.slice(startIndex, startIndex + pageSize)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="grid shrink-0 grid-cols-1 gap-3 border-b border-border/70 px-4 py-3 md:grid-cols-2">
+        <div className="rounded-lg border border-border/70 bg-background/40 p-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Position Value</p>
+          <p className="mt-1 text-lg font-semibold text-foreground">{formatCurrency(data?.total_value ?? 0)}</p>
+        </div>
+        <div className="rounded-lg border border-border/70 bg-background/40 p-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Unrealized P&L</p>
+          <p className={cn('mt-1 text-lg font-semibold', (data?.total_unrealized_pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+            {formatSignedCurrency(data?.total_unrealized_pnl ?? 0)}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center justify-end border-b border-border/70 px-4 py-3">
+        <PaginationControls
+          page={safePage}
+          pageSize={pageSize}
+          total={positions.length}
+          itemLabel="positions"
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table className="text-xs">
+          <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+            <TableRow className="border-b border-border/80 bg-muted/40">
+              <TableHead className="h-9 px-3 min-w-[220px]">Market</TableHead>
+              <TableHead className="h-9 px-3">Outcome</TableHead>
+              <TableHead className="h-9 px-3 text-right">Size</TableHead>
+              <TableHead className="h-9 px-3 text-right">Avg</TableHead>
+              <TableHead className="h-9 px-3 text-right">Current</TableHead>
+              <TableHead className="h-9 px-3 text-right">Value</TableHead>
+              <TableHead className="h-9 px-3 text-right">Unrealized</TableHead>
+              <TableHead className="h-9 px-3 text-right">ROI</TableHead>
+              <TableHead className="h-9 px-3 text-right">Link</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pageRows.map((position) => {
+              const marketUrl = buildPolymarketMarketUrl({
+                eventSlug: position.event_slug,
+                marketSlug: position.market_slug,
+                marketId: position.market,
+              })
+              const positive = position.unrealized_pnl >= 0
+
+              return (
+                <TableRow key={`${position.market}-${position.outcome}`} className="border-border/70">
+                  <TableCell className="px-3 py-2.5">
+                    <div className="space-y-0.5">
+                      <p className="max-w-[360px] truncate text-foreground" title={position.title || position.market}>
+                        {position.title || position.market}
+                      </p>
+                      <p className="font-mono text-[10px] text-muted-foreground">{shortAddress(position.market)}</p>
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5 text-foreground/90">{position.outcome || '--'}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">{position.size.toFixed(2)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">${position.avg_price.toFixed(4)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">${position.current_price.toFixed(4)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">{formatCurrency(position.current_value)}</TableCell>
+                  <TableCell className={cn('px-3 py-2.5 text-right font-mono', positive ? 'text-emerald-300' : 'text-red-300')}>
+                    {formatSignedCurrency(position.unrealized_pnl)}
+                  </TableCell>
+                  <TableCell className={cn('px-3 py-2.5 text-right font-mono', position.roi_percent >= 0 ? 'text-emerald-300' : 'text-red-300')}>
+                    {formatSignedPercent(position.roi_percent)}
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5 text-right">
+                    {marketUrl ? (
+                      <a
+                        href={marketUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
+                        title="Open market"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">--</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
+function RiskPanel({
+  isLoading,
+  data,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  isLoading: boolean
+  data?: WalletAnalysis
+  page: number
+  pageSize: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
+}) {
+  if (isLoading) return <SectionLoading />
+
+  if (!data) {
+    return <EmptyData icon={ShieldAlert} title="No risk analysis available" subtitle="Risk analysis is generated after enough market and trade context is collected." />
+  }
+
+  const risk = riskModel(data.anomaly_score)
+  const anomalies = data.anomalies ?? []
+  const totalPages = Math.max(1, Math.ceil(anomalies.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const startIndex = (safePage - 1) * pageSize
+  const pageRows = anomalies.slice(startIndex, startIndex + pageSize)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="grid shrink-0 grid-cols-1 gap-3 border-b border-border/70 px-4 py-3 lg:grid-cols-3">
+        <div className={cn('rounded-lg border bg-background/40 p-3', risk.borderClass)}>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Anomaly Score</p>
+          <p className={cn('mt-1 text-2xl font-semibold', risk.textClass)}>{(data.anomaly_score * 100).toFixed(0)}%</p>
+          <p className="mt-1 text-xs text-muted-foreground">{risk.label}</p>
+        </div>
+
+        <div className="rounded-lg border border-border/70 bg-background/40 p-3 lg:col-span-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Recommendation</p>
+          <p className="mt-1 text-sm text-foreground">{data.recommendation}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Badge variant="outline" className={risk.badgeClass}>
+              {risk.label}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={cn(
+                data.is_profitable_pattern
+                  ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+                  : 'border-border bg-background/60 text-muted-foreground',
+              )}
+            >
+              {data.is_profitable_pattern ? 'Profitable Pattern' : 'Pattern Unclear'}
+            </Badge>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex shrink-0 items-center justify-between border-b border-border/70 px-4 py-3">
+        <div className="flex flex-wrap gap-1.5">
+          {data.strategies_detected.slice(0, 5).map((strategy) => (
+            <Badge key={strategy} variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-cyan-200">
+              {strategy}
+            </Badge>
+          ))}
+          {data.strategies_detected.length === 0 && (
+            <span className="text-xs text-muted-foreground">No strategy fingerprint detected.</span>
+          )}
+        </div>
+        <PaginationControls
+          page={safePage}
+          pageSize={pageSize}
+          total={anomalies.length}
+          itemLabel="anomalies"
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {anomalies.length === 0 ? (
+          <EmptyData
+            icon={ShieldCheck}
+            title="No anomalies detected"
+            subtitle="This wallet currently looks statistically normal based on observed behavior."
+          />
+        ) : (
+          <Table className="text-xs">
+            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
+              <TableRow className="border-b border-border/80 bg-muted/40">
+                <TableHead className="h-9 px-3">Severity</TableHead>
+                <TableHead className="h-9 px-3">Type</TableHead>
+                <TableHead className="h-9 px-3 text-right">Score</TableHead>
+                <TableHead className="h-9 px-3 min-w-[280px]">Description</TableHead>
+                <TableHead className="h-9 px-3 min-w-[200px]">Evidence</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pageRows.map((anomaly, index) => (
+                <TableRow key={`${anomaly.type}-${index}`} className="border-border/70 align-top">
+                  <TableCell className="px-3 py-2.5">
+                    <SeverityBadge severity={anomaly.severity} />
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5 text-foreground/90">
+                    {anomaly.type.replace(/_/g, ' ')}
+                  </TableCell>
+                  <TableCell className="px-3 py-2.5 text-right font-mono text-foreground">{anomaly.score.toFixed(2)}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-foreground/90">{anomaly.description}</TableCell>
+                  <TableCell className="px-3 py-2.5 text-muted-foreground">
+                    <EvidencePreview evidence={anomaly.evidence} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const normalized = severity.toLowerCase()
+  const tone =
+    normalized === 'critical'
+      ? 'border-red-500/35 bg-red-500/15 text-red-300'
+      : normalized === 'high'
+      ? 'border-orange-500/35 bg-orange-500/15 text-orange-300'
+      : normalized === 'medium'
+      ? 'border-amber-500/35 bg-amber-500/15 text-amber-300'
+      : 'border-cyan-500/35 bg-cyan-500/15 text-cyan-300'
+
+  return (
+    <Badge variant="outline" className={cn('text-[10px] uppercase tracking-wide', tone)}>
+      {severity}
+    </Badge>
+  )
+}
+
+function EvidencePreview({ evidence }: { evidence: Record<string, unknown> }) {
+  const entries = Object.entries(evidence || {})
+
+  if (entries.length === 0) {
+    return <span className="text-xs text-muted-foreground">--</span>
+  }
+
+  return (
+    <div className="space-y-1">
+      {entries.slice(0, 2).map(([key, value]) => (
+        <div key={key} className="truncate text-[11px]">
+          <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>{' '}
+          <span className="text-foreground/90">
+            {typeof value === 'number' ? value.toFixed(2) : String(value)}
+          </span>
+        </div>
+      ))}
+      {entries.length > 2 && <p className="text-[10px] text-muted-foreground">+{entries.length - 2} more</p>}
+    </div>
+  )
+}
+
 export default function WalletAnalysisPanel({ initialWallet, initialUsername, onWalletAnalyzed }: WalletAnalysisPanelProps) {
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
   const [passedUsername, setPassedUsername] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'summary' | 'trades' | 'positions' | 'anomaly'>('summary')
+  const [activeTab, setActiveTab] = useState<AnalysisTab>('overview')
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('ALL')
 
-  // Auto-analyze when initialWallet changes
+  const [tradesPage, setTradesPage] = useState(1)
+  const [tradesPageSize, setTradesPageSize] = useState(20)
+  const [positionsPage, setPositionsPage] = useState(1)
+  const [positionsPageSize, setPositionsPageSize] = useState(20)
+  const [anomaliesPage, setAnomaliesPage] = useState(1)
+  const [anomaliesPageSize, setAnomaliesPageSize] = useState(20)
+
   useEffect(() => {
     if (initialWallet && initialWallet !== activeWallet) {
       setSearchAddress(initialWallet)
       setActiveWallet(initialWallet.trim())
       setPassedUsername(initialUsername || null)
-      setActiveTab('summary')
+      setActiveTab('overview')
       if (onWalletAnalyzed) {
         onWalletAnalyzed()
       }
     }
-  }, [initialWallet, initialUsername, onWalletAnalyzed, activeWallet])
+  }, [activeWallet, initialUsername, initialWallet, onWalletAnalyzed])
 
-  // Use the discover API for PnL data (same as wallet tracker)
   const pnlQuery = useQuery({
     queryKey: ['wallet-pnl-discover', activeWallet, timePeriod],
     queryFn: () => analyzeWalletPnL(activeWallet!, timePeriod),
     enabled: !!activeWallet,
   })
 
-  // Also get summary for additional details
   const summaryQuery = useQuery({
     queryKey: ['wallet-summary', activeWallet],
     queryFn: () => getWalletSummary(activeWallet!),
@@ -210,7 +910,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
 
   const tradesQuery = useQuery({
     queryKey: ['wallet-trades', activeWallet],
-    queryFn: () => getWalletTradesAnalysis(activeWallet!, 200),
+    queryFn: () => getWalletTradesAnalysis(activeWallet!, 500),
     enabled: !!activeWallet,
   })
 
@@ -220,1181 +920,289 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
     enabled: !!activeWallet,
   })
 
-  // Auto-run anomaly detection when wallet is opened
   const anomalyQuery = useQuery({
     queryKey: ['wallet-anomaly', activeWallet],
     queryFn: () => analyzeWallet(activeWallet!),
     enabled: !!activeWallet,
-    staleTime: 300000, // Cache for 5 minutes
+    staleTime: 300000,
     retry: 1,
   })
 
-  // Fetch user profile (username) directly from Polymarket
   const profileQuery = useQuery({
     queryKey: ['wallet-profile', activeWallet],
     queryFn: () => getWalletProfile(activeWallet!),
     enabled: !!activeWallet,
-    staleTime: 300000, // Cache for 5 minutes
+    staleTime: 300000,
   })
 
   const username = passedUsername || profileQuery.data?.username || null
 
+  const trades = tradesQuery.data?.trades ?? []
+  const positions = positionsQuery.data?.positions ?? []
+  const anomalies = anomalyQuery.data?.anomalies ?? []
+
+  useEffect(() => {
+    setTradesPage(1)
+    setPositionsPage(1)
+    setAnomaliesPage(1)
+  }, [activeWallet, timePeriod])
+
+  useEffect(() => {
+    setTradesPage((current) => Math.min(current, Math.max(1, Math.ceil(trades.length / tradesPageSize))))
+  }, [trades.length, tradesPageSize])
+
+  useEffect(() => {
+    setPositionsPage((current) => Math.min(current, Math.max(1, Math.ceil(positions.length / positionsPageSize))))
+  }, [positions.length, positionsPageSize])
+
+  useEffect(() => {
+    setAnomaliesPage((current) => Math.min(current, Math.max(1, Math.ceil(anomalies.length / anomaliesPageSize))))
+  }, [anomalies.length, anomaliesPageSize])
+
   const handleAnalyze = () => {
-    if (searchAddress.trim()) {
-      setActiveWallet(searchAddress.trim())
-      setPassedUsername(null)
-      setActiveTab('summary')
-    }
+    const value = searchAddress.trim()
+    if (!value) return
+    setActiveWallet(value)
+    setPassedUsername(null)
+    setActiveTab('overview')
   }
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleAnalyze()
-    }
+  const handleRefresh = () => {
+    void pnlQuery.refetch()
+    void summaryQuery.refetch()
+    void winRateQuery.refetch()
+    void tradesQuery.refetch()
+    void positionsQuery.refetch()
+    void anomalyQuery.refetch()
+    void profileQuery.refetch()
   }
 
-  const isLoading = pnlQuery.isLoading || summaryQuery.isLoading || winRateQuery.isLoading
+  const summaryData = summaryQuery.data?.summary
+  const totalPnl = pnlQuery.data?.total_pnl ?? summaryData?.total_pnl ?? 0
+  const roiPercent = pnlQuery.data?.roi_percent ?? summaryData?.roi_percent ?? 0
+  const totalInvested = pnlQuery.data?.total_invested ?? summaryData?.total_invested ?? 0
+  const totalReturned = pnlQuery.data?.total_returned ?? summaryData?.total_returned ?? 0
+  const totalTrades = pnlQuery.data?.total_trades ?? summaryData?.total_trades ?? trades.length
+  const volume = totalInvested + totalReturned
+  const winRate = winRateQuery.data?.win_rate ?? 0
+  const isProfitable = totalPnl >= 0
+
+  const sparklineValues = useMemo(() => {
+    if (trades.length < 2) return []
+
+    const ordered = [...trades].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    let cumulative = 0
+
+    return ordered.map((trade) => {
+      cumulative += trade.side === 'SELL' ? trade.cost : -trade.cost
+      return cumulative
+    })
+  }, [trades])
+
+  const firstError =
+    pnlQuery.error ||
+    summaryQuery.error ||
+    winRateQuery.error ||
+    tradesQuery.error ||
+    positionsQuery.error ||
+    anomalyQuery.error
+
+  const risk = riskModel(anomalyQuery.data?.anomaly_score ?? 0)
+  const isHeaderLoading = pnlQuery.isLoading || summaryQuery.isLoading || winRateQuery.isLoading
 
   return (
-    <div className="space-y-4">
-      <Card className="border-border">
-        <CardContent className="p-3">
-          <div className="overflow-x-auto pb-1">
-            <div className="flex min-w-max items-end gap-2">
-              <div className="flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 py-1.5 text-xs text-muted-foreground">
-                <Eye className="h-3.5 w-3.5 text-cyan-400" />
-                Wallet analysis controls
-              </div>
-              <div className="relative w-[380px]">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <Card className="shrink-0 border-border/80 bg-card/80 dark:bg-gradient-to-r dark:from-slate-900/50 dark:via-cyan-950/25 dark:to-emerald-950/20">
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-cyan-200/90">Trader Intelligence</p>
+              <h2 className="mt-1 text-lg font-semibold text-foreground">Wallet Analysis</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Profile any trader wallet with structured performance, execution, and anomaly intelligence.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="relative w-[360px] max-w-full">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="text"
                   value={searchAddress}
-                  onChange={(e) => setSearchAddress(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="Enter wallet address (0x...) or username"
-                  className="h-8 pl-10 bg-card border-border font-mono text-xs"
+                  onChange={(event) => setSearchAddress(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleAnalyze()
+                  }}
+                  placeholder="Enter wallet address (0x...)"
+                  className="h-9 border-border bg-background/80 pl-10 font-mono text-xs"
                 />
               </div>
+
               <Button
                 onClick={handleAnalyze}
                 disabled={!searchAddress.trim()}
-                className="h-8 px-3 text-xs flex items-center gap-1.5 bg-cyan-500 hover:bg-cyan-600 text-foreground mb-0.5"
+                className="h-9 bg-cyan-500 text-slate-950 hover:bg-cyan-400"
               >
-                <Search className="w-3.5 h-3.5" />
+                <Search className="mr-1.5 h-3.5 w-3.5" />
                 Analyze
               </Button>
-              <div className="h-6 w-px bg-border/70 mb-1" />
-              <div className="flex h-8 items-center bg-muted/50 rounded-lg p-0.5 border border-border mb-0.5">
+
+              <Button
+                variant="outline"
+                className="h-9"
+                onClick={handleRefresh}
+                disabled={!activeWallet}
+              >
+                <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', (pnlQuery.isFetching || summaryQuery.isFetching) && 'animate-spin')} />
+                Refresh
+              </Button>
+
+              <div className="flex h-9 items-center rounded-lg border border-border bg-background/70 p-0.5">
                 {TIME_PERIOD_OPTIONS.map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setTimePeriod(option.value)}
                     className={cn(
-                      "h-7 px-2.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap",
+                      'h-8 rounded-md px-2.5 text-xs transition-colors',
                       timePeriod === option.value
-                        ? "bg-primary/20 text-primary"
-                        : "text-muted-foreground hover:bg-muted"
+                        ? 'bg-cyan-500/20 text-cyan-200'
+                        : 'text-muted-foreground hover:text-foreground',
                     )}
                   >
                     {option.label}
                   </button>
                 ))}
               </div>
-              {activeWallet && (
-                <div className="rounded-md border border-border bg-background/40 px-2 py-1.5 text-[11px] text-muted-foreground mb-0.5">
-                  Active: <span className="font-mono text-foreground">{activeWallet.slice(0, 6)}...{activeWallet.slice(-4)}</span>
-                </div>
-              )}
             </div>
           </div>
+
+          {activeWallet && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-cyan-200">
+                Active: {shortAddress(activeWallet)}
+              </Badge>
+              <Badge variant="outline" className={risk.badgeClass}>
+                Risk: {risk.label}
+              </Badge>
+              <span className="text-muted-foreground">Tab data is paginated and table-scoped.</span>
+            </div>
+          )}
+
+          {firstError && activeWallet && (
+            <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {readErrorMessage(firstError)}
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Results */}
-      {activeWallet && (
-        <div className="space-y-4">
-          {/* Hero Profile Card */}
-          <WalletHeroCard
-            address={activeWallet}
-            username={username}
-            pnlData={pnlQuery.data}
-            summary={summaryQuery.data}
-            winRate={winRateQuery.data}
-            trades={tradesQuery.data?.trades || []}
-            isLoading={isLoading}
-            timePeriod={timePeriod}
-            anomalyData={anomalyQuery.data}
-            onRefresh={() => {
-              pnlQuery.refetch()
-              summaryQuery.refetch()
-              winRateQuery.refetch()
-              tradesQuery.refetch()
-              positionsQuery.refetch()
-              anomalyQuery.refetch()
-            }}
-          />
-
-          {/* Tab Navigation */}
-          <div className="flex items-center gap-2">
-            {[
-              { id: 'summary' as const, label: 'Overview', icon: BarChart3 },
-              { id: 'trades' as const, label: 'Trade History', icon: History },
-              { id: 'positions' as const, label: 'Open Positions', icon: Briefcase },
-              { id: 'anomaly' as const, label: 'Risk Analysis', icon: ShieldAlert },
-            ].map((tab) => (
-              <Button
-                key={tab.id}
-                variant="outline"
-                size="sm"
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "flex items-center gap-2",
-                  activeTab === tab.id
-                    ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400"
-                    : "bg-card text-muted-foreground hover:text-foreground border-border"
-                )}
-              >
-                <tab.icon className="w-4 h-4" />
-                {tab.label}
-              </Button>
-            ))}
-          </div>
-
-          {/* Tab Content */}
-          <Card className="border-border">
-            <CardContent className="p-6">
-              {activeTab === 'summary' && (
-                <SummaryTab
-                  pnlData={pnlQuery.data}
-                  summary={summaryQuery.data}
-                  winRate={winRateQuery.data}
-                  isLoading={summaryQuery.isLoading}
-                />
-              )}
-              {activeTab === 'trades' && (
-                <TradesTab data={tradesQuery.data} isLoading={tradesQuery.isLoading} />
-              )}
-              {activeTab === 'positions' && (
-                <PositionsTab data={positionsQuery.data} isLoading={positionsQuery.isLoading} />
-              )}
-              {activeTab === 'anomaly' && (
-                <AnomalyTab data={anomalyQuery.data} isLoading={anomalyQuery.isLoading} />
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Empty State */}
-      {!activeWallet && (
-        <Card className="border-border">
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Wallet className="w-12 h-12 text-muted-foreground/30 mb-4" />
-            <p className="text-muted-foreground">No wallet selected</p>
-            <p className="text-sm text-muted-foreground/70 mt-1">
-              Enter a wallet address above to analyze trading performance, win rates, and strategy patterns
+      {!activeWallet ? (
+        <Card className="flex-1 border-border/80">
+          <CardContent className="flex h-full flex-col items-center justify-center px-6 text-center">
+            <Wallet className="mb-4 h-12 w-12 text-muted-foreground/35" />
+            <p className="text-sm text-foreground">No wallet selected</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Enter a wallet address to unlock a full trader profile with paginated trade and position tables.
             </p>
           </CardContent>
         </Card>
-      )}
-    </div>
-  )
-}
-
-function WalletHeroCard({
-  address,
-  username,
-  pnlData,
-  summary,
-  winRate,
-  trades,
-  isLoading,
-  timePeriod,
-  anomalyData,
-  onRefresh
-}: {
-  address: string
-  username: string | null
-  pnlData?: WalletPnL
-  summary?: WalletSummary
-  winRate?: WalletWinRate
-  trades: WalletTrade[]
-  isLoading: boolean
-  timePeriod: TimePeriod
-  anomalyData?: WalletAnalysis
-  onRefresh: () => void
-}) {
-  const timePeriodLabel = TIME_PERIOD_OPTIONS.find(o => o.value === timePeriod)?.label || 'All Time'
-  // Generate sparkline data from trades (cumulative value over time)
-  const sparklineData = useMemo(() => {
-    if (!trades || trades.length === 0) return []
-
-    const sortedTrades = [...trades].sort((a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    )
-
-    let cumulative = 0
-    const pnlData: number[] = []
-
-    sortedTrades.forEach(trade => {
-      if (trade.side === 'SELL') {
-        cumulative += trade.cost
-      } else {
-        cumulative -= trade.cost
-      }
-      pnlData.push(cumulative)
-    })
-
-    // Normalize to show trend
-    return pnlData.length > 1 ? pnlData : []
-  }, [trades])
-
-  // Use pnlData (from discover API) as primary source, fallback to summary
-  const totalPnl = pnlData?.total_pnl ?? summary?.summary.total_pnl ?? 0
-  const roiPercent = pnlData?.roi_percent ?? summary?.summary.roi_percent ?? 0
-  const totalInvested = pnlData?.total_invested ?? summary?.summary.total_invested ?? 0
-  const totalReturned = pnlData?.total_returned ?? summary?.summary.total_returned ?? 0
-  const totalTrades = pnlData?.total_trades ?? summary?.summary.total_trades ?? 0
-
-  const isProfitable = totalPnl >= 0
-  const winRateValue = winRate?.win_rate ?? 0
-  const winRateColor = winRateValue >= 70 ? '#22c55e' : winRateValue >= 50 ? '#eab308' : '#ef4444'
-  const pnlColor = isProfitable ? '#22c55e' : '#ef4444'
-
-  // Calculate volume
-  const volume = totalInvested + totalReturned
-
-  if (isLoading) {
-    return (
-      <Card className="border-border">
-        <CardContent className="flex items-center justify-center py-12">
-          <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-        </CardContent>
-      </Card>
-    )
-  }
-
-  return (
-    <Card className="border-border">
-      <CardContent className="p-6">
-        {/* Header Row */}
-        <div className="flex items-start justify-between mb-6">
-          <div className="flex items-center gap-4">
-            {/* Avatar */}
-            <div className="relative">
-              <div className="p-3 bg-cyan-500/10 rounded-lg">
-                {username ? (
-                  <User className="w-6 h-6 text-cyan-500" />
-                ) : (
-                  <Wallet className="w-6 h-6 text-cyan-500" />
-                )}
+      ) : (
+        <>
+          <Card className="flex min-h-0 flex-1 flex-col overflow-hidden border-border/80 bg-card/80">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/70 bg-background/40 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {TAB_OPTIONS.map((tab) => (
+                  <Button
+                    key={tab.id}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={cn(
+                      'h-8 gap-1.5 text-xs',
+                      activeTab === tab.id
+                        ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/20'
+                        : 'border-border bg-background/70 text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    <tab.icon className="h-3.5 w-3.5" />
+                    {tab.label}
+                  </Button>
+                ))}
               </div>
-              {isProfitable && (
-                <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center border-2 border-card">
-                  <TrendingUp className="w-2.5 h-2.5 text-foreground" />
-                </div>
-              )}
+              <p className="text-xs text-muted-foreground">Designed for table-first browsing with pagination controls.</p>
             </div>
 
-            {/* Identity */}
-            <div>
-              {username ? (
-                <>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h2 className="text-lg font-bold text-foreground">{username}</h2>
-                    <a
-                      href={`https://polymarket.com/profile/${address}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
-                      title="View on Polymarket"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                  <p className="text-xs text-muted-foreground font-mono">{`${address.slice(0, 6)}...${address.slice(-4)}`}</p>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h2 className="text-lg font-bold text-foreground font-mono">
-                      {`${address.slice(0, 6)}...${address.slice(-4)}`}
-                    </h2>
-                    <a
-                      href={`https://polymarket.com/profile/${address}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
-                      title="View on Polymarket"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[300px]">{address}</p>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Badges & Refresh */}
-          <div className="flex items-center gap-2">
-            {anomalyData && (
-              <Badge variant="outline" className={cn(
-                "text-xs",
-                anomalyData.anomaly_score > 0.7
-                  ? "bg-red-500/15 text-red-400 border-red-500/20"
-                  : anomalyData.anomaly_score > 0.3
-                  ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/20"
-                  : "bg-green-500/15 text-green-400 border-green-500/20"
-              )}>
-                {anomalyData.anomaly_score > 0.7 ? (
-                  <ShieldAlert className="w-3 h-3 mr-1" />
-                ) : anomalyData.anomaly_score > 0.3 ? (
-                  <AlertTriangle className="w-3 h-3 mr-1" />
-                ) : (
-                  <ShieldCheck className="w-3 h-3 mr-1" />
-                )}
-                Risk: {(anomalyData.anomaly_score * 100).toFixed(0)}%
-              </Badge>
-            )}
-            <Badge variant="outline" className="text-xs bg-muted text-muted-foreground border-border">
-              {timePeriodLabel}
-            </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onRefresh}
-              className="flex items-center gap-1.5"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
-            </Button>
-          </div>
-        </div>
-
-        {/* Key Metrics Row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          {/* Total P&L - Primary metric */}
-          <div className="col-span-2 bg-muted rounded-lg p-4 border border-border">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Total P&L</p>
-                <p className={cn(
-                  "text-2xl font-bold",
-                  isProfitable ? "text-green-400" : "text-red-400"
-                )}>
-                  {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  ROI: <span className={isProfitable ? "text-green-400" : "text-red-400"}>
-                    {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}%
-                  </span>
-                </p>
-              </div>
-              <div className={cn(
-                "p-3 rounded-lg",
-                isProfitable ? "bg-green-500/10" : "bg-red-500/10"
-              )}>
-                {isProfitable ? (
-                  <TrendingUp className="w-6 h-6 text-green-400" />
-                ) : (
-                  <TrendingDown className="w-6 h-6 text-red-400" />
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Volume */}
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Volume</p>
-            <p className="text-xl font-bold text-foreground">
-              ${volume.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              {totalTrades} trades
-            </p>
-          </div>
-
-          {/* Win Rate */}
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Win Rate</p>
-                <p className="text-xl font-bold" style={{ color: winRateColor }}>
-                  {winRateValue.toFixed(1)}%
-                </p>
-                {winRate && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    <span className="text-green-400">{winRate.wins}W</span>
-                    {' / '}
-                    <span className="text-red-400">{winRate.losses}L</span>
-                  </p>
-                )}
-              </div>
-              <CircularProgress
-                percentage={winRateValue}
-                size={48}
-                strokeWidth={4}
-                color={winRateColor}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Sparkline Section - Full Width */}
-        {sparklineData.length > 1 && (
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-sm text-muted-foreground">Performance Trend</p>
-              <p className="text-xs text-muted-foreground">Last {sparklineData.length} trades</p>
-            </div>
-            <LargeSparkline
-              data={sparklineData}
-              color={pnlColor}
-              height={100}
-            />
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function SummaryTab({
-  pnlData,
-  summary,
-  winRate,
-  isLoading
-}: {
-  pnlData?: WalletPnL
-  summary?: WalletSummary
-  winRate?: WalletWinRate
-  isLoading: boolean
-}) {
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  // Use pnlData as primary, fallback to summary
-  const data = summary?.summary
-  const realizedPnl = pnlData?.realized_pnl ?? data?.realized_pnl ?? 0
-  const unrealizedPnl = pnlData?.unrealized_pnl ?? data?.unrealized_pnl ?? 0
-  const totalPnl = pnlData?.total_pnl ?? data?.total_pnl ?? 0
-  const roiPercent = pnlData?.roi_percent ?? data?.roi_percent ?? 0
-  const totalInvested = pnlData?.total_invested ?? data?.total_invested ?? 0
-  const totalReturned = pnlData?.total_returned ?? data?.total_returned ?? 0
-  const positionValue = pnlData?.position_value ?? data?.position_value ?? 0
-  const buys = data?.buys ?? 0
-  const sells = data?.sells ?? 0
-  const totalTrades = pnlData?.total_trades ?? data?.total_trades ?? 0
-
-  if (!data && !pnlData) {
-    return (
-      <div className="text-center py-12">
-        <Activity className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-        <p className="text-muted-foreground">No data available for this wallet</p>
-      </div>
-    )
-  }
-
-  const isProfitable = totalPnl >= 0
-
-  return (
-    <div className="space-y-6">
-      {/* Performance Grid */}
-      <div>
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Performance Breakdown</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Realized PnL */}
-          <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-green-500/10 to-emerald-500/5 border border-green-500/20 p-5">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-green-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-2">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-                <p className="text-sm text-muted-foreground">Realized P&L</p>
-              </div>
-              <p className={cn(
-                "text-2xl font-bold",
-                realizedPnl >= 0 ? "text-green-400" : "text-red-400"
-              )}>
-                {realizedPnl >= 0 ? '+' : ''}${realizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </p>
-              <p className="text-xs text-muted-foreground/70 mt-1">From closed positions</p>
-            </div>
-          </div>
-
-          {/* Unrealized PnL */}
-          <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border border-blue-500/20 p-5">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-2">
-                <Clock className="w-4 h-4 text-blue-400" />
-                <p className="text-sm text-muted-foreground">Unrealized P&L</p>
-              </div>
-              <p className={cn(
-                "text-2xl font-bold",
-                unrealizedPnl >= 0 ? "text-green-400" : "text-red-400"
-              )}>
-                {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </p>
-              <p className="text-xs text-muted-foreground/70 mt-1">From open positions</p>
-            </div>
-          </div>
-
-          {/* Total PnL */}
-          <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-purple-500/10 to-pink-500/5 border border-purple-500/20 p-5">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-2">
-                <DollarSign className="w-4 h-4 text-purple-400" />
-                <p className="text-sm text-muted-foreground">Total P&L</p>
-              </div>
-              <p className={cn(
-                "text-2xl font-bold",
-                isProfitable ? "text-green-400" : "text-red-400"
-              )}>
-                {isProfitable ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </p>
-              <p className="text-xs text-muted-foreground/70 mt-1">
-                {roiPercent >= 0 ? '+' : ''}{roiPercent.toFixed(1)}% ROI
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Investment Flow & Trading Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Investment Flow */}
-        <div className="rounded-xl bg-muted border border-border p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
-              <ArrowRight className="w-4 h-4 text-blue-400" />
-            </div>
-            <h4 className="font-semibold text-foreground">Investment Flow</h4>
-          </div>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-red-400" />
-                <span className="text-sm text-muted-foreground">Total Invested</span>
-              </div>
-              <span className="font-mono font-medium text-foreground">
-                ${totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-400" />
-                <span className="text-sm text-muted-foreground">Total Returned</span>
-              </div>
-              <span className="font-mono font-medium text-foreground">
-                ${totalReturned.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-blue-400" />
-                <span className="text-sm text-muted-foreground">Position Value</span>
-              </div>
-              <span className="font-mono font-medium text-foreground">
-                ${positionValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-            <div className="pt-3 mt-3 border-t border-border">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground/80">Net Flow</span>
-                <span className={cn(
-                  "font-mono font-bold text-lg",
-                  totalPnl >= 0 ? "text-green-400" : "text-red-400"
-                )}>
-                  {totalPnl >= 0 ? '+' : '-'}${Math.abs(totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Trading Activity */}
-        <div className="rounded-xl bg-muted border border-border p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-              <Activity className="w-4 h-4 text-purple-400" />
-            </div>
-            <h4 className="font-semibold text-foreground">Trading Activity</h4>
-          </div>
-
-          {/* Trade Counts */}
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <div className="text-center p-3 rounded-lg bg-green-500/10 border border-green-500/20">
-              <p className="text-2xl font-bold text-green-400">{buys}</p>
-              <p className="text-xs text-muted-foreground/70">Buys</p>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-              <p className="text-2xl font-bold text-red-400">{sells}</p>
-              <p className="text-xs text-muted-foreground/70">Sells</p>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-gray-500/10 border border-gray-500/20">
-              <p className="text-2xl font-bold text-foreground/80">{totalTrades}</p>
-              <p className="text-xs text-muted-foreground/70">Total</p>
-            </div>
-          </div>
-
-          {/* Win Rate Bar */}
-          {winRate && (
-            <div className="pt-3 border-t border-border">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Win Rate</span>
-                <span className={cn(
-                  "font-medium",
-                  winRate.win_rate >= 70 ? "text-green-400" :
-                  winRate.win_rate >= 50 ? "text-yellow-400" : "text-red-400"
-                )}>
-                  {winRate.win_rate.toFixed(1)}%
-                </span>
-              </div>
-              <div className="h-2 bg-muted rounded-full overflow-hidden">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-all duration-500",
-                    winRate.win_rate >= 70 ? "bg-gradient-to-r from-green-500 to-emerald-400" :
-                    winRate.win_rate >= 50 ? "bg-gradient-to-r from-yellow-500 to-amber-400" :
-                    "bg-gradient-to-r from-red-500 to-rose-400"
-                  )}
-                  style={{ width: `${Math.min(100, winRate.win_rate)}%` }}
+            <div className="min-h-0 flex-1">
+              {activeTab === 'overview' && (
+                <OverviewHeroPanel
+                  isLoading={summaryQuery.isLoading || pnlQuery.isLoading || winRateQuery.isLoading}
+                  activeWallet={activeWallet}
+                  username={username}
+                  timePeriod={timePeriod}
+                  anomalyScore={anomalyQuery.data?.anomaly_score ?? 0}
+                  riskLabel={risk.label}
+                  riskBadgeClass={risk.badgeClass}
+                  totalPnl={totalPnl}
+                  roiPercent={roiPercent}
+                  isProfitable={isProfitable}
+                  winRate={winRate}
+                  wins={winRateQuery.data?.wins ?? 0}
+                  losses={winRateQuery.data?.losses ?? 0}
+                  volume={volume}
+                  totalTrades={totalTrades}
+                  sparklineValues={sparklineValues}
+                  realizedPnl={pnlQuery.data?.realized_pnl ?? summaryData?.realized_pnl ?? 0}
+                  unrealizedPnl={pnlQuery.data?.unrealized_pnl ?? summaryData?.unrealized_pnl ?? 0}
+                  isHeaderLoading={isHeaderLoading}
+                  positionsCount={positions.length}
+                  anomaliesCount={anomalies.length}
                 />
-              </div>
-              <div className="flex justify-between mt-1">
-                <span className="text-xs text-green-400">{winRate.wins} wins</span>
-                <span className="text-xs text-red-400">{winRate.losses} losses</span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+              )}
 
-function TradesTab({ data, isLoading }: { data?: { wallet: string; total: number; trades: WalletTrade[] }; isLoading: boolean }) {
-  const [expandedTrades, setExpandedTrades] = useState<Set<string>>(new Set())
+              {activeTab === 'trades' && (
+                <TradesPanel
+                  isLoading={tradesQuery.isLoading}
+                  trades={trades}
+                  page={tradesPage}
+                  pageSize={tradesPageSize}
+                  onPageChange={setTradesPage}
+                  onPageSizeChange={(size) => {
+                    setTradesPageSize(size)
+                    setTradesPage(1)
+                  }}
+                />
+              )}
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
+              {activeTab === 'positions' && (
+                <PositionsPanel
+                  isLoading={positionsQuery.isLoading}
+                  data={positionsQuery.data}
+                  page={positionsPage}
+                  pageSize={positionsPageSize}
+                  onPageChange={setPositionsPage}
+                  onPageSizeChange={(size) => {
+                    setPositionsPageSize(size)
+                    setPositionsPage(1)
+                  }}
+                />
+              )}
 
-  if (!data || data.trades.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <History className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-        <p className="text-muted-foreground">No trades found for this wallet</p>
-      </div>
-    )
-  }
-
-  const toggleTrade = (id: string) => {
-    const newExpanded = new Set(expandedTrades)
-    if (newExpanded.has(id)) {
-      newExpanded.delete(id)
-    } else {
-      newExpanded.add(id)
-    }
-    setExpandedTrades(newExpanded)
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Showing {data.trades.length} of {data.total} trades
-        </p>
-      </div>
-
-      {/* Trade List */}
-      <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
-        {data.trades.map((trade) => (
-          <TradeRow
-            key={trade.id}
-            trade={trade}
-            isExpanded={expandedTrades.has(trade.id)}
-            onToggle={() => toggleTrade(trade.id)}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TradeRow({ trade, isExpanded, onToggle }: { trade: WalletTrade; isExpanded: boolean; onToggle: () => void }) {
-  const isBuy = trade.side === 'BUY'
-  const timestamp = trade.timestamp ? new Date(trade.timestamp).toLocaleString() : 'Unknown'
-  const marketUrl = buildPolymarketMarketUrl({
-    eventSlug: trade.event_slug,
-    marketSlug: trade.market_slug,
-    marketId: trade.market,
-  })
-
-  return (
-    <div className={cn(
-      "rounded-xl overflow-hidden transition-all",
-      isExpanded ? "bg-muted" : "bg-muted/50 hover:bg-muted"
-    )}>
-      <div
-        className="flex items-center justify-between p-4 cursor-pointer"
-        onClick={onToggle}
-      >
-        <div className="flex items-center gap-4">
-          <div className={cn(
-            "w-10 h-10 rounded-xl flex items-center justify-center",
-            isBuy ? "bg-green-500/20" : "bg-red-500/20"
-          )}>
-            {isBuy ? (
-              <ArrowUpRight className="w-5 h-5 text-green-400" />
-            ) : (
-              <ArrowDownRight className="w-5 h-5 text-red-400" />
-            )}
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className={cn(
-                "text-xs font-semibold px-2 py-0.5 rounded-full",
-                isBuy ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-              )}>
-                {trade.side}
-              </span>
-              <span className={cn(
-                "text-xs font-medium px-2 py-0.5 rounded-full",
-                trade.outcome?.toUpperCase() === 'YES' ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"
-              )}>
-                {trade.outcome || 'Unknown'}
-              </span>
-            </div>
-            <p className="text-sm font-medium text-foreground mt-1 line-clamp-1" title={trade.market_title}>
-              {trade.market_title || trade.market?.slice(0, 20) + '...'}
-            </p>
-            <p className="text-xs text-muted-foreground/70 mt-0.5">{timestamp}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <p className="font-mono font-semibold text-foreground">${trade.cost.toFixed(2)}</p>
-            <p className="text-xs text-muted-foreground/70">
-              {trade.size.toFixed(2)} @ ${trade.price.toFixed(4)}
-            </p>
-          </div>
-          <div className={cn(
-            "p-2 rounded-lg transition-colors",
-            isExpanded ? "bg-purple-500/20" : "bg-muted/50"
-          )}>
-            {isExpanded ? (
-              <ChevronUp className="w-4 h-4 text-purple-400" />
-            ) : (
-              <ChevronDown className="w-4 h-4 text-muted-foreground/70" />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div className="px-4 pb-4 border-t border-border/50">
-          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div className="bg-muted/60 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70 mb-1">Market</p>
-              {trade.market_title ? (
-                <p className="text-xs text-foreground/80 truncate" title={trade.market_title}>
-                  {trade.market_title}
-                </p>
-              ) : (
-                <p className="font-mono text-xs text-foreground/80 truncate" title={trade.market}>
-                  {trade.market.length > 30 ? trade.market.slice(0, 30) + '...' : trade.market}
-                </p>
+              {activeTab === 'risk' && (
+                <RiskPanel
+                  isLoading={anomalyQuery.isLoading}
+                  data={anomalyQuery.data}
+                  page={anomaliesPage}
+                  pageSize={anomaliesPageSize}
+                  onPageChange={setAnomaliesPage}
+                  onPageSizeChange={(size) => {
+                    setAnomaliesPageSize(size)
+                    setAnomaliesPage(1)
+                  }}
+                />
               )}
             </div>
-            <div className="bg-muted/60 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70 mb-1">Size</p>
-              <p className="font-mono text-foreground">{trade.size.toFixed(4)}</p>
-            </div>
-            <div className="bg-muted/60 rounded-lg p-3">
-              <p className="text-xs text-muted-foreground/70 mb-1">Price</p>
-              <p className="font-mono text-foreground">${trade.price.toFixed(4)}</p>
-            </div>
-            {trade.transaction_hash && (
-              <div className="bg-muted/60 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground/70 mb-1">Transaction</p>
-                <a
-                  href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-blue-400 hover:text-blue-300"
-                >
-                  <span className="font-mono text-xs">{trade.transaction_hash.slice(0, 10)}...</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            )}
-          </div>
-          {/* Actions */}
-          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-            {marketUrl && (
-              <a
-                href={marketUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
-              >
-                <ExternalLink className="w-3 h-3" />
-                View on Polymarket
-              </a>
-            )}
-            {trade.transaction_hash && (
-              <a
-                href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground/80"
-              >
-                <ExternalLink className="w-3 h-3" />
-                Transaction
-              </a>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PositionsTab({ data, isLoading }: { data?: { wallet: string; total_positions: number; total_value: number; total_unrealized_pnl: number; positions: WalletPosition[] }; isLoading: boolean }) {
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  if (!data || data.positions.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <Briefcase className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-        <p className="text-muted-foreground">No open positions</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border border-blue-500/20 p-5">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-          <div className="relative">
-            <p className="text-xs text-muted-foreground/70 uppercase tracking-wider mb-1">Total Position Value</p>
-            <p className="text-2xl font-bold text-foreground">${data.total_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-            <p className="text-xs text-muted-foreground/70 mt-1">{data.total_positions} open positions</p>
-          </div>
-        </div>
-        <div className="relative overflow-hidden rounded-xl bg-gradient-to-br from-purple-500/10 to-pink-500/5 border border-purple-500/20 p-5">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2" />
-          <div className="relative">
-            <p className="text-xs text-muted-foreground/70 uppercase tracking-wider mb-1">Unrealized P&L</p>
-            <p className={cn(
-              "text-2xl font-bold",
-              data.total_unrealized_pnl >= 0 ? "text-green-400" : "text-red-400"
-            )}>
-              {data.total_unrealized_pnl >= 0 ? '+' : ''}${data.total_unrealized_pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Positions List */}
-      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
-        {data.positions.map((position, idx) => (
-          <PositionRow key={idx} position={position} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function AnomalyTab({ data, isLoading }: { data?: WalletAnalysis; isLoading: boolean }) {
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  if (!data) {
-    return (
-      <div className="text-center py-12">
-        <ShieldAlert className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-        <p className="text-muted-foreground">No analysis data available</p>
-      </div>
-    )
-  }
-
-  const scoreColor = data.anomaly_score > 0.7 ? 'text-red-400' :
-                     data.anomaly_score > 0.3 ? 'text-yellow-400' : 'text-green-400'
-  const scoreBg = data.anomaly_score > 0.7 ? 'from-red-500/10 to-red-500/5 border-red-500/20' :
-                  data.anomaly_score > 0.3 ? 'from-yellow-500/10 to-yellow-500/5 border-yellow-500/20' :
-                  'from-green-500/10 to-green-500/5 border-green-500/20'
-  const scoreLabel = data.anomaly_score > 0.7 ? 'High Risk' :
-                     data.anomaly_score > 0.3 ? 'Moderate Risk' : 'Low Risk'
-
-  const severityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical': return 'bg-red-500/20 text-red-400 border-red-500/30'
-      case 'high': return 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-      case 'medium': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-      case 'low': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-      default: return 'bg-gray-500/20 text-muted-foreground border-gray-500/30'
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Score & Recommendation */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Anomaly Score */}
-        <div className={cn("relative overflow-hidden rounded-xl bg-gradient-to-br border p-5", scoreBg)}>
-          <div className="relative">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  {data.anomaly_score > 0.7 ? (
-                    <ShieldAlert className="w-5 h-5 text-red-400" />
-                  ) : data.anomaly_score > 0.3 ? (
-                    <AlertTriangle className="w-5 h-5 text-yellow-400" />
-                  ) : (
-                    <ShieldCheck className="w-5 h-5 text-green-400" />
-                  )}
-                  <p className="text-sm text-muted-foreground">Anomaly Score</p>
-                </div>
-                <p className={cn("text-3xl font-bold", scoreColor)}>
-                  {(data.anomaly_score * 100).toFixed(0)}%
-                </p>
-                <p className={cn("text-sm font-medium mt-1", scoreColor)}>{scoreLabel}</p>
-              </div>
-              <CircularProgress
-                percentage={data.anomaly_score * 100}
-                size={72}
-                strokeWidth={5}
-                color={data.anomaly_score > 0.7 ? '#ef4444' : data.anomaly_score > 0.3 ? '#eab308' : '#22c55e'}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Recommendation */}
-        <div className="rounded-xl bg-muted border border-border p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <Eye className="w-5 h-5 text-purple-400" />
-            <p className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recommendation</p>
-          </div>
-          <p className="text-foreground leading-relaxed">{data.recommendation}</p>
-          <div className="mt-3 flex items-center gap-2">
-            <span className={cn(
-              "px-2.5 py-1 rounded-full text-xs font-medium border",
-              data.is_profitable_pattern
-                ? "bg-green-500/20 text-green-400 border-green-500/30"
-                : "bg-gray-500/20 text-muted-foreground border-gray-500/30"
-            )}>
-              {data.is_profitable_pattern ? 'Profitable Pattern' : 'Not Profitable'}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Stats Grid */}
-      <div>
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Trading Profile</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-muted-foreground/70 mb-1">Total Trades</p>
-            <p className="text-xl font-bold text-foreground">{data.stats.total_trades}</p>
-          </div>
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-muted-foreground/70 mb-1">Win Rate</p>
-            <p className="text-xl font-bold text-foreground">{(data.stats.win_rate * 100).toFixed(1)}%</p>
-          </div>
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-muted-foreground/70 mb-1">Avg ROI</p>
-            <p className={cn("text-xl font-bold", data.stats.avg_roi >= 0 ? "text-green-400" : "text-red-400")}>
-              {data.stats.avg_roi >= 0 ? '+' : ''}{data.stats.avg_roi.toFixed(1)}%
-            </p>
-          </div>
-          <div className="bg-muted rounded-lg p-4 border border-border">
-            <p className="text-xs text-muted-foreground/70 mb-1">Markets Traded</p>
-            <p className="text-xl font-bold text-foreground">{data.stats.markets_traded ?? '-'}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Strategies Detected */}
-      {data.strategies_detected.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Detected Strategies</h3>
-          <div className="flex flex-wrap gap-2">
-            {data.strategies_detected.map((strategy, idx) => (
-              <span
-                key={idx}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm text-purple-300"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                {strategy}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Anomalies Found */}
-      <div>
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
-          Anomalies Detected ({data.anomalies.length})
-        </h3>
-        {data.anomalies.length === 0 ? (
-          <div className="text-center py-8 rounded-xl bg-green-500/5 border border-green-500/20">
-            <ShieldCheck className="w-10 h-10 text-green-400 mx-auto mb-3" />
-            <p className="text-green-400 font-medium">No anomalies detected</p>
-            <p className="text-xs text-muted-foreground/70 mt-1">This wallet shows normal trading patterns</p>
-          </div>
-        ) : (
-          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-            {data.anomalies.map((anomaly, idx) => (
-              <div
-                key={idx}
-                className="rounded-xl bg-muted border border-border p-4 hover:border-gray-700 transition-colors"
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle className={cn(
-                      "w-4 h-4",
-                      anomaly.severity === 'critical' ? 'text-red-400' :
-                      anomaly.severity === 'high' ? 'text-orange-400' :
-                      anomaly.severity === 'medium' ? 'text-yellow-400' : 'text-blue-400'
-                    )} />
-                    <span className="font-medium text-foreground text-sm">
-                      {anomaly.type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-                    </span>
-                  </div>
-                  <span className={cn(
-                    "px-2 py-0.5 rounded-full text-xs font-medium border",
-                    severityColor(anomaly.severity)
-                  )}>
-                    {anomaly.severity}
-                  </span>
-                </div>
-                <p className="text-sm text-muted-foreground mb-2">{anomaly.description}</p>
-                {anomaly.evidence && Object.keys(anomaly.evidence).length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {Object.entries(anomaly.evidence).map(([key, value]) => (
-                      <span key={key} className="text-xs bg-muted/70 rounded px-2 py-1 text-muted-foreground/70">
-                        {key.replace(/_/g, ' ')}: <span className="text-foreground/80">
-                          {typeof value === 'number' ? value.toFixed(2) : String(value)}
-                        </span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function PositionRow({ position }: { position: WalletPosition }) {
-  const marketUrl = buildPolymarketMarketUrl({
-    eventSlug: position.event_slug,
-    marketSlug: position.market_slug,
-    marketId: position.market,
-  })
-  const isProfitable = position.unrealized_pnl >= 0
-  const roiColor = position.roi_percent >= 20 ? 'text-green-400' :
-                   position.roi_percent >= 0 ? 'text-emerald-400' :
-                   position.roi_percent >= -20 ? 'text-yellow-400' : 'text-red-400'
-
-  const displayTitle = position.title || position.market
-  const isConditionId = !position.title && position.market.length > 40
-
-  return (
-    <div className="rounded-xl bg-muted border border-border p-5 hover:border-gray-700 transition-colors">
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-foreground truncate" title={displayTitle}>
-            {position.title || (isConditionId ? `${position.market.slice(0, 20)}...` : position.market)}
-          </p>
-          <p className="text-xs text-muted-foreground/70 mt-1">
-            {position.outcome || 'Unknown'}
-          </p>
-        </div>
-        <div className={cn(
-          "flex items-center gap-1.5 px-3 py-1.5 rounded-full ml-4",
-          isProfitable ? "bg-green-500/20" : "bg-red-500/20"
-        )}>
-          {isProfitable ? (
-            <TrendingUp className="w-4 h-4 text-green-400" />
-          ) : (
-            <TrendingDown className="w-4 h-4 text-red-400" />
-          )}
-          <span className={cn("font-semibold", roiColor)}>
-            {position.roi_percent >= 0 ? '+' : ''}{position.roi_percent.toFixed(1)}%
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-muted/60 rounded-lg p-3">
-          <p className="text-xs text-muted-foreground/70 mb-1">Size</p>
-          <p className="font-mono font-medium text-foreground">{position.size.toFixed(2)}</p>
-        </div>
-        <div className="bg-muted/60 rounded-lg p-3">
-          <p className="text-xs text-muted-foreground/70 mb-1">Avg Price</p>
-          <p className="font-mono font-medium text-foreground">${position.avg_price.toFixed(4)}</p>
-        </div>
-        <div className="bg-muted/60 rounded-lg p-3">
-          <p className="text-xs text-muted-foreground/70 mb-1">Current Price</p>
-          <p className="font-mono font-medium text-foreground">${position.current_price.toFixed(4)}</p>
-        </div>
-        <div className="bg-muted/60 rounded-lg p-3">
-          <p className="text-xs text-muted-foreground/70 mb-1">Unrealized P&L</p>
-          <p className={cn(
-            "font-mono font-medium",
-            isProfitable ? "text-green-400" : "text-red-400"
-          )}>
-            {isProfitable ? '+' : ''}${position.unrealized_pnl.toFixed(2)}
-          </p>
-        </div>
-      </div>
-
-      {/* Actions */}
-      {marketUrl && (
-        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-          <a
-            href={marketUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
-          >
-            <ExternalLink className="w-3 h-3" />
-            View on Polymarket
-          </a>
-        </div>
+          </Card>
+        </>
       )}
     </div>
   )

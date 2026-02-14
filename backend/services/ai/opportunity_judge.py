@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.utcnow import utcnow
 from typing import TYPE_CHECKING
 
@@ -48,6 +48,23 @@ whether a detected arbitrage opportunity is a genuine, executable, \
 profitable trade -- or a false positive that will lose money. You \
 provide a dispassionate second opinion alongside a machine learning \
 classifier.
+
+## Temporal & Evidence Discipline (Critical)
+- Treat `Current UTC time`, `Resolution date`, and `Days until resolution` \
+  in the user prompt as canonical.
+- Never invent time horizons. If you mention timing, use the provided \
+  `Days until resolution` value.
+- Never describe an opportunity as "months away" when days until \
+  resolution is under 60.
+- Only claim catalyst/cross-market confirmation when the related market \
+  quotes are explicitly included in the prompt.
+- If evidence is missing, say it is "unverified in provided data" and \
+  lower confidence.
+- In `reasoning`, do NOT include separate sub-scores like `75/100` or \
+  `7.5/10`; keep reasoning qualitative and consistent with returned scores.
+- Keep `reasoning` concise (max ~120 words).
+- Keep a skeptical score calibration: directional/non-guaranteed trades \
+  should rarely exceed ~0.80 overall without strong multi-source evidence.
 
 ## Polymarket Mechanics You Must Consider
 
@@ -171,6 +188,9 @@ Rules:
 2) Do not invent missing data (liquidity, model agreement, sources, or rules).
 3) If data is missing, state uncertainty explicitly.
 4) Keep reasoning concise and concrete.
+5) Treat `Current UTC time` and `Days until resolution` in the prompt as canonical.
+6) Do not use phrases like "months away" unless days-until-resolution >= 60.
+7) Do not include extra sub-scores (e.g., `7/10`, `70/100`) in reasoning.
 
 Recommendation guidance:
 - strong_execute / execute only when executable and edge is credible
@@ -199,6 +219,10 @@ Rules:
 2) Explicitly account for uncertainty and edge fragility (slippage, stale moves, thin books).
 3) Distinguish "not guaranteed" from "invalid" — directional can still be tradeable.
 4) Penalize extreme/implausible ROI or weak data quality.
+5) Treat `Current UTC time` and `Days until resolution` as canonical timing data.
+6) Do not claim catalyst confirmation unless both markets are shown in the prompt.
+7) Do not include extra sub-scores (e.g., `7/10`, `70/100`) in reasoning.
+8) For non-guaranteed trades, scores above ~0.80 require unusually strong evidence in the prompt.
 
 Recommendation guidance:
 - strong_execute/execute when edge is credible and executable
@@ -693,6 +717,7 @@ class OpportunityJudge:
     ) -> str:
         """Build the user prompt with all opportunity details."""
         sections = ["## Opportunity to Judge\n"]
+        sections.extend(self._temporal_anchor_lines(opportunity))
 
         # Core fields
         sections.append(f"**ID:** {opportunity.id}")
@@ -763,6 +788,18 @@ class OpportunityJudge:
                 except Exception as exc:
                     sections.append(f"\n**Market {i + 1}:** (error reading market data: {exc})")
 
+        market_count = len(opportunity.markets or [])
+        sections.append("\n### Evidence Coverage")
+        sections.append(f"- Market rows provided: {market_count}")
+        sections.append(
+            "- Independent catalyst/related-market quotes provided: "
+            f"{'yes' if market_count > 1 else 'no'}"
+        )
+        sections.append(
+            "- External performance/news fundamentals: "
+            "not provided unless explicitly listed above"
+        )
+
         weather = self._extract_weather_context(opportunity)
         if weather:
             sections.append("\n### Weather Context")
@@ -829,11 +866,6 @@ class OpportunityJudge:
         if opportunity.category:
             sections.append(f"**Category:** {opportunity.category}")
 
-        # Timing
-        if opportunity.resolution_date:
-            sections.append(f"**Resolution date:** {opportunity.resolution_date.isoformat()}")
-        sections.append(f"**Detected at:** {opportunity.detected_at.isoformat()}")
-
         # Positions to take
         if opportunity.positions_to_take:
             sections.append("\n### Positions to Take")
@@ -872,7 +904,9 @@ class OpportunityJudge:
             "Score this opportunity on all dimensions. Be skeptical -- "
             "most detected prediction market arbitrage opportunities are "
             "false positives. Explain your recommendation briefly and concretely. "
-            "Do not assert facts that are not explicitly present in the data above."
+            "Do not assert facts that are not explicitly present in the data above. "
+            "If you mention timing, use the provided days-until-resolution value. "
+            "Do not include extra sub-score formats like 7/10 or 75/100 in reasoning."
         )
 
         return "\n".join(sections)
@@ -885,6 +919,7 @@ class OpportunityJudge:
     ) -> str:
         """Build a compact weather-specific prompt to reduce context pressure."""
         sections = ["## Weather Opportunity to Judge"]
+        sections.extend(self._temporal_anchor_lines(opportunity))
         sections.append(f"- ID: {opportunity.id}")
         sections.append(f"- Title: {opportunity.title}")
         sections.append(f"- Description: {opportunity.description}")
@@ -911,6 +946,10 @@ class OpportunityJudge:
                 f"- Proposed leg: {pos.get('action', 'BUY')} {pos.get('outcome', 'N/A')} "
                 f"@ {pos.get('price', 'N/A')}"
             )
+        sections.append(
+            "- Independent related-market quotes provided: "
+            f"{'yes' if len(opportunity.markets or []) > 1 else 'no'}"
+        )
 
         weather = self._extract_weather_context(opportunity) or {}
         if weather:
@@ -965,9 +1004,47 @@ class OpportunityJudge:
             "---\n"
             "Score strictly from the provided fields. "
             "If execution is blocked (report-only or max_position_size=0), "
-            "execution_feasibility should be 0 and recommendation should be skip/strong_skip."
+            "execution_feasibility should be 0 and recommendation should be skip/strong_skip. "
+            "If you mention timing, use the provided days-until-resolution value and do not convert to months "
+            "unless it is >= 60 days."
         )
         return "\n".join(sections)
+
+    @staticmethod
+    def _to_utc(value: datetime | None) -> datetime | None:
+        """Normalize datetimes to timezone-aware UTC for prompt anchoring."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _temporal_anchor_lines(self, opportunity: "ArbitrageOpportunity") -> list[str]:
+        """Emit canonical timing anchors to reduce LLM date hallucinations."""
+        now_utc = utcnow().astimezone(timezone.utc)
+        detected_utc = self._to_utc(getattr(opportunity, "detected_at", None))
+        resolution_utc = self._to_utc(getattr(opportunity, "resolution_date", None))
+
+        lines = [
+            "### Temporal Anchors (Canonical)",
+            f"- Current UTC time (today): {now_utc.isoformat()}",
+        ]
+        if detected_utc:
+            lines.append(f"- Detected at (UTC): {detected_utc.isoformat()}")
+        if resolution_utc:
+            lines.append(f"- Resolution date (UTC): {resolution_utc.isoformat()}")
+            days_to_resolution = (resolution_utc - now_utc).total_seconds() / 86400.0
+            lines.append(
+                f"- Days until resolution (from current UTC): {days_to_resolution:.2f}"
+            )
+            if detected_utc:
+                days_from_detection = (
+                    resolution_utc - detected_utc
+                ).total_seconds() / 86400.0
+                lines.append(
+                    f"- Days from detection to resolution: {days_from_detection:.2f}"
+                )
+        return lines
 
     @staticmethod
     def _extract_weather_context(opportunity: "ArbitrageOpportunity") -> dict | None:

@@ -138,6 +138,7 @@ export interface DiscoveryStats {
 
 export interface PoolStats {
   target_pool_size: number
+  effective_target_pool_size?: number
   min_pool_size: number
   max_pool_size: number
   pool_size: number
@@ -150,6 +151,8 @@ export interface PoolStats {
   freshest_trade_at: string | null
   stale_floor_trade_at: string | null
 }
+
+export type PoolRecomputeMode = 'quality_only' | 'balanced'
 
 export interface TrackedTraderOpportunity extends ConfluenceSignal {
   top_wallets?: Array<{
@@ -377,6 +380,8 @@ export interface PoolMember {
   }>
   selection_breakdown?: Record<string, number>
   selection_updated_at?: string | null
+  eligibility_status?: 'eligible' | 'blocked' | string
+  eligibility_blockers?: Array<Record<string, unknown> | string>
   trades_1h: number
   trades_24h: number
   last_trade_at?: string | null
@@ -473,6 +478,13 @@ export const discoveryApi = {
     return data
   },
 
+  recomputePool: async (mode: PoolRecomputeMode): Promise<{ status: string; mode: PoolRecomputeMode; pool_stats: PoolStats }> => {
+    const { data } = await discoveryHttp.post(`${API_BASE}/pool/actions/recompute`, null, {
+      params: { mode },
+    })
+    return data
+  },
+
   getPoolMembers: async (params: {
     limit?: number
     offset?: number
@@ -532,10 +544,17 @@ export const discoveryApi = {
 
   getTrackedTraderOpportunities: async (
     limit = 50,
-    minTier: 'WATCH' | 'HIGH' | 'EXTREME' = 'WATCH'
+    minTier: 'WATCH' | 'HIGH' | 'EXTREME' = 'WATCH',
+    includeFiltered = false,
+    sourceFilter: 'all' | 'tracked' | 'pool' = 'all',
   ): Promise<TrackedTraderOpportunity[]> => {
     const { data } = await discoveryHttp.get(`${API_BASE}/opportunities/tracked-traders`, {
-      params: { limit, min_tier: minTier },
+      params: {
+        limit,
+        min_tier: minTier,
+        include_filtered: includeFiltered,
+        source_filter: sourceFilter,
+      },
     })
     return data.opportunities || []
   },

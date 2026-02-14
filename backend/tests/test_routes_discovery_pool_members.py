@@ -56,13 +56,17 @@ def _wallet(
     composite_score: float = 0.7,
     quality_score: float = 0.7,
     activity_score: float = 0.7,
+    in_top_pool: bool = True,
+    pool_tier: str | None = "core",
+    pool_membership_reason: str | None = "core_quality_gate",
+    source_flags: dict | None = None,
 ):
     return SimpleNamespace(
         address=address,
         username=None,
-        in_top_pool=True,
-        pool_tier="core",
-        pool_membership_reason="core_quality_gate",
+        in_top_pool=in_top_pool,
+        pool_tier=pool_tier,
+        pool_membership_reason=pool_membership_reason,
         rank_score=rank_score,
         composite_score=composite_score,
         quality_score=quality_score,
@@ -77,7 +81,7 @@ def _wallet(
         tags=[],
         strategies_detected=[],
         cluster_id=None,
-        source_flags={},
+        source_flags=source_flags or {},
         last_analyzed_at=utcnow(),
     )
 
@@ -175,3 +179,69 @@ async def test_pool_members_invalid_sort_by_returns_400():
             sort_by="not_a_field",
         )
     assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pool_members_reconciles_stale_blocked_metadata_for_active_pool_rows():
+    stale_meta_wallet = _wallet(
+        address="0xabc",
+        win_rate=0.74,
+        total_pnl=3200.0,
+        total_trades=120,
+        in_top_pool=True,
+        source_flags={
+            "pool_selection_meta": {
+                "eligibility_status": "blocked",
+                "eligibility_blockers": [
+                    {"code": "recommendation_blocked", "label": "Recommendation blocked"},
+                ],
+                "reasons": [
+                    {"code": "recommendation_blocked", "label": "Recommendation blocked"},
+                ],
+            }
+        },
+    )
+    out = await _call_pool_members(_make_session([stale_meta_wallet]))
+
+    assert len(out["members"]) == 1
+    row = out["members"][0]
+    assert row["in_top_pool"] is True
+    assert row["eligibility_status"] == "eligible"
+    assert row["eligibility_blockers"] == []
+    assert row["selection_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_pool_members_keeps_blocked_metadata_for_non_pool_rows():
+    blocked_meta_wallet = _wallet(
+        address="0xdef",
+        win_rate=0.48,
+        total_pnl=-250.0,
+        total_trades=12,
+        in_top_pool=False,
+        pool_tier=None,
+        pool_membership_reason="recommendation_blocked",
+        source_flags={
+            "pool_selection_meta": {
+                "eligibility_status": "blocked",
+                "eligibility_blockers": [
+                    {"code": "recommendation_blocked", "label": "Recommendation blocked"},
+                ],
+                "reasons": [
+                    {"code": "recommendation_blocked", "label": "Recommendation blocked"},
+                ],
+            }
+        },
+    )
+    out = await _call_pool_members(_make_session([blocked_meta_wallet]), pool_only=False)
+
+    assert len(out["members"]) == 1
+    row = out["members"][0]
+    assert row["in_top_pool"] is False
+    assert row["eligibility_status"] == "blocked"
+    assert row["eligibility_blockers"] == [
+        {"code": "recommendation_blocked", "label": "Recommendation blocked"}
+    ]
+    assert row["selection_reasons"] == [
+        {"code": "recommendation_blocked", "label": "Recommendation blocked"}
+    ]

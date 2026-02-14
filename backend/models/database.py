@@ -748,6 +748,31 @@ class AppSettings(Base):
     discovery_trader_opps_insider_limit = Column(Integer, default=40)
     discovery_trader_opps_insider_min_confidence = Column(Float, default=0.62)
     discovery_trader_opps_insider_max_age_minutes = Column(Integer, default=180)
+    discovery_pool_recompute_mode = Column(String, default="quality_only")
+    discovery_pool_target_size = Column(Integer, default=500)
+    discovery_pool_min_size = Column(Integer, default=400)
+    discovery_pool_max_size = Column(Integer, default=600)
+    discovery_pool_active_window_hours = Column(Integer, default=72)
+    discovery_pool_selection_score_floor = Column(Float, default=0.55)
+    discovery_pool_max_hourly_replacement_rate = Column(Float, default=0.15)
+    discovery_pool_replacement_score_cutoff = Column(Float, default=0.05)
+    discovery_pool_max_cluster_share = Column(Float, default=0.08)
+    discovery_pool_high_conviction_threshold = Column(Float, default=0.72)
+    discovery_pool_insider_priority_threshold = Column(Float, default=0.62)
+    discovery_pool_min_eligible_trades = Column(Integer, default=50)
+    discovery_pool_max_eligible_anomaly = Column(Float, default=0.5)
+    discovery_pool_core_min_win_rate = Column(Float, default=0.60)
+    discovery_pool_core_min_sharpe = Column(Float, default=1.0)
+    discovery_pool_core_min_profit_factor = Column(Float, default=1.5)
+    discovery_pool_rising_min_win_rate = Column(Float, default=0.55)
+    discovery_pool_slo_min_analyzed_pct = Column(Float, default=95.0)
+    discovery_pool_slo_min_profitable_pct = Column(Float, default=80.0)
+    discovery_pool_leaderboard_wallet_trade_sample = Column(Integer, default=160)
+    discovery_pool_incremental_wallet_trade_sample = Column(Integer, default=80)
+    discovery_pool_full_sweep_interval_seconds = Column(Integer, default=1800)
+    discovery_pool_incremental_refresh_interval_seconds = Column(Integer, default=120)
+    discovery_pool_activity_reconciliation_interval_seconds = Column(Integer, default=120)
+    discovery_pool_recompute_interval_seconds = Column(Integer, default=60)
 
     # Trading Safety Settings
     trading_enabled = Column(Boolean, default=False)
@@ -864,6 +889,7 @@ class AppSettings(Base):
     auto_cleanup_enabled = Column(Boolean, default=False)
     cleanup_interval_hours = Column(Integer, default=24)
     cleanup_resolved_trade_days = Column(Integer, default=30)
+    llm_usage_retention_days = Column(Integer, default=30)
     market_cache_hygiene_enabled = Column(Boolean, default=True)
     market_cache_hygiene_interval_hours = Column(Integer, default=6)
     market_cache_retention_days = Column(Integer, default=120)
@@ -2196,6 +2222,46 @@ class TraderOrder(Base):
         Index("idx_trader_orders_created", "created_at"),
         Index("idx_trader_orders_status", "status"),
         Index("idx_trader_orders_trader_created", "trader_id", "created_at"),
+    )
+
+
+class TraderPosition(Base):
+    """Aggregated position inventory per trader/market/direction/mode."""
+
+    __tablename__ = "trader_positions"
+
+    id = Column(String, primary_key=True)
+    trader_id = Column(
+        String,
+        ForeignKey("traders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    mode = Column(String, nullable=False, default="paper")
+    market_id = Column(String, nullable=False, index=True)
+    market_question = Column(Text, nullable=True)
+    direction = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open")  # open | closed
+    open_order_count = Column(Integer, nullable=False, default=0)
+    total_notional_usd = Column(Float, nullable=False, default=0.0)
+    avg_entry_price = Column(Float, nullable=True)
+    first_order_at = Column(DateTime, nullable=True)
+    last_order_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trader_id",
+            "mode",
+            "market_id",
+            "direction",
+            name="uq_trader_position_identity",
+        ),
+        Index("idx_trader_positions_status", "status"),
+        Index("idx_trader_positions_trader_status", "trader_id", "status"),
     )
 
 

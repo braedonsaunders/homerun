@@ -19,6 +19,11 @@ from models.database import (
     NewsWorkflowFinding,
     get_db_session,
 )
+from services.live_price_snapshot import (
+    append_live_binary_price_point,
+    get_live_mid_prices,
+    normalize_binary_price_history,
+)
 from services.news import shared_state
 from services.pause_state import global_pause_state
 from utils.market_urls import build_market_url, infer_market_platform
@@ -474,6 +479,7 @@ def _build_finding_market_snapshot(
         if isinstance(points, list) and len(points) >= 2:
             history = points
             break
+    history = normalize_binary_price_history(history)
 
     yes_from_history, no_from_history = _extract_yes_no_from_history(history)
 
@@ -535,6 +541,87 @@ def _build_finding_market_snapshot(
         "outcome_prices": outcome_prices,
         "market_token_ids": market_token_ids,
     }
+
+
+def _extract_binary_market_tokens_from_finding(
+    finding: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    token_ids = finding.get("market_token_ids")
+    if not isinstance(token_ids, list):
+        return None, None
+    cleaned = [str(token_id).strip().lower() for token_id in token_ids if str(token_id or "").strip()]
+    if len(cleaned) < 2:
+        return None, None
+    return cleaned[0], cleaned[1]
+
+
+def _normalize_finding_price_histories(findings: list[dict[str, Any]]) -> None:
+    for finding in findings:
+        normalized = normalize_binary_price_history(finding.get("price_history"))
+        if not normalized:
+            continue
+
+        finding["price_history"] = normalized
+        yes_last, no_last = _extract_yes_no_from_history(normalized)
+        if yes_last is not None and _safe_float(finding.get("yes_price")) is None:
+            finding["yes_price"] = yes_last
+        if yes_last is not None and _safe_float(finding.get("current_yes_price")) is None:
+            finding["current_yes_price"] = yes_last
+        if no_last is not None and _safe_float(finding.get("no_price")) is None:
+            finding["no_price"] = no_last
+        if no_last is not None and _safe_float(finding.get("current_no_price")) is None:
+            finding["current_no_price"] = no_last
+
+
+async def _attach_live_mid_prices_to_findings(
+    findings: list[dict[str, Any]],
+) -> None:
+    if not findings:
+        return
+    _normalize_finding_price_histories(findings)
+
+    token_pairs: list[tuple[dict[str, Any], str, str]] = []
+    unique_tokens: list[str] = []
+    seen_tokens: set[str] = set()
+
+    for finding in findings:
+        yes_token, no_token = _extract_binary_market_tokens_from_finding(finding)
+        if not yes_token or not no_token:
+            continue
+        token_pairs.append((finding, yes_token, no_token))
+        for token_id in (yes_token, no_token):
+            if token_id in seen_tokens:
+                continue
+            seen_tokens.add(token_id)
+            unique_tokens.append(token_id)
+
+    if not token_pairs:
+        return
+
+    live_prices = await get_live_mid_prices(unique_tokens)
+    if not live_prices:
+        return
+
+    for finding, yes_token, no_token in token_pairs:
+        yes_price = live_prices.get(yes_token)
+        no_price = live_prices.get(no_token)
+        if yes_price is None and no_price is not None and 0.0 <= no_price <= 1.0:
+            yes_price = float(1.0 - no_price)
+        if no_price is None and yes_price is not None and 0.0 <= yes_price <= 1.0:
+            no_price = float(1.0 - yes_price)
+        if yes_price is None or no_price is None:
+            continue
+
+        finding["yes_price"] = yes_price
+        finding["no_price"] = no_price
+        finding["current_yes_price"] = yes_price
+        finding["current_no_price"] = no_price
+        finding["outcome_prices"] = [yes_price, no_price]
+        finding["price_history"] = append_live_binary_price_point(
+            finding.get("price_history"),
+            yes_price=yes_price,
+            no_price=no_price,
+        )
 
 
 class CustomRssFeedRequest(BaseModel):
@@ -682,7 +769,7 @@ async def set_workflow_interval(
 @router.get("/news-workflow/findings")
 async def get_findings(
     min_edge: float = Query(0.0, ge=0, description="Minimum edge %"),
-    actionable_only: bool = Query(False, description="Only actionable findings"),
+    actionable_only: bool = Query(True, description="Only actionable findings"),
     include_debug_rejections: bool = Query(
         False, description="Include non-actionable debug rejection rows"
     ),
@@ -773,6 +860,8 @@ async def get_findings(
                 "created_at": _to_iso_utc_z(r.created_at),
             }
         )
+
+    await _attach_live_mid_prices_to_findings(findings)
 
     return {
         "total": total,

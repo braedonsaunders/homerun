@@ -234,6 +234,22 @@ function compactOutcomeLabel(value: string, maxChars = 12): string {
   return `${text.slice(0, Math.max(1, maxChars - 1))}…`
 }
 
+function resolveMarketYesPrice(market: Opportunity['markets'][number] | undefined): number {
+  if (!market) return 0
+  const raw = Number((market as any).current_yes_price ?? market.yes_price)
+  if (Number.isFinite(raw)) return raw
+  const fallback = Number(market.yes_price)
+  return Number.isFinite(fallback) ? fallback : 0
+}
+
+function resolveMarketNoPrice(market: Opportunity['markets'][number] | undefined): number {
+  if (!market) return 0
+  const raw = Number((market as any).current_no_price ?? market.no_price)
+  if (Number.isFinite(raw)) return raw
+  const fallback = Number(market.no_price)
+  return Number.isFinite(fallback) ? fallback : 0
+}
+
 function resolveMarketOutcomes(market: Opportunity['markets'][number] | undefined): {
   labels: string[]
   prices: number[]
@@ -267,7 +283,7 @@ function resolveMultiMarketOutcomes(markets: Opportunity['markets']): {
     // Take the first meaningful segment — remove common prefixes like "Will..."
     const label = raw.replace(/^(Will |What will |Which |Who will )/i, '').split('?')[0].trim()
     labels.push(label || `Market ${labels.length + 1}`)
-    prices.push(mkt.yes_price ?? 0)
+    prices.push(resolveMarketYesPrice(mkt))
   }
   return { labels, prices }
 }
@@ -278,7 +294,7 @@ function formatOutcomePriceSummary(
 ): string {
   const { labels, prices } = resolveMarketOutcomes(market)
   if (prices.length < 1) {
-    return `Yes:${safeFixed(market.yes_price, 3)} No:${safeFixed(market.no_price, 3)}`
+    return `Yes:${safeFixed(resolveMarketYesPrice(market), 3)} No:${safeFixed(resolveMarketNoPrice(market), 3)}`
   }
   const visible = prices.slice(0, maxOutcomes).map((price, index) => {
     const label = compactOutcomeLabel(labels[index] || `Outcome ${index + 1}`, 10)
@@ -355,6 +371,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
 
   // Sparkline data
   const market = opportunity.markets[0]
+  const marketYesPrice = resolveMarketYesPrice(market)
+  const marketNoPrice = resolveMarketNoPrice(market)
   const weather = market?.weather
   const isWeatherOpportunity = !isSearch && (opportunity.strategy === 'weather_edge' || Boolean(weather))
 
@@ -410,7 +428,7 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
   )
   const marketProbability = (
     weather?.market_probability
-    ?? (market ? (isBuyNoWeather ? market.no_price : market.yes_price) : null)
+    ?? (market ? (isBuyNoWeather ? marketNoPrice : marketYesPrice) : null)
   ) ?? null
   const signalEdgePercent = (
     modelProbability != null && marketProbability != null
@@ -508,15 +526,15 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
         buildOutcomeFallbacks({
           labels: singleMarketOutcomes.labels,
           prices: singleMarketOutcomes.prices,
-          yesPrice: market?.yes_price,
-          noPrice: market?.no_price,
+          yesPrice: marketYesPrice,
+          noPrice: marketNoPrice,
           yesLabel: singleMarketOutcomes.labels[0] || 'Yes',
           noLabel: singleMarketOutcomes.labels[1] || 'No',
           preferIndexedKeys: singleMarketOutcomes.labels.length > 2 || singleMarketOutcomes.prices.length > 2,
         }),
       )
     },
-    [market, isMultiMarket, multiMarketOutcomes, singleMarketOutcomes, opportunity.markets],
+    [market, marketYesPrice, marketNoPrice, isMultiMarket, multiMarketOutcomes, singleMarketOutcomes, opportunity.markets],
   )
   const hasSparkline = sparkSeries.length > 0
   const sparklineSeries = useMemo(
@@ -676,8 +694,8 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
               <MiniMetric label="Ends" value={timeUntil(opportunity.resolution_date)} />
               <MiniMetric
                 label="Competitive"
-                value={market ? `${safeFixed(Math.abs(market.yes_price - 0.5) * 200, 0)}%` : '—'}
-                valueClass={market && Math.abs(market.yes_price - 0.5) < 0.1 ? 'text-green-400' : undefined}
+                value={market ? `${safeFixed(Math.abs(marketYesPrice - 0.5) * 200, 0)}%` : '—'}
+                valueClass={market && Math.abs(marketYesPrice - 0.5) < 0.1 ? 'text-green-400' : undefined}
               />
             </div>
           ) : (
@@ -924,15 +942,15 @@ export default function OpportunityCard({ opportunity, onExecute, onOpenCopilot,
                   <div className="grid grid-cols-3 gap-3 text-xs">
                     <div>
                       <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(primaryOutcomeLabel, 16)} Price</p>
-                      <p className="font-data text-green-400">{safeFixed((market?.yes_price ?? 0) * 100, 1)}¢</p>
+                      <p className="font-data text-green-400">{safeFixed(marketYesPrice * 100, 1)}¢</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(secondaryOutcomeLabel, 16)} Price</p>
-                      <p className="font-data text-red-400">{safeFixed((market?.no_price ?? 0) * 100, 1)}¢</p>
+                      <p className="font-data text-red-400">{safeFixed(marketNoPrice * 100, 1)}¢</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Spread</p>
-                      <p className="font-data text-foreground">{market ? safeFixed(Math.abs(1 - market.yes_price - market.no_price) * 100, 1) : '—'}¢</p>
+                      <p className="font-data text-foreground">{market ? safeFixed(Math.abs(1 - marketYesPrice - marketNoPrice) * 100, 1) : '—'}¢</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Volume</p>

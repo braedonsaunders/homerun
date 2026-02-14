@@ -65,6 +65,24 @@ DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS = 0.25
 DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS = 0.15
 DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN = 100
 DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET = 50
+DISCOVERY_DEFAULT_RECENT_MARKET_LOOKBACK_MINUTES = 180
+DISCOVERY_DEFAULT_MAINTENANCE_REFRESH_BATCH = 500
+DISCOVERY_LEADERBOARD_PAGE_SIZE = 50
+DISCOVERY_LEADERBOARD_MIN_REQUESTS_PER_RUN = 6
+DISCOVERY_LEADERBOARD_MAX_REQUESTS_PER_RUN = 24
+DISCOVERY_LEADERBOARD_TIME_PERIODS = ("DAY", "WEEK", "MONTH", "ALL")
+DISCOVERY_LEADERBOARD_CATEGORIES = (
+    "OVERALL",
+    "POLITICS",
+    "SPORTS",
+    "CRYPTO",
+    "CULTURE",
+    "ECONOMICS",
+    "TECH",
+    "FINANCE",
+    "WEATHER",
+)
+DISCOVERY_LEADERBOARD_SORTS = ("PNL", "VOL")
 
 POOL_FLAG_MANUAL_INCLUDE = "pool_manual_include"
 POOL_FLAG_MANUAL_EXCLUDE = "pool_manual_exclude"
@@ -90,6 +108,9 @@ class WalletDiscoveryEngine:
         self._wallets_seeded_last_run: int = 0
         self._wallets_pruned_last_run: int = 0
         self._runtime_discovery_settings: dict[str, Any] | None = None
+        self._market_scan_offset: int = 0
+        self._leaderboard_scan_cursor: int = 0
+        self._leaderboard_offsets: dict[str, int] = {}
 
     @staticmethod
     def _coerce_int(value: Any, default: int, minimum: Optional[int] = None) -> int:
@@ -999,6 +1020,136 @@ class WalletDiscoveryEngine:
     # 7. Wallet Discovery from Market Trades
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_wallet_address(value: Any) -> str:
+        addr = str(value or "").strip().lower()
+        if len(addr) < 10:
+            return ""
+        return addr
+
+    @staticmethod
+    def _leaderboard_combo_key(*, order_by: str, time_period: str, category: str) -> str:
+        return f"{order_by.upper()}:{time_period.upper()}:{category.upper()}"
+
+    @staticmethod
+    def _leaderboard_discovery_combinations() -> list[tuple[str, str, str]]:
+        combos: list[tuple[str, str, str]] = []
+        for time_period in DISCOVERY_LEADERBOARD_TIME_PERIODS:
+            for category in DISCOVERY_LEADERBOARD_CATEGORIES:
+                for order_by in DISCOVERY_LEADERBOARD_SORTS:
+                    combos.append((order_by, time_period, category))
+        return combos
+
+    @staticmethod
+    def _market_identity(market: object) -> str:
+        for attr in ("condition_id", "id", "slug"):
+            value = getattr(market, attr, None)
+            normalized = str(value or "").strip().lower()
+            if normalized:
+                return normalized
+        return ""
+
+    def _merge_market_sets(
+        self,
+        *groups: list[object],
+        limit: int,
+    ) -> list[object]:
+        merged: list[object] = []
+        seen: set[str] = set()
+        for group in groups:
+            for market in group:
+                identity = self._market_identity(market)
+                if identity and identity in seen:
+                    continue
+                if identity:
+                    seen.add(identity)
+                merged.append(market)
+                if len(merged) >= limit:
+                    return merged
+        return merged
+
+    async def _fetch_active_market_slice(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        delay_between_requests: float,
+    ) -> list[object]:
+        if limit <= 0:
+            return []
+        out: list[object] = []
+        remaining = int(max(0, limit))
+        cursor = int(max(0, offset))
+        while remaining > 0:
+            page_limit = min(100, remaining)
+            page = await self.client.get_markets(active=True, limit=page_limit, offset=cursor)
+            if not page:
+                break
+            out.extend(page)
+            fetched = len(page)
+            remaining -= fetched
+            cursor += fetched
+            if fetched < page_limit:
+                break
+            if delay_between_requests > 0:
+                await asyncio.sleep(delay_between_requests)
+        return out
+
+    async def _select_markets_for_discovery(
+        self,
+        *,
+        max_markets: int,
+        delay_between_requests: float,
+    ) -> tuple[list[object], dict[str, int]]:
+        start_offset = int(max(0, self._market_scan_offset))
+        primary = await self._fetch_active_market_slice(
+            offset=start_offset,
+            limit=max_markets,
+            delay_between_requests=delay_between_requests,
+        )
+        wrapped: list[object] = []
+        if start_offset > 0 and len(primary) < max_markets:
+            wrapped = await self._fetch_active_market_slice(
+                offset=0,
+                limit=max_markets - len(primary),
+                delay_between_requests=delay_between_requests,
+            )
+
+        # Advance cursor for the next run.
+        if wrapped:
+            self._market_scan_offset = len(wrapped)
+        elif len(primary) < max_markets:
+            self._market_scan_offset = 0
+        else:
+            self._market_scan_offset = start_offset + len(primary)
+
+        recent_markets: list[object] = []
+        try:
+            recent_markets = await self.client.get_recent_markets(
+                since_minutes=DISCOVERY_DEFAULT_RECENT_MARKET_LOOKBACK_MINUTES,
+                active=True,
+            )
+        except Exception as e:
+            logger.warning("Recent market fetch failed during discovery", error=str(e))
+
+        recent_cap = max(10, min(80, max_markets // 3))
+        selected_recent = recent_markets[:recent_cap]
+        merged = self._merge_market_sets(
+            selected_recent,
+            primary,
+            wrapped,
+            limit=max_markets,
+        )
+        stats = {
+            "market_scan_offset_start": start_offset,
+            "market_scan_offset_next": int(self._market_scan_offset),
+            "markets_primary": len(primary),
+            "markets_wrapped": len(wrapped),
+            "markets_recent": len(selected_recent),
+            "markets_selected": len(merged),
+        }
+        return merged, stats
+
     async def _discover_wallets_from_market(self, market: object, max_wallets: int = 50) -> set[str]:
         """
         Fetch recent trades for a single market and extract unique wallet
@@ -1011,16 +1162,40 @@ class WalletDiscoveryEngine:
             if not condition_id:
                 return discovered
 
-            trades = await self.client.get_market_trades(condition_id, limit=min(max_wallets * 2, 200))
+            per_page_limit = max(50, min(500, max_wallets * 2))
+            offset = 0
+            pages_fetched = 0
+            while len(discovered) < max_wallets and pages_fetched < 4:
+                trades = await self.client.get_market_trades(
+                    condition_id,
+                    limit=per_page_limit,
+                    offset=offset,
+                )
+                pages_fetched += 1
+                if not trades:
+                    break
+                # The data API may return one of these fields depending on endpoint shape.
+                for trade in trades:
+                    for field in (
+                        "user",
+                        "taker",
+                        "maker",
+                        "proxyWallet",
+                        "wallet",
+                        "wallet_address",
+                    ):
+                        addr = self._normalize_wallet_address(trade.get(field, ""))
+                        if addr:
+                            discovered.add(addr)
+                    if len(discovered) >= max_wallets:
+                        break
 
-            for trade in trades:
-                # The data API returns 'user' or 'taker' or 'maker' fields
-                for field in ("user", "taker", "maker"):
-                    addr = trade.get(field, "")
-                    if addr and isinstance(addr, str) and len(addr) >= 10:
-                        discovered.add(addr.lower())
-
-                if len(discovered) >= max_wallets:
+                offset += len(trades)
+                if offset >= 2000:
+                    break
+                # Some endpoints return short pages even when more rows exist.
+                # Allow a couple follow-up probes, then stop if pages remain short.
+                if len(trades) < per_page_limit and pages_fetched >= 2:
                     break
 
         except Exception as e:
@@ -1034,27 +1209,81 @@ class WalletDiscoveryEngine:
 
     async def _discover_wallets_from_leaderboard(self, scan_count: int = 200) -> set[str]:
         """
-        Supplement market-based discovery with wallets from the
-        Polymarket leaderboard API (PNL and VOL sorted).
+        Supplement market-based discovery with wallets from rotating
+        leaderboard slices (time periods, categories, and sort modes).
         """
         discovered: set[str] = set()
+        combos = self._leaderboard_discovery_combinations()
+        if not combos:
+            return discovered
 
-        for order_by in ("PNL", "VOL"):
+        requests_budget = int(
+            max(
+                DISCOVERY_LEADERBOARD_MIN_REQUESTS_PER_RUN,
+                min(
+                    DISCOVERY_LEADERBOARD_MAX_REQUESTS_PER_RUN,
+                    math.ceil(max(scan_count, DISCOVERY_LEADERBOARD_PAGE_SIZE) / 20),
+                ),
+            )
+        )
+        start_cursor = int(self._leaderboard_scan_cursor % len(combos))
+
+        for i in range(requests_budget):
+            order_by, time_period, category = combos[(start_cursor + i) % len(combos)]
+            combo_key = self._leaderboard_combo_key(
+                order_by=order_by,
+                time_period=time_period,
+                category=category,
+            )
+            offset = int(max(0, self._leaderboard_offsets.get(combo_key, 0)))
+
             try:
-                entries = await self.client.get_leaderboard_paginated(
-                    total_limit=scan_count,
+                entries = await self.client.get_leaderboard(
+                    limit=DISCOVERY_LEADERBOARD_PAGE_SIZE,
+                    time_period=time_period,
                     order_by=order_by,
+                    category=category,
+                    offset=offset,
                 )
-                for entry in entries:
-                    addr = (entry.get("proxyWallet", "") or "").lower()
-                    if addr and len(addr) >= 10:
-                        discovered.add(addr)
+                if not entries and offset > 0:
+                    offset = 0
+                    entries = await self.client.get_leaderboard(
+                        limit=DISCOVERY_LEADERBOARD_PAGE_SIZE,
+                        time_period=time_period,
+                        order_by=order_by,
+                        category=category,
+                        offset=offset,
+                    )
             except Exception as e:
                 logger.warning(
                     "Leaderboard scan failed",
                     order_by=order_by,
+                    time_period=time_period,
+                    category=category,
                     error=str(e),
                 )
+                self._leaderboard_offsets[combo_key] = 0
+                continue
+
+            if not entries:
+                self._leaderboard_offsets[combo_key] = 0
+                continue
+
+            for entry in entries:
+                addr = self._normalize_wallet_address(
+                    entry.get("proxyWallet")
+                    or entry.get("wallet")
+                    or entry.get("address")
+                )
+                if addr:
+                    discovered.add(addr)
+
+            next_offset = offset + len(entries)
+            if len(entries) < DISCOVERY_LEADERBOARD_PAGE_SIZE:
+                next_offset = 0
+            self._leaderboard_offsets[combo_key] = next_offset
+
+        self._leaderboard_scan_cursor = (start_cursor + requests_budget) % len(combos)
 
         return discovered
 
@@ -1330,6 +1559,43 @@ class WalletDiscoveryEngine:
                 merged.append(addr)
         return merged
 
+    async def _maintenance_refresh_queue(
+        self,
+        *,
+        stale_cutoff: datetime,
+        limit: int | None = None,
+    ) -> list[str]:
+        """Select oldest stale/unanalyzed wallets to keep the catalog healthy."""
+        priority_default = self._coerce_int(
+            self._discovery_setting("analysis_priority_batch_limit", 2500),
+            DISCOVERY_DEFAULT_ANALYSIS_PRIORITY_BATCH_LIMIT,
+            minimum=100,
+        )
+        default_limit = max(
+            100,
+            min(
+                priority_default,
+                DISCOVERY_DEFAULT_MAINTENANCE_REFRESH_BATCH,
+            ),
+        )
+        refresh_limit = max(50, min(limit or default_limit, priority_default))
+        async with AsyncSessionLocal() as session:
+            rows = await session.execute(
+                select(DiscoveredWallet.address)
+                .where(
+                    or_(
+                        DiscoveredWallet.last_analyzed_at.is_(None),
+                        DiscoveredWallet.last_analyzed_at < stale_cutoff,
+                    )
+                )
+                .order_by(
+                    asc(DiscoveredWallet.last_analyzed_at),
+                    asc(DiscoveredWallet.discovered_at),
+                )
+                .limit(refresh_limit)
+            )
+        return [str(row.address).lower() for row in rows.all() if row.address]
+
     async def _priority_analysis_queue(
         self,
         limit: int | None = None,
@@ -1498,30 +1764,23 @@ class WalletDiscoveryEngine:
         try:
             # --- Step 1: Fetch active markets ---
             try:
-                markets = await self.client.get_markets(active=True, limit=min(max_markets, 100), offset=0)
+                markets, market_scan_stats = await self._select_markets_for_discovery(
+                    max_markets=max_markets,
+                    delay_between_requests=delay_between_markets,
+                )
             except Exception as e:
                 logger.error("Failed to fetch markets", error=str(e))
                 markets = []
+                market_scan_stats = {
+                    "market_scan_offset_start": self._market_scan_offset,
+                    "market_scan_offset_next": self._market_scan_offset,
+                    "markets_primary": 0,
+                    "markets_wrapped": 0,
+                    "markets_recent": 0,
+                    "markets_selected": 0,
+                }
 
-            # Paginate if we need more
-            if len(markets) < max_markets:
-                offset = len(markets)
-                while offset < max_markets:
-                    try:
-                        page = await self.client.get_markets(
-                            active=True,
-                            limit=min(100, max_markets - offset),
-                            offset=offset,
-                        )
-                        if not page:
-                            break
-                        markets.extend(page)
-                        offset += len(page)
-                        await asyncio.sleep(delay_between_markets)
-                    except Exception:
-                        break
-
-            logger.info("Fetched markets", count=len(markets))
+            logger.info("Fetched markets", count=len(markets), **market_scan_stats)
 
             # --- Step 2 & 3: Discover wallet addresses ---
             all_addresses: set[str] = set()
@@ -1543,7 +1802,10 @@ class WalletDiscoveryEngine:
                     all_addresses.update(result)
 
             # From leaderboard
-            leaderboard_addrs = await self._discover_wallets_from_leaderboard(scan_count=200)
+            leaderboard_scan_count = int(max(200, min(800, max_markets * 3)))
+            leaderboard_addrs = await self._discover_wallets_from_leaderboard(
+                scan_count=leaderboard_scan_count
+            )
             all_addresses.update(leaderboard_addrs)
 
             seeded = await self._upsert_discovered_placeholders(
@@ -1558,6 +1820,7 @@ class WalletDiscoveryEngine:
                 total=len(all_addresses),
                 from_markets=len(all_addresses) - len(leaderboard_addrs),
                 from_leaderboard=len(leaderboard_addrs),
+                leaderboard_scan_count=leaderboard_scan_count,
             )
 
             # --- Step 4: Filter to new/stale wallets ---
@@ -1595,9 +1858,13 @@ class WalletDiscoveryEngine:
                     stale_addresses.append(addr)
 
             priority_addresses, priority_counts = await self._priority_analysis_queue()
+            maintenance_addresses = await self._maintenance_refresh_queue(
+                stale_cutoff=stale_cutoff,
+            )
             addresses_to_analyze = self._merge_unique_addresses(
                 priority_addresses,
                 stale_addresses,
+                maintenance_addresses,
             )
 
             logger.info(
@@ -1608,6 +1875,7 @@ class WalletDiscoveryEngine:
                 priority_smart_pool_unanalyzed=priority_counts.get("smart_pool_unanalyzed", 0),
                 priority_metrics_backfill=priority_counts.get("metrics_backfill", 0),
                 stale_discovered=len(stale_addresses),
+                maintenance_refresh=len(maintenance_addresses),
                 skipped_fresh=max(len(all_addresses) - len(stale_addresses), 0),
             )
 

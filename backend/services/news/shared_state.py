@@ -21,6 +21,8 @@ from services.market_tradability import get_market_tradability_map
 from services.news.rss_config import (
     default_custom_rss_feeds,
     default_gov_rss_feeds,
+    merge_custom_rss_feeds,
+    merge_gov_rss_feeds,
     normalize_custom_rss_feeds,
     normalize_gov_rss_feeds,
 )
@@ -331,6 +333,7 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
     mutated = False
     if db is None:
         db = AppSettings(id="default")
+        db.news_rss_feeds_json = default_custom_rss_feeds()
         db.news_gov_rss_enabled = True
         db.news_gov_rss_feeds_json = default_gov_rss_feeds()
         session.add(db)
@@ -363,10 +366,19 @@ async def _get_or_create_app_settings(session: AsyncSession) -> AppSettings:
         ):
             db.news_workflow_max_edge_evals_per_article = 6
             mutated = True
+        raw_custom_feeds = getattr(db, "news_rss_feeds_json", None)
+        existing_custom_feeds = normalize_custom_rss_feeds(raw_custom_feeds) if raw_custom_feeds else []
+        merged_custom_feeds = merge_custom_rss_feeds(existing_custom_feeds)
+        if (raw_custom_feeds is None and merged_custom_feeds) or merged_custom_feeds != existing_custom_feeds:
+            db.news_rss_feeds_json = merged_custom_feeds
+            mutated = True
         raw_gov_feeds = getattr(db, "news_gov_rss_feeds_json", None)
-        normalized_gov_feeds = normalize_gov_rss_feeds(raw_gov_feeds)
-        if not normalized_gov_feeds:
-            db.news_gov_rss_feeds_json = default_gov_rss_feeds()
+        normalized_gov_feeds = normalize_gov_rss_feeds(raw_gov_feeds) if raw_gov_feeds else []
+        merged_gov_feeds = merge_gov_rss_feeds(normalized_gov_feeds)
+        if not merged_gov_feeds:
+            merged_gov_feeds = default_gov_rss_feeds()
+        if (raw_gov_feeds is None and merged_gov_feeds) or merged_gov_feeds != normalized_gov_feeds:
+            db.news_gov_rss_feeds_json = merged_gov_feeds
             mutated = True
     if mutated:
         await session.commit()

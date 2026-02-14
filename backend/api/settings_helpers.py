@@ -99,6 +99,31 @@ DISCOVERY_SETTINGS_DEFAULTS: dict[str, Any] = {
     "trader_opps_insider_limit": 40,
     "trader_opps_insider_min_confidence": 0.62,
     "trader_opps_insider_max_age_minutes": 180,
+    "pool_recompute_mode": "quality_only",
+    "pool_target_size": 500,
+    "pool_min_size": 400,
+    "pool_max_size": 600,
+    "pool_active_window_hours": 72,
+    "pool_selection_score_floor": 0.55,
+    "pool_max_hourly_replacement_rate": 0.15,
+    "pool_replacement_score_cutoff": 0.05,
+    "pool_max_cluster_share": 0.08,
+    "pool_high_conviction_threshold": 0.72,
+    "pool_insider_priority_threshold": 0.62,
+    "pool_min_eligible_trades": 50,
+    "pool_max_eligible_anomaly": 0.5,
+    "pool_core_min_win_rate": 0.60,
+    "pool_core_min_sharpe": 1.0,
+    "pool_core_min_profit_factor": 1.5,
+    "pool_rising_min_win_rate": 0.55,
+    "pool_slo_min_analyzed_pct": 95.0,
+    "pool_slo_min_profitable_pct": 80.0,
+    "pool_leaderboard_wallet_trade_sample": 160,
+    "pool_incremental_wallet_trade_sample": 80,
+    "pool_full_sweep_interval_seconds": 1800,
+    "pool_incremental_refresh_interval_seconds": 120,
+    "pool_activity_reconciliation_interval_seconds": 120,
+    "pool_recompute_interval_seconds": 60,
 }
 
 WORLD_INTELLIGENCE_DEFAULTS: dict[str, Any] = {
@@ -312,6 +337,7 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "auto_cleanup_enabled": settings.auto_cleanup_enabled,
         "cleanup_interval_hours": settings.cleanup_interval_hours,
         "cleanup_resolved_trade_days": settings.cleanup_resolved_trade_days,
+        "llm_usage_retention_days": _with_default(settings.llm_usage_retention_days, 30),
         "market_cache_hygiene_enabled": _with_default(settings.market_cache_hygiene_enabled, True),
         "market_cache_hygiene_interval_hours": _with_default(settings.market_cache_hygiene_interval_hours, 6),
         "market_cache_retention_days": _with_default(settings.market_cache_retention_days, 120),
@@ -404,6 +430,106 @@ def discovery_payload(settings: AppSettings) -> dict[str, Any]:
         "trader_opps_insider_max_age_minutes": _with_default(
             settings.discovery_trader_opps_insider_max_age_minutes,
             DISCOVERY_SETTINGS_DEFAULTS["trader_opps_insider_max_age_minutes"],
+        ),
+        "pool_recompute_mode": _with_default(
+            settings.discovery_pool_recompute_mode,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_recompute_mode"],
+        ),
+        "pool_target_size": _with_default(
+            settings.discovery_pool_target_size,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_target_size"],
+        ),
+        "pool_min_size": _with_default(
+            settings.discovery_pool_min_size,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_min_size"],
+        ),
+        "pool_max_size": _with_default(
+            settings.discovery_pool_max_size,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_max_size"],
+        ),
+        "pool_active_window_hours": _with_default(
+            settings.discovery_pool_active_window_hours,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_active_window_hours"],
+        ),
+        "pool_selection_score_floor": _with_default(
+            settings.discovery_pool_selection_score_floor,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_selection_score_floor"],
+        ),
+        "pool_max_hourly_replacement_rate": _with_default(
+            settings.discovery_pool_max_hourly_replacement_rate,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_max_hourly_replacement_rate"],
+        ),
+        "pool_replacement_score_cutoff": _with_default(
+            settings.discovery_pool_replacement_score_cutoff,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_replacement_score_cutoff"],
+        ),
+        "pool_max_cluster_share": _with_default(
+            settings.discovery_pool_max_cluster_share,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_max_cluster_share"],
+        ),
+        "pool_high_conviction_threshold": _with_default(
+            settings.discovery_pool_high_conviction_threshold,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_high_conviction_threshold"],
+        ),
+        "pool_insider_priority_threshold": _with_default(
+            settings.discovery_pool_insider_priority_threshold,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_insider_priority_threshold"],
+        ),
+        "pool_min_eligible_trades": _with_default(
+            settings.discovery_pool_min_eligible_trades,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_min_eligible_trades"],
+        ),
+        "pool_max_eligible_anomaly": _with_default(
+            settings.discovery_pool_max_eligible_anomaly,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_max_eligible_anomaly"],
+        ),
+        "pool_core_min_win_rate": _with_default(
+            settings.discovery_pool_core_min_win_rate,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_win_rate"],
+        ),
+        "pool_core_min_sharpe": _with_default(
+            settings.discovery_pool_core_min_sharpe,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_sharpe"],
+        ),
+        "pool_core_min_profit_factor": _with_default(
+            settings.discovery_pool_core_min_profit_factor,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_core_min_profit_factor"],
+        ),
+        "pool_rising_min_win_rate": _with_default(
+            settings.discovery_pool_rising_min_win_rate,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_rising_min_win_rate"],
+        ),
+        "pool_slo_min_analyzed_pct": _with_default(
+            settings.discovery_pool_slo_min_analyzed_pct,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_analyzed_pct"],
+        ),
+        "pool_slo_min_profitable_pct": _with_default(
+            settings.discovery_pool_slo_min_profitable_pct,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_slo_min_profitable_pct"],
+        ),
+        "pool_leaderboard_wallet_trade_sample": _with_default(
+            settings.discovery_pool_leaderboard_wallet_trade_sample,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_leaderboard_wallet_trade_sample"],
+        ),
+        "pool_incremental_wallet_trade_sample": _with_default(
+            settings.discovery_pool_incremental_wallet_trade_sample,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_wallet_trade_sample"],
+        ),
+        "pool_full_sweep_interval_seconds": _with_default(
+            settings.discovery_pool_full_sweep_interval_seconds,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_full_sweep_interval_seconds"],
+        ),
+        "pool_incremental_refresh_interval_seconds": _with_default(
+            settings.discovery_pool_incremental_refresh_interval_seconds,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_incremental_refresh_interval_seconds"],
+        ),
+        "pool_activity_reconciliation_interval_seconds": _with_default(
+            settings.discovery_pool_activity_reconciliation_interval_seconds,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_activity_reconciliation_interval_seconds"],
+        ),
+        "pool_recompute_interval_seconds": _with_default(
+            settings.discovery_pool_recompute_interval_seconds,
+            DISCOVERY_SETTINGS_DEFAULTS["pool_recompute_interval_seconds"],
         ),
     }
 
@@ -567,6 +693,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.auto_cleanup_enabled = maint.auto_cleanup_enabled
         settings.cleanup_interval_hours = maint.cleanup_interval_hours
         settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
+        settings.llm_usage_retention_days = maint.llm_usage_retention_days
         settings.market_cache_hygiene_enabled = maint.market_cache_hygiene_enabled
         settings.market_cache_hygiene_interval_hours = maint.market_cache_hygiene_interval_hours
         settings.market_cache_retention_days = maint.market_cache_retention_days
@@ -606,6 +733,39 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.discovery_trader_opps_insider_max_age_minutes = (
             discovery.trader_opps_insider_max_age_minutes
         )
+        settings.discovery_pool_recompute_mode = (
+            str(discovery.pool_recompute_mode or "quality_only").strip().lower() or "quality_only"
+        )
+        settings.discovery_pool_target_size = discovery.pool_target_size
+        settings.discovery_pool_min_size = discovery.pool_min_size
+        settings.discovery_pool_max_size = discovery.pool_max_size
+        settings.discovery_pool_active_window_hours = discovery.pool_active_window_hours
+        settings.discovery_pool_selection_score_floor = discovery.pool_selection_score_floor
+        settings.discovery_pool_max_hourly_replacement_rate = discovery.pool_max_hourly_replacement_rate
+        settings.discovery_pool_replacement_score_cutoff = discovery.pool_replacement_score_cutoff
+        settings.discovery_pool_max_cluster_share = discovery.pool_max_cluster_share
+        settings.discovery_pool_high_conviction_threshold = discovery.pool_high_conviction_threshold
+        settings.discovery_pool_insider_priority_threshold = discovery.pool_insider_priority_threshold
+        settings.discovery_pool_min_eligible_trades = discovery.pool_min_eligible_trades
+        settings.discovery_pool_max_eligible_anomaly = discovery.pool_max_eligible_anomaly
+        settings.discovery_pool_core_min_win_rate = discovery.pool_core_min_win_rate
+        settings.discovery_pool_core_min_sharpe = discovery.pool_core_min_sharpe
+        settings.discovery_pool_core_min_profit_factor = discovery.pool_core_min_profit_factor
+        settings.discovery_pool_rising_min_win_rate = discovery.pool_rising_min_win_rate
+        settings.discovery_pool_slo_min_analyzed_pct = discovery.pool_slo_min_analyzed_pct
+        settings.discovery_pool_slo_min_profitable_pct = discovery.pool_slo_min_profitable_pct
+        settings.discovery_pool_leaderboard_wallet_trade_sample = discovery.pool_leaderboard_wallet_trade_sample
+        settings.discovery_pool_incremental_wallet_trade_sample = (
+            discovery.pool_incremental_wallet_trade_sample
+        )
+        settings.discovery_pool_full_sweep_interval_seconds = discovery.pool_full_sweep_interval_seconds
+        settings.discovery_pool_incremental_refresh_interval_seconds = (
+            discovery.pool_incremental_refresh_interval_seconds
+        )
+        settings.discovery_pool_activity_reconciliation_interval_seconds = (
+            discovery.pool_activity_reconciliation_interval_seconds
+        )
+        settings.discovery_pool_recompute_interval_seconds = discovery.pool_recompute_interval_seconds
 
     if request.search_filters:
         sf = request.search_filters

@@ -78,6 +78,31 @@ const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   trader_opps_insider_limit: 40,
   trader_opps_insider_min_confidence: 0.62,
   trader_opps_insider_max_age_minutes: 180,
+  pool_recompute_mode: 'quality_only',
+  pool_target_size: 500,
+  pool_min_size: 400,
+  pool_max_size: 600,
+  pool_active_window_hours: 72,
+  pool_selection_score_floor: 0.55,
+  pool_max_hourly_replacement_rate: 0.15,
+  pool_replacement_score_cutoff: 0.05,
+  pool_max_cluster_share: 0.08,
+  pool_high_conviction_threshold: 0.72,
+  pool_insider_priority_threshold: 0.62,
+  pool_min_eligible_trades: 50,
+  pool_max_eligible_anomaly: 0.5,
+  pool_core_min_win_rate: 0.60,
+  pool_core_min_sharpe: 1.0,
+  pool_core_min_profit_factor: 1.5,
+  pool_rising_min_win_rate: 0.55,
+  pool_slo_min_analyzed_pct: 95.0,
+  pool_slo_min_profitable_pct: 80.0,
+  pool_leaderboard_wallet_trade_sample: 160,
+  pool_incremental_wallet_trade_sample: 80,
+  pool_full_sweep_interval_seconds: 1800,
+  pool_incremental_refresh_interval_seconds: 120,
+  pool_activity_reconciliation_interval_seconds: 120,
+  pool_recompute_interval_seconds: 60,
 }
 
 const getDiscoverySettings = (value: Partial<DiscoverySettings> | null | undefined): DiscoverySettings => {
@@ -194,6 +219,7 @@ export default function SettingsPanel() {
     auto_cleanup_enabled: false,
     cleanup_interval_hours: 24,
     cleanup_resolved_trade_days: 30,
+    llm_usage_retention_days: 30,
     market_cache_hygiene_enabled: true,
     market_cache_hygiene_interval_hours: 6,
     market_cache_retention_days: 120,
@@ -312,6 +338,7 @@ export default function SettingsPanel() {
         auto_cleanup_enabled: settings.maintenance?.auto_cleanup_enabled ?? false,
         cleanup_interval_hours: settings.maintenance?.cleanup_interval_hours ?? 24,
         cleanup_resolved_trade_days: settings.maintenance?.cleanup_resolved_trade_days ?? 30,
+        llm_usage_retention_days: settings.maintenance?.llm_usage_retention_days ?? 30,
         market_cache_hygiene_enabled: settings.maintenance?.market_cache_hygiene_enabled ?? true,
         market_cache_hygiene_interval_hours: settings.maintenance?.market_cache_hygiene_interval_hours ?? 6,
         market_cache_retention_days: settings.maintenance?.market_cache_retention_days ?? 120,
@@ -1984,7 +2011,7 @@ export default function SettingsPanel() {
                           </CardContent>
                         </Card>
 
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                           <div>
                             <Label className="text-xs text-muted-foreground">Cleanup Interval (hours)</Label>
                             <Input
@@ -2005,6 +2032,21 @@ export default function SettingsPanel() {
                               onChange={(e) => setMaintenanceForm(p => ({ ...p, cleanup_resolved_trade_days: parseInt(e.target.value) || 30 }))}
                               min={1}
                               max={365}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">LLM Usage Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.llm_usage_retention_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, llm_usage_retention_days: Number.isNaN(value) ? 30 : value }))
+                              }}
+                              min={0}
+                              max={3650}
                               className="mt-1 text-sm"
                             />
                           </div>

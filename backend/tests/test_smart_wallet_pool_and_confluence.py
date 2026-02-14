@@ -14,8 +14,10 @@ from utils.utcnow import utcnow
 from services.smart_wallet_pool import (  # noqa: E402
     SmartWalletPoolService,
     TARGET_POOL_SIZE,
+    MIN_POOL_SIZE,
     MAX_HOURLY_REPLACEMENT_RATE,
     MAX_POOL_SIZE,
+    SELECTION_SCORE_QUALITY_TARGET_FLOOR,
     POOL_FLAG_BLACKLISTED,
     POOL_FLAG_MANUAL_EXCLUDE,
     POOL_FLAG_MANUAL_INCLUDE,
@@ -178,6 +180,38 @@ class TestSmartWalletPoolScoring:
 
 
 class TestSmartWalletPoolChurnGuard:
+    def test_effective_target_shrinks_in_quality_only_mode(self):
+        svc = SmartWalletPoolService()
+        strong = {f"strong_{i}": SELECTION_SCORE_QUALITY_TARGET_FLOOR + 0.05 for i in range(125)}
+        weak = {f"weak_{i}": SELECTION_SCORE_QUALITY_TARGET_FLOOR - 0.05 for i in range(240)}
+        scores = {**strong, **weak}
+        eligible = set(scores.keys())
+
+        target = svc._effective_target_pool_size(
+            selection_scores=scores,
+            eligible_addresses=eligible,
+            manual_includes=[],
+            quality_only_mode=True,
+        )
+
+        assert target == len(strong)
+
+    def test_effective_target_keeps_balanced_minimum(self):
+        svc = SmartWalletPoolService()
+        strong = {f"strong_{i}": SELECTION_SCORE_QUALITY_TARGET_FLOOR + 0.05 for i in range(125)}
+        weak = {f"weak_{i}": SELECTION_SCORE_QUALITY_TARGET_FLOOR - 0.05 for i in range(240)}
+        scores = {**strong, **weak}
+        eligible = set(scores.keys())
+
+        target = svc._effective_target_pool_size(
+            selection_scores=scores,
+            eligible_addresses=eligible,
+            manual_includes=[],
+            quality_only_mode=False,
+        )
+
+        assert target == MIN_POOL_SIZE
+
     def test_quality_only_mode_allows_pool_shrink_below_minimum(self):
         svc = SmartWalletPoolService()
         current = [f"cur_{i}" for i in range(200)]

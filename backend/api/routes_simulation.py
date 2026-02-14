@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import OperationalError
 import asyncio
 
 from models.database import get_db_session
@@ -31,12 +32,21 @@ class ExecuteTradeRequest(BaseModel):
 @simulation_router.post("/accounts")
 async def create_simulation_account(request: CreateAccountRequest):
     """Create a new simulation account for paper trading"""
-    account = await simulation_service.create_account(
-        name=request.name,
-        initial_capital=request.initial_capital,
-        max_position_pct=request.max_position_pct,
-        max_positions=request.max_positions,
-    )
+    try:
+        account = await simulation_service.create_account(
+            name=request.name,
+            initial_capital=request.initial_capital,
+            max_position_pct=request.max_position_pct,
+            max_positions=request.max_positions,
+        )
+    except OperationalError as exc:
+        if simulation_service.is_sqlite_lock_error(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="Database is busy; please retry creating the sandbox account in a few seconds.",
+            ) from exc
+        raise
+
     return {
         "account_id": account.id,
         "name": account.name,

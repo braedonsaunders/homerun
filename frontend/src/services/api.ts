@@ -88,6 +88,8 @@ export interface Market {
   question: string
   yes_price: number
   no_price: number
+  current_yes_price?: number | null
+  current_no_price?: number | null
   outcome_labels?: string[]
   outcomes?: unknown[]
   outcome_prices?: number[]
@@ -576,6 +578,7 @@ export const getOpportunityCounts = async (params?: {
   min_liquidity?: number
   search?: string
   strategy?: string
+  sub_strategy?: string
   category?: string
 }): Promise<OpportunityCounts> => {
   const { data } = await api.get('/opportunities/counts', { params })
@@ -887,7 +890,7 @@ export const createSimulationAccount = async (params: {
   max_position_pct?: number
   max_positions?: number
 }): Promise<{ account_id: string; name: string; initial_capital: number; message: string }> => {
-  const { data } = await api.post('/simulation/accounts', params)
+  const { data } = await api.post('/simulation/accounts', params, { timeout: 20_000 })
   return data
 }
 
@@ -1721,6 +1724,34 @@ export interface TraderSource {
   description: string
   domains: string[]
   signal_types: string[]
+  aliases?: string[]
+}
+
+export interface TraderStrategySchema {
+  key: string
+  label: string
+  description: string
+  supported_sources: string[]
+  defaults: {
+    interval_seconds: number
+    sources: string[]
+    params: Record<string, any>
+    risk_limits: Record<string, any>
+    metadata: Record<string, any>
+  }
+  param_fields: Array<Record<string, any>>
+  risk_fields: Array<Record<string, any>>
+  metadata_fields: Array<Record<string, any>>
+}
+
+export interface TraderConfigSchema {
+  version: string
+  default_strategy_key: string
+  sources: TraderSource[]
+  source_aliases: Record<string, string>
+  strategies: TraderStrategySchema[]
+  shared_risk_fields: Array<Record<string, any>>
+  runtime_fields: Array<Record<string, any>>
 }
 
 export const getTraders = async (): Promise<Trader[]> => {
@@ -1845,6 +1876,11 @@ export const createTraderFromTemplate = async (payload: {
 export const getTraderSources = async (): Promise<TraderSource[]> => {
   const { data } = await api.get('/trader-sources')
   return data.sources || []
+}
+
+export const getTraderConfigSchema = async (): Promise<TraderConfigSchema> => {
+  const { data } = await api.get('/trader-sources/schema')
+  return data
 }
 
 export const getTraderOrchestratorStats = async (): Promise<TraderOrchestratorStatus['stats']> => {
@@ -2008,13 +2044,38 @@ export interface DiscoverySettings {
   delay_between_wallets: number
   max_markets_per_run: number
   max_wallets_per_market: number
-  trader_opps_source_filter: 'all' | 'confluence' | 'insider'
+  trader_opps_source_filter: 'all' | 'tracked' | 'pool' | 'confluence' | 'insider'
   trader_opps_min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
   trader_opps_side_filter: 'all' | 'buy' | 'sell'
   trader_opps_confluence_limit: number
   trader_opps_insider_limit: number
   trader_opps_insider_min_confidence: number
   trader_opps_insider_max_age_minutes: number
+  pool_recompute_mode: 'quality_only' | 'balanced'
+  pool_target_size: number
+  pool_min_size: number
+  pool_max_size: number
+  pool_active_window_hours: number
+  pool_selection_score_floor: number
+  pool_max_hourly_replacement_rate: number
+  pool_replacement_score_cutoff: number
+  pool_max_cluster_share: number
+  pool_high_conviction_threshold: number
+  pool_insider_priority_threshold: number
+  pool_min_eligible_trades: number
+  pool_max_eligible_anomaly: number
+  pool_core_min_win_rate: number
+  pool_core_min_sharpe: number
+  pool_core_min_profit_factor: number
+  pool_rising_min_win_rate: number
+  pool_slo_min_analyzed_pct: number
+  pool_slo_min_profitable_pct: number
+  pool_leaderboard_wallet_trade_sample: number
+  pool_incremental_wallet_trade_sample: number
+  pool_full_sweep_interval_seconds: number
+  pool_incremental_refresh_interval_seconds: number
+  pool_activity_reconciliation_interval_seconds: number
+  pool_recompute_interval_seconds: number
 }
 
 export interface TradingSettingsConfig {
@@ -2029,6 +2090,7 @@ export interface MaintenanceSettings {
   auto_cleanup_enabled: boolean
   cleanup_interval_hours: number
   cleanup_resolved_trade_days: number
+  llm_usage_retention_days: number
   market_cache_hygiene_enabled: boolean
   market_cache_hygiene_interval_hours: number
   market_cache_retention_days: number
@@ -2940,9 +3002,6 @@ export interface NewsWorkflowSettings {
   min_edge_percent: number
   min_confidence: number
   require_second_source: boolean
-  orchestrator_enabled: boolean
-  orchestrator_min_edge: number
-  orchestrator_max_age_minutes: number
   cycle_spend_cap_usd: number
   hourly_spend_cap_usd: number
   cycle_llm_call_cap: number
@@ -3048,9 +3107,6 @@ export interface WeatherWorkflowSettings {
   min_model_agreement: number
   min_liquidity: number
   max_markets_per_scan: number
-  orchestrator_enabled: boolean
-  orchestrator_min_edge: number
-  orchestrator_max_age_minutes: number
   default_size_usd: number
   max_size_usd: number
   model: string | null
@@ -3129,6 +3185,7 @@ export const getWeatherWorkflowOpportunities = async (params?: {
   max_entry?: number
   location?: string
   target_date?: string
+  include_report_only?: boolean
   limit?: number
   offset?: number
 }): Promise<{ total: number; offset: number; limit: number; opportunities: Opportunity[] }> => {
@@ -3141,6 +3198,7 @@ export const getWeatherWorkflowOpportunityDates = async (params?: {
   direction?: string
   max_entry?: number
   location?: string
+  include_report_only?: boolean
 }): Promise<{ total_dates: number; dates: WeatherOpportunityDateBucket[] }> => {
   const { data } = await api.get('/weather-workflow/opportunity-dates', { params })
   return data

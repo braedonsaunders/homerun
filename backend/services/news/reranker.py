@@ -10,6 +10,7 @@ Pattern from: Polymarket Agents (RAG reranking pipeline).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -17,6 +18,8 @@ from typing import Any, Optional
 from services.news.hybrid_retriever import RetrievalCandidate
 
 logger = logging.getLogger(__name__)
+
+_LLM_CALL_TIMEOUT_SECONDS = 20.0
 
 
 @dataclass
@@ -174,14 +177,17 @@ class Reranker:
         )
 
         try:
-            result = await manager.structured_output(
-                messages=[
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ],
-                schema=RERANK_SCHEMA,
-                model=model,
-                purpose="news_workflow_rerank",
+            result = await asyncio.wait_for(
+                manager.structured_output(
+                    messages=[
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ],
+                    schema=RERANK_SCHEMA,
+                    model=model,
+                    purpose="news_workflow_rerank",
+                ),
+                timeout=_LLM_CALL_TIMEOUT_SECONDS,
             )
 
             pairs = result.get("pairs", [])
@@ -224,6 +230,12 @@ class Reranker:
 
             return reranked
 
+        except asyncio.TimeoutError:
+            logger.debug(
+                "LLM reranking timed out after %.1fs",
+                _LLM_CALL_TIMEOUT_SECONDS,
+            )
+            return None
         except Exception as e:
             logger.debug("LLM reranking failed: %s", e)
             return None

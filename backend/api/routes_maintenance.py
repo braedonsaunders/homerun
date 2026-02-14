@@ -270,6 +270,8 @@ async def run_cleanup(request: CleanupRequest = CleanupRequest()):
     2. Delete resolved trades older than specified days
     3. Delete old wallet trades
     4. Delete resolved anomalies
+    5. Delete stale LLM usage logs (from settings retention policy)
+    6. Run market metadata hygiene when enabled
 
     Defaults:
     - resolved_trade_days: 30

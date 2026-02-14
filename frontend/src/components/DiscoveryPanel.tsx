@@ -21,6 +21,7 @@ import {
   UserX,
   Trash2,
   X,
+  Settings,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'
@@ -45,7 +46,14 @@ import {
   type PoolMember,
   type PoolMembersResponse,
 } from '../services/discoveryApi'
-import { analyzeAndTrackWallet } from '../services/api'
+import {
+  analyzeAndTrackWallet,
+  getDiscoverySettings,
+  runWorkerOnce,
+  updateDiscoverySettings,
+  type DiscoverySettings,
+} from '../services/api'
+import PoolSettingsFlyout, { type PoolSettingsForm } from './PoolSettingsFlyout'
 
 type SortField =
   | 'rank_score'
@@ -73,9 +81,9 @@ const TIME_PERIODS: { value: TimePeriod; label: string; description: string }[] 
 ]
 
 const RECOMMENDATION_COLORS: Record<string, string> = {
-  copy_candidate: 'bg-green-500/15 text-green-400 border-green-500/20',
-  monitor: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
-  avoid: 'bg-red-500/15 text-red-400 border-red-500/20',
+  copy_candidate: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/30 dark:bg-sky-500/15 dark:text-sky-200',
+  monitor: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/15 dark:text-amber-200',
+  avoid: 'border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-400/30 dark:bg-rose-500/15 dark:text-rose-200',
 }
 
 const RECOMMENDATION_LABELS: Record<string, string> = {
@@ -88,6 +96,91 @@ const ITEMS_PER_PAGE = 25
 const FILTER_LABEL_CLASS = 'text-[10px] uppercase tracking-wide text-muted-foreground/80'
 const FILTER_INPUT_CLASS = 'h-8 text-xs bg-card border-border'
 const FILTER_SELECT_CLASS = 'w-full bg-card border border-border rounded-lg px-2 py-1.5 text-xs h-8'
+const SCORE_DELTA_HIDE_THRESHOLD = 0.0025
+
+type MetricTone = 'good' | 'warn' | 'bad' | 'neutral' | 'info'
+
+const METRIC_TONE_CLASSES: Record<MetricTone, string> = {
+  good: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/35 dark:bg-sky-500/15 dark:text-sky-100',
+  warn: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/18 dark:text-amber-100',
+  bad: 'border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-400/45 dark:bg-rose-500/18 dark:text-rose-100',
+  neutral: 'border-slate-300 bg-slate-100 text-slate-800 dark:border-border/85 dark:bg-muted/55 dark:text-foreground/90',
+  info: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/40 dark:bg-indigo-500/16 dark:text-indigo-100',
+}
+
+const METRIC_BAR_CLASSES: Record<MetricTone, string> = {
+  good: 'bg-sky-600 dark:bg-sky-300/95',
+  warn: 'bg-amber-600 dark:bg-amber-300/95',
+  bad: 'bg-rose-600 dark:bg-rose-300/95',
+  neutral: 'bg-slate-500 dark:bg-muted-foreground/80',
+  info: 'bg-indigo-600 dark:bg-indigo-300/95',
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return clamp(value, 0, 1)
+}
+
+function formatScorePct(value: number): string {
+  return `${(clamp01(value) * 100).toFixed(1)}%`
+}
+
+function scoreTone(value: number, goodThreshold: number, warnThreshold: number): MetricTone {
+  if (!Number.isFinite(value)) return 'neutral'
+  if (value >= goodThreshold) return 'good'
+  if (value >= warnThreshold) return 'warn'
+  return 'neutral'
+}
+
+function inverseScoreTone(value: number, badThreshold: number, warnThreshold: number): MetricTone {
+  if (!Number.isFinite(value)) return 'neutral'
+  if (value >= badThreshold) return 'bad'
+  if (value >= warnThreshold) return 'warn'
+  return 'good'
+}
+
+function poolTierTone(tier: string | null | undefined): MetricTone {
+  const normalized = (tier || '').toLowerCase()
+  if (normalized === 'core') return 'good'
+  if (normalized === 'rising') return 'info'
+  return 'neutral'
+}
+
+function selectionReasonTone(code: string): MetricTone {
+  const normalized = code.toLowerCase()
+  if (
+    normalized.includes('manual_include') ||
+    normalized.includes('core') ||
+    normalized.includes('elite') ||
+    normalized.includes('quality') ||
+    normalized.includes('active') ||
+    normalized.includes('tracked')
+  ) {
+    return 'good'
+  }
+  if (
+    normalized.includes('exclude') ||
+    normalized.includes('blacklist') ||
+    normalized.includes('below') ||
+    normalized.includes('blocked') ||
+    normalized.includes('anomaly')
+  ) {
+    return 'bad'
+  }
+  if (
+    normalized.includes('rising') ||
+    normalized.includes('churn') ||
+    normalized.includes('tier') ||
+    normalized.includes('pending')
+  ) {
+    return 'warn'
+  }
+  return 'neutral'
+}
 
 function formatPnl(value: number): string {
   if (value == null) return '0.00'
@@ -133,6 +226,63 @@ function timeAgo(dateStr: string | null): string {
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   return `${days}d ago`
+}
+
+function MetricPill({
+  label,
+  value,
+  tone = 'neutral',
+  className,
+  mono = true,
+  title,
+}: {
+  label: string
+  value: string
+  tone?: MetricTone
+  className?: string
+  mono?: boolean
+  title?: string
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none',
+        METRIC_TONE_CLASSES[tone],
+        className
+      )}
+    >
+      <span className="uppercase tracking-wide opacity-90">{label}</span>
+      <span className={cn('font-semibold', mono && 'font-mono')}>{value}</span>
+    </span>
+  )
+}
+
+function ScoreSparkline({
+  points,
+  className,
+}: {
+  points: Array<{ key: string; label: string; value: number; tone?: MetricTone }>
+  className?: string
+}) {
+  if (!points.length) return null
+  return (
+    <div className={cn('inline-flex items-end gap-0.5 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-0.5 dark:border-border/85 dark:bg-muted/45', className)}>
+      {points.map((point) => {
+        const normalized = clamp01(point.value)
+        const height = Math.max(3, Math.round(normalized * 13))
+        const tone = point.tone || 'neutral'
+        return (
+          <span
+            key={point.key}
+            title={`${point.label} ${(normalized * 100).toFixed(1)}%`}
+            className={cn('w-1.5 rounded-sm', METRIC_BAR_CLASSES[tone])}
+            style={{ height }}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
 type SelectionReason = {
@@ -250,6 +400,20 @@ const FALLBACK_REASON: SelectionReason = {
   detail: 'Reason metadata missing for this recompute cycle.',
 }
 
+const BLOCKER_REASON_CODES = new Set<string>([
+  'not_analyzed',
+  'recommendation_blocked',
+  'insufficient_trades',
+  'anomaly_too_high',
+  'non_positive_pnl',
+  'tier_thresholds_not_met',
+  'below_selection_cutoff',
+])
+
+function normalizeReasonCode(code: string): string {
+  return code.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+}
+
 function getReasonDefinition(code: string): SelectionReason | null {
   const normalized = code.trim().toLowerCase()
   if (!normalized) return null
@@ -343,9 +507,12 @@ function enrichMissingReasonSignals(member: PoolMember): SelectionReason[] {
 function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
   const out: SelectionReason[] = []
   const seen = new Set<string>()
-  const normalized = Array.isArray(member.selection_reasons)
+  const normalizedRaw = Array.isArray(member.selection_reasons)
     ? member.selection_reasons.map(normalizeSelectionReason).filter((reason): reason is SelectionReason => !!reason)
     : []
+  const normalized = member.in_top_pool
+    ? normalizedRaw.filter(reason => !BLOCKER_REASON_CODES.has(normalizeReasonCode(reason.code)))
+    : normalizedRaw
 
   for (const reason of normalized) {
     const key = reason.code.toLowerCase()
@@ -374,6 +541,9 @@ function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
   const fallbackReason: SelectionReason | null = (() => {
     const reason = (member.pool_membership_reason || '').trim()
     if (!reason) return null
+    if (member.in_top_pool && BLOCKER_REASON_CODES.has(normalizeReasonCode(reason))) {
+      return null
+    }
     const def = getReasonDefinition(reason)
     return {
       code: reason,
@@ -443,8 +613,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const [poolSortDir, setPoolSortDir] = useState<'asc' | 'desc'>('desc')
   const [includeBlacklisted, setIncludeBlacklisted] = useState(true)
   const [manualPoolAddress, setManualPoolAddress] = useState('')
+  const [poolSettingsOpen, setPoolSettingsOpen] = useState(false)
+  const [poolSettingsSaveMessage, setPoolSettingsSaveMessage] = useState<{
+    type: 'success' | 'error'
+    text: string
+  } | null>(null)
 
   const queryClient = useQueryClient()
+
+  const { data: discoverySettings } = useQuery({
+    queryKey: ['settings-discovery'],
+    queryFn: getDiscoverySettings,
+    enabled: isPoolView,
+  })
 
   useEffect(() => {
     setCurrentPage(0)
@@ -572,6 +753,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wallets'] })
+      queryClient.invalidateQueries({ queryKey: ['traders-overview'] })
+      queryClient.invalidateQueries({ queryKey: ['tracked-trader-opportunities'] })
+      queryClient.invalidateQueries({ queryKey: ['discovery-pool-members'] })
     },
   })
 
@@ -613,6 +797,70 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     mutationFn: () => discoveryApi.promoteTrackedWalletsToPool(500),
     onSuccess: invalidatePoolQueries,
   })
+
+  const savePoolSettingsMutation = useMutation({
+    mutationFn: (payload: Partial<DiscoverySettings>) => updateDiscoverySettings(payload),
+    onSuccess: async () => {
+      setPoolSettingsSaveMessage({ type: 'success', text: 'Pool settings saved' })
+      setTimeout(() => setPoolSettingsSaveMessage(null), 3000)
+      queryClient.invalidateQueries({ queryKey: ['settings-discovery'] })
+      try {
+        await runWorkerOnce('tracked_traders')
+      } catch {
+        // Non-fatal: setting is persisted and will apply on next worker cycle.
+      }
+      invalidatePoolQueries()
+      setPoolSettingsOpen(false)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      const message = typeof detail === 'string' && detail.trim()
+        ? detail.trim()
+        : 'Failed to save pool settings'
+      setPoolSettingsSaveMessage({ type: 'error', text: message })
+      setTimeout(() => setPoolSettingsSaveMessage(null), 5000)
+    },
+  })
+
+  const handleSavePoolSettings = useCallback((next: PoolSettingsForm) => {
+    if (!discoverySettings) {
+      setPoolSettingsSaveMessage({
+        type: 'error',
+        text: 'Pool settings are not loaded yet',
+      })
+      setTimeout(() => setPoolSettingsSaveMessage(null), 4000)
+      return
+    }
+
+    savePoolSettingsMutation.mutate({
+      ...discoverySettings,
+      pool_recompute_mode: next.pool_recompute_mode,
+      pool_target_size: next.pool_target_size,
+      pool_min_size: next.pool_min_size,
+      pool_max_size: next.pool_max_size,
+      pool_active_window_hours: next.pool_active_window_hours,
+      pool_selection_score_floor: next.pool_selection_score_floor,
+      pool_max_hourly_replacement_rate: next.pool_max_hourly_replacement_rate,
+      pool_replacement_score_cutoff: next.pool_replacement_score_cutoff,
+      pool_max_cluster_share: next.pool_max_cluster_share,
+      pool_high_conviction_threshold: next.pool_high_conviction_threshold,
+      pool_insider_priority_threshold: next.pool_insider_priority_threshold,
+      pool_min_eligible_trades: next.pool_min_eligible_trades,
+      pool_max_eligible_anomaly: next.pool_max_eligible_anomaly,
+      pool_core_min_win_rate: next.pool_core_min_win_rate,
+      pool_core_min_sharpe: next.pool_core_min_sharpe,
+      pool_core_min_profit_factor: next.pool_core_min_profit_factor,
+      pool_rising_min_win_rate: next.pool_rising_min_win_rate,
+      pool_slo_min_analyzed_pct: next.pool_slo_min_analyzed_pct,
+      pool_slo_min_profitable_pct: next.pool_slo_min_profitable_pct,
+      pool_leaderboard_wallet_trade_sample: next.pool_leaderboard_wallet_trade_sample,
+      pool_incremental_wallet_trade_sample: next.pool_incremental_wallet_trade_sample,
+      pool_full_sweep_interval_seconds: next.pool_full_sweep_interval_seconds,
+      pool_incremental_refresh_interval_seconds: next.pool_incremental_refresh_interval_seconds,
+      pool_activity_reconciliation_interval_seconds: next.pool_activity_reconciliation_interval_seconds,
+      pool_recompute_interval_seconds: next.pool_recompute_interval_seconds,
+    })
+  }, [discoverySettings, savePoolSettingsMutation])
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -739,6 +987,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
 
   const totalPages = Math.ceil(totalWallets / ITEMS_PER_PAGE)
   const poolActionBusy =
+    trackWalletMutation.isPending ||
     manualIncludeMutation.isPending ||
     clearManualIncludeMutation.isPending ||
     manualExcludeMutation.isPending ||
@@ -776,6 +1025,18 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <span className="max-w-[320px] truncate">{stats.current_activity}</span>
         )}
         {stats?.last_run_at && <span>Last run: {timeAgo(stats.last_run_at)}</span>}
+        {isPoolView && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-8 text-xs gap-1.5"
+            onClick={() => setPoolSettingsOpen(true)}
+            disabled={!discoverySettings || savePoolSettingsMutation.isPending}
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Settings
+          </Button>
+        )}
       </div>
 
       {isPoolView ? (
@@ -789,7 +1050,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <p className="text-xs text-muted-foreground">Top Pool</p>
                 <p className="text-lg font-semibold">
                   {formatNumber(poolStats?.pool_size || poolMemberStats?.pool_members || 0)}
-                  <span className="text-[11px] text-muted-foreground ml-1">/ {poolStats?.target_pool_size || 500}</span>
+                  <span className="text-[11px] text-muted-foreground ml-1">
+                    / {poolStats?.effective_target_pool_size || poolStats?.target_pool_size || 500}
+                  </span>
                 </p>
               </div>
             </CardContent>
@@ -1037,113 +1300,212 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
             </div>
           ) : (
             <div className="overflow-auto rounded border border-border bg-background/20 grow min-h-[72vh]">
-              <Table className="text-[12px]">
-                <TableHeader className="sticky top-0 z-10 bg-background/80">
-                  <TableRow className="bg-muted/50 border-b border-border/80">
-                    <TableHead className="min-w-[210px]">Trader</TableHead>
-                    <TableHead>Tier</TableHead>
-                    <TableHead className="min-w-[160px]">Performance</TableHead>
-                    <TableHead className="min-w-[110px]">Selection</TableHead>
-                    <TableHead className="min-w-[260px]">Why Selected</TableHead>
-                    <TableHead className="min-w-[110px]">Flags</TableHead>
-                    <TableHead className="min-w-[140px]">Actions</TableHead>
+              <Table className="text-[11px] leading-tight">
+                <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
+                  <TableRow className="bg-muted/55 border-b border-border/80">
+                    <TableHead className="h-9 px-2 min-w-[210px]">Trader</TableHead>
+                    <TableHead className="h-9 px-2">Tier</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[220px]">Performance</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[190px]">Selection</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[220px]">Why Selected</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[120px]">Flags</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[140px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {poolMembers.map((member, rowIndex) => {
-                      const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
-                      const canAnalyze = !!onAnalyzeWallet
-                      const reasons = getPoolSelectionReasons(member)
-                      const displayName = member.display_name || member.username || 'Unknown Trader'
-                      const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
-                      return (
-                      <TableRow key={member.address} className={cn('border-border/70 align-top transition-colors hover:bg-muted/40', rowHighlight)}>
-                        <TableCell className="align-top">
-                          <div className="text-sm font-medium">{displayName}</div>
-                          {member.username && member.display_name !== member.username && (
-                            <div className="text-[11px] text-muted-foreground">@{member.username}</div>
-                          )}
-                          {member.name_source === 'tracked_label' && member.tracked_label && (
-                            <div className="text-[11px] text-muted-foreground">Tracked label: {member.tracked_label}</div>
-                          )}
-                          <div className="text-[11px] text-muted-foreground font-mono">{truncateAddress(member.address)}</div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <Badge variant="outline" className="text-[10px]">
-                            {(member.pool_tier || 'out').toUpperCase()}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-xs align-top">
-                          <div className="space-y-0.5">
-                            <PnlDisplay value={member.total_pnl || 0} />
-                            <div className="text-muted-foreground">
-                              WR {formatWinRate(member.win_rate || 0)} · Trades {member.total_trades || 0}
+                    const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
+                    const canAnalyze = !!onAnalyzeWallet
+                    const reasons = getPoolSelectionReasons(member)
+                    const displayName = member.display_name || member.username || 'Unknown Trader'
+                    const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
+                    const selectionValue = Number(member.selection_score ?? member.composite_score ?? 0)
+                    const compositeValue = Number(member.composite_score || 0)
+                    const selectionDelta = Math.abs(selectionValue - compositeValue)
+                    const showCompositeScore = selectionDelta >= SCORE_DELTA_HIDE_THRESHOLD
+                    const percentile =
+                      member.selection_percentile != null
+                        ? `${(Number(member.selection_percentile) * 100).toFixed(1)}%`
+                        : null
+                    const breakdown = member.selection_breakdown || {}
+                    const qualityScore = Number(breakdown.quality_score ?? member.quality_score ?? 0)
+                    const activityScore = Number(breakdown.activity_score ?? member.activity_score ?? 0)
+                    const stabilityScore = Number(breakdown.stability_score ?? member.stability_score ?? 0)
+                    const insiderScore = Number(breakdown.insider_score ?? 0)
+                    const selectionSparkline = [
+                      { key: 'quality', label: 'Quality', value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
+                      { key: 'activity', label: 'Activity', value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
+                      { key: 'stability', label: 'Stability', value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
+                      { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
+                    ]
+                    const hasSparkline = selectionSparkline.some((point) => point.value > 0)
+
+                    return (
+                      <TableRow key={member.address} className={cn('border-border/70 transition-colors hover:bg-muted/40', rowHighlight)}>
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="truncate text-[12px] font-semibold text-foreground" title={displayName}>
+                              {displayName}
                             </div>
-                            <div className="text-muted-foreground">24h: {member.trades_24h || 0} · 1h: {member.trades_1h || 0}</div>
-                            <div className="text-muted-foreground">{timeAgo(member.last_trade_at || null)}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-xs align-top">
-                          <div className="font-mono">
-                            Sel: {(Number(member.selection_score ?? member.composite_score ?? 0) * 100).toFixed(1)}
-                          </div>
-                          <div className="font-mono text-muted-foreground">
-                            Cmp: {(Number(member.composite_score || 0) * 100).toFixed(1)}
-                          </div>
-                          {member.selection_percentile != null && (
-                            <div className="text-muted-foreground">
-                              Top {(Number(member.selection_percentile) * 100).toFixed(1)}%
+                            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                              {member.username && member.display_name !== member.username && (
+                                <span className="max-w-[120px] truncate" title={`@${member.username}`}>@{member.username}</span>
+                              )}
+                              <span className="font-mono">{truncateAddress(member.address)}</span>
                             </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="align-top">
-                          <div className="flex flex-wrap gap-1">
-                            {reasons.slice(0, 3).map(reason => (
-                              <Tooltip key={`${member.address}-${reason.code}`}>
-                                <TooltipTrigger asChild>
-                                  <Badge variant="outline" className="max-w-[220px] truncate text-[10px] font-medium">
-                                    {reason.label}
-                                  </Badge>
-                                </TooltipTrigger>
-                                {reason.detail && (
-                                  <TooltipContent>{reason.detail}</TooltipContent>
-                                )}
-                              </Tooltip>
-                            ))}
-                            {reasons.length > 3 && (
-                              <span className="text-[10px] text-muted-foreground">+{reasons.length - 3} more</span>
+                            {member.name_source === 'tracked_label' && member.tracked_label && (
+                              <div className="truncate text-[10px] text-muted-foreground" title={member.tracked_label}>
+                                Label: {member.tracked_label}
+                              </div>
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-xs align-top">
-                          <div className="flex gap-1 flex-wrap">
-                            {member.tracked_wallet && <Badge variant="outline" className="text-[9px]">Tracked</Badge>}
-                            {flags.manual_include && <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-300 border-emerald-500/20">Manual+</Badge>}
-                            {flags.manual_exclude && <Badge variant="outline" className="text-[9px] bg-amber-500/10 text-amber-300 border-amber-500/20">Manual-</Badge>}
-                            {flags.blacklisted && <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-300 border-red-500/20">Blacklisted</Badge>}
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <MetricPill
+                            label="Tier"
+                            value={(member.pool_tier || 'out').toUpperCase()}
+                            tone={poolTierTone(member.pool_tier)}
+                            mono={false}
+                          />
+                        </TableCell>
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <PnlDisplay value={member.total_pnl || 0} className="text-xs" />
+                              <MetricPill
+                                label="WR"
+                                value={formatWinRate(member.win_rate || 0)}
+                                tone={scoreTone(normalizePercentRatio(member.win_rate || 0) / 100, 0.6, 0.45)}
+                              />
+                              <MetricPill label="T" value={formatNumber(member.total_trades || 0)} />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1">
+                              <MetricPill
+                                label="24h"
+                                value={formatNumber(member.trades_24h || 0)}
+                                tone={scoreTone(clamp01((member.trades_24h || 0) / 12), 0.6, 0.25)}
+                              />
+                              <MetricPill
+                                label="1h"
+                                value={formatNumber(member.trades_1h || 0)}
+                                tone={scoreTone(clamp01((member.trades_1h || 0) / 4), 0.55, 0.25)}
+                              />
+                              <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null)}</span>
+                            </div>
                           </div>
                         </TableCell>
-                        <TableCell className="align-top">
-                          <div className="flex gap-1 flex-wrap">
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <MetricPill
+                                label={showCompositeScore ? 'Sel' : 'Sel/Cmp'}
+                                value={formatScorePct(selectionValue)}
+                                tone={scoreTone(selectionValue, 0.7, 0.5)}
+                              />
+                              {showCompositeScore && (
+                                <MetricPill
+                                  label="Cmp"
+                                  value={formatScorePct(compositeValue)}
+                                  tone={scoreTone(compositeValue, 0.7, 0.5)}
+                                />
+                              )}
+                              {percentile && (
+                                <MetricPill label="Top" value={percentile} tone="info" />
+                              )}
+                            </div>
+                            {hasSparkline && (
+                              <ScoreSparkline points={selectionSparkline} />
+                            )}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="flex flex-wrap gap-1">
+                            {reasons.slice(0, 2).map((reason) => (
+                              <Tooltip key={`${member.address}-${reason.code}`}>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    className={cn(
+                                      'inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none truncate',
+                                      METRIC_TONE_CLASSES[selectionReasonTone(reason.code)]
+                                    )}
+                                  >
+                                    {reason.label}
+                                  </span>
+                                </TooltipTrigger>
+                                {reason.detail && <TooltipContent>{reason.detail}</TooltipContent>}
+                              </Tooltip>
+                            ))}
+                            {reasons.length > 2 && (
+                              <span className="text-[10px] text-muted-foreground">+{reasons.length - 2}</span>
+                            )}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="flex flex-wrap gap-1">
+                            {member.tracked_wallet && <MetricPill label="Tracked" value="Yes" tone="info" mono={false} />}
+                            {flags.manual_include && <MetricPill label="Manual+" value="On" tone="good" mono={false} />}
+                            {flags.manual_exclude && <MetricPill label="Manual-" value="On" tone="warn" mono={false} />}
+                            {flags.blacklisted && <MetricPill label="BL" value="On" tone="bad" mono={false} />}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="px-2 py-1.5 align-middle">
+                          <div className="flex flex-wrap gap-1">
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <button
                                   onClick={() => onAnalyzeWallet?.(member.address, member.username || member.display_name || undefined)}
                                   disabled={!canAnalyze || poolActionBusy}
-                                  className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
+                                  className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
                                 >
                                   <Activity className="w-3.5 h-3.5" />
                                 </button>
                               </TooltipTrigger>
                               <TooltipContent>Analyze wallet</TooltipContent>
                             </Tooltip>
+                            {!member.tracked_wallet ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() =>
+                                      trackWalletMutation.mutate({
+                                        address: member.address,
+                                        username: member.username || member.display_name || undefined,
+                                      })
+                                    }
+                                    disabled={poolActionBusy}
+                                    className="p-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+                                  >
+                                    <UserPlus className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Add to tracked traders</TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    disabled
+                                    className="p-1 rounded bg-emerald-500/10 text-emerald-300 transition-colors disabled:opacity-70"
+                                  >
+                                    <CheckCircle className="w-3.5 h-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Already tracked</TooltipContent>
+                              </Tooltip>
+                            )}
                             {!flags.manual_include ? (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <button
                                     onClick={() => manualIncludeMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserCheck className="w-3.5 h-3.5" />
                                   </button>
@@ -1156,7 +1518,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <button
                                     onClick={() => clearManualIncludeMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserCheck className="w-3.5 h-3.5" />
                                   </button>
@@ -1170,7 +1532,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <button
                                     onClick={() => manualExcludeMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserX className="w-3.5 h-3.5" />
                                   </button>
@@ -1183,7 +1545,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <button
                                     onClick={() => clearManualExcludeMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <UserX className="w-3.5 h-3.5" />
                                   </button>
@@ -1197,7 +1559,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <button
                                     onClick={() => blacklistMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <Ban className="w-3.5 h-3.5" />
                                   </button>
@@ -1210,7 +1572,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <button
                                     onClick={() => unblacklistMutation.mutate(member.address)}
                                     disabled={poolActionBusy}
-                                    className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                    className="p-1 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
                                   >
                                     <Ban className="w-3.5 h-3.5" />
                                   </button>
@@ -1227,7 +1589,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     }
                                   }}
                                   disabled={poolActionBusy}
-                                  className="p-1.5 rounded bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                  className="p-1 rounded bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -1240,7 +1602,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   href={`https://polymarket.com/profile/${member.address}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                                  className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
                                 >
                                   <ExternalLink className="w-3.5 h-3.5" />
                                 </a>
@@ -1258,6 +1620,43 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           )}
         </CardContent>
       </Card>
+      )}
+
+      {isPoolView && discoverySettings && (
+        <PoolSettingsFlyout
+          isOpen={poolSettingsOpen}
+          onClose={() => setPoolSettingsOpen(false)}
+          initial={{
+            pool_recompute_mode: discoverySettings.pool_recompute_mode || 'quality_only',
+            pool_target_size: discoverySettings.pool_target_size ?? 500,
+            pool_min_size: discoverySettings.pool_min_size ?? 400,
+            pool_max_size: discoverySettings.pool_max_size ?? 600,
+            pool_active_window_hours: discoverySettings.pool_active_window_hours ?? 72,
+            pool_selection_score_floor: discoverySettings.pool_selection_score_floor ?? 0.55,
+            pool_max_hourly_replacement_rate: discoverySettings.pool_max_hourly_replacement_rate ?? 0.15,
+            pool_replacement_score_cutoff: discoverySettings.pool_replacement_score_cutoff ?? 0.05,
+            pool_max_cluster_share: discoverySettings.pool_max_cluster_share ?? 0.08,
+            pool_high_conviction_threshold: discoverySettings.pool_high_conviction_threshold ?? 0.72,
+            pool_insider_priority_threshold: discoverySettings.pool_insider_priority_threshold ?? 0.62,
+            pool_min_eligible_trades: discoverySettings.pool_min_eligible_trades ?? 50,
+            pool_max_eligible_anomaly: discoverySettings.pool_max_eligible_anomaly ?? 0.5,
+            pool_core_min_win_rate: discoverySettings.pool_core_min_win_rate ?? 0.6,
+            pool_core_min_sharpe: discoverySettings.pool_core_min_sharpe ?? 1.0,
+            pool_core_min_profit_factor: discoverySettings.pool_core_min_profit_factor ?? 1.5,
+            pool_rising_min_win_rate: discoverySettings.pool_rising_min_win_rate ?? 0.55,
+            pool_slo_min_analyzed_pct: discoverySettings.pool_slo_min_analyzed_pct ?? 95.0,
+            pool_slo_min_profitable_pct: discoverySettings.pool_slo_min_profitable_pct ?? 80.0,
+            pool_leaderboard_wallet_trade_sample: discoverySettings.pool_leaderboard_wallet_trade_sample ?? 160,
+            pool_incremental_wallet_trade_sample: discoverySettings.pool_incremental_wallet_trade_sample ?? 80,
+            pool_full_sweep_interval_seconds: discoverySettings.pool_full_sweep_interval_seconds ?? 1800,
+            pool_incremental_refresh_interval_seconds: discoverySettings.pool_incremental_refresh_interval_seconds ?? 120,
+            pool_activity_reconciliation_interval_seconds: discoverySettings.pool_activity_reconciliation_interval_seconds ?? 120,
+            pool_recompute_interval_seconds: discoverySettings.pool_recompute_interval_seconds ?? 60,
+          }}
+          onSave={handleSavePoolSettings}
+          savePending={savePoolSettingsMutation.isPending}
+          saveMessage={poolSettingsSaveMessage}
+        />
       )}
 
       {!isPoolView && (
@@ -1453,12 +1852,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <>
             <Card className="border-border overflow-hidden">
               <div className="max-h-[620px] overflow-auto bg-background/20">
-                <Table className="text-xs">
-                <TableHeader className="sticky top-0 z-10 bg-background/80">
-                  <TableRow className="bg-muted/50 border-b border-border/80">
-                    <TableHead className="w-12">#</TableHead>
-                    <TableHead className="min-w-[220px]">Trader</TableHead>
-                    <TableHead>
+                <Table className="text-[11px] leading-tight">
+                <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
+                  <TableRow className="bg-muted/55 border-b border-border/80">
+                    <TableHead className="h-9 px-2 w-[46px]">#</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[230px]">Trader</TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="composite_score"
                         label="Composite"
@@ -1467,7 +1866,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="activity_score"
                         label="Activity"
@@ -1476,7 +1875,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="quality_score"
                         label="Quality"
@@ -1485,7 +1884,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="insider_score"
                         label="Insider"
@@ -1494,7 +1893,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="last_trade_at"
                         label="Last Trade"
@@ -1503,7 +1902,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="total_pnl"
                         label={isWindowActive ? 'Period PnL' : 'PnL'}
@@ -1512,7 +1911,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="win_rate"
                         label={isWindowActive ? 'Period WR' : 'Win Rate'}
@@ -1521,7 +1920,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="sharpe_ratio"
                         label={isWindowActive ? 'Period Sharpe' : 'Sharpe'}
@@ -1530,7 +1929,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="total_trades"
                         label={isWindowActive ? 'Period Trades' : 'Trades'}
@@ -1539,7 +1938,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>
+                    <TableHead className="h-9 px-2">
                       <SortButton
                         field="avg_roi"
                         label={isWindowActive ? 'Period ROI' : 'Avg ROI'}
@@ -1548,8 +1947,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead>Rec.</TableHead>
-                    <TableHead>Actions</TableHead>
+                    <TableHead className="h-9 px-2">Rec.</TableHead>
+                    <TableHead className="h-9 px-2">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1655,43 +2054,46 @@ function WalletAddress({
   onCopy: (address: string) => void
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <div>
-        {username && <p className="text-sm font-medium text-foreground">{username}</p>}
-        <div className="flex items-center gap-1.5">
-          <span className="font-mono text-xs text-muted-foreground">
-            {truncateAddress(address)}
-          </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => onCopy(address)}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {copiedAddress === address ? (
-                  <CheckCircle className="w-3 h-3 text-green-400" />
-                ) : (
-                  <Copy className="w-3 h-3" />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {copiedAddress === address ? 'Copied!' : 'Copy address'}
-            </TooltipContent>
-          </Tooltip>
-        </div>
+    <div className="min-w-0">
+      {username && (
+        <p className="max-w-[180px] truncate text-[12px] font-semibold leading-tight text-foreground">
+          {username}
+        </p>
+      )}
+      <div className="mt-0.5 flex items-center gap-1.5">
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {truncateAddress(address)}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={() => onCopy(address)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {copiedAddress === address ? (
+                <CheckCircle className="w-3 h-3 text-green-400" />
+              ) : (
+                <Copy className="w-3 h-3" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {copiedAddress === address ? 'Copied!' : 'Copy address'}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   )
 }
 
-function PnlDisplay({ value }: { value: number }) {
+function PnlDisplay({ value, className }: { value: number; className?: string }) {
   const isPositive = value >= 0
   return (
     <span
       className={cn(
         'font-medium font-mono text-sm',
-        isPositive ? 'text-green-400' : 'text-red-400'
+        isPositive ? 'text-sky-700 dark:text-sky-300' : 'text-rose-700 dark:text-rose-300',
+        className
       )}
     >
       {isPositive ? '+' : ''}${formatPnl(value)}
@@ -1702,7 +2104,7 @@ function PnlDisplay({ value }: { value: number }) {
 function RecommendationBadge({ recommendation }: { recommendation: string }) {
   const colorClass =
     RECOMMENDATION_COLORS[recommendation] ||
-    'bg-muted-foreground/15 text-muted-foreground border-muted-foreground/20'
+    'border-slate-300 bg-slate-100 text-slate-800 dark:bg-muted-foreground/15 dark:text-muted-foreground dark:border-muted-foreground/20'
   const label = RECOMMENDATION_LABELS[recommendation] || recommendation
   return (
     <Badge variant="outline" className={cn('text-[10px] font-semibold', colorClass)}>
@@ -1756,18 +2158,29 @@ function LeaderboardRow({
   const activity = wallet.activity_score ?? 0
   const quality = wallet.quality_score ?? wallet.rank_score ?? 0
   const marketCategories = wallet.market_categories || []
-  const tagPills = [...(wallet.tags || []).slice(0, 3)]
+  const allTags = wallet.tags || []
+  const tagPills = [...allTags.slice(0, 3)]
   const categoryPills = marketCategories.slice(0, 2).map(cat => `mkt:${cat}`)
   const pills = [...tagPills, ...categoryPills]
+  const totalPillsCount = allTags.length + marketCategories.length
+  const insiderScore = wallet.insider_score
+  const insiderSuspicious = (insiderScore || 0) >= 0.72 &&
+    (wallet.insider_confidence || 0) >= 0.60 &&
+    (wallet.insider_sample_size || 0) >= 25
+  const metricSparkline = [
+    { key: 'composite', label: 'Composite', value: composite, tone: scoreTone(composite, 0.7, 0.5) },
+    { key: 'quality', label: 'Quality', value: quality, tone: scoreTone(quality, 0.6, 0.4) },
+    { key: 'activity', label: 'Activity', value: activity, tone: scoreTone(activity, 0.6, 0.3) },
+  ]
 
   return (
     <TableRow
       className={cn(rowIndex % 2 === 0 ? 'bg-background/40' : '', 'transition-colors hover:bg-muted/40')}
     >
-      <TableCell className="font-medium text-muted-foreground">
+      <TableCell className="px-2 py-1.5 font-medium text-muted-foreground align-middle">
         <span
           className={cn(
-            'flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold',
+            'flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold',
             rankDisplay === 1
               ? 'bg-yellow-500/20 text-yellow-400'
               : rankDisplay === 2
@@ -1781,200 +2194,173 @@ function LeaderboardRow({
         </span>
       </TableCell>
 
-      <TableCell>
+      <TableCell className="px-2 py-1.5 align-middle">
         <WalletAddress
           address={wallet.address}
           username={wallet.username}
           copiedAddress={copiedAddress}
           onCopy={onCopyAddress}
         />
-        {pills.length > 0 && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {pills.map(tag => (
-              <span
-                key={tag}
-                className="px-1.5 py-0.5 text-[10px] rounded bg-muted text-muted-foreground border border-border"
-              >
-                {tag}
-              </span>
-            ))}
-            {(wallet.tags.length + marketCategories.length) > pills.length && (
-              <span className="text-[10px] text-muted-foreground">
-                +{wallet.tags.length + marketCategories.length - pills.length}
-              </span>
-            )}
-          </div>
-        )}
-      </TableCell>
-
-      <TableCell>
-        <span
-          className={cn(
-            'font-mono text-sm',
-            composite >= 0.7
-              ? 'text-green-400'
-              : composite >= 0.5
-                ? 'text-yellow-400'
-                : 'text-muted-foreground'
-          )}
-        >
-          {(composite * 100).toFixed(1)}
-        </span>
-      </TableCell>
-
-      <TableCell>
-        <span
-          className={cn(
-            'font-mono text-sm',
-            activity >= 0.6
-              ? 'text-green-400'
-              : activity >= 0.3
-                ? 'text-yellow-400'
-                : 'text-muted-foreground'
-          )}
-        >
-          {(activity * 100).toFixed(1)}
-        </span>
-      </TableCell>
-
-      <TableCell>
-        <span
-          className={cn(
-            'font-mono text-sm',
-            quality >= 0.6
-              ? 'text-green-400'
-              : quality >= 0.4
-                ? 'text-yellow-400'
-                : 'text-muted-foreground'
-          )}
-        >
-          {(quality * 100).toFixed(1)}
-        </span>
-      </TableCell>
-
-      <TableCell>
-        {wallet.insider_score != null ? (
-          <div className="space-y-0.5">
-            <span
-              className={cn(
-                'font-mono text-sm',
-                (wallet.insider_score || 0) >= 0.72
-                  ? 'text-red-400'
-                  : (wallet.insider_score || 0) >= 0.60
-                    ? 'text-yellow-400'
-                    : 'text-muted-foreground'
+        <div className="mt-1 flex items-center justify-between gap-2">
+          {pills.length > 0 ? (
+            <div className="flex items-center gap-1 flex-wrap min-w-0">
+              {pills.map(tag => (
+                <span
+                  key={tag}
+                  className={cn(
+                    'inline-flex max-w-[92px] truncate rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none',
+                    tag.startsWith('mkt:')
+                      ? METRIC_TONE_CLASSES.info
+                      : 'border-border/80 bg-muted/45 text-muted-foreground'
+                  )}
+                >
+                  {tag}
+                </span>
+              ))}
+              {totalPillsCount > pills.length && (
+                <span className="text-[9px] text-muted-foreground">
+                  +{totalPillsCount - pills.length}
+                </span>
               )}
-            >
-              {(wallet.insider_score || 0).toFixed(2)}
-            </span>
-            <div className="text-[10px] text-muted-foreground">
-              conf {(wallet.insider_confidence || 0).toFixed(2)} · n{wallet.insider_sample_size || 0}
             </div>
-            {(wallet.insider_score || 0) >= 0.72 &&
-              (wallet.insider_confidence || 0) >= 0.60 &&
-              (wallet.insider_sample_size || 0) >= 25 && (
-                <Badge variant="outline" className="text-[9px] bg-red-500/10 text-red-300 border-red-500/20">
-                  <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                  Insider suspect
+          ) : (
+            <span className="text-[9px] text-muted-foreground/60">no tags</span>
+          )}
+          <ScoreSparkline points={metricSparkline} className="shrink-0" />
+        </div>
+      </TableCell>
+
+      <TableCell className="px-2 py-1.5 align-middle">
+        <MetricPill
+          label="C"
+          value={formatScorePct(composite)}
+          tone={scoreTone(composite, 0.7, 0.5)}
+          className="min-w-[72px] justify-between"
+        />
+      </TableCell>
+
+      <TableCell className="px-2 py-1.5 align-middle">
+        <MetricPill
+          label="A"
+          value={formatScorePct(activity)}
+          tone={scoreTone(activity, 0.6, 0.3)}
+          className="min-w-[72px] justify-between"
+        />
+      </TableCell>
+
+      <TableCell className="px-2 py-1.5 align-middle">
+        <MetricPill
+          label="Q"
+          value={formatScorePct(quality)}
+          tone={scoreTone(quality, 0.6, 0.4)}
+          className="min-w-[72px] justify-between"
+        />
+      </TableCell>
+
+      <TableCell className="px-2 py-1.5 align-middle">
+        {insiderScore != null ? (
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1">
+              <MetricPill
+                label="I"
+                value={insiderScore.toFixed(2)}
+                tone={inverseScoreTone(insiderScore, 0.72, 0.6)}
+                className="min-w-[64px] justify-between"
+              />
+              {insiderSuspicious && (
+                <Badge variant="outline" className="text-[9px] bg-rose-500/10 text-rose-300 border-rose-500/20">
+                  <AlertTriangle className="w-2.5 h-2.5 mr-0.5" />
+                  Suspect
                 </Badge>
               )}
+            </div>
+            <div className="text-[9px] text-muted-foreground">
+              c{(wallet.insider_confidence || 0).toFixed(2)} · n{wallet.insider_sample_size || 0}
+            </div>
           </div>
         ) : (
-          <span className="text-xs text-muted-foreground">--</span>
+          <span className="text-[10px] text-muted-foreground">--</span>
         )}
       </TableCell>
 
-      <TableCell>
-        <span className="text-xs text-muted-foreground">
+      <TableCell className="px-2 py-1.5 align-middle">
+        <span className="text-[10px] text-muted-foreground">
           {timeAgo(wallet.last_trade_at || null)}
         </span>
       </TableCell>
 
-      <TableCell>
+      <TableCell className="px-2 py-1.5 align-middle">
         <div>
-          <PnlDisplay value={pnl} />
+          <PnlDisplay value={pnl} className="text-xs" />
           {useWindowMetrics && wallet.period_pnl != null && (
-            <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+            <div className="text-[9px] text-muted-foreground/65 mt-0.5">
               All: ${formatPnl(wallet.total_pnl)}
             </div>
           )}
         </div>
       </TableCell>
 
-      <TableCell>
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'font-medium text-sm',
-              winRatePct >= 60
-                ? 'text-green-400'
-                : winRatePct >= 45
-                  ? 'text-yellow-400'
-                  : 'text-red-400'
-            )}
-          >
-            {formatWinRate(winRate)}
-          </span>
+      <TableCell className="px-2 py-1.5 align-middle">
+        <div className="space-y-0.5">
+          <MetricPill
+            label="WR"
+            value={formatWinRate(winRate)}
+            tone={winRatePct >= 60 ? 'good' : winRatePct >= 45 ? 'warn' : 'bad'}
+            className="min-w-[78px] justify-between"
+          />
           {!useWindowMetrics && (
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[9px] text-muted-foreground">
               {wallet.wins}W/{wallet.losses}L
             </span>
           )}
         </div>
       </TableCell>
 
-      <TableCell>
+      <TableCell className="px-2 py-1.5 align-middle">
         {sharpe != null ? (
-          <span
-            className={cn(
-              'font-mono text-sm',
-              sharpe >= 2
-                ? 'text-green-400'
-                : sharpe >= 1
-                  ? 'text-yellow-400'
-                  : 'text-muted-foreground'
-            )}
-          >
-            {sharpe.toFixed(2)}
-          </span>
+          <MetricPill
+            label="S"
+            value={sharpe.toFixed(2)}
+            tone={sharpe >= 2 ? 'good' : sharpe >= 1 ? 'warn' : 'neutral'}
+            className="min-w-[64px] justify-between"
+          />
         ) : (
-          <span className="text-muted-foreground text-xs">--</span>
+          <span className="text-muted-foreground text-[10px]">--</span>
         )}
       </TableCell>
 
-      <TableCell className="text-muted-foreground text-sm">
-        {trades}
-        {!useWindowMetrics && (
-          <span className="text-[10px] text-muted-foreground/70 ml-1">
-            ({(wallet.trades_per_day ?? 0).toFixed(1)}/d)
-          </span>
-        )}
-      </TableCell>
-
-      <TableCell>
-        <span
-          className={cn(
-            'font-mono text-sm',
-            roi >= 0 ? 'text-green-400' : 'text-red-400'
+      <TableCell className="px-2 py-1.5 align-middle">
+        <div className="space-y-0.5">
+          <MetricPill label="T" value={formatNumber(trades)} className="min-w-[70px] justify-between" />
+          {!useWindowMetrics && (
+            <span className="text-[9px] text-muted-foreground/75">
+              {(wallet.trades_per_day ?? 0).toFixed(1)}/d
+            </span>
           )}
-        >
-          {roi >= 0 ? '+' : ''}
-          {formatPercent(roi)}
-        </span>
+        </div>
       </TableCell>
 
-      <TableCell>
+      <TableCell className="px-2 py-1.5 align-middle">
+        <MetricPill
+          label="ROI"
+          value={`${roi >= 0 ? '+' : ''}${formatPercent(roi)}`}
+          tone={roi >= 0 ? 'good' : 'bad'}
+          className="min-w-[84px] justify-between"
+        />
+      </TableCell>
+
+      <TableCell className="px-2 py-1.5 align-middle">
         <RecommendationBadge recommendation={wallet.recommendation} />
       </TableCell>
 
-      <TableCell>
+      <TableCell className="px-2 py-1.5 align-middle">
         <div className="flex items-center gap-1">
           {onAnalyze && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   onClick={() => onAnalyze(wallet.address, wallet.username || undefined)}
-                  className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                  className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
                 >
                   <Activity className="w-3.5 h-3.5" />
                 </button>
@@ -1988,7 +2374,7 @@ function LeaderboardRow({
                 <button
                   onClick={() => onTrack(wallet.address, wallet.username)}
                   disabled={isTracking}
-                  className="p-1.5 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+                  className="p-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
                 </button>
@@ -2002,7 +2388,7 @@ function LeaderboardRow({
                 href={`https://polymarket.com/profile/${wallet.address}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="p-1.5 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>

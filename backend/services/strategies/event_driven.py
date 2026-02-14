@@ -83,6 +83,26 @@ _STOP_WORDS = frozenset(
         "them",
         "market",
         "price",
+        "over",
+        "under",
+        "point",
+        "points",
+        "scored",
+        "score",
+        "scores",
+        "total",
+        "totals",
+        "spread",
+        "spreads",
+        "line",
+        "wins",
+        "win",
+        "team",
+        "teams",
+        "game",
+        "games",
+        "match",
+        "matches",
         "2024",
         "2025",
         "2026",
@@ -93,11 +113,13 @@ _STOP_WORDS = frozenset(
 # Minimum word length for keyword significance
 _MIN_WORD_LENGTH = 3
 # Minimum shared keywords for relatedness (simple markets)
-_MIN_SHARED_KEYWORDS = 2
+_MIN_SHARED_KEYWORDS = 3
 # Minimum Jaccard keyword overlap ratio to consider related
-_MIN_KEYWORD_OVERLAP_RATIO = 0.3
-# Catalyst move threshold (10%)
-_CATALYST_THRESHOLD = 0.10
+_MIN_KEYWORD_OVERLAP_RATIO = 0.45
+# Catalyst move threshold (12%)
+_CATALYST_THRESHOLD = 0.12
+# Require prior same-direction movement for catalyst confirmation.
+_MIN_CONFIRMING_MOVE = 0.03
 # Minimum proportional lag to flag an opportunity
 _MIN_LAG_RATIO = 0.3
 # Minimum expected repricing for directional edge to be actionable
@@ -110,7 +132,7 @@ class EventDrivenStrategy(BaseStrategy):
     """
     Event-Driven Arbitrage: Exploit price lag after significant market moves.
 
-    Tracks prices across scans and detects "catalyst" moves (>10% change).
+    Tracks prices across scans and detects confirmed catalyst moves (>12% change).
     When a catalyst fires, related markets that didn't move proportionally
     are flagged as lagging opportunities.
 
@@ -133,6 +155,10 @@ class EventDrivenStrategy(BaseStrategy):
         self._market_keywords: dict[str, set[str]] = {}
         # market_id -> Market (latest snapshot)
         self._market_cache: dict[str, Market] = {}
+        # event_id -> Event (current scan snapshot)
+        self._event_cache: dict[str, Event] = {}
+        # market_id -> Event (current scan snapshot)
+        self._market_to_event_obj: dict[str, Event] = {}
 
     def detect(
         self, events: list[Event], markets: list[Market], prices: dict[str, dict]
@@ -144,10 +170,14 @@ class EventDrivenStrategy(BaseStrategy):
         opportunities: list[ArbitrageOpportunity] = []
 
         # Build event/category/keyword mappings from the current scan
+        self._event_cache = {}
+        self._market_to_event_obj = {}
         event_market_ids: dict[str, list[str]] = {}
         for event in events:
+            self._event_cache[event.id] = event
             for m in event.markets:
                 self._market_to_event[m.id] = event.id
+                self._market_to_event_obj[m.id] = event
                 self._market_to_category[m.id] = event.category or ""
                 if event.id not in event_market_ids:
                     event_market_ids[event.id] = []
@@ -172,7 +202,7 @@ class EventDrivenStrategy(BaseStrategy):
             if len(self._price_history[market.id]) > 100:
                 self._price_history[market.id] = self._price_history[market.id][-100:]
 
-        # Need at least 2 scans to detect moves
+        # Need at least 3 scans to detect confirmed catalyst moves
         catalysts = self._detect_catalysts()
         if not catalysts:
             return []
@@ -226,28 +256,44 @@ class EventDrivenStrategy(BaseStrategy):
         # Strip punctuation from each word
         cleaned = set()
         for w in words:
-            w = w.strip("?.,!:;\"'()[]{}#")
+            w = w.replace("’", "'").strip("?.,!:;\"'()[]{}#")
+            if w.endswith("'s"):
+                w = w[:-2]
+            if not w:
+                continue
+            # Numeric-heavy tokens tend to create spurious overlaps.
+            if any(ch.isdigit() for ch in w):
+                continue
             if len(w) >= _MIN_WORD_LENGTH and w not in _STOP_WORDS:
                 cleaned.add(w)
         return cleaned
 
     def _detect_catalysts(self) -> list[tuple[str, float, float]]:
         """
-        Detect catalyst moves: markets that moved > 10% since last scan.
+        Detect catalyst moves: markets that moved > 12% with follow-through.
 
         Returns list of (market_id, move_direction, move_magnitude).
         move_direction is positive for upward moves, negative for downward.
         """
         catalysts = []
         for market_id, history in self._price_history.items():
-            if len(history) < 2:
+            if len(history) < 3:
                 continue
+
+            pre_prev = history[-3][1]
             prev_price = history[-2][1]
             curr_price = history[-1][1]
             move = curr_price - prev_price
+            confirming_move = prev_price - pre_prev
 
-            if abs(move) >= _CATALYST_THRESHOLD:
-                catalysts.append((market_id, move, abs(move)))
+            if abs(move) < _CATALYST_THRESHOLD:
+                continue
+            if abs(confirming_move) < _MIN_CONFIRMING_MOVE:
+                continue
+            # Require same-direction price momentum to reduce one-tick noise.
+            if move * confirming_move <= 0:
+                continue
+            catalysts.append((market_id, move, abs(move)))
 
         return catalysts
 
@@ -518,6 +564,10 @@ class EventDrivenStrategy(BaseStrategy):
 
     def _find_event_for_market(self, market_id: str) -> Optional[Event]:
         """Find the Event object associated with a market_id (best effort)."""
-        # We don't cache Event objects in this strategy, so return None.
-        # The create_opportunity method handles None events gracefully.
-        return None
+        event = self._market_to_event_obj.get(market_id)
+        if event is not None:
+            return event
+        event_id = self._market_to_event.get(market_id)
+        if not event_id:
+            return None
+        return self._event_cache.get(event_id)

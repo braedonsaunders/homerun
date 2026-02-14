@@ -1,38 +1,152 @@
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  BarChart3,
-  RefreshCw,
-  TrendingUp,
-  TrendingDown,
-  Target,
-  Award,
-  Calendar,
   Activity,
-  PieChart,
+  ArrowDownRight,
   ArrowUpRight,
-  ArrowDownRight
+  BarChart3,
+  Calendar,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  TrendingDown,
+  TrendingUp,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import {
-  getSimulationAccounts,
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import {
   getAccountTrades,
-  getTraderOrchestratorStats,
   getAllTraderOrders,
+  getSimulationAccounts,
+  getTraderOrchestratorStats,
   SimulationAccount,
-  SimulationTrade
+  SimulationTrade,
+  TraderOrder,
 } from '../services/api'
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { ScrollArea } from './ui/scroll-area'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from './ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import ValidationEnginePanel from './ValidationEnginePanel'
 
 type ViewMode = 'simulation' | 'live' | 'all'
 type TimeRange = '7d' | '30d' | '90d' | 'all'
 type PerformanceSubTab = 'overview' | 'validation'
+
+type UnifiedTrade = {
+  id: string
+  source: 'sandbox' | 'live'
+  strategy: string
+  cost: number
+  pnl: number | null
+  status: string
+  executedAt: string
+  accountName?: string
+  isResolved: boolean
+  isWin: boolean
+  isLoss: boolean
+}
+
+type StrategyRollup = {
+  strategy: string
+  trades: number
+  wins: number
+  losses: number
+  pnl: number
+  sandboxTrades: number
+  liveTrades: number
+}
+
+const VIEW_MODE_OPTIONS: Array<{ id: ViewMode; label: string }> = [
+  { id: 'all', label: 'Unified' },
+  { id: 'simulation', label: 'Sandbox' },
+  { id: 'live', label: 'Live' },
+]
+
+const RANGE_OPTIONS: Array<{ id: TimeRange; label: string }> = [
+  { id: '7d', label: '7D' },
+  { id: '30d', label: '30D' },
+  { id: '90d', label: '90D' },
+  { id: 'all', label: 'All Time' },
+]
+
+function formatCurrency(value: number, compact = false): string {
+  if (!Number.isFinite(value)) return '$0.00'
+  if (compact) {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: 'USD',
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(value)
+  }
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+function formatSignedCurrency(value: number, compact = false): string {
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : ''
+  return `${prefix}${formatCurrency(Math.abs(value), compact)}`
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return '0.0%'
+  return `${value.toFixed(1)}%`
+}
+
+function formatDateLabel(dateStr: string): string {
+  const date = new Date(dateStr)
+  if (Number.isNaN(date.getTime())) return '--'
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: '2-digit',
+  })
+}
+
+function getTradeStatusClass(status: string): string {
+  switch (status.toLowerCase()) {
+    case 'resolved_win':
+    case 'win':
+      return 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
+    case 'resolved_loss':
+    case 'loss':
+      return 'bg-red-100 text-red-800 border-red-300 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30'
+    case 'resolved':
+      return 'bg-slate-100 text-slate-800 border-slate-300 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30'
+    case 'open':
+    case 'executed':
+      return 'bg-cyan-100 text-cyan-800 border-cyan-300 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-500/30'
+    case 'pending':
+    case 'queued':
+      return 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30'
+    default:
+      return 'bg-muted text-muted-foreground border-border'
+  }
+}
 
 export default function PerformancePanel() {
   const [activeSubTab, setActiveSubTab] = useState<PerformanceSubTab>('overview')
@@ -40,47 +154,56 @@ export default function PerformancePanel() {
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
 
-  // Fetch simulation accounts
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['simulation-accounts'],
     queryFn: getSimulationAccounts,
     enabled: activeSubTab === 'overview',
   })
 
-  // Fetch orchestrator stats
-  const { isLoading: autoStatsLoading } = useQuery({
+  const { data: orchestratorStats } = useQuery({
     queryKey: ['trader-orchestrator-stats'],
     queryFn: getTraderOrchestratorStats,
     enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
   })
 
-  // Fetch simulation trades for all accounts or selected account
-  const { data: simulationTrades = [], isLoading: simTradesLoading, refetch: refetchSimTrades } = useQuery({
+  const {
+    data: simulationTrades = [],
+    isLoading: simTradesLoading,
+    refetch: refetchSimTrades,
+  } = useQuery({
     queryKey: ['all-simulation-trades', selectedAccount],
     queryFn: async () => {
       if (selectedAccount) {
-        return getAccountTrades(selectedAccount, 200)
+        const rows = await getAccountTrades(selectedAccount, 250)
+        return rows.map((row) => ({ ...row, accountName: 'Selected account' }))
       }
-      const allTrades: (SimulationTrade & { accountName: string })[] = []
-      for (const account of accounts) {
-        const trades = await getAccountTrades(account.id, 200)
-        trades.forEach((trade: SimulationTrade) => {
-          allTrades.push({ ...trade, accountName: account.name })
+
+      const responses = await Promise.all(
+        accounts.map(async (account) => {
+          const rows = await getAccountTrades(account.id, 250)
+          return rows.map((row: SimulationTrade) => ({
+            ...row,
+            accountName: account.name,
+          }))
         })
-      }
-      return allTrades.sort((a, b) =>
-        new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime()
       )
+
+      return responses
+        .flat()
+        .sort((left, right) => new Date(right.executed_at).getTime() - new Date(left.executed_at).getTime())
     },
     enabled: activeSubTab === 'overview' && accounts.length > 0 && (viewMode === 'simulation' || viewMode === 'all'),
   })
 
-  // Fetch orchestrator orders
-  const { data: autoTrades = [], isLoading: autoTradesLoading, refetch: refetchAutoTrades } = useQuery({
+  const {
+    data: autoTrades = [],
+    isLoading: autoTradesLoading,
+    refetch: refetchAutoTrades,
+  } = useQuery({
     queryKey: ['trader-orders'],
     queryFn: async () => {
-      const rows = await getAllTraderOrders(200)
-      return rows.map((row: any) => ({
+      const rows = await getAllTraderOrders(250)
+      return rows.map((row: TraderOrder) => ({
         ...row,
         executed_at: row.executed_at || row.created_at || new Date().toISOString(),
         total_cost: Number(row.notional_usd || 0),
@@ -90,400 +213,556 @@ export default function PerformancePanel() {
     enabled: activeSubTab === 'overview' && (viewMode === 'live' || viewMode === 'all'),
   })
 
-  const isLoading = accountsLoading || simTradesLoading || autoStatsLoading || autoTradesLoading
+  const isLoading = accountsLoading || simTradesLoading || autoTradesLoading
 
-  // Filter trades by time range
-  const filterByTimeRange = <T extends { executed_at: string }>(trades: T[]): T[] => {
-    if (timeRange === 'all') return trades
-    const now = new Date()
-    const daysMap = { '7d': 7, '30d': 30, '90d': 90, 'all': Infinity }
-    const cutoff = new Date(now.getTime() - daysMap[timeRange] * 24 * 60 * 60 * 1000)
-    return trades.filter(t => new Date(t.executed_at) >= cutoff)
+  const filterByTimeRange = <T extends { executed_at: string }>(rows: T[]): T[] => {
+    if (timeRange === 'all') return rows
+    const now = Date.now()
+    const daysByRange: Record<Exclude<TimeRange, 'all'>, number> = {
+      '7d': 7,
+      '30d': 30,
+      '90d': 90,
+    }
+    const cutoff = now - daysByRange[timeRange] * 24 * 60 * 60 * 1000
+    return rows.filter((row) => {
+      const ts = new Date(row.executed_at).getTime()
+      return Number.isFinite(ts) && ts >= cutoff
+    })
   }
 
-  const filteredSimTrades = useMemo(() =>
-    filterByTimeRange(simulationTrades), [simulationTrades, timeRange])
-  const filteredAutoTrades = useMemo(() =>
-    filterByTimeRange(autoTrades), [autoTrades, timeRange])
+  const filteredSimTrades = useMemo(
+    () => filterByTimeRange(simulationTrades),
+    [simulationTrades, timeRange]
+  )
 
-  // Calculate simulation performance metrics
-  const simMetrics = useMemo(() => {
-    const trades = filteredSimTrades
-    const resolved = trades.filter(t => t.status === 'resolved_win' || t.status === 'resolved_loss')
-    const wins = resolved.filter(t => t.status === 'resolved_win')
-    const losses = resolved.filter(t => t.status === 'resolved_loss')
+  const filteredAutoTrades = useMemo(
+    () => filterByTimeRange(autoTrades),
+    [autoTrades, timeRange]
+  )
 
-    const totalPnl = trades.reduce((sum, t) => sum + (t.actual_pnl || 0), 0)
-    const totalCost = trades.reduce((sum, t) => sum + t.total_cost, 0)
+  const unifiedTrades = useMemo(() => {
+    const rows: UnifiedTrade[] = []
+
+    if (viewMode === 'simulation' || viewMode === 'all') {
+      filteredSimTrades.forEach((trade) => {
+        const status = String(trade.status || 'unknown')
+        rows.push({
+          id: `sim-${trade.id}`,
+          source: 'sandbox',
+          strategy: trade.strategy_type || 'unknown',
+          cost: Number(trade.total_cost || 0),
+          pnl: typeof trade.actual_pnl === 'number' ? trade.actual_pnl : null,
+          status,
+          executedAt: trade.executed_at,
+          accountName: (trade as SimulationTrade & { accountName?: string }).accountName,
+          isResolved: status === 'resolved_win' || status === 'resolved_loss',
+          isWin: status === 'resolved_win',
+          isLoss: status === 'resolved_loss',
+        })
+      })
+    }
+
+    if (viewMode === 'live' || viewMode === 'all') {
+      filteredAutoTrades.forEach((trade) => {
+        const status = String(trade.status || 'unknown').toLowerCase()
+        const pnl = typeof trade.actual_profit === 'number' ? trade.actual_profit : null
+        const isResolved = ['resolved', 'win', 'loss', 'resolved_win', 'resolved_loss'].includes(status)
+        rows.push({
+          id: `live-${trade.id}`,
+          source: 'live',
+          strategy: String(trade.strategy || 'unknown'),
+          cost: Number(trade.total_cost || 0),
+          pnl,
+          status,
+          executedAt: trade.executed_at,
+          isResolved,
+          isWin: (pnl ?? 0) > 0 || status === 'win' || status === 'resolved_win',
+          isLoss: (pnl ?? 0) < 0 || status === 'loss' || status === 'resolved_loss',
+        })
+      })
+    }
+
+    rows.sort((left, right) => new Date(right.executedAt).getTime() - new Date(left.executedAt).getTime())
+    return rows
+  }, [filteredAutoTrades, filteredSimTrades, viewMode])
+
+  const summary = useMemo(() => {
+    const resolved = unifiedTrades.filter((trade) => trade.isResolved)
+    const wins = resolved.filter((trade) => trade.isWin)
+    const losses = resolved.filter((trade) => trade.isLoss)
+
+    const totalPnl = unifiedTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0)
+    const totalCost = unifiedTrades.reduce((sum, trade) => sum + trade.cost, 0)
+    const openTrades = unifiedTrades.filter((trade) => !trade.isResolved).length
     const winRate = resolved.length > 0 ? (wins.length / resolved.length) * 100 : 0
-    const avgWin = wins.length > 0
-      ? wins.reduce((sum, t) => sum + (t.actual_pnl || 0), 0) / wins.length
-      : 0
-    const avgLoss = losses.length > 0
-      ? Math.abs(losses.reduce((sum, t) => sum + (t.actual_pnl || 0), 0) / losses.length)
-      : 0
     const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
+    const avgPnl = unifiedTrades.length > 0 ? totalPnl / unifiedTrades.length : 0
 
-    // Performance by strategy
-    const byStrategy: Record<string, { trades: number; pnl: number; wins: number; losses: number }> = {}
-    trades.forEach(t => {
-      if (!byStrategy[t.strategy_type]) {
-        byStrategy[t.strategy_type] = { trades: 0, pnl: 0, wins: 0, losses: 0 }
-      }
-      byStrategy[t.strategy_type].trades++
-      byStrategy[t.strategy_type].pnl += t.actual_pnl || 0
-      if (t.status === 'resolved_win') byStrategy[t.strategy_type].wins++
-      if (t.status === 'resolved_loss') byStrategy[t.strategy_type].losses++
-    })
-
-    // Daily P&L data for chart
-    const dailyPnl: Record<string, number> = {}
-    trades.forEach(t => {
-      const date = new Date(t.executed_at).toISOString().split('T')[0]
-      dailyPnl[date] = (dailyPnl[date] || 0) + (t.actual_pnl || 0)
-    })
+    const grossWins = wins.reduce((sum, trade) => sum + Math.max(0, trade.pnl ?? 0), 0)
+    const grossLosses = losses.reduce((sum, trade) => sum + Math.abs(Math.min(0, trade.pnl ?? 0)), 0)
+    const profitFactor = grossLosses > 0
+      ? grossWins / grossLosses
+      : grossWins > 0
+        ? Infinity
+        : 0
 
     return {
-      totalTrades: trades.length,
+      totalTrades: unifiedTrades.length,
       resolvedTrades: resolved.length,
-      openTrades: trades.filter(t => t.status === 'open' || t.status === 'pending').length,
+      openTrades,
       wins: wins.length,
       losses: losses.length,
       totalPnl,
       totalCost,
       winRate,
-      avgWin,
-      avgLoss,
       roi,
-      byStrategy,
-      dailyPnl
+      avgPnl,
+      profitFactor,
     }
-  }, [filteredSimTrades])
+  }, [unifiedTrades])
 
-  // Calculate orchestrator performance metrics
-  const autoMetrics = useMemo(() => {
-    const trades = filteredAutoTrades
-    const resolved = trades.filter(t => t.status === 'resolved' || t.status === 'win' || t.status === 'loss')
+  const strategyLeaderboard = useMemo(() => {
+    const byStrategy = new Map<string, StrategyRollup>()
 
-    const totalPnl = trades.reduce((sum, t) => sum + (t.actual_profit || 0), 0)
-    const totalCost = trades.reduce((sum, t) => sum + t.total_cost, 0)
-    const wins = trades.filter(t => (t.actual_profit || 0) > 0)
-    const losses = trades.filter(t => (t.actual_profit || 0) < 0)
-    const winRate = resolved.length > 0 ? (wins.length / resolved.length) * 100 : 0
-    const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
-
-    // Performance by strategy
-    const byStrategy: Record<string, { trades: number; pnl: number; wins: number; losses: number }> = {}
-    trades.forEach(t => {
-      if (!byStrategy[t.strategy]) {
-        byStrategy[t.strategy] = { trades: 0, pnl: 0, wins: 0, losses: 0 }
+    unifiedTrades.forEach((trade) => {
+      const key = trade.strategy || 'unknown'
+      const current = byStrategy.get(key) || {
+        strategy: key,
+        trades: 0,
+        wins: 0,
+        losses: 0,
+        pnl: 0,
+        sandboxTrades: 0,
+        liveTrades: 0,
       }
-      byStrategy[t.strategy].trades++
-      byStrategy[t.strategy].pnl += t.actual_profit || 0
-      if ((t.actual_profit || 0) > 0) byStrategy[t.strategy].wins++
-      if ((t.actual_profit || 0) < 0) byStrategy[t.strategy].losses++
+
+      current.trades += 1
+      current.pnl += trade.pnl ?? 0
+      current.wins += trade.isWin ? 1 : 0
+      current.losses += trade.isLoss ? 1 : 0
+      current.sandboxTrades += trade.source === 'sandbox' ? 1 : 0
+      current.liveTrades += trade.source === 'live' ? 1 : 0
+
+      byStrategy.set(key, current)
     })
 
-    return {
-      totalTrades: trades.length,
-      wins: wins.length,
-      losses: losses.length,
-      totalPnl,
-      totalCost,
-      winRate,
-      roi,
-      byStrategy
-    }
-  }, [filteredAutoTrades])
+    return Array.from(byStrategy.values()).sort((left, right) => {
+      if (left.pnl === right.pnl) return right.trades - left.trades
+      return right.pnl - left.pnl
+    })
+  }, [unifiedTrades])
+
+  const cumulativePnlData = useMemo(() => {
+    const daily = new Map<string, { sim: number; live: number }>()
+
+    filteredSimTrades.forEach((trade) => {
+      const day = trade.executed_at?.split('T')[0]
+      if (!day) return
+      const current = daily.get(day) || { sim: 0, live: 0 }
+      current.sim += trade.actual_pnl || 0
+      daily.set(day, current)
+    })
+
+    filteredAutoTrades.forEach((trade) => {
+      const day = trade.executed_at?.split('T')[0]
+      if (!day) return
+      const current = daily.get(day) || { sim: 0, live: 0 }
+      current.live += trade.actual_profit || 0
+      daily.set(day, current)
+    })
+
+    const sortedDays = Array.from(daily.keys()).sort()
+    let cumSim = 0
+    let cumLive = 0
+
+    return sortedDays.map((day) => {
+      const row = daily.get(day) || { sim: 0, live: 0 }
+      cumSim += row.sim
+      cumLive += row.live
+      return {
+        date: day,
+        dailySimPnl: row.sim,
+        dailyLivePnl: row.live,
+        cumSimPnl: cumSim,
+        cumLivePnl: cumLive,
+        cumTotalPnl: cumSim + cumLive,
+      }
+    })
+  }, [filteredAutoTrades, filteredSimTrades])
+
+  const maxDrawdown = useMemo(() => {
+    if (cumulativePnlData.length === 0) return 0
+
+    let peak = Number.NEGATIVE_INFINITY
+    let drawdown = 0
+
+    cumulativePnlData.forEach((point) => {
+      const value = viewMode === 'simulation'
+        ? point.cumSimPnl
+        : viewMode === 'live'
+          ? point.cumLivePnl
+          : point.cumTotalPnl
+      if (value > peak) peak = value
+      drawdown = Math.max(drawdown, peak - value)
+    })
+
+    return drawdown
+  }, [cumulativePnlData, viewMode])
 
   const handleRefresh = () => {
-    if (viewMode === 'simulation' || viewMode === 'all') refetchSimTrades()
-    if (viewMode === 'live' || viewMode === 'all') refetchAutoTrades()
+    if (viewMode === 'simulation' || viewMode === 'all') {
+      void refetchSimTrades()
+    }
+    if (viewMode === 'live' || viewMode === 'all') {
+      void refetchAutoTrades()
+    }
   }
 
-  // Cumulative P&L calculation
-  const cumulativePnlData = useMemo(() => {
-    let data: { date: string; simPnl: number; autoPnl: number; cumSimPnl: number; cumAutoPnl: number }[] = []
-    const dates = new Set<string>()
-
-    filteredSimTrades.forEach(t => dates.add(new Date(t.executed_at).toISOString().split('T')[0]))
-    filteredAutoTrades.forEach(t => dates.add(new Date(t.executed_at).toISOString().split('T')[0]))
-
-    const sortedDates = Array.from(dates).sort()
-    let cumSimPnl = 0
-    let cumAutoPnl = 0
-
-    sortedDates.forEach(date => {
-      const simPnl = filteredSimTrades
-        .filter(t => new Date(t.executed_at).toISOString().split('T')[0] === date)
-        .reduce((sum, t) => sum + (t.actual_pnl || 0), 0)
-      const autoPnl = filteredAutoTrades
-        .filter(t => new Date(t.executed_at).toISOString().split('T')[0] === date)
-        .reduce((sum, t) => sum + (t.actual_profit || 0), 0)
-
-      cumSimPnl += simPnl
-      cumAutoPnl += autoPnl
-
-      data.push({ date, simPnl, autoPnl, cumSimPnl, cumAutoPnl })
-    })
-
-    return data
-  }, [filteredSimTrades, filteredAutoTrades])
+  const viewModeLabel = viewMode === 'all'
+    ? 'Unified stream'
+    : viewMode === 'simulation'
+      ? 'Sandbox stream'
+      : 'Live stream'
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <BarChart3 className="w-6 h-6 text-purple-500" />
-            Performance Analytics
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {activeSubTab === 'overview'
-              ? 'Track your trading performance over time'
-              : 'Monitor validation runs, backtests, strategy health, and guardrails'}
-          </p>
-        </div>
-        {activeSubTab === 'overview' && (
-          <Button
-            variant="secondary"
-            onClick={handleRefresh}
-            disabled={isLoading}
-          >
-            <RefreshCw className={cn("w-4 h-4 mr-2", isLoading && "animate-spin")} />
-            Refresh
-          </Button>
-        )}
-      </div>
+    <div className="space-y-5">
+      <Card className="overflow-hidden border-border/80 bg-card/80">
+        <CardContent className="p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-cyan-300 bg-cyan-100 px-2.5 py-1 text-[10px] uppercase tracking-wider text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
+                <Sparkles className="h-3 w-3" />
+                Performance Command Center
+              </div>
+              <h2 className="mt-2 flex items-center gap-2 text-xl font-semibold">
+                <BarChart3 className="h-5 w-5 text-cyan-700 dark:text-cyan-300" />
+                Performance Intelligence
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Data-dense execution telemetry, trade quality diagnostics, and validation controls in one surface.
+              </p>
+            </div>
 
-      <Tabs value={activeSubTab} onValueChange={(v) => setActiveSubTab(v as PerformanceSubTab)} className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="overview" className="gap-1.5">
-            <BarChart3 className="w-3.5 h-3.5" />
-            Performance Over Time
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <Badge variant="outline" className="border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-200">
+                {viewModeLabel}
+              </Badge>
+              <Badge variant="outline" className="border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-200">
+                {summary.totalTrades} trades in scope
+              </Badge>
+              <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
+                Range: {RANGE_OPTIONS.find((option) => option.id === timeRange)?.label}
+              </Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs value={activeSubTab} onValueChange={(value) => setActiveSubTab(value as PerformanceSubTab)} className="space-y-4">
+        <TabsList className="h-auto w-full justify-start gap-2 rounded-xl border border-border/60 bg-card/70 p-1.5">
+          <TabsTrigger
+            value="overview"
+            className="h-auto min-w-[220px] items-start justify-start rounded-lg px-3 py-2 data-[state=active]:border data-[state=active]:border-cyan-300 data-[state=active]:bg-cyan-100 data-[state=active]:text-cyan-900 dark:data-[state=active]:border-cyan-500/40 dark:data-[state=active]:bg-cyan-500/10 dark:data-[state=active]:text-cyan-100"
+          >
+            <div className="flex items-start gap-2 text-left">
+              <BarChart3 className="mt-0.5 h-4 w-4 text-cyan-700 dark:text-cyan-300" />
+              <div>
+                <p className="text-sm font-medium">Overview Grid</p>
+                <p className="text-[11px] text-muted-foreground">P&L, strategy mix, and trade tape</p>
+              </div>
+            </div>
           </TabsTrigger>
-          <TabsTrigger value="validation" className="gap-1.5">
-            <Activity className="w-3.5 h-3.5" />
-            Validation / Backtesting
+          <TabsTrigger
+            value="validation"
+            className="h-auto min-w-[220px] items-start justify-start rounded-lg px-3 py-2 data-[state=active]:border data-[state=active]:border-emerald-300 data-[state=active]:bg-emerald-100 data-[state=active]:text-emerald-900 dark:data-[state=active]:border-emerald-500/40 dark:data-[state=active]:bg-emerald-500/10 dark:data-[state=active]:text-emerald-100"
+          >
+            <div className="flex items-start gap-2 text-left">
+              <ShieldCheck className="mt-0.5 h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+              <div>
+                <p className="text-sm font-medium">Validation Ops</p>
+                <p className="text-[11px] text-muted-foreground">Jobs, guardrails, and strategy health</p>
+              </div>
+            </div>
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview" className="space-y-6 mt-0">
-          {/* Controls */}
-          <div className="flex flex-wrap items-center gap-4">
-            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-              <TabsList>
-                <TabsTrigger value="all">All Trading</TabsTrigger>
-                <TabsTrigger value="simulation">Sandbox Trading</TabsTrigger>
-                <TabsTrigger value="live">Live Trading</TabsTrigger>
-              </TabsList>
-            </Tabs>
+        <TabsContent value="overview" className="mt-0 space-y-4">
+          <Card className="border-border/60 bg-card/75">
+            <CardContent className="p-4">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Data Scope</p>
+                  <div className="flex flex-wrap gap-2">
+                    {VIEW_MODE_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setViewMode(option.id)}
+                        className={cn(
+                          'h-8 rounded-md border px-3 text-xs transition-colors',
+                          viewMode === option.id
+                            ? 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-500/40 dark:bg-cyan-500/15 dark:text-cyan-100'
+                            : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            <Tabs value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-              <TabsList>
-                <TabsTrigger value="7d">7D</TabsTrigger>
-                <TabsTrigger value="30d">30D</TabsTrigger>
-                <TabsTrigger value="90d">90D</TabsTrigger>
-                <TabsTrigger value="all">All Time</TabsTrigger>
-              </TabsList>
-            </Tabs>
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Time Horizon</p>
+                  <div className="flex flex-wrap gap-2">
+                    {RANGE_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setTimeRange(option.id)}
+                        className={cn(
+                          'h-8 rounded-md border px-3 text-xs transition-colors',
+                          timeRange === option.id
+                            ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-100'
+                            : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
-              <select
-                value={selectedAccount || ''}
-                onChange={(e) => setSelectedAccount(e.target.value || null)}
-                className="bg-muted border border-border rounded-lg px-3 py-2 text-sm"
-              >
-                <option value="">All Simulation Accounts</option>
-                {accounts.map((account: SimulationAccount) => (
-                  <option key={account.id} value={account.id}>{account.name}</option>
-                ))}
-              </select>
-            )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {(viewMode === 'simulation' || viewMode === 'all') && accounts.length > 0 && (
+                    <select
+                      value={selectedAccount || ''}
+                      onChange={(event) => setSelectedAccount(event.target.value || null)}
+                      className="h-8 rounded-md border border-border bg-background/80 px-2.5 text-xs"
+                    >
+                      <option value="">All simulation accounts</option>
+                      {accounts.map((account: SimulationAccount) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={handleRefresh}
+                    disabled={isLoading}
+                    className="h-8"
+                  >
+                    <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', isLoading && 'animate-spin')} />
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6 card-stagger">
+            <PerformanceMetricTile
+              label="Net P&L"
+              value={formatSignedCurrency(summary.totalPnl, true)}
+              helper={formatCurrency(summary.totalPnl)}
+              icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
+              tone={summary.totalPnl >= 0 ? 'good' : 'bad'}
+            />
+            <PerformanceMetricTile
+              label="ROI"
+              value={formatPercent(summary.roi)}
+              helper={summary.totalCost > 0 ? `on ${formatCurrency(summary.totalCost, true)} deployed` : 'no deployed capital'}
+              icon={Target}
+              tone={summary.roi >= 0 ? 'good' : 'bad'}
+            />
+            <PerformanceMetricTile
+              label="Win Rate"
+              value={formatPercent(summary.winRate)}
+              helper={`${summary.wins}W / ${summary.losses}L`}
+              icon={Activity}
+              tone={summary.winRate >= 50 ? 'good' : 'warn'}
+            />
+            <PerformanceMetricTile
+              label="Open Trades"
+              value={String(summary.openTrades)}
+              helper={`${summary.resolvedTrades} resolved`}
+              icon={Calendar}
+              tone={summary.openTrades > 0 ? 'info' : 'neutral'}
+            />
+            <PerformanceMetricTile
+              label="Avg Trade P&L"
+              value={formatSignedCurrency(summary.avgPnl)}
+              helper={`${summary.totalTrades} total trades`}
+              icon={summary.avgPnl >= 0 ? ArrowUpRight : ArrowDownRight}
+              tone={summary.avgPnl >= 0 ? 'good' : 'bad'}
+            />
+            <PerformanceMetricTile
+              label="Max Drawdown"
+              value={formatCurrency(maxDrawdown, true)}
+              helper={
+                Number.isFinite(summary.profitFactor)
+                  ? `profit factor ${summary.profitFactor === Infinity ? '∞' : summary.profitFactor.toFixed(2)}`
+                  : 'profit factor n/a'
+              }
+              icon={TrendingDown}
+              tone={maxDrawdown > 0 ? 'warn' : 'neutral'}
+            />
           </div>
 
-          {isLoading ? (
-            <div className="flex justify-center py-12">
-              <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <>
-              {/* Summary Stats */}
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 card-stagger">
-                {(viewMode === 'simulation' || viewMode === 'all') && (
-                  <>
-                    <MetricCard
-                      icon={<Activity className="w-5 h-5 text-blue-500" />}
-                      label="Sandbox Trades"
-                      value={simMetrics.totalTrades.toString()}
-                      subtitle={`${simMetrics.openTrades} open`}
-                    />
-                    <MetricCard
-                      icon={simMetrics.totalPnl >= 0
-                        ? <TrendingUp className="w-5 h-5 text-green-500" />
-                        : <TrendingDown className="w-5 h-5 text-red-500" />
-                      }
-                      label="Sandbox P&L"
-                      value={`${simMetrics.totalPnl >= 0 ? '+' : ''}$${simMetrics.totalPnl.toFixed(2)}`}
-                      valueColor={simMetrics.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}
-                    />
-                    <MetricCard
-                      icon={<Award className="w-5 h-5 text-yellow-500" />}
-                      label="Sandbox Win Rate"
-                      value={`${simMetrics.winRate.toFixed(1)}%`}
-                      subtitle={`${simMetrics.wins}W / ${simMetrics.losses}L`}
-                    />
-                  </>
-                )}
-                {(viewMode === 'live' || viewMode === 'all') && (
-                  <>
-                    <MetricCard
-                      icon={<Target className="w-5 h-5 text-purple-500" />}
-                      label="Live Trades"
-                      value={autoMetrics.totalTrades.toString()}
-                    />
-                    <MetricCard
-                      icon={autoMetrics.totalPnl >= 0
-                        ? <TrendingUp className="w-5 h-5 text-green-500" />
-                        : <TrendingDown className="w-5 h-5 text-red-500" />
-                      }
-                      label="Live P&L"
-                      value={`${autoMetrics.totalPnl >= 0 ? '+' : ''}$${autoMetrics.totalPnl.toFixed(2)}`}
-                      valueColor={autoMetrics.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}
-                    />
-                    <MetricCard
-                      icon={<Award className="w-5 h-5 text-yellow-500" />}
-                      label="Live Win Rate"
-                      value={`${autoMetrics.winRate.toFixed(1)}%`}
-                      subtitle={`${autoMetrics.wins}W / ${autoMetrics.losses}L`}
-                    />
-                  </>
-                )}
-              </div>
-
-              {/* P&L Chart */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <BarChart3 className="w-5 h-5 text-purple-500" />
-                    Cumulative P&L Over Time
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {cumulativePnlData.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      No trade data available for the selected time range
-                    </div>
-                  ) : (
-                    <div className="h-64">
-                      <SimplePnlChart data={cumulativePnlData} viewMode={viewMode} />
-                    </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+            <Card className="xl:col-span-8 border-border/60 bg-card/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center justify-between gap-3 text-base font-semibold">
+                  <span className="flex items-center gap-2">
+                    <BarChart3 className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
+                    Cumulative P&L Stream
+                  </span>
+                  {orchestratorStats?.last_trade_at && (
+                    <span className="text-[11px] font-normal text-muted-foreground">
+                      last orchestrator trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
+                    </span>
                   )}
-                </CardContent>
-              </Card>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {cumulativePnlData.length === 0 ? (
+                  <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-border/60 bg-background/20 text-sm text-muted-foreground">
+                    No trade history in the selected range.
+                  </div>
+                ) : (
+                  <div className="h-72">
+                    <PerformancePnlChart data={cumulativePnlData} viewMode={viewMode} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
-              {/* Strategy Performance */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {(viewMode === 'simulation' || viewMode === 'all') && Object.keys(simMetrics.byStrategy).length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base font-semibold flex items-center gap-2">
-                        <PieChart className="w-5 h-5 text-blue-500" />
-                        Sandbox Trading by Strategy
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        {Object.entries(simMetrics.byStrategy).map(([strategy, stats]) => (
-                          <StrategyRow
-                            key={strategy}
-                            strategy={strategy}
-                            trades={stats.trades}
-                            pnl={stats.pnl}
-                            wins={stats.wins}
-                            losses={stats.losses}
-                          />
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
+            <Card className="xl:col-span-4 border-border/60 bg-card/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-semibold">Strategy Leaderboard</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {strategyLeaderboard.length === 0 && (
+                  <div className="rounded-md border border-dashed border-border/60 bg-background/20 px-3 py-5 text-center text-sm text-muted-foreground">
+                    No strategy activity yet.
+                  </div>
                 )}
 
-                {(viewMode === 'live' || viewMode === 'all') && Object.keys(autoMetrics.byStrategy).length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base font-semibold flex items-center gap-2">
-                        <PieChart className="w-5 h-5 text-purple-500" />
-                        Live Trading by Strategy
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        {Object.entries(autoMetrics.byStrategy).map(([strategy, stats]) => (
-                          <StrategyRow
-                            key={strategy}
-                            strategy={strategy}
-                            trades={stats.trades}
-                            pnl={stats.pnl}
-                            wins={stats.wins}
-                            losses={stats.losses}
-                          />
-                        ))}
+                {strategyLeaderboard.slice(0, 12).map((row) => {
+                  const denominator = Math.max(1, summary.totalTrades)
+                  const volumeShare = (row.trades / denominator) * 100
+                  const winRate = row.wins + row.losses > 0
+                    ? (row.wins / (row.wins + row.losses)) * 100
+                    : 0
+                  return (
+                    <div key={row.strategy} className="rounded-lg border border-border/55 bg-background/30 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-medium">{row.strategy}</p>
+                        <p className={cn(
+                          'text-xs font-data',
+                          row.pnl >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'
+                        )}>
+                          {formatSignedCurrency(row.pnl, true)}
+                        </p>
                       </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-
-              {/* Recent Trades */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <Calendar className="w-5 h-5 text-muted-foreground" />
-                    Recent Trades
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-96">
-                    <div className="space-y-2">
-                      {(viewMode === 'simulation' || viewMode === 'all') && filteredSimTrades.slice(0, 20).map((trade) => (
-                        <TradeRow
-                          key={trade.id}
-                          type="paper"
-                          strategy={trade.strategy_type}
-                          cost={trade.total_cost}
-                          pnl={trade.actual_pnl}
-                          status={trade.status}
-                          date={trade.executed_at}
-                          accountName={(trade as SimulationTrade & { accountName?: string }).accountName}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                        <span>{row.trades} trades</span>
+                        <span>•</span>
+                        <span>{formatPercent(winRate)} hit rate</span>
+                        <span>•</span>
+                        <span>{row.liveTrades} live / {row.sandboxTrades} sandbox</span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border/40">
+                        <div
+                          className={cn(
+                            'h-full rounded-full',
+                            row.pnl >= 0 ? 'bg-emerald-500/75 dark:bg-emerald-400/80' : 'bg-red-500/75 dark:bg-red-400/80'
+                          )}
+                          style={{ width: `${Math.max(6, Math.min(100, volumeShare))}%` }}
                         />
-                      ))}
-                      {(viewMode === 'live' || viewMode === 'all') && filteredAutoTrades.slice(0, 20).map((trade) => (
-                        <TradeRow
-                          key={trade.id}
-                          type="live"
-                          strategy={trade.strategy}
-                          cost={trade.total_cost}
-                          pnl={trade.actual_profit}
-                          status={trade.status}
-                          date={trade.executed_at}
-                        />
-                      ))}
-                      {filteredSimTrades.length === 0 && filteredAutoTrades.length === 0 && (
-                        <div className="text-center py-8 text-muted-foreground">
-                          No trades found for the selected time range
-                        </div>
-                      )}
+                      </div>
                     </div>
-                  </ScrollArea>
-                </CardContent>
-              </Card>
-            </>
-          )}
+                  )
+                })}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="border-border/60 bg-card/80">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">Trade Tape</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[420px] pr-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-border/60 bg-background/30">
+                      <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Timestamp</TableHead>
+                      <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Source</TableHead>
+                      <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Strategy</TableHead>
+                      <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Status</TableHead>
+                      <TableHead className="h-9 py-2 text-right text-[11px] uppercase tracking-wide">Cost</TableHead>
+                      <TableHead className="h-9 py-2 text-right text-[11px] uppercase tracking-wide">P&L</TableHead>
+                      <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Account</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {unifiedTrades.slice(0, 150).map((trade) => (
+                      <TableRow key={trade.id} className="border-border/45">
+                        <TableCell className="py-2 font-data text-xs text-muted-foreground">
+                          {new Date(trade.executedAt).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="py-2">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px] uppercase tracking-wide',
+                              trade.source === 'sandbox'
+                                ? 'border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
+                                : 'border-cyan-300 bg-cyan-100 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200'
+                            )}
+                          >
+                            {trade.source}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="py-2 text-sm">{trade.strategy}</TableCell>
+                        <TableCell className="py-2">
+                          <Badge variant="outline" className={cn('text-[10px] uppercase', getTradeStatusClass(trade.status))}>
+                            {trade.status.replace(/_/g, ' ')}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="py-2 text-right font-data text-xs">
+                          {formatCurrency(trade.cost)}
+                        </TableCell>
+                        <TableCell className={cn(
+                          'py-2 text-right font-data text-xs',
+                          (trade.pnl ?? 0) >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'
+                        )}>
+                          {trade.pnl == null ? '—' : formatSignedCurrency(trade.pnl)}
+                        </TableCell>
+                        <TableCell className="py-2 text-xs text-muted-foreground">
+                          {trade.accountName || (trade.source === 'live' ? 'Orchestrator' : '—')}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {unifiedTrades.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                          No trades found for this view and range.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </TabsContent>
 
-        <TabsContent value="validation" className="space-y-4 mt-0">
+        <TabsContent value="validation" className="mt-0 space-y-4">
           <ValidationEnginePanel />
         </TabsContent>
       </Tabs>
@@ -491,241 +770,152 @@ export default function PerformancePanel() {
   )
 }
 
-function MetricCard({
-  icon,
+function PerformanceMetricTile({
   label,
   value,
-  subtitle,
-  valueColor = 'text-foreground'
+  helper,
+  icon: Icon,
+  tone,
 }: {
-  icon: React.ReactNode
   label: string
   value: string
-  subtitle?: string
-  valueColor?: string
+  helper: string
+  icon: React.ElementType
+  tone: 'good' | 'bad' | 'warn' | 'neutral' | 'info'
 }) {
+  const toneClasses: Record<typeof tone, string> = {
+    good: 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200',
+    bad: 'border-red-300 bg-red-100 text-red-900 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200',
+    warn: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200',
+    neutral: 'border-border/70 bg-background/35 text-foreground',
+    info: 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200',
+  }
+
   return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className="p-2 bg-muted rounded-lg">{icon}</div>
-        <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={cn("text-lg font-semibold font-data", valueColor)}>{value}</p>
-          {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+    <Card className={cn('border', toneClasses[tone])}>
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-[10px] uppercase tracking-wide opacity-85">{label}</p>
+          <Icon className="h-3.5 w-3.5 opacity-80" />
         </div>
+        <p className="mt-2 font-data text-lg font-semibold">{value}</p>
+        <p className="mt-1 text-[11px] opacity-85">{helper}</p>
       </CardContent>
     </Card>
   )
 }
 
-function StrategyRow({
-  strategy,
-  trades,
-  pnl,
-  wins,
-  losses
-}: {
-  strategy: string
-  trades: number
-  pnl: number
-  wins: number
-  losses: number
-}) {
-  const winRate = wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0
-  const isProfitable = pnl >= 0
-
-  return (
-    <div className="flex items-center justify-between bg-muted rounded-lg p-3">
-      <div className="flex items-center gap-3">
-        <div className={cn(
-          "w-2 h-2 rounded-full",
-          isProfitable ? "bg-green-500" : "bg-red-500"
-        )} />
-        <div>
-          <p className="font-medium text-sm">{strategy}</p>
-          <p className="text-xs text-muted-foreground">{trades} trades | {winRate.toFixed(0)}% win rate</p>
-        </div>
-      </div>
-      <div className="text-right">
-        <p className={cn(
-          "font-data font-medium",
-          isProfitable ? "text-green-400 data-glow-green" : "text-red-400 data-glow-red"
-        )}>
-          {isProfitable ? '+' : ''}${pnl.toFixed(2)}
-        </p>
-        <p className="text-xs text-muted-foreground">{wins}W / {losses}L</p>
-      </div>
-    </div>
-  )
-}
-
-function TradeRow({
-  type,
-  strategy,
-  cost,
-  pnl,
-  status,
-  date,
-  accountName
-}: {
-  type: 'paper' | 'live'
-  strategy: string
-  cost: number
-  pnl: number | null | undefined
-  status: string
-  date: string
-  accountName?: string
-}) {
-  const isProfitable = (pnl || 0) >= 0
-  const statusColors: Record<string, string> = {
-    open: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    resolved_win: 'bg-green-500/20 text-green-400 border-green-500/30',
-    resolved_loss: 'bg-red-500/20 text-red-400 border-red-500/30',
-    win: 'bg-green-500/20 text-green-400 border-green-500/30',
-    loss: 'bg-red-500/20 text-red-400 border-red-500/30',
-    resolved: 'bg-gray-500/20 text-muted-foreground border-gray-500/30',
-    executed: 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-  }
-
-  return (
-    <div className="flex items-center justify-between bg-muted rounded-lg p-3">
-      <div className="flex items-center gap-3">
-        {isProfitable ? (
-          <ArrowUpRight className="w-4 h-4 text-green-400" />
-        ) : (
-          <ArrowDownRight className="w-4 h-4 text-red-400" />
-        )}
-        <div>
-          <div className="flex items-center gap-2">
-            <p className="font-medium text-sm">{strategy}</p>
-            <Badge
-              variant="outline"
-              className={cn(
-                type === 'paper'
-                  ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
-                  : "bg-purple-500/20 text-purple-400 border-purple-500/30"
-              )}
-            >
-              {type === 'paper' ? 'Sandbox' : 'Live'}
-            </Badge>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Cost: ${cost.toFixed(2)}
-            {accountName && ` | ${accountName}`}
-          </p>
-        </div>
-      </div>
-      <div className="text-right">
-        <Badge
-          variant="outline"
-          className={cn(statusColors[status] || 'bg-gray-500/20 text-muted-foreground border-gray-500/30')}
-        >
-          {status.replace('_', ' ')}
-        </Badge>
-        {pnl != null && (
-          <p className={cn(
-            "font-data text-sm mt-1",
-            isProfitable ? "text-green-400" : "text-red-400"
-          )}>
-            {isProfitable ? '+' : ''}${pnl.toFixed(2)}
-          </p>
-        )}
-        <p className="text-xs text-muted-foreground mt-1">
-          {new Date(date).toLocaleDateString()}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function SimplePnlChart({
+function PerformancePnlChart({
   data,
-  viewMode
+  viewMode,
 }: {
-  data: { date: string; cumSimPnl: number; cumAutoPnl: number }[]
+  data: Array<{
+    date: string
+    cumSimPnl: number
+    cumLivePnl: number
+    cumTotalPnl: number
+  }>
   viewMode: ViewMode
 }) {
-  if (data.length === 0) return null
+  const showSandbox = viewMode === 'simulation' || viewMode === 'all'
+  const showLive = viewMode === 'live' || viewMode === 'all'
 
-  const showSim = viewMode === 'simulation' || viewMode === 'all'
-  const showAuto = viewMode === 'live' || viewMode === 'all'
-
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr)
-    return `${date.getMonth() + 1}/${date.getDate()}`
-  }
-
-  const formatDollar = (value: number) => {
-    return `$${value.toFixed(2)}`
+  const tooltipFormatter = (value: number, key: string) => {
+    const label = key === 'cumSimPnl'
+      ? 'Sandbox cumulative'
+      : key === 'cumLivePnl'
+        ? 'Live cumulative'
+        : 'Unified cumulative'
+    return [formatCurrency(value), label]
   }
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+      <AreaChart data={data} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
         <defs>
-          <linearGradient id="simGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+          <linearGradient id="sandboxGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.32} />
+            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.04} />
           </linearGradient>
-          <linearGradient id="autoGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3} />
-            <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+          <linearGradient id="liveGradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.32} />
+            <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.04} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+
+        <CartesianGrid stroke="hsl(var(--border) / 0.45)" strokeDasharray="3 3" />
+
         <XAxis
           dataKey="date"
-          tickFormatter={formatDate}
-          stroke="hsl(var(--muted-foreground))"
+          tickFormatter={formatDateLabel}
           tick={{ fontSize: 11 }}
+          stroke="hsl(var(--muted-foreground))"
           axisLine={{ stroke: 'hsl(var(--border))' }}
+          tickLine={{ stroke: 'hsl(var(--border))' }}
         />
         <YAxis
-          tickFormatter={formatDollar}
-          stroke="hsl(var(--muted-foreground))"
+          tickFormatter={(value: number) => formatCurrency(value, true)}
           tick={{ fontSize: 11 }}
+          width={72}
+          stroke="hsl(var(--muted-foreground))"
           axisLine={{ stroke: 'hsl(var(--border))' }}
-          width={65}
+          tickLine={{ stroke: 'hsl(var(--border))' }}
         />
+
         <Tooltip
+          formatter={(value, key) => tooltipFormatter(Number(value), String(key))}
+          labelFormatter={(label) => `Date ${label}`}
           contentStyle={{
-            backgroundColor: 'hsl(var(--popover))',
+            borderRadius: 10,
             border: '1px solid hsl(var(--border))',
-            borderRadius: '8px',
-            fontSize: '12px',
+            background: 'hsl(var(--popover))',
             color: 'hsl(var(--popover-foreground))',
+            fontSize: 12,
           }}
-          labelFormatter={(label) => `Date: ${label}`}
-          formatter={(value: any, name: any) => [
-            typeof value === 'number' ? `$${value.toFixed(2)}` : '$0.00',
-            name === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'
-          ]}
         />
+
         <Legend
-          formatter={(value) => value === 'cumSimPnl' ? 'Sandbox P&L' : 'Live P&L'}
-          wrapperStyle={{ fontSize: '12px' }}
+          wrapperStyle={{ fontSize: '11px' }}
+          formatter={(value) => {
+            if (value === 'cumSimPnl') return 'Sandbox'
+            if (value === 'cumLivePnl') return 'Live'
+            return 'Unified'
+          }}
         />
-        {showSim && (
+
+        {showSandbox && (
           <Area
             type="monotone"
             dataKey="cumSimPnl"
-            stroke="#3b82f6"
+            stroke="#f59e0b"
             strokeWidth={2}
-            fill="url(#simGradient)"
+            fill="url(#sandboxGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#3b82f6', strokeWidth: 2, fill: 'hsl(var(--background))' }}
+            activeDot={{ r: 4, stroke: '#f59e0b', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
-        {showAuto && (
+
+        {showLive && (
           <Area
             type="monotone"
-            dataKey="cumAutoPnl"
-            stroke="#a855f7"
+            dataKey="cumLivePnl"
+            stroke="#22d3ee"
             strokeWidth={2}
-            fill="url(#autoGradient)"
+            fill="url(#liveGradient)"
             dot={false}
-            activeDot={{ r: 4, stroke: '#a855f7', strokeWidth: 2, fill: 'hsl(var(--background))' }}
+            activeDot={{ r: 4, stroke: '#22d3ee', strokeWidth: 2, fill: 'hsl(var(--background))' }}
+          />
+        )}
+
+        {viewMode === 'all' && (
+          <Line
+            type="monotone"
+            dataKey="cumTotalPnl"
+            stroke="#34d399"
+            strokeWidth={2}
+            dot={false}
+            strokeDasharray="5 3"
+            activeDot={{ r: 4, stroke: '#34d399', strokeWidth: 2, fill: 'hsl(var(--background))' }}
           />
         )}
       </AreaChart>

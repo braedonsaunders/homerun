@@ -46,13 +46,22 @@ def test_build_polymarket_market_url_rejects_non_slug_ids():
 def test_build_kalshi_market_url_uses_event_ticker_route():
     # Prefer event_ticker when provided explicitly
     assert build_kalshi_market_url(event_ticker="KXELONMARS") == "https://kalshi.com/markets/kxelonmars"
-    # Derive event ticker from market ticker (first segment before hyphen)
-    assert build_kalshi_market_url(market_ticker="KXELONMARS-99") == "https://kalshi.com/markets/kxelonmars"
-    assert build_kalshi_market_url(market_ticker="KXELONMARS-99_yes") == "https://kalshi.com/markets/kxelonmars"
-    # Multi-segment market tickers: event ticker is always the first segment
-    assert build_kalshi_market_url(market_ticker="KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS") == "https://kalshi.com/markets/kxatpchallengermatch"
-    assert build_kalshi_market_url(market_ticker="KXGOVTSHUTDOWN-26FEB14") == "https://kalshi.com/markets/kxgovtshutdown"
-    assert build_kalshi_market_url(market_ticker="KXLIGUE1GAME-26FEB13RENPSG") == "https://kalshi.com/markets/kxligue1game"
+    # Derive event ticker from market ticker and include series/event path
+    assert build_kalshi_market_url(market_ticker="KXELONMARS-99") == "https://kalshi.com/markets/kxelonmars/kxelonmars-99"
+    assert build_kalshi_market_url(market_ticker="KXELONMARS-99_yes") == "https://kalshi.com/markets/kxelonmars/kxelonmars-99"
+    # Multi-segment market tickers strip trailing outcome codes when needed.
+    assert (
+        build_kalshi_market_url(market_ticker="KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS")
+        == "https://kalshi.com/markets/kxatpchallengermatch/kxatpchallengermatch-26feb14kasgom"
+    )
+    assert (
+        build_kalshi_market_url(market_ticker="KXGOVTSHUTDOWN-26FEB14")
+        == "https://kalshi.com/markets/kxgovtshutdown/kxgovtshutdown-26feb14"
+    )
+    assert (
+        build_kalshi_market_url(market_ticker="KXLIGUE1GAME-26FEB13RENPSG")
+        == "https://kalshi.com/markets/kxligue1game/kxligue1game-26feb13renpsg"
+    )
     # Single-segment market ticker used as-is (it IS the event ticker)
     assert build_kalshi_market_url(market_ticker="KXELONMARS") == "https://kalshi.com/markets/kxelonmars"
     # Non-Kalshi ticker returns None
@@ -67,14 +76,14 @@ def test_build_market_url_kalshi_slug_not_used_as_event():
         "slug": "KXPOLITICSMENTION-26FEB15-SHUT",
         "platform": "kalshi",
     })
-    assert url == "https://kalshi.com/markets/kxpoliticsmention"
+    assert url == "https://kalshi.com/markets/kxpoliticsmention/kxpoliticsmention-26feb15"
 
     url2 = build_market_url({
         "id": "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS",
         "slug": "KXATPCHALLENGERMATCH-26FEB14KASGOM-KAS",
         "platform": "kalshi",
     })
-    assert url2 == "https://kalshi.com/markets/kxatpchallengermatch"
+    assert url2 == "https://kalshi.com/markets/kxatpchallengermatch/kxatpchallengermatch-26feb14kasgom"
 
 
 def test_attach_market_links_keeps_api_url_and_fills_platform_links():

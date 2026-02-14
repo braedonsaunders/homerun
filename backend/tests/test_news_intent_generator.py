@@ -26,7 +26,25 @@ async def test_intent_generator_carries_reasoning_and_evidence():
         confidence=0.74,
         actionable=True,
         reasoning="Reasoning text",
-        evidence={"retrieval": {"score": 0.81}},
+        evidence={
+            "retrieval": {"score": 0.81},
+            "cluster": {
+                "article_refs": [
+                    {
+                        "article_id": "article-1",
+                        "title": "Primary source article",
+                        "url": "https://example.com/a1",
+                        "source": "Reuters",
+                    },
+                    {
+                        "article_id": "article-2",
+                        "title": "Corroborating source article",
+                        "url": "https://example.com/a2",
+                        "source": "AP",
+                    },
+                ]
+            },
+        },
     )
 
     intents = await generator.generate(
@@ -39,9 +57,11 @@ async def test_intent_generator_carries_reasoning_and_evidence():
     assert len(intents) == 1
     metadata = intents[0]["metadata_json"]
     assert metadata["finding"]["reasoning"] == "Reasoning text"
-    assert metadata["finding"]["evidence"] == {"retrieval": {"score": 0.81}}
-    assert metadata["supporting_article_count"] == 1
-    assert len(metadata["supporting_articles"]) == 1
+    assert metadata["finding"]["evidence"]["retrieval"] == {"score": 0.81}
+    assert "cluster" in metadata["finding"]["evidence"]
+    assert metadata["supporting_article_count"] == 2
+    assert metadata["supporting_source_count"] == 2
+    assert len(metadata["supporting_articles"]) == 2
     assert metadata["supporting_articles"][0]["article_id"] == "article-1"
 
 
@@ -90,4 +110,43 @@ async def test_intent_generator_includes_cluster_supporting_articles():
     assert len(intents) == 1
     metadata = intents[0]["metadata_json"]
     assert metadata["supporting_article_count"] == 2
+    assert metadata["supporting_source_count"] == 2
     assert [a["article_id"] for a in metadata["supporting_articles"]] == ["a1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_intent_generator_requires_multi_article_multi_source_evidence():
+    generator = IntentGenerator()
+    finding = WorkflowFinding(
+        id="finding-3",
+        article_id="article-1",
+        market_id="mkt-3",
+        market_question="Will event happen?",
+        market_price=0.44,
+        model_probability=0.66,
+        edge_percent=12.0,
+        direction="buy_yes",
+        confidence=0.72,
+        actionable=True,
+        evidence={
+            "cluster": {
+                "article_refs": [
+                    {
+                        "article_id": "article-1",
+                        "title": "Only one article",
+                        "url": "https://example.com/solo",
+                        "source": "Reuters",
+                    }
+                ]
+            }
+        },
+    )
+
+    intents = await generator.generate(
+        findings=[finding],
+        min_edge=10.0,
+        min_confidence=0.6,
+        market_metadata_by_id={"mkt-3": {"liquidity": 10000.0}},
+    )
+
+    assert intents == []

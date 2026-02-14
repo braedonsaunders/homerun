@@ -19,11 +19,13 @@ from models.database import (
     TraderDecisionCheck,
     TraderEvent,
     TraderOrder,
+    TraderPosition,
     TraderOrchestratorControl,
     TraderOrchestratorSnapshot,
     TraderSignalConsumption,
 )
 from services.trader_orchestrator.sources.registry import normalize_sources
+from services.trader_orchestrator.strategies import list_strategy_keys
 from services.trader_orchestrator.templates import (
     DEFAULT_GLOBAL_RISK,
     TRADER_TEMPLATES,
@@ -35,6 +37,17 @@ from utils.secrets import decrypt_secret
 ORCHESTRATOR_CONTROL_ID = "default"
 ORCHESTRATOR_SNAPSHOT_ID = "latest"
 OPEN_ORDER_STATUSES = {"submitted", "executed", "open"}
+PAPER_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
+LIVE_ACTIVE_ORDER_STATUSES = {"submitted", "executed", "open"}
+CLEANUP_ELIGIBLE_ORDER_STATUSES = {"submitted", "executed", "open"}
+RESOLVED_ORDER_STATUSES = {"resolved_win", "resolved_loss"}
+ACTIVE_POSITION_STATUS = "open"
+INACTIVE_POSITION_STATUS = "closed"
+_STRATEGY_KEY_ALIASES = {
+    "strategy.default": "crypto_15m",
+    "default": "crypto_15m",
+}
+_RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
 
 
 def _now() -> datetime:
@@ -69,11 +82,71 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _normalize_mode_key(mode: Any) -> str:
+    key = str(mode or "").strip().lower()
+    if key in {"paper", "live"}:
+        return key
+    return "other"
+
+
+def _normalize_status_key(status: Any) -> str:
+    return str(status or "").strip().lower()
+
+
+def _active_statuses_for_mode(mode: Any) -> set[str]:
+    mode_key = _normalize_mode_key(mode)
+    if mode_key == "paper":
+        return PAPER_ACTIVE_ORDER_STATUSES
+    if mode_key == "live":
+        return LIVE_ACTIVE_ORDER_STATUSES
+    return OPEN_ORDER_STATUSES
+
+
+def _is_active_order_status(mode: Any, status: Any) -> bool:
+    return _normalize_status_key(status) in _active_statuses_for_mode(mode)
+
+
+def _normalize_position_status(status: Any) -> str:
+    value = str(status or "").strip().lower()
+    if value == ACTIVE_POSITION_STATUS:
+        return ACTIVE_POSITION_STATUS
+    return INACTIVE_POSITION_STATUS
+
+
+def _position_identity_key(mode: Any, market_id: Any, direction: Any) -> tuple[str, str, str]:
+    return (
+        _normalize_mode_key(mode),
+        str(market_id or "").strip(),
+        str(direction or "").strip().lower(),
+    )
+
+
 def _normalize_confidence_fraction(value: Any, default: float = 0.0) -> float:
     parsed = _safe_float(value, default)
     if parsed > 1.0:
         parsed = parsed / 100.0
     return max(0.0, min(1.0, parsed))
+
+
+def _normalize_resume_policy(value: Any) -> str:
+    policy = str(value or "").strip().lower()
+    if policy in _RESUME_POLICY_VALUES:
+        return policy
+    return "resume_full"
+
+
+def _normalize_strategy_key(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    return _STRATEGY_KEY_ALIASES.get(key, key)
+
+
+def _validate_strategy_key(strategy_key: str) -> None:
+    valid_keys = set(list_strategy_keys())
+    if not strategy_key:
+        raise ValueError("strategy_key is required")
+    if strategy_key not in valid_keys:
+        allowed = ", ".join(sorted(valid_keys))
+        raise ValueError(f"Unknown strategy_key '{strategy_key}'. Valid strategy keys: {allowed}")
 
 
 def _default_control_settings() -> dict[str, Any]:
@@ -122,6 +195,8 @@ def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
 
 
 def _serialize_trader(row: Trader) -> dict[str, Any]:
+    metadata = dict(row.metadata_json or {})
+    metadata["resume_policy"] = _normalize_resume_policy(metadata.get("resume_policy"))
     return {
         "id": row.id,
         "name": row.name,
@@ -131,7 +206,7 @@ def _serialize_trader(row: Trader) -> dict[str, Any]:
         "sources": list(row.sources_json or []),
         "params": row.params_json or {},
         "risk_limits": row.risk_limits_json or {},
-        "metadata": row.metadata_json or {},
+        "metadata": metadata,
         "is_enabled": bool(row.is_enabled),
         "is_paused": bool(row.is_paused),
         "interval_seconds": int(row.interval_seconds or 60),
@@ -332,15 +407,20 @@ def _normalize_trader_payload(payload: dict[str, Any]) -> dict[str, Any]:
             params.get("min_confidence"),
             0.0,
         )
+    metadata = payload.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata = dict(metadata)
+    metadata["resume_policy"] = _normalize_resume_policy(metadata.get("resume_policy"))
 
     return {
         "name": str(payload.get("name") or "").strip(),
         "description": payload.get("description"),
-        "strategy_key": str(payload.get("strategy_key") or "").strip().lower(),
-        "sources": normalize_sources(payload.get("sources") or []),
+        "strategy_key": _normalize_strategy_key(payload.get("strategy_key")),
+        "sources": normalize_sources(payload.get("sources")),
         "params": params,
         "risk_limits": payload.get("risk_limits") or {},
-        "metadata": payload.get("metadata") or {},
+        "metadata": metadata,
         "is_enabled": bool(payload.get("is_enabled", True)),
         "is_paused": bool(payload.get("is_paused", False)),
         "interval_seconds": max(1, min(86400, _safe_int(payload.get("interval_seconds"), 60))),
@@ -388,8 +468,7 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
     normalized = _normalize_trader_payload(payload)
     if not normalized["name"]:
         raise ValueError("Trader name is required")
-    if not normalized["strategy_key"]:
-        raise ValueError("strategy_key is required")
+    _validate_strategy_key(normalized["strategy_key"])
 
     existing = (
         (await session.execute(select(Trader).where(func.lower(Trader.name) == normalized["name"].lower())))
@@ -462,6 +541,7 @@ async def update_trader(
     if "description" in payload:
         row.description = normalized["description"]
     if "strategy_key" in payload:
+        _validate_strategy_key(normalized["strategy_key"])
         row.strategy_key = normalized["strategy_key"]
     if "sources" in payload:
         row.sources_json = normalized["sources"]
@@ -791,6 +871,12 @@ async def create_trader_order(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    if _is_active_order_status(mode, status):
+        await sync_trader_position_inventory(
+            session,
+            trader_id=trader_id,
+            mode=str(mode),
+        )
     return row
 
 
@@ -852,23 +938,227 @@ async def list_unconsumed_trade_signals(
         .order_by(TradeSignal.created_at.asc())
         .limit(max(1, min(limit, 1000)))
     )
-    if sources:
-        query = query.where(TradeSignal.source.in_(sources))
+    if sources is not None:
+        normalized_sources = [str(source).strip().lower() for source in sources if str(source).strip()]
+        if not normalized_sources:
+            return []
+        query = query.where(TradeSignal.source.in_(normalized_sources))
     return list((await session.execute(query)).scalars().all())
 
 
-async def get_open_order_count_for_trader(session: AsyncSession, trader_id: str) -> int:
-    return int(
-        (
-            await session.execute(
-                select(func.count(TraderOrder.id)).where(
-                    TraderOrder.trader_id == trader_id,
-                    TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
-                )
+async def sync_trader_position_inventory(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str] = None,
+) -> dict[str, Any]:
+    query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")).not_in(["paper", "live"]))
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    order_rows = list((await session.execute(query)).scalars().all())
+
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in order_rows:
+        mode_key = _normalize_mode_key(row.mode)
+        if not _is_active_order_status(mode_key, row.status):
+            continue
+        identity = _position_identity_key(mode_key, row.market_id, row.direction)
+        if not identity[1]:
+            continue
+
+        bucket = grouped.get(identity)
+        if bucket is None:
+            bucket = {
+                "mode": mode_key,
+                "market_id": str(row.market_id or ""),
+                "market_question": row.market_question,
+                "direction": str(row.direction or ""),
+                "open_order_count": 0,
+                "total_notional_usd": 0.0,
+                "weighted_entry_numerator": 0.0,
+                "weighted_entry_denominator": 0.0,
+                "first_order_at": row.created_at,
+                "last_order_at": row.updated_at or row.executed_at or row.created_at,
+            }
+            grouped[identity] = bucket
+
+        notional = abs(_safe_float(row.notional_usd, 0.0))
+        entry_price = _safe_float(row.effective_price, 0.0) or _safe_float(row.entry_price, 0.0)
+        bucket["open_order_count"] = int(bucket["open_order_count"]) + 1
+        bucket["total_notional_usd"] = float(bucket["total_notional_usd"]) + max(0.0, notional)
+        if entry_price and entry_price > 0 and notional > 0:
+            bucket["weighted_entry_numerator"] = float(bucket["weighted_entry_numerator"]) + (entry_price * notional)
+            bucket["weighted_entry_denominator"] = float(bucket["weighted_entry_denominator"]) + notional
+        if row.created_at and (bucket["first_order_at"] is None or row.created_at < bucket["first_order_at"]):
+            bucket["first_order_at"] = row.created_at
+        last_order_at = row.updated_at or row.executed_at or row.created_at
+        if last_order_at and (bucket["last_order_at"] is None or last_order_at > bucket["last_order_at"]):
+            bucket["last_order_at"] = last_order_at
+
+    existing_query = select(TraderPosition).where(TraderPosition.trader_id == trader_id)
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            existing_query = existing_query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
+        else:
+            existing_query = existing_query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
+    existing_rows = list((await session.execute(existing_query)).scalars().all())
+    existing_by_identity = {
+        _position_identity_key(row.mode, row.market_id, row.direction): row
+        for row in existing_rows
+    }
+
+    now = _now()
+    updates = 0
+    inserts = 0
+    closures = 0
+
+    for identity, bucket in grouped.items():
+        row = existing_by_identity.get(identity)
+        avg_entry_price = None
+        weighted_den = float(bucket.get("weighted_entry_denominator") or 0.0)
+        if weighted_den > 0:
+            avg_entry_price = float(bucket.get("weighted_entry_numerator") or 0.0) / weighted_den
+
+        if row is None:
+            row = TraderPosition(
+                id=_new_id(),
+                trader_id=trader_id,
+                mode=str(bucket["mode"]),
+                market_id=str(bucket["market_id"]),
+                market_question=bucket.get("market_question"),
+                direction=str(bucket.get("direction") or ""),
+                status=ACTIVE_POSITION_STATUS,
+                open_order_count=int(bucket.get("open_order_count") or 0),
+                total_notional_usd=float(bucket.get("total_notional_usd") or 0.0),
+                avg_entry_price=avg_entry_price,
+                first_order_at=bucket.get("first_order_at"),
+                last_order_at=bucket.get("last_order_at"),
+                closed_at=None,
+                payload_json={"sync_source": "order_inventory"},
+                created_at=now,
+                updated_at=now,
             )
-        ).scalar()
-        or 0
+            session.add(row)
+            inserts += 1
+            continue
+
+        row.market_question = bucket.get("market_question")
+        row.status = ACTIVE_POSITION_STATUS
+        row.open_order_count = int(bucket.get("open_order_count") or 0)
+        row.total_notional_usd = float(bucket.get("total_notional_usd") or 0.0)
+        row.avg_entry_price = avg_entry_price
+        row.first_order_at = bucket.get("first_order_at")
+        row.last_order_at = bucket.get("last_order_at")
+        row.closed_at = None
+        row.updated_at = now
+        updates += 1
+
+    grouped_keys = set(grouped.keys())
+    for identity, row in existing_by_identity.items():
+        if identity in grouped_keys:
+            continue
+        if _normalize_position_status(row.status) != ACTIVE_POSITION_STATUS:
+            continue
+        row.status = INACTIVE_POSITION_STATUS
+        row.open_order_count = 0
+        row.total_notional_usd = 0.0
+        row.closed_at = now
+        row.updated_at = now
+        closures += 1
+
+    if inserts > 0 or updates > 0 or closures > 0:
+        await session.commit()
+
+    return {
+        "trader_id": trader_id,
+        "mode": _normalize_mode_key(mode) if mode is not None else "all",
+        "open_positions": len(grouped),
+        "inserts": inserts,
+        "updates": updates,
+        "closures": closures,
+    }
+
+
+async def get_open_position_count_for_trader(
+    session: AsyncSession,
+    trader_id: str,
+    mode: Optional[str] = None,
+) -> int:
+    query = (
+        select(func.count(TraderPosition.id))
+        .where(TraderPosition.trader_id == trader_id)
+        .where(func.lower(func.coalesce(TraderPosition.status, "")) == ACTIVE_POSITION_STATUS)
     )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
+        else:
+            query = query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
+    return int((await session.execute(query)).scalar() or 0)
+
+
+async def get_open_position_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:
+    rows = (
+        await session.execute(
+            select(
+                TraderPosition.mode,
+                func.count(TraderPosition.id).label("count"),
+            )
+            .where(TraderPosition.trader_id == trader_id)
+            .where(func.lower(func.coalesce(TraderPosition.status, "")) == ACTIVE_POSITION_STATUS)
+            .group_by(TraderPosition.mode)
+        )
+    ).all()
+
+    summary = {"live": 0, "paper": 0, "other": 0, "total": 0}
+    for row in rows:
+        mode_key = _normalize_mode_key(row.mode)
+        count = int(row.count or 0)
+        if mode_key == "live":
+            summary["live"] += count
+        elif mode_key == "paper":
+            summary["paper"] += count
+        else:
+            summary["other"] += count
+        summary["total"] += count
+    return summary
+
+
+async def get_open_order_count_for_trader(
+    session: AsyncSession,
+    trader_id: str,
+    mode: Optional[str] = None,
+) -> int:
+    query = (
+        select(
+            TraderOrder.mode,
+            TraderOrder.status,
+            func.count(TraderOrder.id).label("count"),
+        )
+        .where(TraderOrder.trader_id == trader_id)
+        .group_by(TraderOrder.mode, TraderOrder.status)
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = (await session.execute(query)).all()
+    total = 0
+    for row in rows:
+        mode_key = _normalize_mode_key(mode if mode is not None else row.mode)
+        if _is_active_order_status(mode_key, row.status):
+            total += int(row.count or 0)
+    return total
 
 
 async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:
@@ -876,19 +1166,19 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
         await session.execute(
             select(
                 TraderOrder.mode,
+                TraderOrder.status,
                 func.count(TraderOrder.id).label("count"),
             )
-            .where(
-                TraderOrder.trader_id == trader_id,
-                TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
-            )
-            .group_by(TraderOrder.mode)
+            .where(TraderOrder.trader_id == trader_id)
+            .group_by(TraderOrder.mode, TraderOrder.status)
         )
     ).all()
 
     summary = {"live": 0, "paper": 0, "other": 0, "total": 0}
     for row in rows:
-        mode = str(row.mode or "other").lower()
+        mode = _normalize_mode_key(row.mode)
+        if not _is_active_order_status(mode, row.status):
+            continue
         count = int(row.count or 0)
         if mode == "live":
             summary["live"] += count
@@ -900,31 +1190,232 @@ async def get_open_order_summary_for_trader(session: AsyncSession, trader_id: st
     return summary
 
 
-async def get_market_exposure(session: AsyncSession, market_id: str) -> float:
-    return float(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(TraderOrder.notional_usd), 0.0)).where(
-                    TraderOrder.market_id == market_id,
-                    TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)),
-                )
-            )
-        ).scalar()
-        or 0.0
+async def cleanup_trader_open_orders(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    scope: str = "paper",
+    max_age_hours: Optional[int] = None,
+    dry_run: bool = False,
+    target_status: str = "cancelled",
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    scope_key = str(scope or "paper").strip().lower()
+    if scope_key == "all":
+        allowed_modes = {"paper", "live", "other"}
+    elif scope_key in {"paper", "live"}:
+        allowed_modes = {scope_key}
+    else:
+        raise ValueError("scope must be one of: paper, live, all")
+
+    query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
+    rows = list((await session.execute(query)).scalars().all())
+    cutoff: Optional[datetime] = None
+    if max_age_hours is not None:
+        cutoff = _now() - timedelta(hours=max(1, int(max_age_hours)))
+
+    candidates: list[TraderOrder] = []
+    for row in rows:
+        mode_key = _normalize_mode_key(row.mode)
+        if mode_key not in allowed_modes:
+            continue
+
+        status_key = _normalize_status_key(row.status)
+        if status_key not in CLEANUP_ELIGIBLE_ORDER_STATUSES:
+            continue
+
+        if cutoff is not None:
+            age_anchor = row.executed_at or row.updated_at or row.created_at
+            if age_anchor is None or age_anchor > cutoff:
+                continue
+
+        candidates.append(row)
+
+    mode_breakdown = {"paper": 0, "live": 0, "other": 0}
+    status_breakdown: dict[str, int] = {}
+    for row in candidates:
+        mode_key = _normalize_mode_key(row.mode)
+        status_key = _normalize_status_key(row.status)
+        mode_breakdown[mode_key] = int(mode_breakdown.get(mode_key, 0)) + 1
+        status_breakdown[status_key] = int(status_breakdown.get(status_key, 0)) + 1
+
+    updated = 0
+    if not dry_run and candidates:
+        now = _now()
+        note_reason = str(reason or "manual_position_cleanup").strip()
+        for row in candidates:
+            previous_status = str(row.status or "")
+            row.status = target_status
+            row.updated_at = now
+            existing_payload = dict(row.payload_json or {})
+            existing_payload["cleanup"] = {
+                "previous_status": previous_status,
+                "target_status": target_status,
+                "reason": note_reason,
+                "performed_at": _to_iso(now),
+            }
+            row.payload_json = existing_payload
+            if note_reason:
+                if row.reason:
+                    row.reason = f"{row.reason} | cleanup:{note_reason}"
+                else:
+                    row.reason = f"cleanup:{note_reason}"
+            updated += 1
+        await session.commit()
+        await sync_trader_position_inventory(session, trader_id=trader_id)
+
+    return {
+        "trader_id": trader_id,
+        "scope": scope_key,
+        "max_age_hours": max_age_hours,
+        "dry_run": bool(dry_run),
+        "target_status": target_status,
+        "matched": len(candidates),
+        "updated": updated,
+        "by_mode": mode_breakdown,
+        "by_status": status_breakdown,
+    }
+
+
+async def get_market_exposure(session: AsyncSession, market_id: str, mode: Optional[str] = None) -> float:
+    query = (
+        select(
+            TraderOrder.mode,
+            TraderOrder.status,
+            func.coalesce(func.sum(TraderOrder.notional_usd), 0.0).label("notional"),
+        )
+        .where(TraderOrder.market_id == market_id)
+        .group_by(TraderOrder.mode, TraderOrder.status)
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = (await session.execute(query)).all()
+    total = 0.0
+    for row in rows:
+        mode_key = _normalize_mode_key(mode if mode is not None else row.mode)
+        if _is_active_order_status(mode_key, row.status):
+            total += float(row.notional or 0.0)
+    return total
+
+
+async def get_gross_exposure(session: AsyncSession, mode: Optional[str] = None) -> float:
+    query = (
+        select(
+            TraderOrder.mode,
+            TraderOrder.status,
+            func.coalesce(func.sum(func.abs(TraderOrder.notional_usd)), 0.0).label("notional_abs"),
+        )
+        .group_by(TraderOrder.mode, TraderOrder.status)
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = (await session.execute(query)).all()
+    total = 0.0
+    for row in rows:
+        mode_key = _normalize_mode_key(mode if mode is not None else row.mode)
+        if _is_active_order_status(mode_key, row.status):
+            total += float(row.notional_abs or 0.0)
+    return total
+
+
+async def get_realized_pnl(
+    session: AsyncSession,
+    *,
+    trader_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    since: Optional[datetime] = None,
+) -> float:
+    query = select(func.coalesce(func.sum(TraderOrder.actual_profit), 0.0)).where(
+        TraderOrder.status.in_(tuple(RESOLVED_ORDER_STATUSES))
+    )
+    if trader_id:
+        query = query.where(TraderOrder.trader_id == trader_id)
+    if since is not None:
+        query = query.where(TraderOrder.updated_at >= since)
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    return float((await session.execute(query)).scalar() or 0.0)
+
+
+async def get_daily_realized_pnl(
+    session: AsyncSession,
+    *,
+    trader_id: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> float:
+    today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return await get_realized_pnl(
+        session,
+        trader_id=trader_id,
+        mode=mode,
+        since=today_start,
     )
 
 
-async def get_gross_exposure(session: AsyncSession) -> float:
-    return float(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(func.abs(TraderOrder.notional_usd)), 0.0)).where(
-                    TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES))
-                )
-            )
-        ).scalar()
-        or 0.0
+async def get_consecutive_loss_count(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str] = None,
+    limit: int = 100,
+) -> int:
+    query = (
+        select(TraderOrder.status, TraderOrder.updated_at)
+        .where(TraderOrder.trader_id == trader_id)
+        .where(TraderOrder.status.in_(tuple(RESOLVED_ORDER_STATUSES)))
+        .order_by(desc(TraderOrder.updated_at), desc(TraderOrder.id))
+        .limit(max(1, min(int(limit or 100), 1000)))
     )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+
+    rows = (await session.execute(query)).all()
+    losses = 0
+    for row in rows:
+        status = _normalize_status_key(row.status)
+        if status == "resolved_loss":
+            losses += 1
+            continue
+        if status == "resolved_win":
+            break
+    return losses
+
+
+async def get_last_resolved_loss_at(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    mode: Optional[str] = None,
+) -> Optional[datetime]:
+    query = select(func.max(TraderOrder.updated_at)).where(
+        TraderOrder.trader_id == trader_id,
+        TraderOrder.status == "resolved_loss",
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == "")
+        else:
+            query = query.where(func.lower(func.coalesce(TraderOrder.mode, "")) == mode_key)
+    return (await session.execute(query)).scalar_one_or_none()
 
 
 async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
@@ -942,26 +1433,20 @@ async def compute_orchestrator_metrics(session: AsyncSession) -> dict[str, Any]:
     )
     decisions_count = int((await session.execute(select(func.count(TraderDecision.id)))).scalar() or 0)
     orders_count = int((await session.execute(select(func.count(TraderOrder.id)))).scalar() or 0)
-    open_orders = int(
-        (
-            await session.execute(
-                select(func.count(TraderOrder.id)).where(TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)))
-            )
-        ).scalar()
-        or 0
-    )
-    today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
-    daily_pnl = float(
-        (
-            await session.execute(
-                select(func.coalesce(func.sum(TraderOrder.actual_profit), 0.0)).where(
-                    TraderOrder.updated_at >= today_start,
-                    TraderOrder.status.in_(("resolved_win", "resolved_loss")),
-                )
-            )
-        ).scalar()
-        or 0.0
-    )
+    open_rows = (
+        await session.execute(
+            select(
+                TraderOrder.mode,
+                TraderOrder.status,
+                func.count(TraderOrder.id).label("count"),
+            ).group_by(TraderOrder.mode, TraderOrder.status)
+        )
+    ).all()
+    open_orders = 0
+    for row in open_rows:
+        if _is_active_order_status(row.mode, row.status):
+            open_orders += int(row.count or 0)
+    daily_pnl = await get_daily_realized_pnl(session)
 
     return {
         "traders_total": traders_total,

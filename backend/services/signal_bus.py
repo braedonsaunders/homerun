@@ -54,6 +54,20 @@ def make_dedupe_key(*parts: Any) -> str:
     return hashlib.sha256(packed.encode("utf-8")).hexdigest()[:32]
 
 
+def tracked_trader_signal_dedupe_key(market_id: str) -> str:
+    return make_dedupe_key(
+        "tracked_traders",
+        str(market_id or "").strip().lower(),
+    )
+
+
+def insider_signal_dedupe_key(market_id: str) -> str:
+    return make_dedupe_key(
+        "insider",
+        str(market_id or "").strip().lower(),
+    )
+
+
 async def upsert_trade_signal(
     session: AsyncSession,
     *,
@@ -180,6 +194,39 @@ async def expire_stale_signals(session: AsyncSession, *, commit: bool = True) ->
         await refresh_trade_signal_snapshots(session)
     elif commit:
         await session.commit()
+    return len(rows)
+
+
+async def expire_source_signals_except(
+    session: AsyncSession,
+    *,
+    source: str,
+    keep_dedupe_keys: set[str],
+    commit: bool = True,
+) -> int:
+    """Expire active source signals not present in the current emission set."""
+    now = _utc_now()
+    keep = {str(key) for key in keep_dedupe_keys if str(key).strip()}
+
+    query = select(TradeSignal).where(
+        TradeSignal.source == str(source),
+        TradeSignal.status.in_(tuple(SIGNAL_ACTIVE_STATUSES)),
+    )
+    if keep:
+        query = query.where(~TradeSignal.dedupe_key.in_(list(keep)))
+
+    rows = list((await session.execute(query)).scalars().all())
+    for row in rows:
+        row.status = "expired"
+        row.expires_at = now
+        row.updated_at = now
+
+    if rows and commit:
+        await session.commit()
+        await refresh_trade_signal_snapshots(session)
+    elif commit:
+        await session.commit()
+
     return len(rows)
 
 
@@ -397,6 +444,23 @@ def _direction_from_outcome(outcome: Optional[str]) -> Optional[str]:
     return None
 
 
+def _direction_from_signal_payload(signal: dict[str, Any]) -> Optional[str]:
+    outcome_direction = _direction_from_outcome(str(signal.get("outcome") or ""))
+    if outcome_direction:
+        return outcome_direction
+
+    explicit_direction = _direction_from_outcome(str(signal.get("direction") or ""))
+    if explicit_direction:
+        return explicit_direction
+
+    signal_type = str(signal.get("signal_type") or "").strip().lower()
+    if "sell" in signal_type:
+        return "buy_no"
+    if "buy" in signal_type or "accumulation" in signal_type:
+        return "buy_yes"
+    return None
+
+
 async def emit_scanner_signals(
     session: AsyncSession,
     opportunities: list[ArbitrageOpportunity],
@@ -548,13 +612,20 @@ async def emit_insider_intent_signals(
     max_age_minutes: int = 180,
 ) -> int:
     emitted = 0
+    active_dedupe_keys: set[str] = set()
     ttl = timedelta(minutes=max(1, max_age_minutes))
     for intent in intents:
+        market_id = str(getattr(intent, "market_id", "") or "").strip()
+        direction = str(getattr(intent, "direction", "") or "").strip().lower()
+        if not market_id or direction not in {"buy_yes", "buy_no"}:
+            continue
+
         created_at = _to_utc_naive(getattr(intent, "created_at", None)) or _utc_now()
         expires = created_at + ttl
-        dedupe_key = getattr(intent, "signal_key", None) or make_dedupe_key(intent.id)
+        dedupe_key = insider_signal_dedupe_key(market_id)
         metadata = getattr(intent, "metadata_json", {}) or {}
         wallet_addresses = getattr(intent, "wallet_addresses_json", None) or []
+        active_dedupe_keys.add(dedupe_key)
 
         await upsert_trade_signal(
             session,
@@ -562,9 +633,9 @@ async def emit_insider_intent_signals(
             source_item_id=str(intent.id),
             signal_type="insider_intent",
             strategy_type="insider_edge",
-            market_id=str(intent.market_id),
+            market_id=market_id,
             market_question=intent.market_question,
-            direction=getattr(intent, "direction", None),
+            direction=direction,
             entry_price=getattr(intent, "entry_price", None),
             edge_percent=getattr(intent, "edge_percent", None),
             confidence=getattr(intent, "confidence", None),
@@ -581,6 +652,12 @@ async def emit_insider_intent_signals(
         )
         emitted += 1
 
+    await expire_source_signals_except(
+        session,
+        source="insider",
+        keep_dedupe_keys=active_dedupe_keys,
+        commit=False,
+    )
     await session.commit()
     await refresh_trade_signal_snapshots(session)
     return emitted
@@ -591,9 +668,9 @@ async def emit_tracked_trader_signals(
     confluence_signals: list[dict[str, Any]],
 ) -> int:
     emitted = 0
+    active_dedupe_keys: set[str] = set()
     for sig in confluence_signals:
-        tier = str(sig.get("tier") or "WATCH").upper()
-        if tier not in {"HIGH", "EXTREME"}:
+        if sig.get("is_tradeable") is False:
             continue
 
         market_id = str(sig.get("market_id") or "")
@@ -615,15 +692,28 @@ async def emit_tracked_trader_signals(
 
         expires_at = detected_dt + timedelta(minutes=max(30, int(sig.get("window_minutes") or 60)))
 
-        outcome = str(sig.get("outcome") or "").upper()
-        direction = "buy_yes" if outcome == "YES" else "buy_no" if outcome == "NO" else None
+        direction = _direction_from_signal_payload(sig)
+        if direction not in {"buy_yes", "buy_no"}:
+            continue
 
-        dedupe_key = make_dedupe_key(
-            sig.get("id") or "",
-            market_id,
-            outcome,
-            round(float(sig.get("conviction_score") or 0.0), 2),
-        )
+        avg_entry = _to_float(sig.get("avg_entry_price"))
+        yes_price = _to_float(sig.get("yes_price"))
+        no_price = _to_float(sig.get("no_price"))
+        entry_price = avg_entry
+        if entry_price is None or not (0.0 <= entry_price <= 1.0):
+            entry_price = yes_price if direction == "buy_yes" else no_price
+        if entry_price is None or not (0.0 <= entry_price <= 1.0):
+            continue
+
+        confidence = _to_float(sig.get("strength"))
+        if confidence is None:
+            confidence = _to_float(sig.get("conviction_score"), 0.0)
+            if confidence is not None and confidence > 1.0:
+                confidence = confidence / 100.0
+        confidence = max(0.0, min(1.0, float(confidence or 0.0)))
+
+        dedupe_key = tracked_trader_signal_dedupe_key(market_id)
+        active_dedupe_keys.add(dedupe_key)
 
         await upsert_trade_signal(
             session,
@@ -634,9 +724,9 @@ async def emit_tracked_trader_signals(
             market_id=market_id,
             market_question=sig.get("market_question"),
             direction=direction,
-            entry_price=sig.get("avg_entry_price"),
+            entry_price=entry_price,
             edge_percent=float(sig.get("conviction_score") or 0.0),
-            confidence=max(0.0, min(1.0, float(sig.get("strength") or 0.0))),
+            confidence=confidence,
             liquidity=sig.get("market_liquidity"),
             expires_at=expires_at,
             payload_json=sig,
@@ -645,6 +735,12 @@ async def emit_tracked_trader_signals(
         )
         emitted += 1
 
+    await expire_source_signals_except(
+        session,
+        source="tracked_traders",
+        keep_dedupe_keys=active_dedupe_keys,
+        commit=False,
+    )
     await session.commit()
     await refresh_trade_signal_snapshots(session)
     return emitted

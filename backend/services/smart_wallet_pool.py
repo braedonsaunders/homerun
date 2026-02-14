@@ -1,9 +1,9 @@
 """
 Near-real-time smart wallet pool management.
 
-Builds and maintains a 400-600 wallet pool (target 500) using
-quality + recency + stability scoring. Also persists wallet activity
-events for confluence detection windows.
+Builds and maintains a quality-first wallet pool (target ceiling 500)
+using quality + recency + stability scoring. Also persists wallet
+activity events for confluence detection windows.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ TARGET_POOL_SIZE = 500
 MIN_POOL_SIZE = 400
 MAX_POOL_SIZE = 600
 ACTIVE_WINDOW_HOURS = 72
+SELECTION_SCORE_QUALITY_TARGET_FLOOR = 0.55
 
 # Scheduling targets
 FULL_SWEEP_INTERVAL = timedelta(minutes=30)
@@ -105,6 +106,34 @@ SIGNAL_METADATA_REFRESH_LIMIT = 12
 SIGNAL_DUPLICATE_QUESTION_THRESHOLD = 3
 
 
+POOL_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "target_pool_size": 500,
+    "min_pool_size": 400,
+    "max_pool_size": 600,
+    "active_window_hours": 72,
+    "selection_score_quality_target_floor": 0.55,
+    "max_hourly_replacement_rate": 0.15,
+    "replacement_score_cutoff": 0.05,
+    "max_cluster_share": 0.08,
+    "high_conviction_threshold": 0.72,
+    "insider_priority_threshold": 0.62,
+    "min_eligible_trades": 50,
+    "max_eligible_anomaly": 0.5,
+    "core_min_win_rate": 0.60,
+    "core_min_sharpe": 1.0,
+    "core_min_profit_factor": 1.5,
+    "rising_min_win_rate": 0.55,
+    "slo_min_analyzed_pct": 95.0,
+    "slo_min_profitable_pct": 80.0,
+    "leaderboard_wallet_trade_sample": 160,
+    "incremental_wallet_trade_sample": 80,
+    "full_sweep_interval_seconds": 1800,
+    "incremental_refresh_interval_seconds": 120,
+    "activity_reconciliation_interval_seconds": 120,
+    "pool_recompute_interval_seconds": 60,
+}
+
+
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(value, hi))
 
@@ -125,6 +154,7 @@ class SmartWalletPoolService:
 
         self._stats: dict[str, Any] = {
             "target_pool_size": TARGET_POOL_SIZE,
+            "effective_target_pool_size": TARGET_POOL_SIZE,
             "min_pool_size": MIN_POOL_SIZE,
             "max_pool_size": MAX_POOL_SIZE,
             "quality_gate_version": QUALITY_GATE_VERSION,
@@ -144,6 +174,157 @@ class SmartWalletPoolService:
             "copy_candidate_pool_pct_delta": 0.0,
             "slo_violations": [],
             "quality_only_auto_enforced": False,
+        }
+        self.configure_runtime(None)
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int, lo: int, hi: int) -> int:
+        try:
+            parsed = int(float(value))
+        except Exception:
+            parsed = default
+        return max(lo, min(hi, parsed))
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float, lo: float, hi: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = default
+        if not math.isfinite(parsed):
+            parsed = default
+        return max(lo, min(hi, parsed))
+
+    def configure_runtime(self, config: Optional[dict[str, Any]]) -> dict[str, Any]:
+        """Apply dynamic runtime pool settings (worker-controlled)."""
+        merged = {**POOL_RUNTIME_DEFAULTS, **(config or {})}
+
+        target_pool_size = self._coerce_int(merged.get("target_pool_size"), 500, 10, 5000)
+        min_pool_size = self._coerce_int(merged.get("min_pool_size"), 400, 0, 5000)
+        max_pool_size = self._coerce_int(merged.get("max_pool_size"), 600, 1, 10000)
+        if max_pool_size < min_pool_size:
+            max_pool_size = min_pool_size
+        target_pool_size = max(min_pool_size, min(target_pool_size, max_pool_size))
+
+        active_window_hours = self._coerce_int(merged.get("active_window_hours"), 72, 1, 720)
+        selection_floor = self._coerce_float(merged.get("selection_score_quality_target_floor"), 0.55, 0.0, 1.0)
+        max_hourly_replacement_rate = self._coerce_float(merged.get("max_hourly_replacement_rate"), 0.15, 0.0, 1.0)
+        replacement_score_cutoff = self._coerce_float(merged.get("replacement_score_cutoff"), 0.05, 0.0, 1.0)
+        max_cluster_share = self._coerce_float(merged.get("max_cluster_share"), 0.08, 0.01, 1.0)
+        high_conviction_threshold = self._coerce_float(merged.get("high_conviction_threshold"), 0.72, 0.0, 1.0)
+        insider_priority_threshold = self._coerce_float(merged.get("insider_priority_threshold"), 0.62, 0.0, 1.0)
+        min_eligible_trades = self._coerce_int(merged.get("min_eligible_trades"), 50, 1, 100000)
+        max_eligible_anomaly = self._coerce_float(merged.get("max_eligible_anomaly"), 0.5, 0.0, 5.0)
+        core_min_win_rate = self._coerce_float(merged.get("core_min_win_rate"), 0.60, 0.0, 1.0)
+        core_min_sharpe = self._coerce_float(merged.get("core_min_sharpe"), 1.0, -10.0, 20.0)
+        core_min_profit_factor = self._coerce_float(merged.get("core_min_profit_factor"), 1.5, 0.0, 20.0)
+        rising_min_win_rate = self._coerce_float(merged.get("rising_min_win_rate"), 0.55, 0.0, 1.0)
+        slo_min_analyzed_pct = self._coerce_float(merged.get("slo_min_analyzed_pct"), 95.0, 0.0, 100.0)
+        slo_min_profitable_pct = self._coerce_float(merged.get("slo_min_profitable_pct"), 80.0, 0.0, 100.0)
+        leaderboard_wallet_trade_sample = self._coerce_int(merged.get("leaderboard_wallet_trade_sample"), 160, 1, 5000)
+        incremental_wallet_trade_sample = self._coerce_int(merged.get("incremental_wallet_trade_sample"), 80, 1, 5000)
+        full_sweep_interval_seconds = self._coerce_int(merged.get("full_sweep_interval_seconds"), 1800, 10, 86400)
+        incremental_refresh_interval_seconds = self._coerce_int(
+            merged.get("incremental_refresh_interval_seconds"),
+            120,
+            10,
+            86400,
+        )
+        activity_reconciliation_interval_seconds = self._coerce_int(
+            merged.get("activity_reconciliation_interval_seconds"),
+            120,
+            10,
+            86400,
+        )
+        pool_recompute_interval_seconds = self._coerce_int(
+            merged.get("pool_recompute_interval_seconds"),
+            60,
+            10,
+            86400,
+        )
+
+        global TARGET_POOL_SIZE
+        global MIN_POOL_SIZE
+        global MAX_POOL_SIZE
+        global ACTIVE_WINDOW_HOURS
+        global SELECTION_SCORE_QUALITY_TARGET_FLOOR
+        global MAX_HOURLY_REPLACEMENT_RATE
+        global REPLACEMENT_SCORE_CUTOFF
+        global MAX_CLUSTER_SHARE
+        global HIGH_CONVICTION_THRESHOLD
+        global INSIDER_PRIORITY_THRESHOLD
+        global MIN_ELIGIBLE_TRADES
+        global MAX_ELIGIBLE_ANOMALY
+        global CORE_MIN_WIN_RATE
+        global CORE_MIN_SHARPE
+        global CORE_MIN_PROFIT_FACTOR
+        global RISING_MIN_WIN_RATE
+        global SLO_MIN_ANALYZED_PCT
+        global SLO_MIN_PROFITABLE_PCT
+        global LEADERBOARD_WALLET_TRADE_SAMPLE
+        global INCREMENTAL_WALLET_TRADE_SAMPLE
+        global FULL_SWEEP_INTERVAL
+        global INCREMENTAL_REFRESH_INTERVAL
+        global ACTIVITY_RECONCILIATION_INTERVAL
+        global POOL_RECOMPUTE_INTERVAL
+
+        TARGET_POOL_SIZE = target_pool_size
+        MIN_POOL_SIZE = min_pool_size
+        MAX_POOL_SIZE = max_pool_size
+        ACTIVE_WINDOW_HOURS = active_window_hours
+        SELECTION_SCORE_QUALITY_TARGET_FLOOR = selection_floor
+        MAX_HOURLY_REPLACEMENT_RATE = max_hourly_replacement_rate
+        REPLACEMENT_SCORE_CUTOFF = replacement_score_cutoff
+        MAX_CLUSTER_SHARE = max_cluster_share
+        HIGH_CONVICTION_THRESHOLD = high_conviction_threshold
+        INSIDER_PRIORITY_THRESHOLD = insider_priority_threshold
+        MIN_ELIGIBLE_TRADES = min_eligible_trades
+        MAX_ELIGIBLE_ANOMALY = max_eligible_anomaly
+        CORE_MIN_WIN_RATE = core_min_win_rate
+        CORE_MIN_SHARPE = core_min_sharpe
+        CORE_MIN_PROFIT_FACTOR = core_min_profit_factor
+        RISING_MIN_WIN_RATE = rising_min_win_rate
+        SLO_MIN_ANALYZED_PCT = slo_min_analyzed_pct
+        SLO_MIN_PROFITABLE_PCT = slo_min_profitable_pct
+        LEADERBOARD_WALLET_TRADE_SAMPLE = leaderboard_wallet_trade_sample
+        INCREMENTAL_WALLET_TRADE_SAMPLE = incremental_wallet_trade_sample
+        FULL_SWEEP_INTERVAL = timedelta(seconds=full_sweep_interval_seconds)
+        INCREMENTAL_REFRESH_INTERVAL = timedelta(seconds=incremental_refresh_interval_seconds)
+        ACTIVITY_RECONCILIATION_INTERVAL = timedelta(seconds=activity_reconciliation_interval_seconds)
+        POOL_RECOMPUTE_INTERVAL = timedelta(seconds=pool_recompute_interval_seconds)
+
+        self._stats["target_pool_size"] = TARGET_POOL_SIZE
+        self._stats["effective_target_pool_size"] = min(
+            int(self._stats.get("effective_target_pool_size") or TARGET_POOL_SIZE),
+            TARGET_POOL_SIZE,
+        )
+        self._stats["min_pool_size"] = MIN_POOL_SIZE
+        self._stats["max_pool_size"] = MAX_POOL_SIZE
+        return {
+            "target_pool_size": TARGET_POOL_SIZE,
+            "min_pool_size": MIN_POOL_SIZE,
+            "max_pool_size": MAX_POOL_SIZE,
+            "active_window_hours": ACTIVE_WINDOW_HOURS,
+            "selection_score_quality_target_floor": SELECTION_SCORE_QUALITY_TARGET_FLOOR,
+            "max_hourly_replacement_rate": MAX_HOURLY_REPLACEMENT_RATE,
+            "replacement_score_cutoff": REPLACEMENT_SCORE_CUTOFF,
+            "max_cluster_share": MAX_CLUSTER_SHARE,
+            "high_conviction_threshold": HIGH_CONVICTION_THRESHOLD,
+            "insider_priority_threshold": INSIDER_PRIORITY_THRESHOLD,
+            "min_eligible_trades": MIN_ELIGIBLE_TRADES,
+            "max_eligible_anomaly": MAX_ELIGIBLE_ANOMALY,
+            "core_min_win_rate": CORE_MIN_WIN_RATE,
+            "core_min_sharpe": CORE_MIN_SHARPE,
+            "core_min_profit_factor": CORE_MIN_PROFIT_FACTOR,
+            "rising_min_win_rate": RISING_MIN_WIN_RATE,
+            "slo_min_analyzed_pct": SLO_MIN_ANALYZED_PCT,
+            "slo_min_profitable_pct": SLO_MIN_PROFITABLE_PCT,
+            "leaderboard_wallet_trade_sample": LEADERBOARD_WALLET_TRADE_SAMPLE,
+            "incremental_wallet_trade_sample": INCREMENTAL_WALLET_TRADE_SAMPLE,
+            "full_sweep_interval_seconds": int(FULL_SWEEP_INTERVAL.total_seconds()),
+            "incremental_refresh_interval_seconds": int(INCREMENTAL_REFRESH_INTERVAL.total_seconds()),
+            "activity_reconciliation_interval_seconds": int(ACTIVITY_RECONCILIATION_INTERVAL.total_seconds()),
+            "pool_recompute_interval_seconds": int(POOL_RECOMPUTE_INTERVAL.total_seconds()),
         }
 
     # ------------------------------------------------------------------
@@ -370,6 +551,7 @@ class SmartWalletPoolService:
                 {
                     "pool_size": pool_size,
                     "target_pool_size": TARGET_POOL_SIZE,
+                    "effective_target_pool_size": int(self._stats.get("effective_target_pool_size") or TARGET_POOL_SIZE),
                     "churn_rate": round(churn, 4),
                     "recompute_mode": self._recompute_mode,
                     "updated_at": utcnow().isoformat(),
@@ -378,6 +560,7 @@ class SmartWalletPoolService:
             logger.info(
                 "Smart wallet pool recompute complete",
                 pool_size=pool_size,
+                effective_target_pool_size=int(self._stats.get("effective_target_pool_size") or TARGET_POOL_SIZE),
                 churn_rate=round(churn, 4),
                 recompute_mode=self._recompute_mode,
             )
@@ -459,29 +642,51 @@ class SmartWalletPoolService:
         self,
         limit: int = 50,
         min_tier: str = "WATCH",
+        include_filtered: bool = False,
     ) -> list[dict]:
         """Get signal-first opportunities for the Tracked Traders surface."""
         tier_rank = {"WATCH": 1, "HIGH": 2, "EXTREME": 3}
         min_rank = tier_rank.get(min_tier.upper(), 1)
 
         async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(MarketConfluenceSignal)
-                .where(MarketConfluenceSignal.is_active == True)  # noqa: E712
-                .order_by(
-                    MarketConfluenceSignal.conviction_score.desc(),
-                    MarketConfluenceSignal.last_seen_at.desc(),
+            if include_filtered:
+                # Show Filtered mode should include recently deactivated signals so
+                # users can inspect what was filtered out of execution.
+                filtered_cutoff = utcnow() - timedelta(hours=24)
+                result = await session.execute(
+                    select(MarketConfluenceSignal)
+                    .where(
+                        func.coalesce(
+                            MarketConfluenceSignal.last_seen_at,
+                            MarketConfluenceSignal.detected_at,
+                        )
+                        >= filtered_cutoff
+                    )
+                    .order_by(
+                        MarketConfluenceSignal.conviction_score.desc(),
+                        MarketConfluenceSignal.last_seen_at.desc(),
+                    )
+                    .limit(max(limit * 6, limit + 50))
                 )
-                .limit(limit * 2)
-            )
+            else:
+                result = await session.execute(
+                    select(MarketConfluenceSignal)
+                    .where(MarketConfluenceSignal.is_active == True)  # noqa: E712
+                    .order_by(
+                        MarketConfluenceSignal.conviction_score.desc(),
+                        MarketConfluenceSignal.last_seen_at.desc(),
+                    )
+                    .limit(limit * 2)
+                )
             raw = list(result.scalars().all())
 
             signals = [s for s in raw if tier_rank.get((s.tier or "WATCH").upper(), 1) >= min_rank]
 
-            signals = await self._prune_non_tradable_signals(
-                session=session,
-                signals=signals,
-            )
+            if not include_filtered:
+                signals = await self._prune_non_tradable_signals(
+                    session=session,
+                    signals=signals,
+                )
             signals = signals[:limit]
 
             await self._refresh_signal_market_metadata(session=session, signals=signals)
@@ -557,6 +762,7 @@ class SmartWalletPoolService:
                             else (s.last_seen_at.isoformat() if s.last_seen_at else utcnow().isoformat())
                         ),
                         "is_active": bool(s.is_active),
+                        "is_tradeable": bool(s.is_active),
                         "wallets": s.wallets or [],
                         "top_wallets": top_wallets,
                     }
@@ -1312,9 +1518,16 @@ class SmartWalletPoolService:
             ]
             core_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "core"]
             rising_candidates = [w.address for w in eligible_ranked if tier_hint.get(w.address) == "rising"]
+            effective_target_size = self._effective_target_pool_size(
+                selection_scores=selection_scores,
+                eligible_addresses=eligible_addresses,
+                manual_includes=manual_includes,
+                quality_only_mode=quality_only_mode,
+            )
+            self._stats["effective_target_pool_size"] = effective_target_size
             diversified_ranked = self._rank_with_cluster_diversity(
                 eligible_ranked,
-                target_size=TARGET_POOL_SIZE,
+                target_size=effective_target_size,
             )
 
             desired: list[str] = []
@@ -1323,32 +1536,33 @@ class SmartWalletPoolService:
                 desired,
                 desired_set,
                 manual_includes,
-                TARGET_POOL_SIZE,
+                effective_target_size,
             )
+            core_target_size = max(1, int(effective_target_size * 0.70)) if effective_target_size > 0 else 0
             self._append_unique_inplace(
                 desired,
                 desired_set,
                 core_candidates,
-                int(TARGET_POOL_SIZE * 0.70),
+                core_target_size,
             )
             self._append_unique_inplace(
                 desired,
                 desired_set,
                 rising_candidates,
-                TARGET_POOL_SIZE,
+                effective_target_size,
             )
             self._append_unique_inplace(
                 desired,
                 desired_set,
                 [w.address for w in diversified_ranked],
-                TARGET_POOL_SIZE,
+                effective_target_size,
             )
             if not quality_only_mode:
                 self._append_unique_inplace(
                     desired,
                     desired_set,
                     [w.address for w in diversified_ranked if active_recently.get(w.address, False)],
-                    TARGET_POOL_SIZE,
+                    effective_target_size,
                 )
 
             current_pool = [
@@ -1377,7 +1591,7 @@ class SmartWalletPoolService:
             desired_set = set(desired)
             current_set = set(current_pool)
             cluster_counts = self._count_clusters(final_pool, wallet_by_address)
-            cluster_cap = max(3, int(TARGET_POOL_SIZE * MAX_CLUSTER_SHARE))
+            cluster_cap = max(3, int(max(effective_target_size, 1) * MAX_CLUSTER_SHARE))
             final_wallets = [wallet_by_address[address] for address in final_pool if address in wallet_by_address]
             analyzed_pool_count = sum(1 for w in final_wallets if w.last_analyzed_at is not None)
             profitable_pool_count = sum(1 for w in final_wallets if bool(w.is_profitable))
@@ -1475,10 +1689,14 @@ class SmartWalletPoolService:
                 source_flags = self._source_flags(wallet)
                 if not isinstance(source_flags, dict):
                     source_flags = {}
+                # Force a fresh dict assignment so ORM JSON columns always persist nested updates.
+                source_flags = dict(source_flags)
                 analysis_freshness_hours = self._analysis_freshness_hours(wallet, now)
                 status = "eligible" if wallet.address in eligible_addresses else "blocked"
                 blockers_payload = list(eligibility_blockers.get(wallet.address, []))
                 if self._is_pool_manually_included(wallet) and not self._is_pool_blocked(wallet):
+                    status = "eligible"
+                if wallet.in_top_pool:
                     status = "eligible"
                 source_flags[POOL_SELECTION_META_KEY] = {
                     "version": POOL_SELECTION_META_VERSION,
@@ -1718,6 +1936,26 @@ class SmartWalletPoolService:
             seen.add(address)
             if len(base) >= limit:
                 break
+
+    def _effective_target_pool_size(
+        self,
+        *,
+        selection_scores: dict[str, float],
+        eligible_addresses: set[str],
+        manual_includes: list[str],
+        quality_only_mode: bool,
+    ) -> int:
+        quality_supply = sum(
+            1
+            for address in eligible_addresses
+            if selection_scores.get(address, 0.0) >= SELECTION_SCORE_QUALITY_TARGET_FLOOR
+        )
+        manual_count = len(manual_includes)
+        if quality_only_mode:
+            baseline = max(quality_supply, manual_count)
+        else:
+            baseline = max(quality_supply, manual_count, MIN_POOL_SIZE)
+        return int(max(0, min(TARGET_POOL_SIZE, MAX_POOL_SIZE, baseline)))
 
     def _cluster_id(self, wallet: DiscoveredWallet) -> str:
         return str(wallet.cluster_id or "").strip().lower()

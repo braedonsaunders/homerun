@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Homerun
+Comment=Launch Homerun
+Exec=sh -lc 'cd "$(dirname "%k")" && ./run.sh'
+Terminal=true
+StartupNotify=true
+Categories=Development;Finance;

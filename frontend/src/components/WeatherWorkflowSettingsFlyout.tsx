@@ -7,7 +7,6 @@ import {
   CheckCircle,
   AlertCircle,
   CloudRain,
-  Bot,
   Brain,
   Thermometer,
 } from 'lucide-react'
@@ -35,9 +34,6 @@ const DEFAULTS: WeatherWorkflowSettings = {
   min_model_agreement: 0.75,
   min_liquidity: 500,
   max_markets_per_scan: 200,
-  orchestrator_enabled: true,
-  orchestrator_min_edge: 10,
-  orchestrator_max_age_minutes: 240,
   default_size_usd: 10,
   max_size_usd: 50,
   model: null,
@@ -100,7 +96,20 @@ export default function WeatherWorkflowSettingsFlyout({
 
   useEffect(() => {
     if (settings) {
-      setForm({ ...DEFAULTS, ...settings })
+      const {
+        orchestrator_enabled: legacyOrchestratorEnabled,
+        orchestrator_min_edge: legacyOrchestratorMinEdge,
+        orchestrator_max_age_minutes: legacyOrchestratorMaxAgeMinutes,
+        ...settingsWithoutHandoff
+      } = settings as WeatherWorkflowSettings & {
+        orchestrator_enabled?: boolean
+        orchestrator_min_edge?: number
+        orchestrator_max_age_minutes?: number
+      }
+      void legacyOrchestratorEnabled
+      void legacyOrchestratorMinEdge
+      void legacyOrchestratorMaxAgeMinutes
+      setForm({ ...DEFAULTS, ...settingsWithoutHandoff })
     }
   }, [settings])
 
@@ -111,7 +120,8 @@ export default function WeatherWorkflowSettingsFlyout({
 
   const saveMutation = useMutation({
     mutationFn: updateWeatherWorkflowSettings,
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData(['weather-workflow-settings'], result.settings)
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-settings'] })
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-status'] })
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
@@ -232,45 +242,6 @@ export default function WeatherWorkflowSettingsFlyout({
               <NumericField label="Min Model Agreement" value={form.min_model_agreement} onChange={(v) => set('min_model_agreement', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
               <NumericField label="Min Liquidity ($)" value={form.min_liquidity} onChange={(v) => set('min_liquidity', v)} min={0} max={1000000} step={10} disabled={!form.enabled} />
               <NumericField label="Max Markets/Scan" value={form.max_markets_per_scan} onChange={(v) => set('max_markets_per_scan', Math.max(10, Math.round(v)))} min={10} max={5000} step={10} disabled={!form.enabled} />
-            </div>
-          </Card>
-
-          <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <div className="flex items-center gap-2">
-              <Bot className="w-3.5 h-3.5 text-violet-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Orchestrator Handoff</h4>
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium">Orchestrator Enabled</p>
-                <p className="text-[10px] text-muted-foreground">Allow trader orchestrator to consume weather intents</p>
-              </div>
-              <Switch
-                checked={form.orchestrator_enabled}
-                onCheckedChange={(v) => set('orchestrator_enabled', v)}
-                className="scale-75"
-                disabled={!form.enabled}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <NumericField
-                label="Auto Min Edge %"
-                value={form.orchestrator_min_edge}
-                onChange={(v) => set('orchestrator_min_edge', v)}
-                min={0}
-                max={100}
-                step={0.5}
-                disabled={!form.enabled || !form.orchestrator_enabled}
-              />
-              <NumericField
-                label="Auto Max Intent Age (min)"
-                value={form.orchestrator_max_age_minutes}
-                onChange={(v) => set('orchestrator_max_age_minutes', Math.max(1, Math.round(v)))}
-                min={1}
-                max={1440}
-                step={1}
-                disabled={!form.enabled || !form.orchestrator_enabled}
-              />
               <NumericField
                 label="Default Size ($)"
                 value={form.default_size_usd}
@@ -352,4 +323,3 @@ export default function WeatherWorkflowSettingsFlyout({
     </>
   )
 }
-

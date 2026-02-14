@@ -38,8 +38,10 @@ async def _find_opportunity_by_id(session: AsyncSession, opportunity_id: str) ->
     if scanner_hit:
         return scanner_hit, "scanner"
 
+    # Weather opportunities panel can display both executable opportunities and
+    # report-only findings; AI lookup must search the same visible set.
     weather_opps = await weather_shared_state.get_weather_opportunities_from_db(
-        session, include_report_only=False
+        session, include_report_only=True
     )
     weather_hit = next((o for o in weather_opps if o.id == opportunity_id), None)
     if weather_hit:

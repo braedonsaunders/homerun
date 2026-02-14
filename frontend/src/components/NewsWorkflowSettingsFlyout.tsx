@@ -9,9 +9,7 @@ import {
   Newspaper,
   Search,
   Brain,
-  Bot,
   Zap,
-  Target,
   Timer,
   Shield,
   Plus,
@@ -110,9 +108,6 @@ const DEFAULTS: NewsWorkflowSettings = {
   min_edge_percent: 8.0,
   min_confidence: 0.6,
   require_second_source: false,
-  orchestrator_enabled: true,
-  orchestrator_min_edge: 10.0,
-  orchestrator_max_age_minutes: 120,
   cycle_spend_cap_usd: 0.25,
   hourly_spend_cap_usd: 2.0,
   cycle_llm_call_cap: 30,
@@ -146,9 +141,22 @@ export default function NewsWorkflowSettingsFlyout({
 
   useEffect(() => {
     if (settings) {
+      const {
+        orchestrator_enabled: legacyOrchestratorEnabled,
+        orchestrator_min_edge: legacyOrchestratorMinEdge,
+        orchestrator_max_age_minutes: legacyOrchestratorMaxAgeMinutes,
+        ...settingsWithoutHandoff
+      } = settings as NewsWorkflowSettings & {
+        orchestrator_enabled?: boolean
+        orchestrator_min_edge?: number
+        orchestrator_max_age_minutes?: number
+      }
+      void legacyOrchestratorEnabled
+      void legacyOrchestratorMinEdge
+      void legacyOrchestratorMaxAgeMinutes
       const normalized: NewsWorkflowSettings = {
         ...DEFAULTS,
-        ...settings,
+        ...settingsWithoutHandoff,
         rss_enabled: settings.rss_enabled ?? settings.gov_rss_enabled ?? DEFAULTS.rss_enabled,
         rss_sources: settings.rss_sources ?? settings.gov_rss_feeds ?? DEFAULTS.rss_sources,
       }
@@ -575,31 +583,6 @@ export default function NewsWorkflowSettingsFlyout({
                 <p className="text-[10px] text-muted-foreground">Only flag if 2+ articles match the same market</p>
               </div>
               <Switch checked={form.require_second_source} onCheckedChange={(v) => set('require_second_source', v)} className="scale-75" disabled={!form.enabled} />
-            </div>
-          </Section>
-
-          {/* Orchestrator Handoff */}
-          <Section title="Orchestrator Handoff" icon={Bot} color="text-purple-500">
-            <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              Control how high-conviction findings are fed to the trader orchestrator for execution.
-            </p>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium">Enable Auto-Trading</p>
-                <p className="text-[10px] text-muted-foreground">Allow trader orchestrator to consume news trade intents</p>
-              </div>
-              <Switch checked={form.orchestrator_enabled} onCheckedChange={(v) => set('orchestrator_enabled', v)} className="scale-75" disabled={!form.enabled} />
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <NumericField label="Min Edge for Orchestrator Trade %" help="Higher bar than detection" value={form.orchestrator_min_edge} onChange={(v) => set('orchestrator_min_edge', v)} min={0} max={100} step={0.5} disabled={!form.enabled || !form.orchestrator_enabled} />
-              <NumericField label="Max Intent Age (min)" help="Expire stale intents" value={form.orchestrator_max_age_minutes} onChange={(v) => set('orchestrator_max_age_minutes', v)} min={1} max={1440} disabled={!form.enabled || !form.orchestrator_enabled} />
-            </div>
-            {/* Info */}
-            <div className="flex items-start gap-2 p-2.5 bg-purple-500/5 border border-purple-500/20 rounded-lg">
-              <Target className="w-3.5 h-3.5 text-purple-400 mt-0.5 shrink-0" />
-              <p className="text-[10px] text-muted-foreground">
-                Trade intents flow through the trader orchestrator's full safety pipeline: circuit breakers, risk scoring, AI judge, depth analysis, and position limits.
-              </p>
             </div>
           </Section>
 

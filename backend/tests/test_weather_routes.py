@@ -85,6 +85,33 @@ async def test_update_settings_syncs_control_interval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_settings_accepts_temperature_unit(monkeypatch):
+    fake_session = object()
+    update_mock = AsyncMock(return_value={"temperature_unit": "C"})
+    set_interval_mock = AsyncMock()
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "update_weather_settings",
+        update_mock,
+    )
+    monkeypatch.setattr(
+        routes_weather_workflow.shared_state,
+        "set_weather_interval",
+        set_interval_mock,
+    )
+
+    req = routes_weather_workflow.WeatherWorkflowSettingsRequest(temperature_unit="C")
+    out = await routes_weather_workflow.update_weather_workflow_settings(
+        request=req,
+        session=fake_session,
+    )
+
+    assert out["status"] == "success"
+    update_mock.assert_awaited_once_with(fake_session, {"temperature_unit": "C"})
+    set_interval_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_run_weather_workflow_executes_immediately(monkeypatch):
     fake_session = object()
     monkeypatch.setattr(routes_weather_workflow.global_pause_state, "_paused", False)

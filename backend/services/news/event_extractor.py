@@ -11,12 +11,15 @@ Pattern from: OmniEvent (typed event output), Quant-tool (rule-based fallback).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_LLM_CALL_TIMEOUT_SECONDS = 20.0
 
 # ---------------------------------------------------------------------------
 # Event types aligned with prediction market categories
@@ -350,14 +353,17 @@ class EventExtractor:
             user_prompt += f"SOURCE: {source}\n"
 
         try:
-            result = await manager.structured_output(
-                messages=[
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ],
-                schema=EVENT_EXTRACTION_SCHEMA,
-                model=model,
-                purpose="news_workflow_event_extraction",
+            result = await asyncio.wait_for(
+                manager.structured_output(
+                    messages=[
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ],
+                    schema=EVENT_EXTRACTION_SCHEMA,
+                    model=model,
+                    purpose="news_workflow_event_extraction",
+                ),
+                timeout=_LLM_CALL_TIMEOUT_SECONDS,
             )
 
             # Build keywords from entities + actors for retrieval
@@ -378,6 +384,12 @@ class EventExtractor:
                 keywords=list(set(keywords)),
                 confidence=result.get("confidence", 0.5),
             )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "LLM event extraction timed out after %.1fs",
+                _LLM_CALL_TIMEOUT_SECONDS,
+            )
+            return None
         except Exception as e:
             logger.debug("LLM event extraction failed: %s", e)
             return None

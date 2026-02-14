@@ -40,14 +40,43 @@ _USER_AGENT = "Mozilla/5.0 (compatible; Homerun/2.0)"
 
 # Topic feeds for broad coverage
 _GOOGLE_NEWS_TOPICS = [
+    "breaking news",
     "politics",
     "business",
+    "markets",
+    "economy",
+    "inflation",
+    "federal reserve",
+    "supreme court",
     "technology",
+    "artificial intelligence",
     "science",
     "sports",
     "world",
+    "ukraine",
+    "china us relations",
+    "middle east",
+    "energy prices",
     "cryptocurrency",
+    "bitcoin etf",
 ]
+
+_GDELT_QUERIES = [
+    "prediction market",
+    "polymarket",
+    "kalshi",
+    "election odds",
+    "federal reserve policy",
+    "inflation report",
+    "jobs report",
+    "supreme court decision",
+    "ceasefire agreement",
+    "military escalation",
+    "trade sanctions",
+    "cryptocurrency regulation",
+    "bitcoin etf",
+]
+_GDELT_TIMESPAN = "6h"
 
 
 @dataclass
@@ -310,15 +339,7 @@ class NewsFeedService:
         The DOC API returns articles matching a query with metadata.
         """
         all_articles: list[NewsArticle] = []
-        queries = [
-            "prediction market",
-            "polymarket",
-            "election odds",
-            "geopolitical crisis",
-            "policy announcement",
-            "cryptocurrency regulation",
-        ]
-        tasks = [self._fetch_gdelt_query(q) for q in queries]
+        tasks = [self._fetch_gdelt_query(q) for q in _GDELT_QUERIES]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, list):
@@ -332,7 +353,7 @@ class NewsFeedService:
             url = (
                 f"https://api.gdeltproject.org/api/v2/doc/doc"
                 f"?query={encoded}&mode=artlist&maxrecords={max_results}"
-                f"&format=json&sort=datedesc&timespan=1h"
+                f"&format=json&sort=datedesc&timespan={_GDELT_TIMESPAN}"
             )
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
                 resp = await client.get(url, headers={"User-Agent": _USER_AGENT})

@@ -49,9 +49,8 @@ import {
   resumeAllWorkers,
   judgeOpportunitiesBulk,
   getSimulationAccounts,
-  getTrackedTraderOpportunities,
   getNewsWorkflowFindings,
-  getWeatherWorkflowStatus,
+  getWeatherWorkflowOpportunities,
   getCryptoMarkets,
   Opportunity,
   WorkerStatus,
@@ -59,6 +58,7 @@ import {
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardShortcuts, Shortcut } from './hooks/useKeyboardShortcuts'
 import { useRealtimeInvalidation } from './hooks/useRealtimeInvalidation'
+import { useDisplayedOpportunityRefresh } from './hooks/useDisplayedOpportunityRefresh'
 import { shortcutsHelpOpenAtom, selectedAccountIdAtom } from './store/atoms'
 import { buildNewsSearchKeywords, processPolymarketSearchResults } from './lib/opportunitySearch'
 
@@ -99,6 +99,7 @@ import NewsIntelligencePanel from './components/NewsIntelligencePanel'
 import CryptoMarketsPanel from './components/CryptoMarketsPanel'
 import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 import WorldIntelligencePanel from './components/WorldIntelligencePanel'
+import OpportunityEmptyState from './components/OpportunityEmptyState'
 
 type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
@@ -239,6 +240,7 @@ function App() {
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
   const [selectedStrategy, setSelectedStrategy] = useState<string>('')
   const [selectedStrategySubtype, setSelectedStrategySubtype] = useState<string>('')
+  const [showZeroCountStrategies, setShowZeroCountStrategies] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [minProfit, setMinProfit] = useState(0)
   const [maxRisk, setMaxRisk] = useState(1.0)
@@ -249,6 +251,7 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'world' | 'search'>('arbitrage')
+  const [tradersExecutableCountOverride, setTradersExecutableCountOverride] = useState<number | null>(null)
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -343,6 +346,11 @@ function App() {
   // WebSocket for real-time updates
   const { isConnected, lastMessage } = useWebSocket('/ws')
   useRealtimeInvalidation(lastMessage, queryClient, setScannerActivity)
+  useDisplayedOpportunityRefresh({
+    activeTab,
+    opportunitiesView,
+    queryClient,
+  })
 
   // Reset page when filters change
   useEffect(() => {
@@ -356,6 +364,12 @@ function App() {
   useEffect(() => {
     if (opportunitiesView !== 'arbitrage') {
       setSearchFiltersOpen(false)
+    }
+  }, [opportunitiesView])
+
+  useEffect(() => {
+    if (opportunitiesView !== 'recent_trades') {
+      setTradersExecutableCountOverride(null)
     }
   }, [opportunitiesView])
 
@@ -405,6 +419,21 @@ function App() {
   })
 
   const workers = workersData?.workers || []
+  const trackedTradersWorker = useMemo(
+    () => workers.find((worker) => worker.worker_name === 'tracked_traders'),
+    [workers],
+  )
+  const trackedTradersExecutableCount = useMemo<number | null>(() => {
+    const stats = trackedTradersWorker?.stats
+    if (!stats || typeof stats !== 'object') return null
+
+    const confluenceRaw = Number((stats as Record<string, unknown>).confluence_executable)
+    const insiderRaw = Number((stats as Record<string, unknown>).insider_intents_executable)
+    const confluence = Number.isFinite(confluenceRaw) ? Math.max(0, Math.round(confluenceRaw)) : null
+    const insider = Number.isFinite(insiderRaw) ? Math.max(0, Math.round(insiderRaw)) : null
+    if (confluence == null && insider == null) return null
+    return (confluence ?? 0) + (insider ?? 0)
+  }, [trackedTradersWorker])
 
   const workerHealth = useMemo(() => {
     const byName = new Map(workers.map((worker) => [worker.worker_name, worker]))
@@ -463,10 +492,26 @@ function App() {
   const selectedAccount = sandboxAccounts.find(a => a.id === selectedAccountId)
 
   const {
-    data: opportunityCounts,
+    data: strategyFacetCounts,
   } = useQuery({
-    queryKey: ['opportunity-counts', minProfit, maxRisk, searchQuery],
+    queryKey: ['opportunity-strategy-counts', selectedCategory, selectedStrategySubtype, minProfit, maxRisk, searchQuery],
     queryFn: () => getOpportunityCounts({
+      category: selectedCategory || undefined,
+      sub_strategy: selectedStrategySubtype || undefined,
+      min_profit: minProfit,
+      max_risk: maxRisk,
+      search: searchQuery || undefined,
+    }),
+    refetchInterval: isConnected ? false : 15000,
+  })
+
+  const {
+    data: categoryFacetCounts,
+  } = useQuery({
+    queryKey: ['opportunity-category-counts', selectedStrategy, selectedStrategySubtype, minProfit, maxRisk, searchQuery],
+    queryFn: () => getOpportunityCounts({
+      strategy: selectedStrategy || undefined,
+      sub_strategy: selectedStrategySubtype || undefined,
       min_profit: minProfit,
       max_risk: maxRisk,
       search: searchQuery || undefined,
@@ -489,17 +534,10 @@ function App() {
     refetchInterval: isConnected ? false : 15000,
   })
 
-  const { data: trackedTraderCounts } = useQuery({
-    queryKey: ['tracked-trader-opportunities-count'],
-    queryFn: () => getTrackedTraderOpportunities({ min_tier: 'WATCH' }),
-    enabled: activeTab === 'opportunities',
-    refetchInterval: 30000,
-  })
-
   const { data: newsWorkflowFindingsCount } = useQuery({
     queryKey: ['news-workflow-findings-count'],
     queryFn: () => getNewsWorkflowFindings({
-      actionable_only: false,
+      actionable_only: true,
       include_debug_rejections: false,
       max_age_hours: 24,
       limit: 1,
@@ -508,9 +546,13 @@ function App() {
     refetchInterval: 30000,
   })
 
-  const { data: weatherWorkflowStatus } = useQuery({
-    queryKey: ['weather-workflow-status'],
-    queryFn: getWeatherWorkflowStatus,
+  const { data: weatherWorkflowExecutableCount } = useQuery({
+    queryKey: ['weather-workflow-opportunities', 'count'],
+    queryFn: () => getWeatherWorkflowOpportunities({
+      include_report_only: false,
+      limit: 1,
+      offset: 0,
+    }),
     enabled: activeTab === 'opportunities',
     refetchInterval: 30000,
   })
@@ -522,9 +564,10 @@ function App() {
     refetchInterval: 30000,
   })
 
-  const tradersCount = trackedTraderCounts?.total || 0
+  const tradersCount = trackedTradersExecutableCount ?? 0
+  const tradersCountDisplay = tradersExecutableCountOverride ?? tradersCount
   const newsCount = newsWorkflowFindingsCount?.total || 0
-  const weatherCount = weatherWorkflowStatus?.opportunities_count || 0
+  const weatherCount = weatherWorkflowExecutableCount?.total || 0
   const cryptoCount = cryptoMarketCounts?.length || 0
 
   // Polymarket search query (only runs when user submits a search)
@@ -627,6 +670,17 @@ function App() {
       }))
   }, [subfilterCounts?.sub_strategies, selectedStrategy])
 
+  const strategyCounts = strategyFacetCounts?.strategies || {}
+  const categoryCounts = categoryFacetCounts?.categories || {}
+  const visibleStrategies = useMemo(
+    () => strategies.filter((s) => {
+      if (s.type === selectedStrategy) return true
+      if (showZeroCountStrategies) return true
+      return (strategyCounts[s.type] || 0) > 0
+    }),
+    [strategies, selectedStrategy, showZeroCountStrategies, strategyCounts]
+  )
+
   useEffect(() => {
     if (!selectedStrategySubtype) return
     if (!strategySubtypeOptions.some((option) => option.value === selectedStrategySubtype)) {
@@ -650,7 +704,8 @@ function App() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['opportunities'] })
       queryClient.invalidateQueries({ queryKey: ['scanner-status'] })
-      queryClient.invalidateQueries({ queryKey: ['opportunity-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunity-strategy-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['opportunity-category-counts'] })
       queryClient.invalidateQueries({ queryKey: ['opportunity-subfilters'] })
     },
   })
@@ -717,6 +772,42 @@ function App() {
   const scannerHasError =
     scannerActivity.startsWith('Scan error')
     || scannerActivity.startsWith('Fast scan error')
+  const marketEmptyState: { title: string; description: string } = (() => {
+    if (!status?.enabled) {
+      return {
+        title: 'No executable market opportunities found',
+        description: 'Try lowering the minimum profit threshold or start the scanner',
+      }
+    }
+
+    if ((status.opportunities_count || 0) > 0) {
+      return {
+        title: hasActiveOpportunityFilters
+          ? `${status.opportunities_count} opportunities found but none match current filters`
+          : `${status.opportunities_count} opportunities found, but none currently pass display criteria`,
+        description: 'Try lowering the minimum profit % or adjusting filters',
+      }
+    }
+
+    if (scannerHasError) {
+      return {
+        title: 'Last scan failed. Check scanner logs and retry.',
+        description: 'Retry a scan after resolving the scanner error.',
+      }
+    }
+
+    if (scannerIsSettled) {
+      return {
+        title: 'Scan complete, but no opportunities are currently in the pool.',
+        description: 'Try adjusting filters or run a fresh scan.',
+      }
+    }
+
+    return {
+      title: 'Scanning for opportunities...',
+      description: 'Wait for the next scan cycle to complete.',
+    }
+  })()
 
   return (
     <TooltipProvider>
@@ -1003,11 +1094,9 @@ function App() {
                     >
                       <Zap className="w-3.5 h-3.5" />
                       Markets
-                      {totalOpportunities > 0 && (
-                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-green-500/20 text-green-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                          <AnimatedNumber value={totalOpportunities} decimals={0} className="" />
-                        </span>
-                      )}
+                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-green-500/20 text-green-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                        <AnimatedNumber value={totalOpportunities} decimals={0} className="" />
+                      </span>
                     </Button>
                     <Button
                       variant="outline"
@@ -1023,7 +1112,7 @@ function App() {
                       <Activity className="w-3.5 h-3.5" />
                       Traders
                       <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={tradersCount} decimals={0} className="" />
+                        <AnimatedNumber value={tradersCountDisplay} decimals={0} className="" />
                       </span>
                     </Button>
                     <Button
@@ -1056,11 +1145,9 @@ function App() {
                     >
                       <CloudRain className="w-3.5 h-3.5" />
                       Weather
-                      {weatherCount > 0 && (
-                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                          <AnimatedNumber value={weatherCount} decimals={0} className="" />
-                        </span>
-                      )}
+                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                        <AnimatedNumber value={weatherCount} decimals={0} className="" />
+                      </span>
                     </Button>
                     <Button
                       variant="outline"
@@ -1075,11 +1162,9 @@ function App() {
                     >
                       <ArrowUpDown className="w-3.5 h-3.5" />
                       Crypto
-                      {cryptoCount > 0 && (
-                        <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                          <AnimatedNumber value={cryptoCount} decimals={0} className="" />
-                        </span>
-                      )}
+                      <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
+                        <AnimatedNumber value={cryptoCount} decimals={0} className="" />
+                      </span>
                     </Button>
                     <Button
                       variant="outline"
@@ -1407,6 +1492,9 @@ function App() {
                       mode="opportunities"
                       viewMode={oppsViewMode}
                       onOpenCopilot={handleOpenCopilot}
+                      onSignalStatsChange={({ executableCount }) => {
+                        setTradersExecutableCountOverride(executableCount)
+                      }}
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
                         setActiveTab('traders')
@@ -1435,13 +1523,13 @@ function App() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_all">All Strategies</SelectItem>
-                              {strategies.map((s) => (
+                              {visibleStrategies.map((s) => (
                                 <SelectItem
                                   key={s.type}
                                   value={s.type}
-                                  suffix={opportunityCounts?.strategies[s.type] != null ? (
+                                  suffix={strategyCounts[s.type] != null ? (
                                     <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
-                                      {opportunityCounts.strategies[s.type]}
+                                      {strategyCounts[s.type]}
                                     </span>
                                   ) : undefined}
                                 >
@@ -1450,6 +1538,15 @@ function App() {
                               ))}
                             </SelectContent>
                           </Select>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setShowZeroCountStrategies((value) => !value)}
+                            className="shrink-0 h-8 text-[11px] px-2.5"
+                          >
+                            {showZeroCountStrategies ? 'Hide Empty' : 'Show Empty'}
+                          </Button>
 
                           {selectedStrategy && strategySubtypeOptions.length > 0 && (
                             <Select
@@ -1497,9 +1594,9 @@ function App() {
                                 <SelectItem
                                   key={cat.value}
                                   value={cat.value}
-                                  suffix={opportunityCounts?.categories[cat.value] != null ? (
+                                  suffix={categoryCounts[cat.value] != null ? (
                                     <span className="ml-auto pl-2 inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
-                                      {opportunityCounts.categories[cat.value]}
+                                      {categoryCounts[cat.value]}
                                     </span>
                                   ) : undefined}
                                 >
@@ -1598,37 +1695,10 @@ function App() {
                               <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
                             </div>
                           ) : displayOpportunities.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-12">
-                              {status?.enabled ? (
-                                <>
-                                  <RefreshCw className="w-10 h-10 animate-spin text-muted-foreground mb-4" />
-                                  <p className="text-muted-foreground">
-                                    {status?.opportunities_count > 0
-                                      ? (hasActiveOpportunityFilters
-                                        ? `${status.opportunities_count} opportunities found but none match current filters`
-                                        : `${status.opportunities_count} opportunities found, but none currently pass display criteria`)
-                                      : scannerHasError
-                                        ? 'Last scan failed. Check scanner logs and retry.'
-                                        : scannerIsSettled
-                                          ? 'Scan complete, but no opportunities are currently in the pool.'
-                                          : 'Scanning for opportunities...'}
-                                  </p>
-                                  {status?.opportunities_count > 0 && (
-                                    <p className="text-sm text-muted-foreground/70 mt-1">
-                                      Try lowering the minimum profit % or adjusting filters
-                                    </p>
-                                  )}
-                                </>
-                              ) : (
-                                <>
-                                  <AlertCircle className="w-12 h-12 text-muted-foreground/50 mb-4" />
-                                  <p className="text-muted-foreground">No opportunities found</p>
-                                  <p className="text-sm text-muted-foreground/70 mt-1">
-                                    Try lowering the minimum profit threshold or start the scanner
-                                  </p>
-                                </>
-                              )}
-                            </div>
+                            <OpportunityEmptyState
+                              title={marketEmptyState.title}
+                              description={marketEmptyState.description}
+                            />
                           ) : (
                             <>
                               {oppsViewMode === 'terminal' ? (
@@ -1781,7 +1851,10 @@ function App() {
                     Analysis
                   </Button>
                 </div>
-                <div className="flex-1 overflow-y-auto px-6 py-4">
+                <div className={cn(
+                  "flex-1 min-h-0 px-6 py-4",
+                  tradersSubTab === 'analysis' ? "overflow-hidden" : "overflow-y-auto"
+                )}>
                   <div className={tradersSubTab === 'discovery' ? '' : 'hidden'}>
                     <DiscoveryPanel
                       view="discovery"
@@ -1803,7 +1876,7 @@ function App() {
                       }}
                     />
                   </div>
-                  <div className={tradersSubTab === 'analysis' ? '' : 'hidden'}>
+                  <div className={cn("h-full min-h-0", tradersSubTab === 'analysis' ? '' : 'hidden')}>
                     <WalletAnalysisPanel
                       initialWallet={walletToAnalyze}
                       initialUsername={walletUsername}

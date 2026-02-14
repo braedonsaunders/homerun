@@ -57,6 +57,23 @@ class IntentGenerator:
             if finding.confidence < min_confidence:
                 continue
 
+            supporting_articles = self._extract_supporting_articles(finding)
+            supporting_source_count = self._count_distinct_sources(supporting_articles)
+            if len(supporting_articles) < 2:
+                logger.debug(
+                    "Skipping intent for market %s: insufficient supporting articles (%d)",
+                    finding.market_id,
+                    len(supporting_articles),
+                )
+                continue
+            if supporting_source_count < 2:
+                logger.debug(
+                    "Skipping intent for market %s: insufficient source diversity (%d)",
+                    finding.market_id,
+                    supporting_source_count,
+                )
+                continue
+
             # Compute suggested size
             market_meta = market_metadata_by_id.get(finding.market_id, {})
             suggested_size = self._compute_size(finding, market_meta)
@@ -97,9 +114,9 @@ class IntentGenerator:
                     "evidence": finding.evidence or {},
                 },
             }
-            supporting_articles = self._extract_supporting_articles(finding)
             metadata["supporting_articles"] = supporting_articles
             metadata["supporting_article_count"] = len(supporting_articles)
+            metadata["supporting_source_count"] = supporting_source_count
 
             intent = {
                 "id": signal_key[:16],
@@ -175,6 +192,15 @@ class IntentGenerator:
             seen.add(key)
             deduped.append(ref)
         return deduped[:8]
+
+    @staticmethod
+    def _count_distinct_sources(articles: list[dict[str, Any]]) -> int:
+        sources: set[str] = set()
+        for article in articles:
+            source = str(article.get("source") or "").strip().lower()
+            if source:
+                sources.add(source)
+        return len(sources)
 
     @staticmethod
     def _signal_key(finding: WorkflowFinding) -> str:

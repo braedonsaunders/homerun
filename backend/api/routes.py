@@ -16,6 +16,7 @@ from models.database import (
     get_db_session,
 )
 from services import scanner, wallet_tracker, polymarket_client
+from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client
 from services.plugin_loader import plugin_loader
@@ -509,6 +510,10 @@ async def get_opportunity_counts(
         None,
         description="Optional strategy type filter (supports plugin_<slug>) for subfilter lookups",
     ),
+    sub_strategy: Optional[str] = Query(
+        None,
+        description="Optional strategy subtype filter (e.g. certainty_shock, pure_arb)",
+    ),
     category: Optional[str] = Query(
         None, description="Optional category filter for subfilter lookups"
     ),
@@ -539,12 +544,30 @@ async def get_opportunity_counts(
             or any(search_lower in m.get("question", "").lower() for m in opp.markets)
         ]
 
+    normalized_sub = _normalize_sub_strategy(sub_strategy)
+    if normalized_sub:
+        opportunities = [
+            opp
+            for opp in opportunities
+            if _derive_opportunity_sub_strategy(opp) == normalized_sub
+        ]
+
+    plugin_slugs = set(
+        (
+            await session.execute(
+                select(StrategyPlugin.slug).where(StrategyPlugin.enabled)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     # Count by strategy
     strategy_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
     sub_strategy_counts: dict[str, int] = {}
     for opp in opportunities:
-        s = opp.strategy
+        s = f"plugin_{opp.strategy}" if opp.strategy in plugin_slugs else opp.strategy
         strategy_counts[s] = strategy_counts.get(s, 0) + 1
         if opp.category:
             cat = opp.category.lower()
@@ -1246,13 +1269,25 @@ async def analyze_and_track_wallet(
     - Optionally sets up copy trading in paper mode
     """
     try:
+        analysis_upserted = False
         profile = await wallet_discovery.get_wallet_profile(address.lower())
         if profile is None:
             analysis = await wallet_discovery.analyze_wallet(address.lower())
             if analysis is not None:
                 await wallet_discovery._upsert_wallet(analysis)
                 await wallet_discovery.refresh_leaderboard()
+                analysis_upserted = True
                 profile = await wallet_discovery.get_wallet_profile(address.lower())
+
+        if analysis_upserted:
+            try:
+                await smart_wallet_pool.recompute_pool()
+            except Exception as recompute_exc:
+                logger.warning(
+                    "Smart pool recompute after analyze-and-track failed",
+                    address=address.lower(),
+                    error=str(recompute_exc),
+                )
 
         analysis_payload = (
             {

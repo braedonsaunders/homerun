@@ -18,6 +18,7 @@ import { Separator } from './ui/separator'
 import OpportunityCard from './OpportunityCard'
 import OpportunityTable from './OpportunityTable'
 import OpportunityTerminal from './OpportunityTerminal'
+import OpportunityEmptyState from './OpportunityEmptyState'
 import {
   getWeatherWorkflowStatus,
   runWeatherWorkflow,
@@ -96,6 +97,7 @@ export default function WeatherOpportunitiesPanel({
   const [city, setCity] = useState('')
   const [minEdge, setMinEdge] = useState(0)
   const [maxEntry, setMaxEntry] = useState('')
+  const [showFiltered, setShowFiltered] = useState(false)
   const [targetDate, setTargetDate] = useState<TargetDateFilter>('all')
   const [datePage, setDatePage] = useState(0)
   const [currentPage, setCurrentPage] = useState(0)
@@ -106,11 +108,11 @@ export default function WeatherOpportunitiesPanel({
 
   useEffect(() => {
     setCurrentPage(0)
-  }, [direction, city, minEdge, maxEntry, targetDate])
+  }, [direction, city, minEdge, maxEntry, targetDate, showFiltered])
 
   useEffect(() => {
     setDatePage(0)
-  }, [direction, city, minEdge, maxEntry])
+  }, [direction, city, minEdge, maxEntry, showFiltered])
 
   const { data: status } = useQuery({
     queryKey: ['weather-workflow-status'],
@@ -119,7 +121,7 @@ export default function WeatherOpportunitiesPanel({
   })
 
   const { data: oppData, isLoading: oppsLoading } = useQuery({
-    queryKey: ['weather-workflow-opportunities', direction, city, minEdge, maxEntry, targetDate, currentPage],
+    queryKey: ['weather-workflow-opportunities', direction, city, minEdge, maxEntry, targetDate, currentPage, showFiltered],
     queryFn: () => {
       return getWeatherWorkflowOpportunities({
         direction: direction === 'all' ? undefined : direction,
@@ -127,6 +129,7 @@ export default function WeatherOpportunitiesPanel({
         target_date: targetDate === 'all' ? undefined : targetDate,
         min_edge: minEdge > 0 ? minEdge : undefined,
         max_entry: maxEntryFilter,
+        include_report_only: showFiltered,
         limit: ITEMS_PER_PAGE,
         offset: currentPage * ITEMS_PER_PAGE,
       })
@@ -135,13 +138,14 @@ export default function WeatherOpportunitiesPanel({
   })
 
   const { data: dateSourceOppData } = useQuery({
-    queryKey: ['weather-workflow-opportunity-date-source', direction, city, minEdge, maxEntry],
+    queryKey: ['weather-workflow-opportunity-date-source', direction, city, minEdge, maxEntry, showFiltered],
     queryFn: () =>
       getWeatherWorkflowOpportunities({
         direction: direction === 'all' ? undefined : direction,
         location: city.trim() || undefined,
         min_edge: minEdge > 0 ? minEdge : undefined,
         max_entry: maxEntryFilter,
+        include_report_only: showFiltered,
         limit: 500,
         offset: 0,
       }),
@@ -149,13 +153,14 @@ export default function WeatherOpportunitiesPanel({
   })
 
   const { data: dateData, isLoading: dateBucketsLoading } = useQuery({
-    queryKey: ['weather-workflow-opportunity-dates', direction, city, minEdge, maxEntry],
+    queryKey: ['weather-workflow-opportunity-dates', direction, city, minEdge, maxEntry, showFiltered],
     queryFn: () =>
       getWeatherWorkflowOpportunityDates({
         direction: direction === 'all' ? undefined : direction,
         location: city.trim() || undefined,
         min_edge: minEdge > 0 ? minEdge : undefined,
         max_entry: maxEntryFilter,
+        include_report_only: showFiltered,
       }),
     refetchInterval: 30000,
   })
@@ -296,6 +301,11 @@ export default function WeatherOpportunitiesPanel({
           <Badge variant="outline" className="text-[10px] h-6 bg-card border-border/60 text-muted-foreground">
             Opps {totalOpportunities}
           </Badge>
+          {showFiltered && (
+            <Badge variant="outline" className="text-[10px] h-6 bg-amber-500/10 text-amber-300 border-amber-500/30">
+              Showing Filtered
+            </Badge>
+          )}
 
           <select
             value={direction}
@@ -367,6 +377,19 @@ export default function WeatherOpportunitiesPanel({
             >
               <Settings className="w-3.5 h-3.5" />
               Settings
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn(
+                "h-8 text-xs gap-1.5",
+                showFiltered
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                  : "",
+              )}
+              onClick={() => setShowFiltered((prev) => !prev)}
+            >
+              {showFiltered ? 'Hide Filtered' : 'Show Filtered'}
             </Button>
           </div>
         </div>
@@ -452,10 +475,14 @@ export default function WeatherOpportunitiesPanel({
             Loading weather opportunities...
           </div>
         ) : totalOpportunities === 0 ? (
-          <div className="text-center py-10 border border-border/40 rounded-xl bg-card/20">
-            <CloudRain className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground">No weather opportunities match current filters.</p>
-          </div>
+          <OpportunityEmptyState
+            title={showFiltered ? 'No scanned weather opportunities found' : 'No executable weather opportunities found'}
+            description={
+              showFiltered
+                ? 'No raw weather workflow findings are currently available'
+                : 'Try lowering direction/location/date filters or wait for new signals'
+            }
+          />
         ) : viewMode === 'terminal' ? (
           <OpportunityTerminal
             opportunities={opportunities}

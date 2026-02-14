@@ -55,6 +55,7 @@ export default function SimulationPanel() {
   }
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountCapital, setNewAccountCapital] = useState(10000)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [accountToDelete, setAccountToDelete] = useState<SimulationAccount | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>('overview')
   const [tradeSort, setTradeSort] = useState<'date' | 'pnl' | 'cost'>('date')
@@ -90,11 +91,19 @@ export default function SimulationPanel() {
       name: newAccountName,
       initial_capital: newAccountCapital
     }),
+    onMutate: () => {
+      setCreateError(null)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['simulation-accounts'] })
       setShowCreateForm(false)
       setNewAccountName('')
-    }
+      setCreateError(null)
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail || error?.response?.data?.error
+      setCreateError(detail || error?.message || 'Failed to create sandbox account')
+    },
   })
 
   const deleteMutation = useMutation({
@@ -150,7 +159,10 @@ export default function SimulationPanel() {
           <p className="text-sm text-muted-foreground">Practice trading without risking real money</p>
         </div>
         <Button
-          onClick={() => setShowCreateForm(true)}
+          onClick={() => {
+            setCreateError(null)
+            setShowCreateForm(true)
+          }}
           className="gap-2"
         >
           <Plus className="w-4 h-4" />
@@ -186,11 +198,17 @@ export default function SimulationPanel() {
             </Button>
             <Button
               variant="secondary"
-              onClick={() => setShowCreateForm(false)}
+              onClick={() => {
+                setCreateError(null)
+                setShowCreateForm(false)
+              }}
             >
               Cancel
             </Button>
           </div>
+          {createError && (
+            <p className="mt-3 text-xs text-red-400">{createError}</p>
+          )}
         </Card>
       )}
 

@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # Scanner Settings
     SCAN_INTERVAL_SECONDS: int = 60
     SCANNER_STALE_OPPORTUNITY_MINUTES: int = 45
+    # Prevent one strategy from flooding the opportunities surface.
+    # Set to <=0 to disable a given cap.
+    SCANNER_MAX_OPPORTUNITIES_TOTAL: int = 500
+    SCANNER_MAX_OPPORTUNITIES_PER_STRATEGY: int = 120
     MIN_PROFIT_THRESHOLD: float = 0.015  # 1.5% minimum profit after fees
     POLYMARKET_FEE: float = 0.02  # 2% winner fee
 

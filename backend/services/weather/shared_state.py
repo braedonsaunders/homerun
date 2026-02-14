@@ -558,6 +558,9 @@ async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
         """Get an int setting, falling back to *default* when the DB value is None."""
         return int(getattr(db, attr, default) or default)
 
+    raw_temperature_unit = str(getattr(db, "weather_workflow_temperature_unit", "F") or "F").upper()
+    temperature_unit = raw_temperature_unit if raw_temperature_unit in {"F", "C"} else "F"
+
     return {
         "enabled": bool(getattr(db, "weather_workflow_enabled", True) or True),
         "auto_run": bool(getattr(db, "weather_workflow_auto_run", True) or True),
@@ -576,7 +579,7 @@ async def get_weather_settings(session: AsyncSession) -> dict[str, Any]:
         "default_size_usd": _f("weather_workflow_default_size_usd", app_settings.WEATHER_WORKFLOW_DEFAULT_SIZE_USD),
         "max_size_usd": _f("weather_workflow_max_size_usd", app_settings.WEATHER_WORKFLOW_MAX_SIZE_USD),
         "model": getattr(db, "weather_workflow_model", None),
-        "temperature_unit": getattr(db, "weather_workflow_temperature_unit", None) or "F",
+        "temperature_unit": temperature_unit,
     }
 
 
@@ -610,6 +613,11 @@ async def update_weather_settings(
     for key, value in updates.items():
         if key not in mapping:
             continue
+        if key == "temperature_unit":
+            normalized = str(value or "").strip().upper()
+            if normalized not in {"F", "C"}:
+                continue
+            value = normalized
         setattr(db, mapping[key], value)
 
     db.updated_at = utcnow()

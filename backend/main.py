@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pathlib import Path
 from typing import Optional
 import traceback
+from sqlalchemy import select
 
 # Keep native ML/linear algebra threading conservative for long-running
 # backend and worker workloads on macOS.
@@ -54,7 +55,7 @@ from services.maintenance import maintenance_service
 from services.validation_service import validation_service
 from services.snapshot_broadcaster import snapshot_broadcaster
 from services.market_prioritizer import market_prioritizer
-from models.database import AsyncSessionLocal, init_database
+from models.database import AppSettings, AsyncSessionLocal, init_database
 from models.model_registry import register_all_models
 from services import discovery_shared_state, shared_state
 from services.news import shared_state as news_shared_state
@@ -348,22 +349,42 @@ async def lifespan(app: FastAPI):
         # Intelligence, crypto, tracked-trader, and trader-orchestrator runtimes are worker-owned.
         logger.info("API runtime running in orchestration/read-only mode for worker-owned loops")
 
-        # Start background cleanup if enabled
-        if settings.AUTO_CLEANUP_ENABLED:
-            cleanup_config = {
-                "resolved_trade_days": settings.CLEANUP_RESOLVED_TRADE_DAYS,
-                "open_trade_expiry_days": settings.CLEANUP_OPEN_TRADE_EXPIRY_DAYS,
-                "wallet_trade_days": settings.CLEANUP_WALLET_TRADE_DAYS,
-                "anomaly_days": settings.CLEANUP_ANOMALY_DAYS,
-            }
+        # Start background cleanup if enabled (DB settings override env defaults).
+        cleanup_enabled = bool(settings.AUTO_CLEANUP_ENABLED)
+        cleanup_interval_hours = int(settings.CLEANUP_INTERVAL_HOURS)
+        cleanup_config = {
+            "resolved_trade_days": int(settings.CLEANUP_RESOLVED_TRADE_DAYS),
+            "open_trade_expiry_days": int(settings.CLEANUP_OPEN_TRADE_EXPIRY_DAYS),
+            "wallet_trade_days": int(settings.CLEANUP_WALLET_TRADE_DAYS),
+            "anomaly_days": int(settings.CLEANUP_ANOMALY_DAYS),
+        }
+        try:
+            async with AsyncSessionLocal() as session:
+                row = (
+                    await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+                ).scalar_one_or_none()
+                if row is not None:
+                    if row.auto_cleanup_enabled is not None:
+                        cleanup_enabled = bool(row.auto_cleanup_enabled)
+                    cleanup_interval_hours = int(row.cleanup_interval_hours or cleanup_interval_hours)
+                    cleanup_config["resolved_trade_days"] = int(
+                        row.cleanup_resolved_trade_days or cleanup_config["resolved_trade_days"]
+                    )
+        except Exception as e:
+            logger.warning("Failed to load DB maintenance settings; using env defaults", error=str(e))
+
+        if cleanup_enabled:
             cleanup_task = asyncio.create_task(
                 maintenance_service.start_background_cleanup(
-                    interval_hours=settings.CLEANUP_INTERVAL_HOURS,
+                    interval_hours=cleanup_interval_hours,
                     cleanup_config=cleanup_config,
                 )
             )
             tasks.append(cleanup_task)
-            logger.info("Background database cleanup enabled")
+            logger.info(
+                "Background database cleanup enabled",
+                interval_hours=cleanup_interval_hours,
+            )
 
         # Initialize news intelligence layer (workers own background loops)
         try:
@@ -593,6 +614,9 @@ async def detailed_health_check():
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
         discovery_status = await discovery_shared_state.get_discovery_status_from_db(session)
+        maintenance_row = (
+            await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+        ).scalar_one_or_none()
         try:
             from services.news import shared_state as news_shared_state
 
@@ -602,6 +626,12 @@ async def detailed_health_check():
         worker_status_rows = await list_worker_snapshots(session)
         orchestrator_snapshot = await read_orchestrator_snapshot(session)
     worker_status = {row.get("worker_name"): row for row in worker_status_rows}
+    maintenance_enabled = bool(settings.AUTO_CLEANUP_ENABLED)
+    maintenance_interval = int(settings.CLEANUP_INTERVAL_HOURS)
+    if maintenance_row is not None:
+        if maintenance_row.auto_cleanup_enabled is not None:
+            maintenance_enabled = bool(maintenance_row.auto_cleanup_enabled)
+        maintenance_interval = int(maintenance_row.cleanup_interval_hours or maintenance_interval)
 
     return {
         "status": "healthy",
@@ -627,8 +657,8 @@ async def detailed_health_check():
                 "stats": orchestrator_snapshot,
             },
             "maintenance": {
-                "auto_cleanup_enabled": settings.AUTO_CLEANUP_ENABLED,
-                "cleanup_interval_hours": settings.CLEANUP_INTERVAL_HOURS if settings.AUTO_CLEANUP_ENABLED else None,
+                "auto_cleanup_enabled": maintenance_enabled,
+                "cleanup_interval_hours": maintenance_interval if maintenance_enabled else None,
             },
             "market_prioritizer": market_prioritizer.get_stats(),
             "ai_intelligence": _get_ai_status(),

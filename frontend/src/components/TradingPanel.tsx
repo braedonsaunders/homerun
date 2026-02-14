@@ -24,10 +24,10 @@ import {
   getTraderDecisionDetail,
   getTraderDecisions,
   getTraderEvents,
+  getTraderConfigSchema,
   getTraderOrchestratorOverview,
   getTraderSources,
   getSimulationAccounts,
-  getTraderTemplates,
   getTraders,
   pauseTrader,
   runTraderOnce,
@@ -39,15 +39,15 @@ import {
   stopTraderOrchestrator,
   stopTraderOrchestratorLive,
   type Trader,
+  type TraderConfigSchema,
   type TraderOrder,
   type TraderSource,
   updateTrader,
   getActiveCopyMode,
-  createCopyConfig,
-  updateCopyConfig,
-  deleteCopyConfig,
+  getDiscoverySettings,
   type ActiveCopyMode,
   type CopySourceType,
+  type DiscoverySettings,
 } from '../services/api'
 import { cn } from '../lib/utils'
 import { selectedAccountIdAtom } from '../store/atoms'
@@ -97,7 +97,9 @@ type PositionBookRow = {
 const CRYPTO_STRATEGY_MODES = ['auto', 'directional', 'pure_arb', 'rebalance'] as const
 const CRYPTO_ASSET_OPTIONS = ['BTC', 'ETH', 'SOL', 'XRP'] as const
 const CRYPTO_TIMEFRAME_OPTIONS = ['5m', '15m', '1h', '4h'] as const
+const RESUME_POLICY_OPTIONS = ['resume_full', 'manage_only', 'flatten_then_start'] as const
 type CryptoStrategyMode = (typeof CRYPTO_STRATEGY_MODES)[number]
+type ResumePolicy = (typeof RESUME_POLICY_OPTIONS)[number]
 
 type TraderAdvancedConfig = {
   cadenceProfile: string
@@ -132,6 +134,7 @@ type TraderAdvancedConfig = {
   haltOnConsecutiveLosses: boolean
   maxConsecutiveLosses: number
   circuitBreakerDrawdownPct: number
+  resumePolicy: ResumePolicy
   tradingWindowStartUtc: string
   tradingWindowEndUtc: string
   tagsCsv: string
@@ -156,7 +159,7 @@ type CopyTradingFormState = {
 }
 
 type TraderSignalFilters = {
-  source_filter: 'all' | 'confluence' | 'insider'
+  source_filter: 'all' | 'tracked' | 'pool'
   min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
   side_filter: 'all' | 'BUY' | 'SELL'
   confluence_limit: number
@@ -224,13 +227,6 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     signal_types: ['tracked_trader'],
   },
   {
-    key: 'pool_traders',
-    label: 'Pool Traders',
-    description: 'Copy trades from smart wallet pool confluence signals.',
-    domains: ['event_markets'],
-    signal_types: ['pool_confluence'],
-  },
-  {
     key: 'weather',
     label: 'Weather Workflow',
     description: 'Weather forecast probability dislocations.',
@@ -245,6 +241,25 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     signal_types: ['world_intelligence'],
   },
 ]
+
+const STRATEGY_LABELS: Record<string, string> = {
+  crypto_15m: 'Crypto HF Trader',
+  news_reaction: 'News Trader',
+  opportunity_weather: 'General + Weather Trader',
+  omni_aggressive: 'Omni Aggressive Trader',
+}
+
+const DEFAULT_STRATEGY_KEY = 'crypto_15m'
+
+type StrategyOption = {
+  key: string
+  label: string
+}
+
+const STRATEGY_OPTIONS: StrategyOption[] = Object.entries(STRATEGY_LABELS).map(([key, label]) => ({
+  key,
+  label,
+}))
 
 
 function toNumber(value: unknown): number {
@@ -451,6 +466,53 @@ function uniqueSourceList(values: string[]): string[] {
   return out
 }
 
+function normalizeStrategyKey(value: unknown): string {
+  const key = String(value || '').trim().toLowerCase()
+  return key || DEFAULT_STRATEGY_KEY
+}
+
+function normalizeResumePolicy(value: unknown): ResumePolicy {
+  const policy = String(value || '').trim().toLowerCase()
+  if (RESUME_POLICY_OPTIONS.includes(policy as ResumePolicy)) {
+    return policy as ResumePolicy
+  }
+  return 'resume_full'
+}
+
+function strategyLabelForKey(key: string): string {
+  return STRATEGY_LABELS[key] || key
+}
+
+function asSignalSideFilter(value: unknown): TraderSignalFilters['side_filter'] {
+  const side = String(value || '').trim().toLowerCase()
+  if (side === 'buy') return 'BUY'
+  if (side === 'sell') return 'SELL'
+  return 'all'
+}
+
+function asSignalSourceFilter(value: unknown): TraderSignalFilters['source_filter'] {
+  const source = String(value || '').trim().toLowerCase()
+  if (source === 'confluence') return 'all'
+  if (source === 'tracked') return 'tracked'
+  if (source === 'pool' || source === 'insider') return 'pool'
+  return 'all'
+}
+
+function signalFiltersFromDiscoverySettings(
+  discovery: DiscoverySettings | undefined
+): TraderSignalFilters {
+  if (!discovery) return { ...DEFAULT_SIGNAL_FILTERS }
+  return {
+    source_filter: asSignalSourceFilter(discovery.trader_opps_source_filter),
+    min_tier: discovery.trader_opps_min_tier || DEFAULT_SIGNAL_FILTERS.min_tier,
+    side_filter: asSignalSideFilter(discovery.trader_opps_side_filter),
+    confluence_limit: Math.round(clamp(Number(discovery.trader_opps_confluence_limit || 50), 1, 200)),
+    insider_limit: Math.round(clamp(Number(discovery.trader_opps_insider_limit || 40), 1, 500)),
+    insider_min_confidence: clamp(Number(discovery.trader_opps_insider_min_confidence || 0.62), 0, 1),
+    insider_max_age_minutes: Math.round(clamp(Number(discovery.trader_opps_insider_max_age_minutes || 180), 1, 1440)),
+  }
+}
+
 function isTraderSourceKey(key: string): boolean {
   const k = normalizeSourceKey(key)
   return k.includes('tracked') || k.includes('pool') || k.includes('watch')
@@ -519,6 +581,7 @@ function defaultAdvancedConfig(): TraderAdvancedConfig {
     haltOnConsecutiveLosses: true,
     maxConsecutiveLosses: 4,
     circuitBreakerDrawdownPct: 12,
+    resumePolicy: 'resume_full',
     tradingWindowStartUtc: '00:00',
     tradingWindowEndUtc: '23:59',
     tagsCsv: '',
@@ -573,6 +636,7 @@ function computeAdvancedConfig(
     haltOnConsecutiveLosses: toBoolean(risk.halt_on_consecutive_losses, defaults.haltOnConsecutiveLosses),
     maxConsecutiveLosses: toNumber(risk.max_consecutive_losses ?? defaults.maxConsecutiveLosses),
     circuitBreakerDrawdownPct: toNumber(risk.circuit_breaker_drawdown_pct ?? defaults.circuitBreakerDrawdownPct),
+    resumePolicy: normalizeResumePolicy(metadata.resume_policy ?? defaults.resumePolicy),
     tradingWindowStartUtc: String(tradingWindow.start || defaults.tradingWindowStartUtc),
     tradingWindowEndUtc: String(tradingWindow.end || defaults.tradingWindowEndUtc),
     tagsCsv: toCsv(metadata.tags ?? defaults.tagsCsv),
@@ -646,6 +710,7 @@ function withConfiguredMetadata(
   return {
     ...raw,
     cadence_profile: config.cadenceProfile,
+    resume_policy: config.resumePolicy,
     trading_window_utc: {
       start: config.tradingWindowStartUtc,
       end: config.tradingWindowEndUtc,
@@ -825,10 +890,9 @@ export default function TradingPanel() {
 
   const [traderFlyoutOpen, setTraderFlyoutOpen] = useState(false)
   const [traderFlyoutMode, setTraderFlyoutMode] = useState<'create' | 'edit'>('create')
-  const [templateSelection, setTemplateSelection] = useState<string>('none')
   const [draftName, setDraftName] = useState('')
   const [draftDescription, setDraftDescription] = useState('')
-  const [draftStrategyKey, setDraftStrategyKey] = useState('')
+  const [draftStrategyKey, setDraftStrategyKey] = useState(DEFAULT_STRATEGY_KEY)
   const [draftInterval, setDraftInterval] = useState('60')
   const [draftSources, setDraftSources] = useState('')
   const [draftEnabled, setDraftEnabled] = useState(true)
@@ -855,15 +919,15 @@ export default function TradingPanel() {
     refetchInterval: 5000,
   })
 
-  const templatesQuery = useQuery({
-    queryKey: ['traders-templates'],
-    queryFn: getTraderTemplates,
-    staleTime: 60000,
-  })
-
   const traderSourcesQuery = useQuery({
     queryKey: ['trader-sources'],
     queryFn: getTraderSources,
+    staleTime: 300000,
+  })
+
+  const traderConfigSchemaQuery = useQuery({
+    queryKey: ['trader-config-schema'],
+    queryFn: getTraderConfigSchema,
     staleTime: 300000,
   })
 
@@ -879,10 +943,20 @@ export default function TradingPanel() {
     staleTime: 15000,
   })
 
+  const discoverySettingsQuery = useQuery({
+    queryKey: ['settings-discovery'],
+    queryFn: getDiscoverySettings,
+    staleTime: 15000,
+  })
+
+  const traderConfigSchema: TraderConfigSchema | null = traderConfigSchemaQuery.data ?? null
   const activeCopyMode = activeCopyModeQuery.data ?? null
   const traders = tradersQuery.data || []
-  const templates = templatesQuery.data || []
-  const sourceCatalog = traderSourcesQuery.data?.length ? traderSourcesQuery.data : FALLBACK_TRADER_SOURCES
+  const sourceCatalog = traderConfigSchema?.sources?.length
+    ? traderConfigSchema.sources
+    : traderSourcesQuery.data?.length
+      ? traderSourcesQuery.data
+      : FALLBACK_TRADER_SOURCES
   const defaultSourceKeys = useMemo(
     () => uniqueSourceList(sourceCatalog.map((source) => source.key)),
     [sourceCatalog]
@@ -987,14 +1061,48 @@ export default function TradingPanel() {
   )
 
   const effectiveDraftSources = useMemo(() => {
-    const explicit = uniqueSourceList(csvToList(draftSources))
-    if (explicit.length > 0) return explicit
-    return defaultSourceKeys
-  }, [defaultSourceKeys, draftSources])
+    return uniqueSourceList(csvToList(draftSources))
+  }, [draftSources])
 
-  const isCryptoStrategyDraft = useMemo(
-    () => isCryptoStrategyKey(draftStrategyKey),
+  const strategyCatalog = useMemo<StrategyOption[]>(() => {
+    const schemaStrategies = traderConfigSchema?.strategies || []
+    if (schemaStrategies.length === 0) return STRATEGY_OPTIONS
+    return schemaStrategies.map((strategy) => ({
+      key: strategy.key,
+      label: strategy.label || strategyLabelForKey(strategy.key),
+    }))
+  }, [traderConfigSchema])
+
+  const effectiveStrategyKey = useMemo(
+    () => normalizeStrategyKey(draftStrategyKey),
     [draftStrategyKey]
+  )
+  const strategyOptionsForDraft = useMemo(() => {
+    if (strategyCatalog.some((option) => option.key === effectiveStrategyKey)) {
+      return strategyCatalog
+    }
+    return [
+      ...strategyCatalog,
+      { key: effectiveStrategyKey, label: `${strategyLabelForKey(effectiveStrategyKey)} (Custom)` },
+    ]
+  }, [effectiveStrategyKey, strategyCatalog])
+  const selectedStrategySchema = useMemo(
+    () => traderConfigSchema?.strategies?.find((strategy) => strategy.key === effectiveStrategyKey) || null,
+    [effectiveStrategyKey, traderConfigSchema]
+  )
+  const incompatibleSourceKeys = useMemo(() => {
+    const supported = selectedStrategySchema?.supported_sources || []
+    if (supported.length === 0) return []
+    const allowed = new Set(supported.map((key) => normalizeSourceKey(key)))
+    return effectiveDraftSources.filter((sourceKey) => !allowed.has(normalizeSourceKey(sourceKey)))
+  }, [effectiveDraftSources, selectedStrategySchema])
+  const effectiveStrategyLabel = useMemo(
+    () => strategyLabelForKey(effectiveStrategyKey),
+    [effectiveStrategyKey]
+  )
+  const isCryptoStrategyDraft = useMemo(
+    () => isCryptoStrategyKey(effectiveStrategyKey),
+    [effectiveStrategyKey]
   )
   const selectedCryptoAssets = useMemo(
     () => new Set(normalizeCryptoAssetList(advancedConfig.cryptoAssetsCsv)),
@@ -1019,6 +1127,10 @@ export default function TradingPanel() {
 
   const enableAllSourceCards = () => {
     setDraftSources(uniqueSourceList(sourceCards.map((source) => source.key)).join(', '))
+  }
+
+  const disableAllSourceCards = () => {
+    setDraftSources('')
   }
 
   const toggleCryptoAssetTarget = (asset: (typeof CRYPTO_ASSET_OPTIONS)[number]) => {
@@ -1056,7 +1168,7 @@ export default function TradingPanel() {
     if (!selectedTrader) return
     setDraftName(selectedTrader.name)
     setDraftDescription(selectedTrader.description || '')
-    setDraftStrategyKey(selectedTrader.strategy_key)
+    setDraftStrategyKey(normalizeStrategyKey(selectedTrader.strategy_key))
     setDraftInterval(String(selectedTrader.interval_seconds || 60))
     setDraftSources(uniqueSourceList(selectedTrader.sources || []).join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(selectedTrader.is_enabled))
@@ -1101,34 +1213,11 @@ export default function TradingPanel() {
     queryClient.invalidateQueries({ queryKey: ['trader-decision-detail'] })
   }
 
-  const hydrateDraftFromTemplate = (templateId: string) => {
-    const template = templates.find((row) => row.id === templateId)
-    if (!template) return
-    const suggestedInterval = template.strategy_key.toLowerCase().includes('crypto') && toNumber(template.interval_seconds) >= 60
-      ? 5
-      : toNumber(template.interval_seconds || 60)
-    const params = template.params || {}
-    const risk = template.risk_limits || {}
-    const metadata: Record<string, unknown> = { template_id: template.id }
-    setDraftName(template.name)
-    setDraftDescription(template.description || '')
-    setDraftStrategyKey(template.strategy_key)
-    setDraftInterval(String(suggestedInterval))
-    setDraftSources(uniqueSourceList(template.sources || []).join(', ') || defaultSourceCsv)
-    setDraftEnabled(true)
-    setDraftPaused(false)
-    setDraftParams(JSON.stringify(params, null, 2))
-    setDraftRisk(JSON.stringify(risk, null, 2))
-    setDraftMetadata(JSON.stringify(metadata, null, 2))
-    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
-  }
-
   const openCreateTraderFlyout = () => {
     setTraderFlyoutMode('create')
-    setTemplateSelection('none')
     setDraftName('')
     setDraftDescription('')
-    setDraftStrategyKey('strategy.default')
+    setDraftStrategyKey(normalizeStrategyKey(traderConfigSchema?.default_strategy_key || DEFAULT_STRATEGY_KEY))
     setDraftInterval('5')
     setDraftSources(defaultSourceCsv)
     setDraftEnabled(true)
@@ -1143,17 +1232,16 @@ export default function TradingPanel() {
     setDraftCopyTrading(activeCopyMode && activeCopyMode.mode !== 'disabled'
       ? copyTradingFromActiveMode(activeCopyMode)
       : DEFAULT_COPY_TRADING)
-    setDraftSignalFilters(DEFAULT_SIGNAL_FILTERS)
+    setDraftSignalFilters(signalFiltersFromDiscoverySettings(discoverySettingsQuery.data))
     setTraderFlyoutOpen(true)
   }
 
   const openEditTraderFlyout = (trader: Trader) => {
     setSelectedTraderId(trader.id)
     setTraderFlyoutMode('edit')
-    setTemplateSelection('none')
     setDraftName(trader.name)
     setDraftDescription(trader.description || '')
-    setDraftStrategyKey(trader.strategy_key)
+    setDraftStrategyKey(normalizeStrategyKey(trader.strategy_key))
     setDraftInterval(String(trader.interval_seconds || 60))
     setDraftSources(uniqueSourceList(trader.sources || []).join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(trader.is_enabled))
@@ -1171,7 +1259,7 @@ export default function TradingPanel() {
     setDraftCopyTrading(activeCopyMode && activeCopyMode.mode !== 'disabled'
       ? copyTradingFromActiveMode(activeCopyMode)
       : DEFAULT_COPY_TRADING)
-    setDraftSignalFilters(DEFAULT_SIGNAL_FILTERS)
+    setDraftSignalFilters(signalFiltersFromDiscoverySettings(discoverySettingsQuery.data))
     setTraderFlyoutOpen(true)
   }
 
@@ -1237,55 +1325,6 @@ export default function TradingPanel() {
     onSuccess: refreshAll,
   })
 
-  const saveCopyTradingConfig = async () => {
-    const ct = draftCopyTrading
-    try {
-      const currentMode = activeCopyMode
-      const currentConfigId = currentMode?.config_id
-
-      if (ct.copy_mode_type === 'disabled') {
-        if (currentConfigId) {
-          await deleteCopyConfig(currentConfigId)
-        }
-      } else if (currentConfigId && currentMode?.mode === ct.copy_mode_type) {
-        await updateCopyConfig(currentConfigId, {
-          copy_mode: ct.copy_trade_mode,
-          max_position_size: ct.max_position_size,
-          proportional_sizing: ct.proportional_sizing,
-          proportional_multiplier: ct.proportional_multiplier,
-          copy_buys: ct.copy_buys,
-          copy_sells: ct.copy_sells,
-          copy_delay_seconds: ct.copy_delay_seconds,
-          slippage_tolerance: ct.slippage_tolerance,
-          min_roi_threshold: ct.min_roi_threshold,
-        })
-      } else {
-        if (currentConfigId) {
-          await deleteCopyConfig(currentConfigId)
-        }
-        if (selectedAccountId) {
-          await createCopyConfig({
-            source_type: ct.copy_mode_type as CopySourceType,
-            source_wallet: ct.copy_mode_type === 'individual' ? ct.individual_wallet : undefined,
-            account_id: selectedAccountId,
-            copy_mode: ct.copy_trade_mode,
-            max_position_size: ct.max_position_size,
-            proportional_sizing: ct.proportional_sizing,
-            proportional_multiplier: ct.proportional_multiplier,
-            copy_buys: ct.copy_buys,
-            copy_sells: ct.copy_sells,
-            copy_delay_seconds: ct.copy_delay_seconds,
-            slippage_tolerance: ct.slippage_tolerance,
-            min_roi_threshold: ct.min_roi_threshold,
-          })
-        }
-      }
-      queryClient.invalidateQueries({ queryKey: ['copy-trading-active-mode'] })
-    } catch (err) {
-      console.error('Failed to save copy trading config', err)
-    }
-  }
-
   const createTraderMutation = useMutation({
     mutationFn: async () => {
       const parsedParams = parseJsonObject(draftParams || '{}')
@@ -1306,18 +1345,17 @@ export default function TradingPanel() {
       return createTrader({
         name: draftName.trim(),
         description: draftDescription.trim() || null,
-        strategy_key: draftStrategyKey.trim(),
+        strategy_key: effectiveStrategyKey,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
         sources: effectiveDraftSources,
-        params: withConfiguredParams(parsedParams.value, advancedConfig, draftStrategyKey),
+        params: withConfiguredParams(parsedParams.value, advancedConfig, effectiveStrategyKey),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
         is_paused: draftPaused,
       })
     },
-    onSuccess: async (trader) => {
-      await saveCopyTradingConfig()
+    onSuccess: (trader) => {
       setSaveError(null)
       setTraderFlyoutOpen(false)
       setSelectedTraderId(trader.id)
@@ -1348,18 +1386,17 @@ export default function TradingPanel() {
       return updateTrader(traderId, {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
-        strategy_key: draftStrategyKey.trim(),
+        strategy_key: effectiveStrategyKey,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
         sources: effectiveDraftSources,
-        params: withConfiguredParams(parsedParams.value, advancedConfig, draftStrategyKey),
+        params: withConfiguredParams(parsedParams.value, advancedConfig, effectiveStrategyKey),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
         is_paused: draftPaused,
       })
     },
-    onSuccess: async () => {
-      await saveCopyTradingConfig()
+    onSuccess: () => {
       setSaveError(null)
       setTraderFlyoutOpen(false)
       refreshAll()
@@ -3007,7 +3044,7 @@ export default function TradingPanel() {
                 </SheetTitle>
                 <SheetDescription>
                   {traderFlyoutMode === 'create'
-                    ? 'Configure a new trader profile. Templates can preload strategy and risk defaults.'
+                    ? 'Configure a new trader profile with explicit strategy, source, risk, and lifecycle controls.'
                     : 'Update runtime configuration and lifecycle state for this trader.'}
                 </SheetDescription>
               </SheetHeader>
@@ -3018,49 +3055,57 @@ export default function TradingPanel() {
                 <FlyoutSection
                   title="Trader Profile"
                   icon={Sparkles}
-                  subtitle="Core identity and strategy metadata used by the orchestrator."
+                  subtitle="Name this trader and select the execution strategy explicitly."
                 >
-                  {traderFlyoutMode === 'create' ? (
-                    <div>
-                      <Label>Template</Label>
-                      <Select
-                        value={templateSelection}
-                        onValueChange={(value) => {
-                          setTemplateSelection(value)
-                          if (value !== 'none') {
-                            hydrateDraftFromTemplate(value)
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="mt-1 h-9">
-                          <SelectValue placeholder="Start from blank trader" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Blank Trader</SelectItem>
-                          {templates.map((template) => (
-                            <SelectItem key={template.id} value={template.id}>
-                              {template.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ) : null}
-
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div>
-                      <Label>Name</Label>
-                      <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
-                    </div>
-                    <div>
-                      <Label>Strategy Key</Label>
-                      <Input value={draftStrategyKey} onChange={(event) => setDraftStrategyKey(event.target.value)} className="mt-1 font-mono" />
-                    </div>
+                  <div>
+                    <Label>Name</Label>
+                    <Input value={draftName} onChange={(event) => setDraftName(event.target.value)} className="mt-1" />
                   </div>
 
                   <div>
                     <Label>Description</Label>
                     <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} className="mt-1" />
+                  </div>
+
+                  <div>
+                    <Label>Strategy</Label>
+                    <Select
+                      value={effectiveStrategyKey}
+                      onValueChange={(value) => {
+                        const nextStrategyKey = normalizeStrategyKey(value)
+                        setDraftStrategyKey(nextStrategyKey)
+                        if (traderFlyoutMode !== 'create' || !traderConfigSchema) return
+                        const defaults = traderConfigSchema.strategies
+                          .find((strategy) => strategy.key === nextStrategyKey)
+                          ?.defaults
+                        if (!defaults) return
+                        setDraftInterval(String(defaults.interval_seconds || draftInterval))
+                        setDraftSources(
+                          uniqueSourceList(defaults.sources?.length ? defaults.sources : defaultSourceKeys).join(', ')
+                        )
+                        setDraftParams(JSON.stringify(defaults.params || {}, null, 2))
+                        setDraftRisk(JSON.stringify(defaults.risk_limits || {}, null, 2))
+                        setDraftMetadata(JSON.stringify(defaults.metadata || {}, null, 2))
+                        setAdvancedConfig(
+                          computeAdvancedConfig(
+                            defaults.params || {},
+                            defaults.risk_limits || {},
+                            defaults.metadata || {}
+                          )
+                        )
+                      }}
+                    >
+                      <SelectTrigger className="mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {strategyOptionsForDraft.map((option) => (
+                          <SelectItem key={option.key} value={option.key}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </FlyoutSection>
 
@@ -3074,8 +3119,8 @@ export default function TradingPanel() {
                     <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={enableAllSourceCards}>
                       Enable all
                     </Button>
-                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setDraftSources(defaultSourceCsv)}>
-                      Use default
+                    <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={disableAllSourceCards}>
+                      Disable all
                     </Button>
                   </div>
 
@@ -3111,6 +3156,27 @@ export default function TradingPanel() {
                         </button>
                       )
                     })}
+                  </div>
+
+                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Selected Strategy</p>
+                      <span className="text-[11px] font-mono text-muted-foreground">{effectiveStrategyKey}</span>
+                    </div>
+                    <p className="mt-1 text-sm font-medium">{effectiveStrategyLabel}</p>
+                    {selectedStrategySchema?.description ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground/80">{selectedStrategySchema.description}</p>
+                    ) : null}
+                    {selectedStrategySchema?.supported_sources?.length ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground/80">
+                        Supports: {selectedStrategySchema.supported_sources.join(', ')}
+                      </p>
+                    ) : null}
+                    {incompatibleSourceKeys.length > 0 ? (
+                      <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-100">
+                        Incompatible enabled sources: {incompatibleSourceKeys.join(', ')}
+                      </p>
+                    ) : null}
                   </div>
 
                   {/* Crypto inline config — shown when any crypto source is enabled */}
@@ -3180,8 +3246,11 @@ export default function TradingPanel() {
                     <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-2.5 space-y-3 mt-2">
                       <div className="flex items-center gap-1.5">
                         <Filter className="w-3.5 h-3.5 text-orange-400" />
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Trader Signal Filters</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Trader Signal Filters (Global)</p>
                       </div>
+                      <p className="text-[10px] text-muted-foreground/80">
+                        These filters are shared with trader-opportunity discovery settings.
+                      </p>
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
                           <Label className="text-[11px] text-muted-foreground leading-tight">Source Filter</Label>
@@ -3191,8 +3260,8 @@ export default function TradingPanel() {
                             className="mt-0.5 h-7 w-full rounded-md border border-border bg-muted px-2 text-xs"
                           >
                             <option value="all">All sources</option>
-                            <option value="confluence">Tracked Traders</option>
-                            <option value="insider">Pool Traders</option>
+                            <option value="tracked">Tracked Traders</option>
+                            <option value="pool">Pool Traders</option>
                           </select>
                         </div>
                         <div>
@@ -3409,11 +3478,11 @@ export default function TradingPanel() {
                 </FlyoutSection>
 
                 <FlyoutSection
-                  title="Execution Cadence"
+                  title="Run Cadence"
                   icon={Clock3}
                   iconClassName="text-sky-500"
                   count={`${Number(draftInterval || 0)}s`}
-                  subtitle="Set how often this trader is eligible to run."
+                  subtitle="Scheduling only. Strategy/selection logic is configured in Signal Sources and Signal Gating."
                 >
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                     <div>
@@ -3474,87 +3543,13 @@ export default function TradingPanel() {
                 </FlyoutSection>
 
                 <FlyoutSection
-                  title="Signal Gating + Selection"
+                  title="Signal Gating"
                   icon={ShieldAlert}
                   iconClassName="text-amber-500"
-                  count={isCryptoStrategyDraft ? '10 controls' : '7 controls'}
+                  count="7 controls"
                   defaultOpen={false}
                 >
-                  {isCryptoStrategyDraft ? (
-                    <div className="rounded-md border border-border/60 bg-muted/10 p-2.5 space-y-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Crypto Market Targets</p>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={enableAllCryptoTargets}
-                        >
-                          Use all
-                        </Button>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[11px] text-muted-foreground/80">Coins</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {CRYPTO_ASSET_OPTIONS.map((asset) => (
-                            <Button
-                              key={asset}
-                              type="button"
-                              size="sm"
-                              variant={selectedCryptoAssets.has(asset) ? 'default' : 'outline'}
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => toggleCryptoAssetTarget(asset)}
-                            >
-                              {asset}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[11px] text-muted-foreground/80">Market Cadence</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {CRYPTO_TIMEFRAME_OPTIONS.map((timeframe) => (
-                            <Button
-                              key={timeframe}
-                              type="button"
-                              size="sm"
-                              variant={selectedCryptoTimeframes.has(timeframe) ? 'default' : 'outline'}
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => toggleCryptoTimeframeTarget(timeframe)}
-                            >
-                              {timeframe}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                      {selectedCryptoAssets.size === 0 || selectedCryptoTimeframes.size === 0 ? (
-                        <p className="text-[11px] text-amber-700 dark:text-amber-100">
-                          Empty target lists default to all configured crypto assets and timeframes.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <div className={cn('grid gap-3 md:grid-cols-3', isCryptoStrategyDraft ? 'lg:grid-cols-4' : '')}>
-                    {isCryptoStrategyDraft ? (
-                      <div>
-                        <Label>Crypto Strategy Mode</Label>
-                        <Select
-                          value={advancedConfig.strategyMode}
-                          onValueChange={(value) => setAdvancedValue('strategyMode', normalizeCryptoStrategyMode(value))}
-                        >
-                          <SelectTrigger className="mt-1">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">Auto (Regime)</SelectItem>
-                            <SelectItem value="directional">Directional</SelectItem>
-                            <SelectItem value="pure_arb">Pure Arb</SelectItem>
-                            <SelectItem value="rebalance">Rebalance</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    ) : null}
+                  <div className="grid gap-3 md:grid-cols-3">
                     <div>
                       <Label>Min Signal Score</Label>
                       <Input type="number" value={advancedConfig.minSignalScore} onChange={(event) => setAdvancedValue('minSignalScore', toNumber(event.target.value))} className="mt-1" />
@@ -3582,7 +3577,7 @@ export default function TradingPanel() {
                   </div>
                   {isCryptoStrategyDraft ? (
                     <p className="text-[11px] text-muted-foreground/80">
-                      Auto switches between directional, pure-arb, and rebalance by market regime.
+                      Crypto target scope and strategy mode are configured in the Signal Sources section.
                     </p>
                   ) : null}
                   <div className="grid gap-3 md:grid-cols-2">
@@ -3705,10 +3700,26 @@ export default function TradingPanel() {
                   title="Session Window + Metadata"
                   icon={Sparkles}
                   iconClassName="text-blue-500"
-                  count="4 fields"
+                  count="5 fields"
                   defaultOpen={false}
                 >
                   <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <Label>Resume Policy</Label>
+                      <Select
+                        value={advancedConfig.resumePolicy}
+                        onValueChange={(value) => setAdvancedValue('resumePolicy', normalizeResumePolicy(value))}
+                      >
+                        <SelectTrigger className="mt-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="resume_full">Resume Full</SelectItem>
+                          <SelectItem value="manage_only">Manage Existing Only</SelectItem>
+                          <SelectItem value="flatten_then_start">Flatten Then Start</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div>
                       <Label>Trading Window Start (UTC HH:MM)</Label>
                       <Input value={advancedConfig.tradingWindowStartUtc} onChange={(event) => setAdvancedValue('tradingWindowStartUtc', event.target.value)} className="mt-1 font-mono" />
@@ -3835,7 +3846,7 @@ export default function TradingPanel() {
                 disabled={
                   traderFlyoutBusy ||
                   !draftName.trim() ||
-                  !draftStrategyKey.trim()
+                  !effectiveStrategyKey.trim()
                 }
               >
                 {traderFlyoutMode === 'create' ? 'Create Trader' : 'Save Trader'}

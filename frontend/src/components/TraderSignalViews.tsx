@@ -621,7 +621,7 @@ function TraderSignalCard({
 
           <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground/70">
             <Clock className="w-3 h-3" />
-            {timeAgo(signal.detected_at)}
+            {timeAgo(signal.last_seen_at || signal.detected_at)}
           </div>
         </div>
 
@@ -1172,7 +1172,7 @@ function TraderSignalTableRow({
 
         {/* Age */}
         <div className="px-2 py-2.5 text-right text-[10px] text-muted-foreground/70 font-data">
-          {timeAgo(signal.detected_at)}
+          {timeAgo(signal.last_seen_at || signal.detected_at)}
         </div>
       </div>
 

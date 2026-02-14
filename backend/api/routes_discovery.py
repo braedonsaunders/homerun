@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, delete
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
@@ -21,6 +21,11 @@ from models.database import (
 )
 from services import discovery_shared_state
 from services.insider_detector import insider_detector
+from services.live_price_snapshot import (
+    append_live_binary_price_point,
+    get_live_mid_prices,
+    normalize_binary_price_history,
+)
 from services.pause_state import global_pause_state
 from services.wallet_discovery import wallet_discovery
 from services.wallet_intelligence import wallet_intelligence
@@ -248,6 +253,16 @@ def _extract_outcome_prices(raw: object) -> tuple[Optional[float], Optional[floa
     return None, None
 
 
+def _labels_look_like_yes_no(labels: list[str]) -> bool:
+    if len(labels) < 2:
+        return False
+    yes_text = str(labels[0] or "").strip().lower()
+    no_text = str(labels[1] or "").strip().lower()
+    yes_aliases = {"yes", "buy yes", "up", "long", "true"}
+    no_aliases = {"no", "buy no", "down", "short", "false"}
+    return yes_text in yes_aliases and no_text in no_aliases
+
+
 async def _load_scanner_market_history(session: AsyncSession) -> dict[str, list[dict]]:
     """Read scanner snapshot market history map used by main opportunities sparklines."""
     result = await session.execute(select(ScannerSnapshot).where(ScannerSnapshot.id == "latest"))
@@ -416,6 +431,57 @@ def _build_signal_validation_payload(
         },
         "reasons": reasons,
     }
+
+
+def _normalize_trader_confluence_source_filter(
+    value: Optional[str],
+) -> Literal["all", "tracked", "pool"]:
+    normalized = str(value or "all").strip().lower()
+    # Legacy aliases kept for backward compatibility.
+    if normalized == "confluence":
+        return "all"
+    if normalized == "insider":
+        return "pool"
+    if normalized == "tracked":
+        return "tracked"
+    if normalized == "pool":
+        return "pool"
+    return "all"
+
+
+def _filter_trader_confluence_rows_by_source(
+    rows: list[dict[str, Any]],
+    source_filter: Optional[str],
+) -> list[dict[str, Any]]:
+    normalized = _normalize_trader_confluence_source_filter(source_filter)
+    filtered: list[dict[str, Any]] = []
+
+    for row in rows:
+        source_flags = row.get("source_flags")
+        if not isinstance(source_flags, dict):
+            source_flags = {}
+
+        from_tracked = bool(
+            source_flags.get("from_tracked_traders")
+            or source_flags.get("from_trader_groups")
+        )
+        from_pool = bool(source_flags.get("from_pool"))
+
+        if normalized == "tracked":
+            if from_tracked:
+                filtered.append(row)
+            continue
+        if normalized == "pool":
+            if from_pool:
+                filtered.append(row)
+            continue
+
+        # "all" for this surface means the two confluence sources this page owns:
+        # tracked traders (individuals/groups) and pool members.
+        if from_tracked or from_pool:
+            filtered.append(row)
+
+    return filtered
 
 
 def _extract_outcome_labels_from_market_info(
@@ -677,6 +743,22 @@ async def _attach_activity_history_fallback(
 
     for idx, aliases in aliases_by_row.items():
         row = rows[idx]
+        labels_raw = row.get("outcome_labels")
+        labels = (
+            [str(item).strip() for item in labels_raw if str(item or "").strip()]
+            if isinstance(labels_raw, list)
+            else []
+        )
+        has_named_outcomes = bool(labels) and not _labels_look_like_yes_no(labels)
+        has_authoritative_prices = (
+            _safe_float(row.get("yes_price")) is not None
+            and _safe_float(row.get("no_price")) is not None
+        )
+        # Wallet activity fallback only carries side+price and cannot safely map
+        # named two-outcome markets (e.g. "Kecmanovic" vs "Shelton").
+        if has_named_outcomes and has_authoritative_prices:
+            continue
+
         outcome_hint = str(row.get("outcome") or "")
         direction_hint = str(row.get("direction") or "").strip().lower()
         points: list[dict[str, float]] = []
@@ -706,12 +788,92 @@ async def _attach_activity_history_fallback(
         compact = points[-20:]
         row["price_history"] = compact
         yes_last, no_last = _extract_yes_no_from_history(compact)
-        if yes_last is not None:
+        if yes_last is not None and _safe_float(row.get("yes_price")) is None:
             row["yes_price"] = yes_last
+        if yes_last is not None and _safe_float(row.get("current_yes_price")) is None:
             row["current_yes_price"] = yes_last
-        if no_last is not None:
+        if no_last is not None and _safe_float(row.get("no_price")) is None:
             row["no_price"] = no_last
+        if no_last is not None and _safe_float(row.get("current_no_price")) is None:
             row["current_no_price"] = no_last
+
+
+def _normalize_signal_price_histories(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        normalized = normalize_binary_price_history(row.get("price_history"))
+        if not normalized:
+            continue
+
+        row["price_history"] = normalized
+        yes_last, no_last = _extract_yes_no_from_history(normalized)
+        if yes_last is not None and _safe_float(row.get("yes_price")) is None:
+            row["yes_price"] = yes_last
+        if yes_last is not None and _safe_float(row.get("current_yes_price")) is None:
+            row["current_yes_price"] = yes_last
+        if no_last is not None and _safe_float(row.get("no_price")) is None:
+            row["no_price"] = no_last
+        if no_last is not None and _safe_float(row.get("current_no_price")) is None:
+            row["current_no_price"] = no_last
+
+
+def _extract_binary_market_tokens(row: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    token_ids = row.get("market_token_ids")
+    if not isinstance(token_ids, list):
+        return None, None
+
+    cleaned = [str(token_id).strip().lower() for token_id in token_ids if str(token_id or "").strip()]
+    if len(cleaned) < 2:
+        return None, None
+    return cleaned[0], cleaned[1]
+
+
+async def _attach_live_mid_prices_to_signal_rows(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    _normalize_signal_price_histories(rows)
+
+    token_pairs: list[tuple[dict[str, Any], str, str]] = []
+    unique_tokens: list[str] = []
+    seen_tokens: set[str] = set()
+
+    for row in rows:
+        yes_token, no_token = _extract_binary_market_tokens(row)
+        if not yes_token or not no_token:
+            continue
+        token_pairs.append((row, yes_token, no_token))
+        for token_id in (yes_token, no_token):
+            if token_id in seen_tokens:
+                continue
+            seen_tokens.add(token_id)
+            unique_tokens.append(token_id)
+
+    if not token_pairs:
+        return
+
+    live_prices = await get_live_mid_prices(unique_tokens)
+    if not live_prices:
+        return
+
+    for row, yes_token, no_token in token_pairs:
+        yes_price = live_prices.get(yes_token)
+        no_price = live_prices.get(no_token)
+        if yes_price is None and no_price is not None and 0.0 <= no_price <= 1.0:
+            yes_price = float(1.0 - no_price)
+        if no_price is None and yes_price is not None and 0.0 <= yes_price <= 1.0:
+            no_price = float(1.0 - yes_price)
+        if yes_price is None or no_price is None:
+            continue
+
+        row["yes_price"] = yes_price
+        row["no_price"] = no_price
+        row["current_yes_price"] = yes_price
+        row["current_no_price"] = no_price
+        row["outcome_prices"] = [yes_price, no_price]
+        row["price_history"] = append_live_binary_price_point(
+            row.get("price_history"),
+            yes_price=yes_price,
+            no_price=no_price,
+        )
 
 
 async def _annotate_trader_signal_rows(
@@ -1324,9 +1486,23 @@ async def get_smart_pool_stats(session: AsyncSession = Depends(get_db_session)):
         if isinstance(stats, dict):
             pool_stats = stats.get("pool_stats")
             if isinstance(pool_stats, dict) and "active_1h" in pool_stats and "active_24h" in pool_stats:
-                # Prefer DB-computed values for live counts, but preserve worker
-                # timing metadata when canonical values are empty in API-only processes.
-                merged = {**pool_stats, **canonical}
+                # Worker owns tracked-traders runtime state; API canonical values
+                # are only authoritative for direct DB-count fields.
+                merged = {**pool_stats}
+                for key in (
+                    "pool_size",
+                    "active_1h",
+                    "active_24h",
+                    "active_1h_pct",
+                    "active_24h_pct",
+                    "freshest_trade_at",
+                    "stale_floor_trade_at",
+                ):
+                    if key in canonical and canonical.get(key) is not None:
+                        merged[key] = canonical.get(key)
+                for key, value in canonical.items():
+                    if key not in merged:
+                        merged[key] = value
                 for key in (
                     "last_pool_recompute_at",
                     "last_full_sweep_at",
@@ -1523,6 +1699,26 @@ async def get_pool_members(
                 eligibility_blockers = [item for item in raw_blockers if isinstance(item, (dict, str))]
             else:
                 eligibility_blockers = []
+            # Defensive reconciliation: membership is canonical for pool view.
+            # Stale metadata should not surface blocked state/reasons for active pool members.
+            if wallet.in_top_pool:
+                eligibility_status = "eligible"
+                eligibility_blockers = []
+                if selection_reasons:
+                    selection_reasons = [
+                        reason
+                        for reason in selection_reasons
+                        if str((reason or {}).get("code") or "").strip().lower()
+                        not in {
+                            "not_analyzed",
+                            "recommendation_blocked",
+                            "insufficient_trades",
+                            "anomaly_too_high",
+                            "non_positive_pnl",
+                            "tier_thresholds_not_met",
+                            "below_selection_cutoff",
+                        }
+                    ]
             try:
                 analysis_freshness_hours = (
                     float(selection_meta.get("analysis_freshness_hours"))
@@ -1984,6 +2180,7 @@ async def get_traders_overview(
         await _attach_signal_market_metadata(confluence_signals)
         _attach_history_from_aliases(confluence_signals, market_history)
         await _attach_activity_history_fallback(session, confluence_signals)
+        await _attach_live_mid_prices_to_signal_rows(confluence_signals)
         await _annotate_trader_signal_rows(session, confluence_signals)
 
         groups = await _fetch_group_payload(session=session, include_members=False)
@@ -2014,6 +2211,14 @@ async def get_traders_overview(
 async def get_tracked_trader_opportunities(
     limit: int = Query(default=50, ge=1, le=200),
     min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
+    source_filter: Literal["all", "tracked", "pool", "confluence", "insider"] = Query(
+        default="all",
+        description="Confluence source scope: tracked traders, pool traders, or both.",
+    ),
+    include_filtered: bool = Query(
+        default=False,
+        description="Include recently inactive/filtered confluence rows for review mode.",
+    ),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Legacy alias for confluence signals powering the Traders surface."""
@@ -2021,6 +2226,7 @@ async def get_tracked_trader_opportunities(
         opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
             limit=limit,
             min_tier=min_tier,
+            include_filtered=include_filtered,
         )
         if not opportunities:
             # Self-heal path: run an on-demand confluence scan so the UI can
@@ -2030,6 +2236,7 @@ async def get_tracked_trader_opportunities(
                 opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
                     limit=limit,
                     min_tier=min_tier,
+                    include_filtered=include_filtered,
                 )
             except Exception:
                 pass
@@ -2038,7 +2245,12 @@ async def get_tracked_trader_opportunities(
         await _attach_signal_market_metadata(opportunities)
         _attach_history_from_aliases(opportunities, market_history)
         await _attach_activity_history_fallback(session, opportunities)
+        await _attach_live_mid_prices_to_signal_rows(opportunities)
         await _annotate_trader_signal_rows(session, opportunities)
+        opportunities = _filter_trader_confluence_rows_by_source(
+            opportunities,
+            source_filter,
+        )
         return {"opportunities": opportunities, "total": len(opportunities)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2071,6 +2283,7 @@ async def get_insider_opportunities(
             await _attach_signal_market_metadata(opportunities)
             _attach_history_from_aliases(opportunities, market_history)
             await _attach_activity_history_fallback(session, opportunities)
+            await _attach_live_mid_prices_to_signal_rows(opportunities)
             await _annotate_trader_signal_rows(session, opportunities)
         return payload
     except Exception as e:
