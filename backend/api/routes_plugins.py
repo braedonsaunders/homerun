@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from sqlalchemy import select
-from models.database import AsyncSessionLocal, StrategyPlugin, StrategyPluginTombstone
+from models.database import AsyncSessionLocal, Strategy, StrategyPluginTombstone
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.plugin_loader import (
     plugin_loader,
@@ -110,7 +110,7 @@ class PluginResponse(BaseModel):
     runtime: Optional[dict] = None
 
 
-def _extract_config_schema(p: StrategyPlugin) -> Optional[dict]:
+def _extract_config_schema(p: Strategy) -> Optional[dict]:
     """Extract config_schema from the config._schema key or seed catalog."""
     from services.opportunity_strategy_catalog import SYSTEM_OPPORTUNITY_STRATEGY_SEEDS
 
@@ -131,8 +131,8 @@ def _extract_config_schema(p: StrategyPlugin) -> Optional[dict]:
     return None
 
 
-def _plugin_to_response(p: StrategyPlugin) -> PluginResponse:
-    """Convert a DB StrategyPlugin to a PluginResponse."""
+def _plugin_to_response(p: Strategy) -> PluginResponse:
+    """Convert a DB Strategy to a PluginResponse."""
     runtime = plugin_loader.get_status(p.slug)
     # Strip internal _schema key from config before returning
     config = dict(p.config or {})
@@ -707,10 +707,10 @@ async def list_plugins():
     async with AsyncSessionLocal() as session:
         await ensure_system_opportunity_strategies_seeded(session)
         result = await session.execute(
-            select(StrategyPlugin).order_by(
-                StrategyPlugin.is_system.desc(),
-                StrategyPlugin.sort_order.asc(),
-                StrategyPlugin.name.asc(),
+            select(Strategy).order_by(
+                Strategy.is_system.desc(),
+                Strategy.sort_order.asc(),
+                Strategy.name.asc(),
             )
         )
         plugins = result.scalars().all()
@@ -725,7 +725,7 @@ async def create_plugin(req: PluginCreateRequest):
 
     # Check slug uniqueness
     async with AsyncSessionLocal() as session:
-        existing = await session.execute(select(StrategyPlugin).where(StrategyPlugin.slug == slug))
+        existing = await session.execute(select(Strategy).where(Strategy.slug == slug))
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=409,
@@ -763,7 +763,7 @@ async def create_plugin(req: PluginCreateRequest):
 
     # Save to database
     async with AsyncSessionLocal() as session:
-        plugin = StrategyPlugin(
+        plugin = Strategy(
             id=plugin_id,
             slug=slug,
             source_key=source_key,
@@ -790,7 +790,7 @@ async def create_plugin(req: PluginCreateRequest):
 async def get_plugin(plugin_id: str):
     """Get a single plugin by ID."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
+        result = await session.execute(select(Strategy).where(Strategy.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -801,7 +801,7 @@ async def get_plugin(plugin_id: str):
 async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
     """Update a plugin. Source code changes trigger re-validation and reload."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
+        result = await session.execute(select(Strategy).where(Strategy.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -814,9 +814,9 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
             next_slug = _validate_slug(req.slug)
             if next_slug != plugin.slug:
                 existing_slug = await session.execute(
-                    select(StrategyPlugin.id).where(
-                        StrategyPlugin.slug == next_slug,
-                        StrategyPlugin.id != plugin.id,
+                    select(Strategy.id).where(
+                        Strategy.slug == next_slug,
+                        Strategy.id != plugin.id,
                     )
                 )
                 if existing_slug.scalar_one_or_none():
@@ -892,7 +892,7 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
 async def delete_plugin(plugin_id: str):
     """Delete a plugin and unload it from the runtime."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
+        result = await session.execute(select(Strategy).where(Strategy.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -924,7 +924,7 @@ async def delete_plugin(plugin_id: str):
 async def reload_plugin(plugin_id: str):
     """Force reload a plugin from its stored source code."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(StrategyPlugin).where(StrategyPlugin.id == plugin_id))
+        result = await session.execute(select(Strategy).where(Strategy.id == plugin_id))
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")

@@ -522,8 +522,6 @@ app.add_middleware(
 
 
 # API routes
-# Unified strategies management router at /api/strategy-manager/*
-app.include_router(strategies_router, prefix="/api", tags=["Strategies (Unified)"])
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
 app.include_router(copy_trading_router, prefix="/api/copy-trading", tags=["Copy Trading"])
@@ -540,6 +538,8 @@ app.include_router(news_router, prefix="/api", tags=["News Intelligence"])
 app.include_router(discovery_router, prefix="/api/discovery", tags=["Trader Discovery"])
 app.include_router(kalshi_router, prefix="/api", tags=["Kalshi"])
 app.include_router(plugins_router, prefix="/api", tags=["Plugins"])
+# Unified strategies router at /api/strategies/* (registered after legacy routers)
+app.include_router(strategies_router, prefix="/api", tags=["Strategies (Unified)"])
 app.include_router(crypto_router, prefix="/api", tags=["Crypto Markets"])
 app.include_router(news_workflow_router, prefix="/api", tags=["News Workflow"])
 app.include_router(weather_workflow_router, prefix="/api", tags=["Weather Workflow"])

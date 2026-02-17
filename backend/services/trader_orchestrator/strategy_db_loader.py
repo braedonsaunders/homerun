@@ -13,7 +13,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import AsyncSessionLocal, TraderStrategyDefinition
+from models.database import AsyncSessionLocal, Strategy
 from services.trader_orchestrator.strategies.base import BaseTraderStrategy
 from utils.utcnow import utcnow
 
@@ -340,7 +340,7 @@ class StrategyDBLoader:
             return False
         return True
 
-    def _compile_and_load_row(self, row: TraderStrategyDefinition) -> LoadedTraderStrategy:
+    def _compile_and_load_row(self, row: Strategy) -> LoadedTraderStrategy:
         validation = validate_trader_strategy_source(row.source_code or "", row.class_name)
         if not validation.get("valid"):
             raise TraderStrategyValidationError("; ".join(validation.get("errors") or ["Validation failed"]))
@@ -350,12 +350,12 @@ class StrategyDBLoader:
             raise TraderStrategyValidationError("Strategy class_name could not be resolved from source.")
 
         self._module_counter += 1
-        module_name = f"_trader_strategy_{row.strategy_key}_{self._module_counter}"
+        module_name = f"_trader_strategy_{row.slug}_{self._module_counter}"
 
         try:
-            code = compile(row.source_code, f"<trader-strategy:{row.strategy_key}>", "exec")
+            code = compile(row.source_code, f"<trader-strategy:{row.slug}>", "exec")
             module = types.ModuleType(module_name)
-            module.__file__ = f"<trader-strategy:{row.strategy_key}>"
+            module.__file__ = f"<trader-strategy:{row.slug}>"
             module.__builtins__ = __builtins__
             sys.modules[module_name] = module
             exec(code, module.__dict__)  # noqa: S102
@@ -386,10 +386,10 @@ class StrategyDBLoader:
                 )
 
             source_hash = hashlib.sha256((row.source_code or "").encode("utf-8")).hexdigest()[:16]
-            aliases_raw = row.aliases_json if isinstance(row.aliases_json, list) else []
+            aliases_raw = row.aliases if isinstance(row.aliases, list) else []
             aliases = [str(item).strip().lower() for item in aliases_raw if str(item).strip()]
             loaded = LoadedTraderStrategy(
-                strategy_key=str(row.strategy_key),
+                strategy_key=str(row.slug),
                 source_key=str(row.source_key),
                 class_name=class_name,
                 instance=instance,
@@ -398,7 +398,7 @@ class StrategyDBLoader:
                 module_name=module_name,
                 aliases=aliases,
                 is_system=bool(row.is_system),
-                label=str(row.label or row.strategy_key),
+                label=str(row.name or row.slug),
                 description=str(row.description or ""),
                 loaded_at=datetime.now(timezone.utc),
             )
@@ -421,9 +421,9 @@ class StrategyDBLoader:
 
         async with self.refresh_lock:
             try:
-                query = select(TraderStrategyDefinition).order_by(TraderStrategyDefinition.strategy_key.asc())
+                query = select(Strategy).order_by(Strategy.slug.asc())
                 if keys_filter:
-                    query = query.where(TraderStrategyDefinition.strategy_key.in_(tuple(sorted(keys_filter))))
+                    query = query.where(Strategy.slug.in_(tuple(sorted(keys_filter))))
                 rows = list((await session.execute(query)).scalars().all())
 
                 next_loaded = dict(self._loaded)
@@ -431,7 +431,7 @@ class StrategyDBLoader:
                 next_aliases = dict(self._aliases)
 
                 for row in rows:
-                    strategy_key = str(row.strategy_key or "").strip().lower()
+                    strategy_key = str(row.slug or "").strip().lower()
                     self._reset_modules_for_key(strategy_key)
                     next_loaded.pop(strategy_key, None)
                     next_errors.pop(strategy_key, None)
@@ -488,32 +488,32 @@ class StrategyDBLoader:
         *,
         source_key: str | None = None,
         enabled_only: bool = False,
-    ) -> list[TraderStrategyDefinition]:
-        query = select(TraderStrategyDefinition)
+    ) -> list[Strategy]:
+        query = select(Strategy)
         if source_key:
-            query = query.where(TraderStrategyDefinition.source_key == str(source_key).strip().lower())
+            query = query.where(Strategy.source_key == str(source_key).strip().lower())
         if enabled_only:
-            query = query.where(TraderStrategyDefinition.enabled == True)  # noqa: E712
-        query = query.order_by(TraderStrategyDefinition.source_key.asc(), TraderStrategyDefinition.strategy_key.asc())
+            query = query.where(Strategy.enabled == True)  # noqa: E712
+        query = query.order_by(Strategy.source_key.asc(), Strategy.slug.asc())
         return list((await session.execute(query)).scalars().all())
 
 
 strategy_db_loader = StrategyDBLoader()
 
 
-def serialize_trader_strategy_definition(row: TraderStrategyDefinition) -> dict[str, Any]:
-    runtime = strategy_db_loader.get_runtime_status(str(row.strategy_key or ""))
+def serialize_trader_strategy_definition(row: Strategy) -> dict[str, Any]:
+    runtime = strategy_db_loader.get_runtime_status(str(row.slug or ""))
     return {
         "id": row.id,
-        "strategy_key": row.strategy_key,
+        "strategy_key": row.slug,
         "source_key": row.source_key,
-        "label": row.label,
+        "label": row.name,
         "description": row.description,
         "class_name": row.class_name,
         "source_code": row.source_code,
-        "default_params_json": row.default_params_json or {},
-        "param_schema_json": row.param_schema_json or {},
-        "aliases_json": row.aliases_json or [],
+        "default_params_json": row.config or {},
+        "param_schema_json": row.config_schema or {},
+        "aliases_json": row.aliases or [],
         "is_system": bool(row.is_system),
         "enabled": bool(row.enabled),
         "status": row.status,

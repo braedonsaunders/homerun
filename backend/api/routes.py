@@ -11,7 +11,7 @@ from sqlalchemy import select
 from models import ArbitrageOpportunity, StrategyType, OpportunityFilter
 from models.database import (
     AsyncSessionLocal,
-    StrategyPlugin,
+    Strategy,
     StrategyValidationProfile,
     get_db_session,
 )
@@ -216,9 +216,9 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
     # DB strategy slug used directly (system or custom row).
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(StrategyPlugin.id).where(
-                StrategyPlugin.slug == strategy_param,
-                StrategyPlugin.enabled.is_(True),
+            select(Strategy.id).where(
+                Strategy.slug == strategy_param,
+                Strategy.enabled.is_(True),
             )
         )
         plugin_id = result.scalar_one_or_none()
@@ -898,12 +898,12 @@ async def get_strategies():
     async with AsyncSessionLocal() as session:
         await ensure_system_opportunity_strategies_seeded(session)
         result = await session.execute(
-            select(StrategyPlugin)
-            .where(StrategyPlugin.enabled)
+            select(Strategy)
+            .where(Strategy.enabled)
             .order_by(
-                StrategyPlugin.is_system.desc(),
-                StrategyPlugin.sort_order.asc(),
-                StrategyPlugin.name.asc(),
+                Strategy.is_system.desc(),
+                Strategy.sort_order.asc(),
+                Strategy.name.asc(),
             )
         )
         plugins = result.scalars().all()

@@ -45,7 +45,21 @@
       "Bash(\"venv/Scripts/python.exe\" -c \"\nimport sys; sys.stdout.reconfigure\\(encoding=''utf-8''\\)\nsys.path.insert\\(0, ''.''\\)\n\n# Check the running server''s actual output\nimport json, urllib.request\n\n# Also check - fetch a market that we KNOW should have the new format\nurl = ''http://localhost:8000/api/opportunities''\nreq = urllib.request.Request\\(url\\)\nwith urllib.request.urlopen\\(req\\) as resp:\n    opps = json.loads\\(resp.read\\(\\)\\)\n\n# Find a KXPOLITICSMENTION opp\nfor opp in opps:\n    for m in opp[''markets'']:\n        if ''KXPOLITICSMENTION'' in str\\(m.get\\(''id'', ''''\\)\\):\n            print\\(f''Server opp id={m[\"\"id\"\"]}''\\)\n            print\\(f''  question: {m[\"\"question\"\"][:80]}''\\)\n            print\\(f''  group_item_title: \"\"{m.get\\(\"\"group_item_title\"\", \"\"\"\"\\)}\"\"''\\)\n            print\\(f''  outcome_labels: {m.get\\(\"\"outcome_labels\"\", []\\)}''\\)\n            print\\(\\)\n\")",
       "Bash(WMIC PROCESS WHERE \"name=''python.exe''\" GET ProcessId,CommandLine)",
       "Bash(ls:*)",
-      "Bash(\"venv/Scripts/python.exe\" -c:*)"
+      "Bash(\"venv/Scripts/python.exe\" -c:*)",
+      "Bash(wc:*)",
+      "Bash(python3:*)",
+      "Bash(backend/venv/bin/python:*)",
+      "Bash(venv/bin/python:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(/Users/braedonsaunders/Documents/Code/homerun/backend/venv/bin/python:*)",
+      "Bash(git commit:*)",
+      "Bash(npm run build:*)",
+      "Bash(./venv/bin/python:*)",
+      "Bash(xargs:*)",
+      "Bash(sqlite3:*)"
     ]
   }
 }

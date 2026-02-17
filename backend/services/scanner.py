@@ -743,7 +743,7 @@ class ArbitrageScanner:
     async def load_plugins(self):
         """Load all enabled plugins from the database into the plugin loader."""
         try:
-            from models.database import StrategyPlugin as StrategyPluginModel
+            from models.database import Strategy as StrategyModel
 
             # DB is the source of truth; clear any stale in-memory strategies.
             for slug in list(plugin_loader.loaded_plugins.keys()):
@@ -752,12 +752,12 @@ class ArbitrageScanner:
             async with AsyncSessionLocal() as session:
                 await ensure_system_opportunity_strategies_seeded(session)
                 result = await session.execute(
-                    select(StrategyPluginModel)
-                    .where(StrategyPluginModel.enabled)
+                    select(StrategyModel)
+                    .where(StrategyModel.enabled)
                     .order_by(
-                        StrategyPluginModel.is_system.desc(),
-                        StrategyPluginModel.sort_order.asc(),
-                        StrategyPluginModel.name.asc(),
+                        StrategyModel.is_system.desc(),
+                        StrategyModel.sort_order.asc(),
+                        StrategyModel.name.asc(),
                     )
                 )
                 plugins = result.scalars().all()
@@ -769,7 +769,7 @@ class ArbitrageScanner:
                     # Update status in DB
                     async with AsyncSessionLocal() as session:
                         result = await session.execute(
-                            select(StrategyPluginModel).where(StrategyPluginModel.id == p.id)
+                            select(StrategyModel).where(StrategyModel.id == p.id)
                         )
                         db_plugin = result.scalar_one_or_none()
                         if db_plugin:
@@ -782,7 +782,7 @@ class ArbitrageScanner:
                     # Update error status in DB
                     async with AsyncSessionLocal() as session:
                         result = await session.execute(
-                            select(StrategyPluginModel).where(StrategyPluginModel.id == p.id)
+                            select(StrategyModel).where(StrategyModel.id == p.id)
                         )
                         db_plugin = result.scalar_one_or_none()
                         if db_plugin:

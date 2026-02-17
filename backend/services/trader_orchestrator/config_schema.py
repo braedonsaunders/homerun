@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import StrategyPlugin, TraderStrategyDefinition
+from models.database import Strategy
 from services.trader_orchestrator.sources.registry import (
     list_source_adapters,
     list_source_aliases,
@@ -167,7 +167,7 @@ def _row_value(row: Any, key: str) -> Any:
 
 
 def _strategy_param_fields(row: Any) -> list[dict[str, Any]]:
-    schema = _row_value(row, "param_schema_json")
+    schema = _row_value(row, "config_schema")
     if not isinstance(schema, dict):
         return []
     fields = schema.get("param_fields")
@@ -181,11 +181,11 @@ async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
     rows = list(
         (
             await session.execute(
-                select(TraderStrategyDefinition)
-                .where(TraderStrategyDefinition.enabled == True)  # noqa: E712
+                select(Strategy)
+                .where(Strategy.enabled == True)  # noqa: E712
                 .order_by(
-                    TraderStrategyDefinition.source_key.asc(),
-                    TraderStrategyDefinition.strategy_key.asc(),
+                    Strategy.source_key.asc(),
+                    Strategy.slug.asc(),
                 )
             )
         )
@@ -230,7 +230,7 @@ def _detection_plugin_has_evaluate(source_code: str, class_name: str | None = No
 async def _list_detection_strategies_with_evaluate(
     session: AsyncSession,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Query enabled StrategyPlugin rows and return those with evaluate() capability.
+    """Query enabled Strategy rows and return those with evaluate() capability.
 
     Returns a dict keyed by source_key, each value a list of strategy option dicts.
     """
@@ -238,9 +238,9 @@ async def _list_detection_strategies_with_evaluate(
         rows = list(
             (
                 await session.execute(
-                    select(StrategyPlugin)
-                    .where(StrategyPlugin.enabled == True)  # noqa: E712
-                    .order_by(StrategyPlugin.source_key.asc(), StrategyPlugin.slug.asc())
+                    select(Strategy)
+                    .where(Strategy.enabled == True)  # noqa: E712
+                    .order_by(Strategy.source_key.asc(), Strategy.slug.asc())
                 )
             )
             .scalars()
@@ -290,7 +290,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
             continue
         strategies_by_source.setdefault(source_key, []).append(row)
 
-    # Gather detection strategies (StrategyPlugin) that define evaluate().
+    # Gather detection strategies (Strategy) that define evaluate().
     detection_strategies_by_source = await _list_detection_strategies_with_evaluate(session)
 
     sources: list[dict[str, Any]] = []
@@ -300,19 +300,19 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
         template_defaults = source_defaults.get(adapter.key, {})
         template_default_params = dict(template_defaults.get("strategy_params") or {})
 
-        # 1. Dedicated trader strategies from TraderStrategyDefinition table.
+        # 1. Dedicated trader strategies from Strategy table.
         for row in rows:
-            key = str(_row_value(row, "strategy_key") or "").strip().lower()
+            key = str(_row_value(row, "slug") or "").strip().lower()
             if not key:
                 continue
-            row_defaults = _row_value(row, "default_params_json")
+            row_defaults = _row_value(row, "config")
             default_params = dict(row_defaults or {}) if isinstance(row_defaults, dict) else {}
             if not default_params and template_default_params:
                 default_params = dict(template_default_params)
             strategy_options.append(
                 {
                     "key": key,
-                    "label": str(_row_value(row, "label") or key),
+                    "label": str(_row_value(row, "name") or key),
                     "description": str(_row_value(row, "description") or ""),
                     "default_params": default_params,
                     "param_fields": _strategy_param_fields(row),
@@ -340,7 +340,7 @@ async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
             }
         )
 
-        # 3. Detection strategies from StrategyPlugin table that have evaluate().
+        # 3. Detection strategies from Strategy table that have evaluate().
         existing_keys = {opt["key"] for opt in strategy_options}
         for det_opt in detection_strategies_by_source.get(adapter.key, []):
             if det_opt["key"] not in existing_keys:

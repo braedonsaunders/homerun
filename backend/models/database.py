@@ -1050,16 +1050,55 @@ class StrategyPluginTombstone(Base):
     If a system strategy slug is tombstoned, seed routines will not recreate it.
     """
 
-    __tablename__ = "strategy_plugin_tombstones"
+    __tablename__ = "strategy_tombstones"
 
     slug = Column(String, primary_key=True)  # Tombstoned system strategy slug
     deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     reason = Column(String, nullable=True)
 
     __table_args__ = (
-        Index("idx_strategy_plugin_tombstones_deleted_at", "deleted_at"),
+        Index("idx_strategy_tombstones_deleted_at", "deleted_at"),
     )
 
+
+
+
+class Strategy(Base):
+    """Unified strategy definition — one class handles detect → evaluate → exit.
+
+    Replaces both StrategyPlugin (detection) and TraderStrategyDefinition (execution).
+    Each row is a complete Python strategy with optional detect(), evaluate(), and
+    should_exit() methods.
+    """
+
+    __tablename__ = "strategies"
+
+    id = Column(String, primary_key=True)  # UUID
+    slug = Column(String, unique=True, nullable=False)  # Unique identifier
+    source_key = Column(String, nullable=False, default="scanner")  # scanner, news, crypto, weather, traders
+    name = Column(String, nullable=False)  # Display name
+    description = Column(Text, nullable=True)
+    source_code = Column(Text, nullable=False)  # Full Python source
+    class_name = Column(String, nullable=True)  # Strategy class name
+    is_system = Column(Boolean, default=False, nullable=False)  # Seeded built-in
+    enabled = Column(Boolean, default=True)
+    status = Column(String, default="unloaded")  # unloaded, loaded, error
+    error_message = Column(Text, nullable=True)
+    config = Column(JSON, default=dict)  # Merged config (detect + execute + exit params)
+    config_schema = Column(JSON, default=dict)  # Param schema for UI form
+    aliases = Column(JSON, default=list)  # Alternative slug names
+    version = Column(Integer, default=1)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_strategy_slug", "slug"),
+        Index("idx_strategy_source_key", "source_key"),
+        Index("idx_strategy_enabled", "enabled"),
+        Index("idx_strategy_is_system", "is_system"),
+        Index("idx_strategy_status", "status"),
+    )
 
 # ==================== LLM MODELS CACHE ====================
 

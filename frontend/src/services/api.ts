@@ -3591,3 +3591,124 @@ export const getWeatherWorkflowPerformance = async (
 }
 
 export default api
+
+// ==================== UNIFIED STRATEGY API ====================
+
+export interface UnifiedStrategy {
+  id: string
+  slug: string
+  source_key: string
+  name: string
+  description: string | null
+  source_code: string
+  class_name: string | null
+  is_system: boolean
+  enabled: boolean
+  status: string
+  error_message: string | null
+  version: number
+  config: Record<string, unknown>
+  config_schema: Record<string, unknown> | null
+  aliases: string[]
+  sort_order: number
+  created_at: string | null
+  updated_at: string | null
+  capabilities: {
+    has_detect: boolean
+    has_detect_async: boolean
+    has_evaluate: boolean
+    has_should_exit: boolean
+  }
+  strategy_type: string  // 'detect' | 'execute' | 'unified'
+  runtime: Record<string, any> | null
+}
+
+export const getUnifiedStrategies = async (params?: {
+  type?: string
+  source_key?: string
+  enabled?: boolean
+}): Promise<UnifiedStrategy[]> => {
+  const { data } = await api.get('/strategy-manager', { params })
+  return data.items || []
+}
+
+export const getUnifiedStrategy = async (id: string): Promise<UnifiedStrategy> => {
+  const { data } = await api.get(`/strategy-manager/${id}`)
+  return data
+}
+
+export const createUnifiedStrategy = async (payload: {
+  slug: string
+  source_key?: string
+  name?: string
+  description?: string
+  source_code: string
+  class_name?: string
+  config?: Record<string, unknown>
+  config_schema?: Record<string, unknown>
+  aliases?: string[]
+  enabled?: boolean
+}): Promise<UnifiedStrategy> => {
+  const { data } = await api.post('/strategy-manager', payload)
+  return data
+}
+
+export const updateUnifiedStrategy = async (
+  id: string,
+  payload: Partial<{
+    slug: string
+    source_key: string
+    name: string
+    description: string
+    source_code: string
+    class_name: string
+    config: Record<string, unknown>
+    config_schema: Record<string, unknown>
+    aliases: string[]
+    enabled: boolean
+    unlock_system: boolean
+  }>
+): Promise<UnifiedStrategy> => {
+  const { data } = await api.put(`/strategy-manager/${id}`, payload)
+  return data
+}
+
+export const deleteUnifiedStrategy = async (id: string): Promise<void> => {
+  await api.delete(`/strategy-manager/${id}`)
+}
+
+export const validateUnifiedStrategy = async (source_code: string, class_name?: string): Promise<{
+  valid: boolean
+  inferred_type: string
+  capabilities: Record<string, boolean>
+  class_name: string | null
+  errors: string[]
+  warnings: string[]
+}> => {
+  const { data } = await api.post('/strategy-manager/validate', { source_code, class_name })
+  return data
+}
+
+export const reloadUnifiedStrategy = async (id: string): Promise<{
+  status: string
+  message?: string
+  runtime?: Record<string, any>
+}> => {
+  const { data } = await api.post(`/strategy-manager/${id}/reload`)
+  return data
+}
+
+export const getUnifiedStrategyTemplate = async (): Promise<{
+  template: string
+  instructions: string
+  available_imports: string[]
+}> => {
+  const { data } = await api.get('/strategy-manager/template')
+  return data
+}
+
+export const getUnifiedStrategyDocs = async (): Promise<Record<string, any>> => {
+  const { data } = await api.get('/strategy-manager/docs')
+  return data
+}
+

@@ -1,10 +1,7 @@
 """Unified Strategy API Routes
 
-Serves both opportunity-detection (StrategyPlugin) and trader-execution
-(TraderStrategyDefinition) strategies through a single /strategies endpoint.
-
-The older /plugins and /trader-strategies endpoints remain functional as
-backward-compatible aliases.
+All strategies (detection and execution) live in a single `strategies` table.
+This router provides CRUD, validation, reload, template, and docs endpoints.
 """
 
 from __future__ import annotations
@@ -21,9 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AsyncSessionLocal,
-    StrategyPlugin,
+    Strategy,
     StrategyPluginTombstone,
-    TraderStrategyDefinition,
     get_db_session,
 )
 from services.opportunity_strategy_catalog import (
@@ -38,11 +34,6 @@ from services.plugin_loader import (
 )
 from services.trader_orchestrator.strategy_catalog import (
     ensure_system_trader_strategies_seeded,
-)
-from services.trader_orchestrator.strategy_db_loader import (
-    serialize_trader_strategy_definition,
-    strategy_db_loader,
-    validate_trader_strategy_source,
 )
 from utils.logger import get_logger
 
@@ -75,22 +66,22 @@ def _validate_slug(slug: str) -> str:
 
 
 class UnifiedStrategyCreateRequest(BaseModel):
-    """Create a strategy in the appropriate table based on its source code."""
+    """Create a strategy in the strategies table."""
 
-    slug: str = Field(..., min_length=3, max_length=128, description="Unique identifier (slug or strategy_key)")
+    slug: str = Field(..., min_length=3, max_length=128, description="Unique identifier")
     source_key: str = Field(default="scanner", min_length=2, max_length=64)
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Display name / label")
+    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Display name")
     description: Optional[str] = Field(None, max_length=500)
     source_code: str = Field(..., min_length=10)
     class_name: Optional[str] = Field(None, min_length=1, max_length=200)
-    config: dict = Field(default_factory=dict, description="Config overrides or default_params_json")
-    config_schema: dict = Field(default_factory=dict, description="Param schema (for trader strategies)")
+    config: dict = Field(default_factory=dict, description="Config / default params")
+    config_schema: dict = Field(default_factory=dict, description="Param schema for UI form")
     aliases: list[str] = Field(default_factory=list)
     enabled: bool = True
 
 
 class UnifiedStrategyUpdateRequest(BaseModel):
-    """Partial update for a unified strategy."""
+    """Partial update for a strategy."""
 
     slug: Optional[str] = Field(None, min_length=3, max_length=128)
     source_key: Optional[str] = Field(None, min_length=2, max_length=64)
@@ -108,25 +99,6 @@ class UnifiedStrategyUpdateRequest(BaseModel):
 class UnifiedValidateRequest(BaseModel):
     source_code: str = Field(..., min_length=10)
     class_name: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# Helpers — extract config_schema for opportunity plugins
-# ---------------------------------------------------------------------------
-
-
-def _extract_config_schema_for_plugin(p: StrategyPlugin) -> Optional[dict]:
-    if bool(p.is_system):
-        for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
-            if seed.slug == p.slug and seed.config_schema:
-                return seed.config_schema
-    cfg = p.config or {}
-    if isinstance(cfg, dict) and "_schema" in cfg:
-        return cfg["_schema"]
-    for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
-        if seed.slug == p.slug and seed.config_schema:
-            return seed.config_schema
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -160,51 +132,18 @@ def _infer_strategy_type(capabilities: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Serialisation — unified response from either table
+# Serialisation — unified response from Strategy table
 # ---------------------------------------------------------------------------
 
 
-def _plugin_to_unified(p: StrategyPlugin) -> dict:
-    """Convert a StrategyPlugin ORM row to the unified response dict."""
-    runtime = plugin_loader.get_status(p.slug)
-    config = dict(p.config or {})
-    config.pop("_schema", None)
-    capabilities = _detect_capabilities(p.source_code or "")
-    return {
-        "id": p.id,
-        "slug": p.slug,
-        "source_key": p.source_key or "scanner",
-        "name": p.name,
-        "description": p.description,
-        "source_code": p.source_code,
-        "class_name": p.class_name,
-        "is_system": bool(p.is_system),
-        "enabled": bool(p.enabled),
-        "status": p.status,
-        "error_message": p.error_message,
-        "version": int(p.version or 1),
-        "config": config,
-        "config_schema": _extract_config_schema_for_plugin(p),
-        "strategy_type": _infer_strategy_type(capabilities),
-        "capabilities": capabilities,
-        "aliases": [],
-        "sort_order": p.sort_order,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-        "table_source": "strategy_plugins",
-        "runtime": runtime,
-    }
-
-
-def _trader_def_to_unified(row: TraderStrategyDefinition) -> dict:
-    """Convert a TraderStrategyDefinition ORM row to the unified response dict."""
-    runtime = strategy_db_loader.get_runtime_status(str(row.strategy_key or ""))
+def _strategy_to_dict(row: Strategy) -> dict:
+    """Convert a Strategy ORM row to the API response dict."""
     capabilities = _detect_capabilities(row.source_code or "")
     return {
         "id": row.id,
-        "slug": row.strategy_key,
-        "source_key": row.source_key,
-        "name": row.label,
+        "slug": row.slug,
+        "source_key": row.source_key or "scanner",
+        "name": row.name,
         "description": row.description,
         "source_code": row.source_code,
         "class_name": row.class_name,
@@ -213,44 +152,16 @@ def _trader_def_to_unified(row: TraderStrategyDefinition) -> dict:
         "status": row.status,
         "error_message": row.error_message,
         "version": int(row.version or 1),
-        "config": dict(row.default_params_json or {}),
-        "config_schema": dict(row.param_schema_json or {}),
+        "config": dict(row.config or {}),
+        "config_schema": dict(row.config_schema or {}),
         "strategy_type": _infer_strategy_type(capabilities),
         "capabilities": capabilities,
-        "aliases": list(row.aliases_json or []),
-        "sort_order": 0,
+        "aliases": list(row.aliases or []),
+        "sort_order": row.sort_order or 0,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        "table_source": "trader_strategy_definitions",
-        "runtime": runtime,
+        "runtime": None,  # Will be populated by strategy_loader later
     }
-
-
-# ---------------------------------------------------------------------------
-# Lookup helpers
-# ---------------------------------------------------------------------------
-
-
-async def _find_in_plugins(strategy_id: str, session: AsyncSession) -> Optional[StrategyPlugin]:
-    result = await session.execute(
-        select(StrategyPlugin).where(StrategyPlugin.id == strategy_id)
-    )
-    return result.scalar_one_or_none()
-
-
-async def _find_in_trader_defs(strategy_id: str, session: AsyncSession) -> Optional[TraderStrategyDefinition]:
-    return await session.get(TraderStrategyDefinition, strategy_id)
-
-
-async def _find_strategy(strategy_id: str, session: AsyncSession):
-    """Find a strategy in either table, returning (row, table_source)."""
-    plugin = await _find_in_plugins(strategy_id, session)
-    if plugin is not None:
-        return plugin, "strategy_plugins"
-    trader_def = await _find_in_trader_defs(strategy_id, session)
-    if trader_def is not None:
-        return trader_def, "trader_strategy_definitions"
-    return None, None
 
 
 # ==================== ENDPOINTS ====================
@@ -258,14 +169,14 @@ async def _find_strategy(strategy_id: str, session: AsyncSession):
 
 @router.get("/template")
 async def get_unified_template():
-    """Return the unified strategy template (opportunity detection)."""
+    """Return the unified strategy template."""
     return {
         "template": PLUGIN_TEMPLATE,
         "instructions": (
             "Create a class that extends BaseStrategy and implements detect() or "
-            "detect_async(). For execution strategies, extend BaseTraderStrategy "
-            "and implement evaluate(signal, context). Unified strategies can "
-            "implement both detect/detect_async and evaluate/should_exit."
+            "detect_async() for opportunity detection. For execution strategies, "
+            "implement evaluate(signal, context). Unified strategies can implement "
+            "both detect/detect_async and evaluate/should_exit."
         ),
         "available_imports": [
             "models (Market, Event, ArbitrageOpportunity, StrategyType)",
@@ -289,34 +200,31 @@ async def get_unified_template():
 
 @router.get("/docs")
 async def get_unified_docs():
-    """Comprehensive merged documentation for both strategy types."""
+    """Comprehensive documentation for the unified strategy system."""
     return {
         "overview": {
             "title": "Unified Strategy API Reference",
             "description": (
-                "This API manages two families of strategy: opportunity-detection "
-                "strategies (StrategyPlugin) that run inside the scanner, and "
-                "trader-execution strategies (TraderStrategyDefinition) that the "
-                "orchestrator evaluates for each trade signal. A unified strategy "
-                "may implement both detect and evaluate methods."
+                "All strategies live in a single `strategies` table. Each strategy "
+                "is a complete Python class with optional detect(), evaluate(), and "
+                "should_exit() methods. Strategies are classified as 'detect', "
+                "'execute', or 'unified' based on which methods they implement."
             ),
         },
         "strategy_types": {
             "detect": (
                 "Opportunity-detection strategies extend BaseStrategy and implement "
                 "detect() or detect_async(). They run every scan cycle and return "
-                "ArbitrageOpportunity objects. Stored in strategy_plugins."
+                "ArbitrageOpportunity objects."
             ),
             "execute": (
                 "Trader-execution strategies extend BaseTraderStrategy and implement "
                 "evaluate(signal, context). They decide whether a detected signal "
-                "should be traded, at what size, and with what confidence. Stored in "
-                "trader_strategy_definitions."
+                "should be traded, at what size, and with what confidence."
             ),
             "unified": (
                 "A unified strategy implements both detect/detect_async and evaluate. "
-                "It is stored in strategy_plugins (detect is primary) and can also "
-                "act as an execution strategy."
+                "It handles end-to-end: finding opportunities and deciding how to trade them."
             ),
         },
         "detect_strategy": {
@@ -378,47 +286,35 @@ async def get_unified_docs():
             "multiprocessing — No process-based concurrency",
         ],
         "endpoints": {
-            "GET /strategy-manager": "List all strategies from both tables with type/source_key/enabled filters",
-            "GET /strategy-manager/template": "Starter template for writing a new strategy",
-            "GET /strategy-manager/docs": "This documentation",
-            "GET /strategy-manager/{id}": "Get one strategy by ID (searches both tables)",
-            "POST /strategy-manager": "Create — auto-detects type from source code",
-            "PUT /strategy-manager/{id}": "Update (partial)",
-            "DELETE /strategy-manager/{id}": "Delete with tombstone for system strategies",
-            "POST /strategy-manager/{id}/reload": "Force reload from stored source",
-            "POST /strategy-manager/validate": "Validate source code without saving",
+            "GET /strategies": "List all strategies with type/source_key/enabled filters",
+            "GET /strategies/template": "Starter template for writing a new strategy",
+            "GET /strategies/docs": "This documentation",
+            "GET /strategies/{id}": "Get one strategy by ID",
+            "POST /strategies": "Create a new strategy",
+            "PUT /strategies/{id}": "Update (partial)",
+            "DELETE /strategies/{id}": "Delete with tombstone for system strategies",
+            "POST /strategies/{id}/reload": "Force reload from stored source",
+            "POST /strategies/validate": "Validate source code without saving",
         },
     }
 
 
 @router.post("/validate")
 async def validate_unified_source(req: UnifiedValidateRequest):
-    """Validate strategy source code without saving.
-
-    Runs both opportunity-plugin and trader-strategy validators.
-    """
+    """Validate strategy source code without saving."""
     plugin_result = validate_plugin_source(req.source_code)
-    trader_result = validate_trader_strategy_source(req.source_code, req.class_name)
     capabilities = _detect_capabilities(req.source_code)
     inferred_type = _infer_strategy_type(capabilities)
 
-    # Choose the primary validation result based on inferred type
-    if inferred_type == "execute":
-        primary = trader_result
-    else:
-        primary = plugin_result
-
     return {
-        "valid": primary.get("valid", False),
+        "valid": plugin_result.get("valid", False),
         "inferred_type": inferred_type,
         "capabilities": capabilities,
-        "class_name": primary.get("class_name"),
+        "class_name": plugin_result.get("class_name"),
         "strategy_name": plugin_result.get("strategy_name"),
         "strategy_description": plugin_result.get("strategy_description"),
-        "errors": primary.get("errors", []),
-        "warnings": primary.get("warnings", []),
-        "plugin_validation": plugin_result,
-        "trader_validation": trader_result,
+        "errors": plugin_result.get("errors", []),
+        "warnings": plugin_result.get("warnings", []),
     }
 
 
@@ -431,50 +327,26 @@ async def list_strategies(
     source_key: Optional[str] = Query(default=None, description="Filter by source_key"),
     enabled: Optional[bool] = Query(default=None, description="Filter by enabled status"),
 ):
-    """List ALL strategies from both tables in a unified format."""
-    items: list[dict] = []
-
+    """List all strategies from the unified strategies table."""
     async with AsyncSessionLocal() as session:
         # Seed system strategies to ensure they exist
         await ensure_system_opportunity_strategies_seeded(session)
         await ensure_system_trader_strategies_seeded(session)
 
-        # --- Query StrategyPlugin (detect / unified) ---
-        plugin_query = select(StrategyPlugin).order_by(
-            StrategyPlugin.is_system.desc(),
-            StrategyPlugin.sort_order.asc(),
-            StrategyPlugin.name.asc(),
+        query = select(Strategy).order_by(
+            Strategy.is_system.desc(),
+            Strategy.sort_order.asc(),
+            Strategy.name.asc(),
         )
         if source_key:
-            plugin_query = plugin_query.where(
-                StrategyPlugin.source_key == source_key.strip().lower()
-            )
+            query = query.where(Strategy.source_key == source_key.strip().lower())
         if enabled is not None:
-            plugin_query = plugin_query.where(StrategyPlugin.enabled == bool(enabled))
+            query = query.where(Strategy.enabled == bool(enabled))
 
-        plugins = (await session.execute(plugin_query)).scalars().all()
-        for p in plugins:
-            items.append(_plugin_to_unified(p))
+        rows = (await session.execute(query)).scalars().all()
+        items = [_strategy_to_dict(row) for row in rows]
 
-        # --- Query TraderStrategyDefinition (execute) ---
-        trader_query = select(TraderStrategyDefinition).order_by(
-            TraderStrategyDefinition.source_key.asc(),
-            TraderStrategyDefinition.strategy_key.asc(),
-        )
-        if source_key:
-            trader_query = trader_query.where(
-                TraderStrategyDefinition.source_key == source_key.strip().lower()
-            )
-        if enabled is not None:
-            trader_query = trader_query.where(
-                TraderStrategyDefinition.enabled == bool(enabled)
-            )
-
-        trader_rows = (await session.execute(trader_query)).scalars().all()
-        for row in trader_rows:
-            items.append(_trader_def_to_unified(row))
-
-    # Apply type filter after both queries (capabilities require source inspection)
+    # Apply type filter after query (capabilities require source inspection)
     if type and type != "all":
         items = [s for s in items if s["strategy_type"] == type]
 
@@ -483,50 +355,24 @@ async def list_strategies(
 
 @router.get("/{strategy_id}")
 async def get_strategy(strategy_id: str, session: AsyncSession = Depends(get_db_session)):
-    """Get a single strategy by ID (searches both tables)."""
+    """Get a single strategy by ID."""
     await ensure_system_opportunity_strategies_seeded(session)
     await ensure_system_trader_strategies_seeded(session)
 
-    row, table = await _find_strategy(strategy_id, session)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    if table == "strategy_plugins":
-        return _plugin_to_unified(row)
-    return _trader_def_to_unified(row)
+    return _strategy_to_dict(row)
 
 
 @router.post("")
 async def create_strategy(req: UnifiedStrategyCreateRequest):
-    """Create a strategy, auto-detecting the target table from source code."""
+    """Create a new strategy."""
     slug = _validate_slug(req.slug)
     source_key = str(req.source_key or "scanner").strip().lower()
 
-    capabilities = _detect_capabilities(req.source_code)
-    inferred_type = _infer_strategy_type(capabilities)
-
-    # Route to the appropriate table
-    if inferred_type == "execute":
-        return await _create_trader_strategy(req, slug, source_key, capabilities)
-    else:
-        # "detect" or "unified" -> strategy_plugins (detect is primary)
-        return await _create_plugin_strategy(req, slug, source_key, capabilities)
-
-
-async def _create_plugin_strategy(
-    req: UnifiedStrategyCreateRequest,
-    slug: str,
-    source_key: str,
-    capabilities: dict,
-) -> dict:
-    """Insert into strategy_plugins."""
-    async with AsyncSessionLocal() as session:
-        existing = await session.execute(
-            select(StrategyPlugin).where(StrategyPlugin.slug == slug)
-        )
-        if existing.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail=f"A strategy with slug '{slug}' already exists.")
-
+    # Validate source code
     validation = validate_plugin_source(req.source_code)
     if not validation["valid"]:
         raise HTTPException(
@@ -538,23 +384,29 @@ async def _create_plugin_strategy(
         req.name or validation["strategy_name"] or slug.replace("_", " ").title()
     ).strip()
     strategy_description = req.description if req.description is not None else validation["strategy_description"]
-    class_name = validation["class_name"]
+    class_name = req.class_name or validation["class_name"]
 
-    plugin_id = str(uuid.uuid4())
+    strategy_id = uuid.uuid4().hex
     status = "unloaded"
     error_message = None
 
-    if req.enabled:
-        try:
-            plugin_loader.load_plugin(slug, req.source_code, req.config or None)
-            status = "loaded"
-        except PluginValidationError as e:
-            status = "error"
-            error_message = str(e)
-
     async with AsyncSessionLocal() as session:
-        plugin = StrategyPlugin(
-            id=plugin_id,
+        existing = await session.execute(
+            select(Strategy).where(Strategy.slug == slug)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail=f"A strategy with slug '{slug}' already exists.")
+
+        if req.enabled:
+            try:
+                plugin_loader.load_plugin(slug, req.source_code, req.config or None)
+                status = "loaded"
+            except PluginValidationError as e:
+                status = "error"
+                error_message = str(e)
+
+        row = Strategy(
+            id=strategy_id,
             slug=slug,
             source_key=source_key,
             name=strategy_name,
@@ -566,271 +418,130 @@ async def _create_plugin_strategy(
             status=status,
             error_message=error_message,
             config=req.config or {},
+            config_schema=req.config_schema or {},
+            aliases=req.aliases or [],
             version=1,
             sort_order=0,
-        )
-        session.add(plugin)
-        await session.commit()
-        await session.refresh(plugin)
-        return _plugin_to_unified(plugin)
-
-
-async def _create_trader_strategy(
-    req: UnifiedStrategyCreateRequest,
-    slug: str,
-    source_key: str,
-    capabilities: dict,
-) -> dict:
-    """Insert into trader_strategy_definitions."""
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import func
-
-        existing = await session.execute(
-            select(TraderStrategyDefinition.id).where(
-                func.lower(TraderStrategyDefinition.strategy_key) == slug.lower()
-            )
-        )
-        if existing.scalar_one_or_none() is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"A strategy with key '{slug}' already exists.",
-            )
-
-        class_name_to_use = req.class_name or slug.replace("_", " ").title().replace(" ", "")
-        validation = validate_trader_strategy_source(req.source_code, class_name_to_use)
-        if not validation.get("valid"):
-            raise HTTPException(
-                status_code=422,
-                detail={"message": "Strategy validation failed", "errors": validation.get("errors", [])},
-            )
-        class_name_to_use = str(validation.get("class_name") or class_name_to_use).strip()
-
-        row = TraderStrategyDefinition(
-            id=uuid.uuid4().hex,
-            strategy_key=slug,
-            source_key=source_key,
-            label=str(req.name or slug.replace("_", " ").title()).strip(),
-            description=req.description,
-            class_name=class_name_to_use,
-            source_code=req.source_code,
-            default_params_json=dict(req.config or {}),
-            param_schema_json=dict(req.config_schema or {}),
-            aliases_json=list(req.aliases or []),
-            is_system=False,
-            enabled=bool(req.enabled),
-            status="unloaded",
-            error_message=None,
-            version=1,
         )
         session.add(row)
         await session.commit()
         await session.refresh(row)
-
-        if row.enabled:
-            await strategy_db_loader.reload_strategy(row.strategy_key, session=session)
-            row = await session.get(TraderStrategyDefinition, row.id)
-
-        return _trader_def_to_unified(row)
+        return _strategy_to_dict(row)
 
 
 @router.put("/{strategy_id}")
 async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
-    """Update a strategy in whichever table it belongs to."""
+    """Update a strategy."""
     async with AsyncSessionLocal() as session:
-        row, table = await _find_strategy(strategy_id, session)
+        row = await session.get(Strategy, strategy_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
-        if table == "strategy_plugins":
-            return await _update_plugin(row, req, session)
-        else:
-            return await _update_trader_def(row, req, session)
-
-
-async def _update_plugin(
-    plugin: StrategyPlugin,
-    req: UnifiedStrategyUpdateRequest,
-    session: AsyncSession,
-) -> dict:
-    """Update a StrategyPlugin row."""
-    if bool(plugin.is_system) and not req.unlock_system:
-        raise HTTPException(
-            status_code=403,
-            detail="System strategies are read-only. Set unlock_system=true for admin override.",
-        )
-
-    original_slug = plugin.slug
-    code_changed = False
-    slug_changed = False
-
-    if req.slug is not None:
-        next_slug = _validate_slug(req.slug)
-        if next_slug != plugin.slug:
-            existing_slug = await session.execute(
-                select(StrategyPlugin.id).where(
-                    StrategyPlugin.slug == next_slug,
-                    StrategyPlugin.id != plugin.id,
-                )
-            )
-            if existing_slug.scalar_one_or_none():
-                raise HTTPException(status_code=409, detail=f"Slug '{next_slug}' already exists.")
-            plugin.slug = next_slug
-            slug_changed = True
-
-    if req.source_code is not None and req.source_code != plugin.source_code:
-        validation = validate_plugin_source(req.source_code)
-        if not validation["valid"]:
+        if bool(row.is_system) and not req.unlock_system:
             raise HTTPException(
-                status_code=400,
-                detail={"message": "Validation failed", "errors": validation["errors"]},
+                status_code=403,
+                detail="System strategies are read-only. Set unlock_system=true for admin override.",
             )
-        plugin.source_code = req.source_code
-        plugin.class_name = validation["class_name"]
-        if req.name is None and validation["strategy_name"]:
-            plugin.name = validation["strategy_name"]
-        if req.description is None and validation["strategy_description"]:
-            plugin.description = validation["strategy_description"]
-        plugin.version += 1
-        code_changed = True
 
-    if req.config is not None:
-        plugin.config = req.config
-        code_changed = True
+        original_slug = row.slug
+        code_changed = False
+        slug_changed = False
 
-    if req.source_key is not None:
-        plugin.source_key = str(req.source_key or "scanner").strip().lower()
-    if req.name is not None:
-        plugin.name = req.name
-    if req.description is not None:
-        plugin.description = req.description
+        if req.slug is not None:
+            next_slug = _validate_slug(req.slug)
+            if next_slug != row.slug:
+                existing_slug = await session.execute(
+                    select(Strategy.id).where(
+                        Strategy.slug == next_slug,
+                        Strategy.id != row.id,
+                    )
+                )
+                if existing_slug.scalar_one_or_none():
+                    raise HTTPException(status_code=409, detail=f"Slug '{next_slug}' already exists.")
+                row.slug = next_slug
+                slug_changed = True
 
-    enabled_changed = False
-    if req.enabled is not None and req.enabled != plugin.enabled:
-        plugin.enabled = req.enabled
-        enabled_changed = True
+        if req.source_code is not None and req.source_code != row.source_code:
+            validation = validate_plugin_source(req.source_code)
+            if not validation["valid"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": "Validation failed", "errors": validation["errors"]},
+                )
+            row.source_code = req.source_code
+            row.class_name = validation["class_name"]
+            if req.name is None and validation["strategy_name"]:
+                row.name = validation["strategy_name"]
+            if req.description is None and validation["strategy_description"]:
+                row.description = validation["strategy_description"]
+            row.version = int(row.version or 1) + 1
+            code_changed = True
 
-    if enabled_changed or code_changed or slug_changed:
-        if slug_changed:
-            plugin_loader.unload_plugin(original_slug)
-        if plugin.enabled:
-            try:
-                plugin_loader.load_plugin(plugin.slug, plugin.source_code, plugin.config or None)
-                plugin.status = "loaded"
-                plugin.error_message = None
-            except PluginValidationError as e:
-                plugin.status = "error"
-                plugin.error_message = str(e)
-        else:
-            plugin_loader.unload_plugin(plugin.slug)
-            plugin.status = "unloaded"
-            plugin.error_message = None
+        if req.config is not None:
+            row.config = req.config
+            code_changed = True
+        if req.config_schema is not None:
+            row.config_schema = req.config_schema
+        if req.aliases is not None:
+            row.aliases = list(req.aliases)
 
-    await session.commit()
-    await session.refresh(plugin)
-    return _plugin_to_unified(plugin)
+        if req.source_key is not None:
+            row.source_key = str(req.source_key or "scanner").strip().lower()
+        if req.name is not None:
+            row.name = req.name
+        if req.description is not None:
+            row.description = req.description
 
+        enabled_changed = False
+        if req.enabled is not None and req.enabled != row.enabled:
+            row.enabled = req.enabled
+            enabled_changed = True
 
-async def _update_trader_def(
-    row: TraderStrategyDefinition,
-    req: UnifiedStrategyUpdateRequest,
-    session: AsyncSession,
-) -> dict:
-    """Update a TraderStrategyDefinition row."""
-    if bool(row.is_system) and not req.unlock_system:
-        raise HTTPException(
-            status_code=403,
-            detail="System strategies are read-only. Clone first or set unlock_system=true.",
-        )
+        if enabled_changed or code_changed or slug_changed:
+            if slug_changed:
+                plugin_loader.unload_plugin(original_slug)
+            if row.enabled:
+                try:
+                    plugin_loader.load_plugin(row.slug, row.source_code, row.config or None)
+                    row.status = "loaded"
+                    row.error_message = None
+                except PluginValidationError as e:
+                    row.status = "error"
+                    row.error_message = str(e)
+            else:
+                plugin_loader.unload_plugin(row.slug)
+                row.status = "unloaded"
+                row.error_message = None
 
-    from sqlalchemy import func
-
-    next_key = str(req.slug or row.strategy_key).strip().lower()
-    if next_key != str(row.strategy_key or "").strip().lower():
-        exists = await session.execute(
-            select(TraderStrategyDefinition.id).where(
-                func.lower(TraderStrategyDefinition.strategy_key) == next_key,
-                TraderStrategyDefinition.id != row.id,
-            )
-        )
-        if exists.scalar_one_or_none() is not None:
-            raise HTTPException(status_code=409, detail=f"strategy_key '{next_key}' already exists.")
-        row.strategy_key = next_key
-
-    next_class_name = str(req.class_name or row.class_name or "").strip()
-    next_source_code = str(req.source_code or row.source_code or "")
-    if req.class_name is not None or req.source_code is not None:
-        validation = validate_trader_strategy_source(next_source_code, next_class_name)
-        if not validation.get("valid"):
-            raise HTTPException(status_code=422, detail={"errors": validation.get("errors", [])})
-        next_class_name = str(validation.get("class_name") or next_class_name).strip()
-
-    if req.source_key is not None:
-        row.source_key = str(req.source_key).strip().lower()
-    if req.name is not None:
-        row.label = str(req.name).strip() or row.label
-    if req.description is not None:
-        row.description = req.description
-    row.class_name = next_class_name or row.class_name
-    if req.source_code is not None:
-        row.source_code = next_source_code
-    if req.config is not None:
-        row.default_params_json = dict(req.config)
-    if req.config_schema is not None:
-        row.param_schema_json = dict(req.config_schema)
-    if req.aliases is not None:
-        row.aliases_json = list(req.aliases)
-    if req.enabled is not None:
-        row.enabled = bool(req.enabled)
-    row.version = int(row.version or 1) + 1
-    row.status = "unloaded"
-    row.error_message = None
-
-    await session.commit()
-    await session.refresh(row)
-
-    await strategy_db_loader.reload_strategy(row.strategy_key, session=session)
-    row = await session.get(TraderStrategyDefinition, row.id)
-    return _trader_def_to_unified(row)
+        await session.commit()
+        await session.refresh(row)
+        return _strategy_to_dict(row)
 
 
 @router.delete("/{strategy_id}")
 async def delete_strategy(strategy_id: str):
-    """Delete a strategy (with tombstone for system opportunity strategies)."""
+    """Delete a strategy (with tombstone for system strategies)."""
     async with AsyncSessionLocal() as session:
-        row, table = await _find_strategy(strategy_id, session)
+        row = await session.get(Strategy, strategy_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
-        if table == "strategy_plugins":
-            plugin: StrategyPlugin = row
-            if bool(plugin.is_system):
-                tombstone = await session.get(StrategyPluginTombstone, plugin.slug)
-                if tombstone is None:
-                    session.add(
-                        StrategyPluginTombstone(
-                            slug=plugin.slug,
-                            deleted_at=datetime.utcnow(),
-                            reason="user_deleted_system_strategy",
-                        )
+        if bool(row.is_system):
+            tombstone = await session.get(StrategyPluginTombstone, row.slug)
+            if tombstone is None:
+                session.add(
+                    StrategyPluginTombstone(
+                        slug=row.slug,
+                        deleted_at=datetime.utcnow(),
+                        reason="user_deleted_system_strategy",
                     )
-                else:
-                    tombstone.deleted_at = datetime.utcnow()
-                    tombstone.reason = "user_deleted_system_strategy"
-            plugin_loader.unload_plugin(plugin.slug)
-            await session.delete(plugin)
-        else:
-            trader_def: TraderStrategyDefinition = row
-            key = str(trader_def.strategy_key or "").strip().lower()
-            # Remove from loader caches (no public unload method exists)
-            strategy_db_loader._loaded.pop(key, None)
-            strategy_db_loader._errors.pop(key, None)
-            strategy_db_loader._reset_modules_for_key(key)
-            # Remove any aliases pointing to this key
-            for alias, target in list(strategy_db_loader._aliases.items()):
-                if target == key:
-                    strategy_db_loader._aliases.pop(alias, None)
-            await session.delete(trader_def)
+                )
+            else:
+                tombstone.deleted_at = datetime.utcnow()
+                tombstone.reason = "user_deleted_system_strategy"
 
+        plugin_loader.unload_plugin(row.slug)
+        await session.delete(row)
         await session.commit()
 
     return {"status": "success", "message": "Strategy deleted"}
@@ -840,43 +551,31 @@ async def delete_strategy(strategy_id: str):
 async def reload_strategy(strategy_id: str):
     """Force reload a strategy from its stored source code."""
     async with AsyncSessionLocal() as session:
-        row, table = await _find_strategy(strategy_id, session)
+        row = await session.get(Strategy, strategy_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
-        if table == "strategy_plugins":
-            plugin: StrategyPlugin = row
-            if not plugin.enabled:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot reload a disabled strategy. Enable it first.",
-                )
-            try:
-                plugin_loader.load_plugin(plugin.slug, plugin.source_code, plugin.config or None)
-                plugin.status = "loaded"
-                plugin.error_message = None
-                await session.commit()
-                return {
-                    "status": "success",
-                    "message": f"Strategy '{plugin.slug}' reloaded",
-                    "runtime": plugin_loader.get_status(plugin.slug),
-                }
-            except PluginValidationError as e:
-                plugin.status = "error"
-                plugin.error_message = str(e)
-                await session.commit()
-                raise HTTPException(
-                    status_code=400,
-                    detail={"message": f"Reload failed for '{plugin.slug}'", "error": str(e)},
-                )
-        else:
-            trader_def: TraderStrategyDefinition = row
-            result = await strategy_db_loader.reload_strategy(
-                trader_def.strategy_key, session=session,
+        if not row.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot reload a disabled strategy. Enable it first.",
             )
-            refreshed = await session.get(TraderStrategyDefinition, strategy_id)
+
+        try:
+            plugin_loader.load_plugin(row.slug, row.source_code, row.config or None)
+            row.status = "loaded"
+            row.error_message = None
+            await session.commit()
             return {
                 "status": "success",
-                "reload": result,
-                "strategy": _trader_def_to_unified(refreshed),
+                "message": f"Strategy '{row.slug}' reloaded",
+                "runtime": plugin_loader.get_status(row.slug),
             }
+        except PluginValidationError as e:
+            row.status = "error"
+            row.error_message = str(e)
+            await session.commit()
+            raise HTTPException(
+                status_code=400,
+                detail={"message": f"Reload failed for '{row.slug}'", "error": str(e)},
+            )

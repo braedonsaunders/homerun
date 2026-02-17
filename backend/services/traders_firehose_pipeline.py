@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import (
     AsyncSessionLocal,
     DiscoveredWallet,
-    StrategyPlugin,
+    Strategy,
     TrackedWallet,
     TraderGroup,
     TraderGroupMember,
@@ -123,12 +123,12 @@ def _apply_strategy_config(instance: Any, config: dict[str, Any]) -> None:
             pass
 
 
-async def _load_strategy_row(session: AsyncSession) -> Optional[StrategyPlugin]:
+async def _load_strategy_row(session: AsyncSession) -> Optional[Strategy]:
     await ensure_system_opportunity_strategies_seeded(session)
     return (
         (
             await session.execute(
-                select(StrategyPlugin).where(StrategyPlugin.slug == _STRATEGY_SLUG)
+                select(Strategy).where(Strategy.slug == _STRATEGY_SLUG)
             )
         )
         .scalars()

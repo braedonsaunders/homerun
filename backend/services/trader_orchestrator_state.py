@@ -13,7 +13,7 @@ from config import settings
 from models.database import (
     AppSettings,
     TradeSignal,
-    TraderStrategyDefinition,
+    Strategy,
     Trader,
     TraderConfigRevision,
     TraderDecision,
@@ -189,9 +189,9 @@ async def _fetch_enabled_strategy_catalog(
         (
             await session.execute(
                 select(
-                    TraderStrategyDefinition.strategy_key,
-                    TraderStrategyDefinition.source_key,
-                ).where(TraderStrategyDefinition.enabled == True)  # noqa: E712
+                    Strategy.slug,
+                    Strategy.source_key,
+                ).where(Strategy.enabled == True)  # noqa: E712
             )
         )
         .all()

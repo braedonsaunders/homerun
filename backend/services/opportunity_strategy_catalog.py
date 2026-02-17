@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import StrategyPlugin, StrategyPluginTombstone
+from models.database import Strategy, StrategyPluginTombstone
 
 
 _RELATIVE_IMPORT_RE = re.compile(r"(?m)^(\s*)from\s+\.([A-Za-z_][A-Za-z0-9_]*)\s+import\s+")
@@ -405,7 +405,9 @@ def build_system_opportunity_strategy_rows(*, now: datetime | None = None) -> li
                 "enabled": True,
                 "status": "unloaded",
                 "error_message": None,
-                "config": {"_schema": seed.config_schema} if seed.config_schema else {},
+                "config": {},
+                "config_schema": seed.config_schema or {},
+                "aliases": [],
                 "version": 1,
                 "sort_order": seed.sort_order,
                 "created_at": ts,
@@ -439,7 +441,7 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
         for plugin in (
             (
                 await session.execute(
-                    select(StrategyPlugin).where(StrategyPlugin.slug.in_(list(seed_by_slug.keys())))
+                    select(Strategy).where(Strategy.slug.in_(list(seed_by_slug.keys())))
                 )
             )
             .scalars()
@@ -455,7 +457,7 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
 
         current = existing.get(slug)
         if current is None:
-            session.add(StrategyPlugin(**row))
+            session.add(Strategy(**row))
             inserted += 1
             continue
 

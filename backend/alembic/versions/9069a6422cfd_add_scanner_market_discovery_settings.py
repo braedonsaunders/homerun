@@ -17,11 +17,27 @@ branch_labels = None
 depends_on = None
 
 
+def _column_names(table_name: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    table_names = set(inspector.get_table_names())
+    if table_name not in table_names:
+        return set()
+    return {col["name"] for col in inspector.get_columns(table_name)}
+
+
 def upgrade() -> None:
-    with op.batch_alter_table('app_settings', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('max_events_to_scan', sa.Integer(), nullable=True))
-        batch_op.add_column(sa.Column('market_fetch_page_size', sa.Integer(), nullable=True))
-        batch_op.add_column(sa.Column('market_fetch_order', sa.String(), nullable=True))
+    table_name = "app_settings"
+    existing = _column_names(table_name)
+
+    additions: list[sa.Column] = [
+        sa.Column("max_events_to_scan", sa.Integer(), nullable=True),
+        sa.Column("market_fetch_page_size", sa.Integer(), nullable=True),
+        sa.Column("market_fetch_order", sa.String(), nullable=True),
+    ]
+
+    for column in additions:
+        if column.name not in existing:
+            op.add_column(table_name, column)
 
 
 def downgrade() -> None:

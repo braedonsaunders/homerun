@@ -499,37 +499,38 @@ def build_system_strategy_rows() -> list[dict[str, Any]]:
         rows.append(
             {
                 "id": strategy_id,
-                "strategy_key": seed.strategy_key,
+                "slug": seed.strategy_key,
                 "source_key": seed.source_key,
-                "label": seed.label,
+                "name": seed.label,
                 "description": seed.description,
                 "class_name": seed.class_name,
                 "source_code": _seed_source_code(seed.import_module),
-                "default_params_json": dict(seed.default_params),
-                "param_schema_json": dict(seed.param_schema),
-                "aliases_json": list(seed.aliases),
+                "config": dict(seed.default_params),
+                "config_schema": dict(seed.param_schema),
+                "aliases": list(seed.aliases),
                 "is_system": True,
                 "enabled": True,
                 "status": "unloaded",
                 "error_message": None,
                 "version": 1,
+                "sort_order": 0,
             }
         )
     return rows
 
 
 async def ensure_system_trader_strategies_seeded(session: AsyncSession) -> int:
-    from models.database import TraderStrategyDefinition
+    from models.database import Strategy
 
     rows = build_system_strategy_rows()
-    seed_by_key = {row["strategy_key"]: row for row in rows}
+    seed_by_key = {row["slug"]: row for row in rows}
     existing = {
-        row.strategy_key: row
+        row.slug: row
         for row in (
             (
                 await session.execute(
-                    select(TraderStrategyDefinition).where(
-                        TraderStrategyDefinition.strategy_key.in_(list(seed_by_key.keys()))
+                    select(Strategy).where(
+                        Strategy.slug.in_(list(seed_by_key.keys()))
                     )
                 )
             )
@@ -543,7 +544,7 @@ async def ensure_system_trader_strategies_seeded(session: AsyncSession) -> int:
     for strategy_key, seed_row in seed_by_key.items():
         current = existing.get(strategy_key)
         if current is None:
-            session.add(TraderStrategyDefinition(**seed_row))
+            session.add(Strategy(**seed_row))
             inserted += 1
             continue
 
@@ -554,13 +555,13 @@ async def ensure_system_trader_strategies_seeded(session: AsyncSession) -> int:
             continue
 
         current.source_key = seed_row["source_key"]
-        current.label = seed_row["label"]
+        current.name = seed_row["name"]
         current.description = seed_row["description"]
         current.class_name = seed_row["class_name"]
         current.source_code = seed_row["source_code"]
-        current.default_params_json = seed_row["default_params_json"]
-        current.param_schema_json = seed_row["param_schema_json"]
-        current.aliases_json = seed_row["aliases_json"]
+        current.config = seed_row["config"]
+        current.config_schema = seed_row["config_schema"]
+        current.aliases = seed_row["aliases"]
         current.status = "unloaded"
         current.error_message = None
         current.version = int(current.version or 0) + 1

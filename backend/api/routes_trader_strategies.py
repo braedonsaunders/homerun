@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import TraderStrategyDefinition, get_db_session
+from models.database import Strategy, get_db_session
 from services.trader_orchestrator.strategy_catalog import (
     ensure_system_trader_strategies_seeded,
 )
@@ -107,7 +107,7 @@ def _normalize_aliases(value: Any) -> list[str]:
     return out
 
 
-def _assert_editable(row: TraderStrategyDefinition, unlock_system: bool) -> None:
+def _assert_editable(row: Strategy, unlock_system: bool) -> None:
     if bool(row.is_system) and not unlock_system:
         raise HTTPException(
             status_code=403,
@@ -124,11 +124,11 @@ async def _ensure_unique_strategy_key(
     *,
     current_id: str | None = None,
 ) -> None:
-    query = select(TraderStrategyDefinition.id).where(
-        func.lower(TraderStrategyDefinition.strategy_key) == strategy_key.lower()
+    query = select(Strategy.id).where(
+        func.lower(Strategy.slug) == strategy_key.lower()
     )
     if current_id:
-        query = query.where(TraderStrategyDefinition.id != current_id)
+        query = query.where(Strategy.id != current_id)
     exists = (await session.execute(query)).scalar_one_or_none()
     if exists is not None:
         raise HTTPException(status_code=409, detail=f"strategy_key '{strategy_key}' already exists")
@@ -142,16 +142,16 @@ async def list_trader_strategies(
     session: AsyncSession = Depends(get_db_session),
 ):
     await ensure_system_trader_strategies_seeded(session)
-    query = select(TraderStrategyDefinition).order_by(
-        TraderStrategyDefinition.source_key.asc(),
-        TraderStrategyDefinition.strategy_key.asc(),
+    query = select(Strategy).order_by(
+        Strategy.source_key.asc(),
+        Strategy.slug.asc(),
     )
     if source_key:
-        query = query.where(TraderStrategyDefinition.source_key == _normalize_key(source_key))
+        query = query.where(Strategy.source_key == _normalize_key(source_key))
     if enabled is not None:
-        query = query.where(TraderStrategyDefinition.enabled == bool(enabled))
+        query = query.where(Strategy.enabled == bool(enabled))
     if status:
-        query = query.where(TraderStrategyDefinition.status == _normalize_key(status))
+        query = query.where(Strategy.status == _normalize_key(status))
 
     rows = list((await session.execute(query)).scalars().all())
     return {"items": [serialize_trader_strategy_definition(row) for row in rows]}
@@ -349,7 +349,7 @@ async def get_trader_strategy_docs():
 @router.get("/{strategy_id}")
 async def get_trader_strategy(strategy_id: str, session: AsyncSession = Depends(get_db_session)):
     await ensure_system_trader_strategies_seeded(session)
-    row = await session.get(TraderStrategyDefinition, strategy_id)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy definition not found")
     return serialize_trader_strategy_definition(row)
@@ -369,17 +369,17 @@ async def create_trader_strategy(
     if not validation.get("valid"):
         raise HTTPException(status_code=422, detail={"errors": validation.get("errors", [])})
 
-    row = TraderStrategyDefinition(
+    row = Strategy(
         id=uuid.uuid4().hex,
-        strategy_key=strategy_key,
+        slug=strategy_key,
         source_key=source_key,
-        label=str(request.label).strip(),
+        name=str(request.label).strip(),
         description=request.description,
         class_name=str(validation.get("class_name") or request.class_name).strip(),
         source_code=request.source_code,
-        default_params_json=dict(request.default_params_json or {}),
-        param_schema_json=dict(request.param_schema_json or {}),
-        aliases_json=_normalize_aliases(request.aliases_json),
+        config=dict(request.default_params_json or {}),
+        config_schema=dict(request.param_schema_json or {}),
+        aliases=_normalize_aliases(request.aliases_json),
         is_system=False,
         enabled=bool(request.enabled),
         status="unloaded",
@@ -391,8 +391,8 @@ async def create_trader_strategy(
     await session.refresh(row)
 
     if row.enabled:
-        await strategy_db_loader.reload_strategy(row.strategy_key, session=session)
-        row = await session.get(TraderStrategyDefinition, row.id)
+        await strategy_db_loader.reload_strategy(row.slug, session=session)
+        row = await session.get(Strategy, row.id)
 
     return serialize_trader_strategy_definition(row)
 
@@ -403,7 +403,7 @@ async def update_trader_strategy(
     request: TraderStrategyUpdateRequest,
     session: AsyncSession = Depends(get_db_session),
 ):
-    row = await session.get(TraderStrategyDefinition, strategy_id)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy definition not found")
 
@@ -412,8 +412,8 @@ async def update_trader_strategy(
     updates = request.model_dump(exclude_unset=True)
     updates.pop("unlock_system", None)
 
-    next_strategy_key = _normalize_key(updates.get("strategy_key", row.strategy_key))
-    if next_strategy_key != _normalize_key(row.strategy_key):
+    next_strategy_key = _normalize_key(updates.get("strategy_key", row.slug))
+    if next_strategy_key != _normalize_key(row.slug):
         await _ensure_unique_strategy_key(session, next_strategy_key, current_id=row.id)
 
     next_class_name = str(updates.get("class_name", row.class_name) or "").strip()
@@ -424,21 +424,21 @@ async def update_trader_strategy(
             raise HTTPException(status_code=422, detail={"errors": validation.get("errors", [])})
         next_class_name = str(validation.get("class_name") or next_class_name).strip()
 
-    row.strategy_key = next_strategy_key
+    row.slug = next_strategy_key
     if "source_key" in updates:
         row.source_key = _normalize_key(updates.get("source_key"))
     if "label" in updates:
-        row.label = str(updates.get("label") or "").strip() or row.label
+        row.name = str(updates.get("label") or "").strip() or row.name
     if "description" in updates:
         row.description = updates.get("description")
     row.class_name = next_class_name or row.class_name
     row.source_code = next_source_code or row.source_code
     if "default_params_json" in updates:
-        row.default_params_json = dict(updates.get("default_params_json") or {})
+        row.config = dict(updates.get("default_params_json") or {})
     if "param_schema_json" in updates:
-        row.param_schema_json = dict(updates.get("param_schema_json") or {})
+        row.config_schema = dict(updates.get("param_schema_json") or {})
     if "aliases_json" in updates:
-        row.aliases_json = _normalize_aliases(updates.get("aliases_json"))
+        row.aliases = _normalize_aliases(updates.get("aliases_json"))
     if "enabled" in updates:
         row.enabled = bool(updates.get("enabled"))
     row.version = int(row.version or 1) + 1
@@ -448,8 +448,8 @@ async def update_trader_strategy(
     await session.commit()
     await session.refresh(row)
 
-    await strategy_db_loader.reload_strategy(row.strategy_key, session=session)
-    row = await session.get(TraderStrategyDefinition, row.id)
+    await strategy_db_loader.reload_strategy(row.slug, session=session)
+    row = await session.get(Strategy, row.id)
     return serialize_trader_strategy_definition(row)
 
 
@@ -459,7 +459,7 @@ async def validate_trader_strategy(
     request: TraderStrategyValidateRequest,
     session: AsyncSession = Depends(get_db_session),
 ):
-    row = await session.get(TraderStrategyDefinition, strategy_id)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy definition not found")
 
@@ -474,12 +474,12 @@ async def reload_trader_strategy(
     strategy_id: str,
     session: AsyncSession = Depends(get_db_session),
 ):
-    row = await session.get(TraderStrategyDefinition, strategy_id)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy definition not found")
 
-    result = await strategy_db_loader.reload_strategy(row.strategy_key, session=session)
-    refreshed = await session.get(TraderStrategyDefinition, strategy_id)
+    result = await strategy_db_loader.reload_strategy(row.slug, session=session)
+    refreshed = await session.get(Strategy, strategy_id)
     return {
         "status": "ok",
         "reload": result,
@@ -493,25 +493,25 @@ async def clone_trader_strategy(
     request: TraderStrategyCloneRequest,
     session: AsyncSession = Depends(get_db_session),
 ):
-    row = await session.get(TraderStrategyDefinition, strategy_id)
+    row = await session.get(Strategy, strategy_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy definition not found")
 
     suffix = uuid.uuid4().hex[:8]
-    strategy_key = _normalize_key(request.strategy_key or f"{row.strategy_key}_clone_{suffix}")
+    strategy_key = _normalize_key(request.strategy_key or f"{row.slug}_clone_{suffix}")
     await _ensure_unique_strategy_key(session, strategy_key)
 
-    clone = TraderStrategyDefinition(
+    clone = Strategy(
         id=uuid.uuid4().hex,
-        strategy_key=strategy_key,
+        slug=strategy_key,
         source_key=str(row.source_key or "").strip().lower(),
-        label=str(request.label or f"{row.label} (Clone)").strip(),
+        name=str(request.label or f"{row.name} (Clone)").strip(),
         description=row.description,
         class_name=row.class_name,
         source_code=row.source_code,
-        default_params_json=dict(row.default_params_json or {}),
-        param_schema_json=dict(row.param_schema_json or {}),
-        aliases_json=[],
+        config=dict(row.config or {}),
+        config_schema=dict(row.config_schema or {}),
+        aliases=[],
         is_system=False,
         enabled=bool(request.enabled),
         status="unloaded",
@@ -523,7 +523,7 @@ async def clone_trader_strategy(
     await session.refresh(clone)
 
     if clone.enabled:
-        await strategy_db_loader.reload_strategy(clone.strategy_key, session=session)
-        clone = await session.get(TraderStrategyDefinition, clone.id)
+        await strategy_db_loader.reload_strategy(clone.slug, session=session)
+        clone = await session.get(Strategy, clone.id)
 
     return serialize_trader_strategy_definition(clone)
