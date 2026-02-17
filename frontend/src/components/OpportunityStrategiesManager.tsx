@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  FlaskConical,
   Link2,
   Loader2,
   Plus,
@@ -39,6 +40,7 @@ import {
   validateOpportunityStrategy,
 } from '../services/api'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
+import StrategyBacktestFlyout from './StrategyBacktestFlyout'
 
 function parseJsonObject(value: string): { value?: Record<string, unknown>; error?: string } {
   try {
@@ -129,6 +131,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
   const [showConfig, setShowConfig] = useState(false)
   const [showRawJson, setShowRawJson] = useState(false)
   const [showApiDocs, setShowApiDocs] = useState(false)
+  const [showBacktest, setShowBacktest] = useState(false)
   const [strategyFilterSource, setStrategyFilterSource] = useState<string>(initialSourceFilter || 'all')
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
   const [strategyDraftToken, setStrategyDraftToken] = useState<string | null>(null)
@@ -346,7 +349,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
       'from services.strategies.base import BaseStrategy',
       '',
       'class CustomOpportunityStrategy(BaseStrategy):',
-      '    name = "Custom Opportunity Strategy"',
+      '    name = "Custom Detector"',
       '    description = "Describe what this strategy detects"',
       '',
       '    def detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[ArbitrageOpportunity]:',
@@ -360,7 +363,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
     setStrategyDraftToken(`draft_${Date.now()}`)
     setStrategyEditorSlug(`custom_${Date.now().toString().slice(-6)}`)
     setStrategyEditorSourceKey('scanner')
-    setStrategyEditorName('Custom Opportunity Strategy')
+    setStrategyEditorName('Custom Detector')
     setStrategyEditorDescription('')
     setStrategyEditorEnabled(true)
     setStrategyEditorCode(templateQuery.data?.template || fallbackTemplate)
@@ -446,7 +449,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
                         <>
                           {pipelineStrategies.length > 0 && (
                             <p className="px-2.5 pt-1.5 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
-                              Scanner ({scannerStrategies.length})
+                              Scanner Detectors ({scannerStrategies.length})
                             </p>
                           )}
                           {scannerStrategies.map((strategy) => {
@@ -492,7 +495,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
                           <div className="px-2.5 pt-3 pb-1 flex items-center gap-1.5">
                             <div className="flex-1 h-px bg-border/50" />
                             <p className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium shrink-0">
-                              Pipelines ({pipelineStrategies.length})
+                              Pipeline Detectors ({pipelineStrategies.length})
                             </p>
                             <div className="flex-1 h-px bg-border/50" />
                           </div>
@@ -594,6 +597,17 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
                   variant="outline"
                   size="sm"
                   className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowBacktest(true)}
+                  disabled={!strategyEditorCode.trim()}
+                >
+                  <FlaskConical className="w-3 h-3" />
+                  Backtest
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
                   onClick={() => setShowApiDocs(true)}
                 >
                   <BookOpen className="w-3 h-3" />
@@ -668,8 +682,8 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
                     disabled={managerBusy}
                     title={
                       PIPELINE_SOURCES.has(selectedStrategy.source_key) && selectedStrategy.is_system
-                        ? `Pipeline strategy — powers the ${SOURCE_LABELS[selectedStrategy.source_key] || selectedStrategy.source_key}`
-                        : 'Delete strategy'
+                        ? `Pipeline detector — powers the ${SOURCE_LABELS[selectedStrategy.source_key] || selectedStrategy.source_key}`
+                        : 'Delete detector'
                     }
                   >
                     <Trash2 className="w-3 h-3" />
@@ -909,6 +923,14 @@ export default function OpportunityStrategiesManager({ initialSourceFilter }: Op
       </div>
 
       <StrategyApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} variant="opportunity" />
+      <StrategyBacktestFlyout
+        open={showBacktest}
+        onOpenChange={setShowBacktest}
+        sourceCode={strategyEditorCode}
+        slug={strategyEditorSlug || '_backtest_preview'}
+        config={(() => { try { return JSON.parse(strategyEditorConfigJson || '{}') } catch { return {} } })()}
+        variant="opportunity"
+      />
     </div>
   )
 }

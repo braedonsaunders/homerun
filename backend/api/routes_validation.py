@@ -63,6 +63,12 @@ class ExecutionSimulationRequest(BaseModel):
     fee_bps: float = Field(default=200.0, ge=0.0, le=10000.0)
 
 
+class CodeBacktestRequest(BaseModel):
+    source_code: str = Field(min_length=10)
+    slug: str = Field(default="_backtest_preview", min_length=1, max_length=128)
+    config: Optional[dict[str, Any]] = None
+
+
 def _get_combinatorial_validation_stats() -> dict[str, Any]:
     for strategy in plugin_loader.get_all_strategy_instances():
         st = getattr(strategy, "strategy_type", None)
@@ -209,6 +215,24 @@ async def get_execution_sim_events(run_id: str, limit: int = 2000, offset: int =
         offset=offset,
     )
     return {"events": events}
+
+
+@router.post("/code-backtest")
+async def run_code_backtest(req: CodeBacktestRequest):
+    """Run a strategy's source code against current market data.
+
+    This compiles the strategy, loads it in a sandbox, runs detect()
+    against the live market snapshot, and returns what opportunities
+    it would find right now.
+    """
+    from services.strategy_backtester import run_strategy_backtest
+
+    result = await run_strategy_backtest(
+        source_code=req.source_code,
+        slug=req.slug,
+        config=req.config,
+    )
+    return result.to_dict()
 
 
 @router.get("/guardrails/config")

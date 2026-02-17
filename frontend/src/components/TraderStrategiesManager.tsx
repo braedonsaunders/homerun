@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  FlaskConical,
   Loader2,
   Plus,
   RefreshCw,
@@ -37,6 +38,7 @@ import {
   validateTraderStrategy,
 } from '../services/api'
 import StrategyApiDocsFlyout from './StrategyApiDocsFlyout'
+import StrategyBacktestFlyout from './StrategyBacktestFlyout'
 
 function parseJsonObject(value: string): { value?: Record<string, unknown>; error?: string } {
   try {
@@ -89,6 +91,7 @@ export default function TraderStrategiesManager() {
   const [showDocs, setShowDocs] = useState(false)
   const [showParams, setShowParams] = useState(false)
   const [showApiDocs, setShowApiDocs] = useState(false)
+  const [showBacktest, setShowBacktest] = useState(false)
   const [strategyFilterSource, setStrategyFilterSource] = useState<string>('all')
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
   const [strategyEditorCode, setStrategyEditorCode] = useState('')
@@ -478,6 +481,17 @@ export default function TraderStrategiesManager() {
                   variant="outline"
                   size="sm"
                   className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => setShowBacktest(true)}
+                  disabled={!strategyEditorCode.trim()}
+                >
+                  <FlaskConical className="w-3 h-3" />
+                  Backtest
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-[11px]"
                   onClick={() => setShowApiDocs(true)}
                 >
                   <BookOpen className="w-3 h-3" />
@@ -816,6 +830,14 @@ export default function TraderStrategiesManager() {
       </div>
 
       <StrategyApiDocsFlyout open={showApiDocs} onOpenChange={setShowApiDocs} variant="trader" />
+      <StrategyBacktestFlyout
+        open={showBacktest}
+        onOpenChange={setShowBacktest}
+        sourceCode={strategyEditorCode}
+        slug={strategyDraftKey || '_backtest_preview'}
+        config={(() => { try { return JSON.parse(strategyEditorParamsJson || '{}') } catch { return {} } })()}
+        variant="trader"
+      />
     </div>
   )
 }
