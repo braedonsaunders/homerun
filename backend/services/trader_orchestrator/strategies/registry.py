@@ -14,26 +14,37 @@ from services.strategies.weather_distribution import WeatherDistributionStrategy
 from services.strategies.crypto_spike_reversion import CryptoSpikeReversionStrategy
 
 
+# Unified strategy instances keyed by canonical slug.
 _REFERENCE_STRATEGIES: dict[str, BaseStrategy] = {
-    "crypto_5m": BtcEthHighFreqStrategy(),
-    "crypto_15m": BtcEthHighFreqStrategy(),
-    "crypto_1h": BtcEthHighFreqStrategy(),
-    "crypto_4h": BtcEthHighFreqStrategy(),
-    "news_reaction": NewsEdgeStrategy(),
-    "opportunity_general": BasicArbStrategy(),
-    "opportunity_structural": NegRiskStrategy(),
-    "opportunity_flash_reversion": FlashCrashReversionStrategy(),
-    "opportunity_tail_carry": TailEndCarryStrategy(),
-    "weather_consensus": WeatherEdgeStrategy(),
-    "weather_alerts": WeatherDistributionStrategy(),
-    "traders_flow": TradersConfluenceStrategy(),
+    "btc_eth_highfreq": BtcEthHighFreqStrategy(),
     "crypto_spike_reversion": CryptoSpikeReversionStrategy(),
+    "basic": BasicArbStrategy(),
+    "negrisk": NegRiskStrategy(),
+    "flash_crash_reversion": FlashCrashReversionStrategy(),
+    "tail_end_carry": TailEndCarryStrategy(),
+    "news_edge": NewsEdgeStrategy(),
+    "traders_confluence": TradersConfluenceStrategy(),
+    "weather_edge": WeatherEdgeStrategy(),
+    "weather_distribution": WeatherDistributionStrategy(),
 }
 
+# Old execution-only slugs → unified canonical slug.
 _STRATEGY_ALIASES: dict[str, str] = {
-    "strategy.default": "crypto_15m",
-    "default": "crypto_15m",
-    "opportunity_weather": "opportunity_general",
+    "strategy.default": "btc_eth_highfreq",
+    "default": "btc_eth_highfreq",
+    "crypto_5m": "btc_eth_highfreq",
+    "crypto_15m": "btc_eth_highfreq",
+    "crypto_1h": "btc_eth_highfreq",
+    "crypto_4h": "btc_eth_highfreq",
+    "opportunity_general": "basic",
+    "opportunity_weather": "basic",
+    "opportunity_structural": "negrisk",
+    "opportunity_flash_reversion": "flash_crash_reversion",
+    "opportunity_tail_carry": "tail_end_carry",
+    "news_reaction": "news_edge",
+    "traders_flow": "traders_confluence",
+    "weather_consensus": "weather_edge",
+    "weather_alerts": "weather_distribution",
 }
 
 

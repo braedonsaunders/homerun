@@ -29,7 +29,7 @@ from models.database import (
 from services.event_bus import event_bus
 from services.simulation import simulation_service
 from services.trader_orchestrator.sources.registry import normalize_source_key
-from services.trader_orchestrator.strategy_catalog import (
+from services.opportunity_strategy_catalog import (
     build_system_strategy_rows,
     default_strategy_by_source,
     list_system_strategy_keys,
@@ -55,8 +55,8 @@ RESOLVED_ORDER_STATUSES = {"resolved_win", "resolved_loss"}
 ACTIVE_POSITION_STATUS = "open"
 INACTIVE_POSITION_STATUS = "closed"
 _STRATEGY_KEY_ALIASES = {
-    "strategy.default": "crypto_15m",
-    "default": "crypto_15m",
+    "strategy.default": "btc_eth_highfreq",
+    "default": "btc_eth_highfreq",
 }
 _RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
 _TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
@@ -67,11 +67,11 @@ _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER = 5.0
 _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS = 15.0
 _SOURCE_DEFAULT_STRATEGY: dict[str, str] = default_strategy_by_source()
 _LEGACY_OMNI_STRATEGY_BY_SOURCE: dict[str, str] = {
-    "crypto": "crypto_15m",
-    "scanner": "opportunity_general",
-    "news": "news_reaction",
-    "weather": "weather_consensus",
-    "traders": "traders_flow",
+    "crypto": "btc_eth_highfreq",
+    "scanner": "basic",
+    "news": "news_edge",
+    "weather": "weather_edge",
+    "traders": "traders_confluence",
 }
 
 
@@ -174,12 +174,21 @@ async def _fetch_enabled_strategy_catalog(
     )
     if not rows:
         fallback_rows = build_system_strategy_rows()
-        valid_keys = {
-            str(row.get("strategy_key") or "").strip().lower()
-            for row in fallback_rows
-            if str(row.get("strategy_key") or "").strip()
-        }
-        by_source = dict(_SOURCE_STRATEGY_MATRIX_FALLBACK)
+        valid_keys: set[str] = set()
+        by_source: dict[str, set[str]] = {}
+        for row in fallback_rows:
+            slug = str(row.get("slug") or "").strip().lower()
+            src = str(row.get("source_key") or "").strip().lower()
+            if not slug or not src:
+                continue
+            valid_keys.add(slug)
+            by_source.setdefault(src, set()).add(slug)
+            # Include aliases so old strategy keys keep working
+            for alias in (row.get("aliases") or []):
+                a = str(alias).strip().lower()
+                if a:
+                    valid_keys.add(a)
+                    by_source.setdefault(src, set()).add(a)
         return valid_keys, by_source
 
     valid_keys: set[str] = set()

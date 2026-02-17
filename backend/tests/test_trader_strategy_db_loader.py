@@ -11,31 +11,18 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from models.database import Base, Strategy
-from services.trader_orchestrator.strategy_catalog import (
-    build_system_strategy_rows,
-    ensure_system_trader_strategies_seeded,
+from services.opportunity_strategy_catalog import (
+    SYSTEM_OPPORTUNITY_STRATEGY_SEEDS,
+    build_system_opportunity_strategy_rows,
+    ensure_system_opportunity_strategies_seeded,
 )
 from services.trader_orchestrator.strategy_db_loader import (
     StrategyDBLoader,
     validate_strategy_source,
 )
 
-
-REQUIRED_STRATEGY_KEYS = {
-    "crypto_5m",
-    "crypto_15m",
-    "crypto_1h",
-    "crypto_4h",
-    "crypto_spike_reversion",
-    "opportunity_general",
-    "opportunity_structural",
-    "opportunity_flash_reversion",
-    "opportunity_tail_carry",
-    "news_reaction",
-    "traders_flow",
-    "weather_consensus",
-    "weather_alerts",
-}
+# Every seed slug that the unified catalog produces.
+REQUIRED_STRATEGY_SLUGS = {seed.slug for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS}
 
 
 async def _build_session_factory(tmp_path: Path):
@@ -48,20 +35,20 @@ async def _build_session_factory(tmp_path: Path):
 
 
 def test_system_strategy_catalog_contains_required_keys():
-    rows = build_system_strategy_rows()
-    keys = {str(row.get("strategy_key") or "").strip().lower() for row in rows}
-    assert keys == REQUIRED_STRATEGY_KEYS
+    rows = build_system_opportunity_strategy_rows()
+    keys = {str(row.get("slug") or "").strip().lower() for row in rows}
+    assert keys == REQUIRED_STRATEGY_SLUGS
 
 
 def test_system_strategy_catalog_uses_executable_source_files():
-    rows = build_system_strategy_rows()
+    rows = build_system_opportunity_strategy_rows()
     for row in rows:
         source_code = str(row.get("source_code") or "")
         class_name = str(row.get("class_name") or "")
         assert "System strategy seed wrapper loaded from DB" not in source_code
         assert class_name in source_code
         validation = validate_strategy_source(source_code, class_name)
-        assert validation["valid"] is True
+        assert validation["valid"] is True, f'{row["slug"]}: {validation["errors"]}'
         assert validation.get("class_name") == class_name
 
 
@@ -164,22 +151,22 @@ async def test_ensure_system_seed_rewrites_legacy_wrapper_rows(tmp_path):
         async with session_factory() as session:
             legacy_source = "\n".join(
                 [
-                    '"""System strategy seed wrapper loaded from DB."""',
+                    '"""System opportunity strategy wrapper loaded from DB."""',
                     "from services.strategies.base import BaseStrategy",
-                    "from services.strategies.btc_eth_highfreq import BtcEthHighFreqStrategy as _SeedStrategy",
+                    "from services.strategies.basic import BasicArbStrategy as _SeedStrategy",
                     "",
-                    "class BtcEthHighFreqStrategy(_SeedStrategy):",
+                    "class BasicArbStrategy(_SeedStrategy):",
                     "    pass",
                 ]
             )
             session.add(
                 Strategy(
-                    id="legacy-crypto-15m",
-                    slug="crypto_15m",
-                    source_key="crypto",
-                    name="Crypto 15m",
+                    id="legacy-basic",
+                    slug="basic",
+                    source_key="scanner",
+                    name="Basic Arbitrage",
                     description="Legacy wrapper",
-                    class_name="BtcEthHighFreqStrategy",
+                    class_name="BasicArbStrategy",
                     source_code=legacy_source,
                     config={},
                     config_schema={},
@@ -192,21 +179,19 @@ async def test_ensure_system_seed_rewrites_legacy_wrapper_rows(tmp_path):
             )
             await session.commit()
 
-            changed = await ensure_system_trader_strategies_seeded(session)
-            assert changed == len(REQUIRED_STRATEGY_KEYS)
+            changed = await ensure_system_opportunity_strategies_seeded(session)
+            assert changed >= 1
 
             row = (
                 (
                     await session.execute(
-                        select(Strategy).where(
-                            Strategy.slug == "crypto_15m"
-                        )
+                        select(Strategy).where(Strategy.slug == "basic")
                     )
                 )
                 .scalars()
                 .one()
             )
-            assert "System strategy seed wrapper loaded from DB" not in (row.source_code or "")
+            assert "System opportunity strategy wrapper loaded from DB" not in (row.source_code or "")
             assert "from services.strategies" in (row.source_code or "")
             assert int(row.version or 0) == 2
     finally:

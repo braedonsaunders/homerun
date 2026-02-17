@@ -279,8 +279,7 @@ class DependencyAccuracyTracker:
 
             path = Path(self._persistence_path)
             if path.exists():
-                with open(path) as f:
-                    data = json.load(f)
+                data = json.loads(path.read_text(encoding="utf-8"))
                 self._records = data.get("records", [])
                 self._threshold_override = data.get("threshold_override")
                 self._accuracy_cache = None
@@ -302,8 +301,7 @@ class DependencyAccuracyTracker:
                 "records": self._records[-500:],  # Keep last 500 records
                 "threshold_override": self._threshold_override,
             }
-            with open(path, "w") as f:
-                json.dump(data, f)
+            path.write_text(json.dumps(data), encoding="utf-8")
         except Exception as e:
             logger.warning(f"Failed to save accuracy data: {e}")
 

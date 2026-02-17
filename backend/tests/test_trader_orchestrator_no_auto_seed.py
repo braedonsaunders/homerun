@@ -130,7 +130,7 @@ async def test_create_trader_normalizes_legacy_default_strategy_key(tmp_path):
                 },
             )
 
-        assert trader["source_configs"][0]["strategy_key"] == "crypto_15m"
+        assert trader["source_configs"][0]["strategy_key"] == "btc_eth_highfreq"
     finally:
         await engine.dispose()
 

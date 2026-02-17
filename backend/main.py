@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
 
         # Warm DB-native trader strategy registry at process startup.
         try:
-            from services.strategy_catalog import ensure_all_strategies_seeded
+            from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
             from services.trader_orchestrator.strategy_db_loader import (
                 strategy_db_loader,
             )

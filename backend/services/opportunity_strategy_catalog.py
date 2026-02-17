@@ -32,6 +32,8 @@ class SystemOpportunityStrategySeed:
     class_name: str
     sort_order: int
     config_schema: dict | None = None  # param_fields for dynamic config UI
+    default_config: dict | None = None  # default parameter values
+    aliases: list[str] | None = None  # slug aliases for backward compat
 
 
 def _seed_source_code(seed: SystemOpportunityStrategySeed) -> str:
@@ -58,10 +60,22 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
                 {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
                 {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
-                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
-                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+                {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+                {"key": "min_markets", "label": "Min Markets", "type": "integer", "min": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 4.0,
+            "min_confidence": 0.45,
+            "max_risk_score": 0.78,
+            "min_liquidity": 25.0,
+            "min_markets": 1,
+            "base_size_usd": 18.0,
+            "max_size_usd": 150.0,
+        },
+        aliases=["opportunity_general", "opportunity_weather"],
     ),
     SystemOpportunityStrategySeed(
         slug="negrisk",
@@ -81,6 +95,15 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
             ]
         },
+        default_config={
+            "min_edge_percent": 3.0,
+            "min_confidence": 0.42,
+            "max_risk_score": 0.68,
+            "min_markets": 2,
+            "base_size_usd": 20.0,
+            "max_size_usd": 180.0,
+        },
+        aliases=["opportunity_structural"],
     ),
     SystemOpportunityStrategySeed(
         slug="mutually_exclusive",
@@ -371,19 +394,32 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             "param_fields": [
                 {"key": "lookback_seconds", "label": "Lookback (seconds)", "type": "number", "min": 30},
                 {"key": "drop_threshold", "label": "Drop Threshold", "type": "number", "min": 0.01, "max": 0.5},
-                {
-                    "key": "min_rebound_fraction",
-                    "label": "Min Rebound Fraction",
-                    "type": "number",
-                    "min": 0.1,
-                    "max": 0.95,
-                },
+                {"key": "min_rebound_fraction", "label": "Min Rebound Fraction", "type": "number", "min": 0.1, "max": 0.95},
                 {"key": "min_target_move", "label": "Min Target Move", "type": "number", "min": 0.005, "max": 0.15},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0.1, "max": 1},
                 {"key": "max_spread", "label": "Max Spread", "type": "number", "min": 0.005, "max": 0.25},
                 {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
+                {"key": "min_abs_move_5m", "label": "Min |5m Move| (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "require_crash_alignment", "label": "Require Crash Alignment", "type": "boolean"},
+                {"key": "sizing_policy", "label": "Sizing Policy", "type": "enum", "options": ["fixed", "linear", "adaptive", "kelly"]},
+                {"key": "kelly_fractional_scale", "label": "Kelly Fractional Scale", "type": "number", "min": 0.05, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 3.0,
+            "min_confidence": 0.4,
+            "max_risk_score": 0.8,
+            "min_liquidity": 1500.0,
+            "min_abs_move_5m": 1.5,
+            "require_crash_alignment": True,
+            "sizing_policy": "kelly",
+            "kelly_fractional_scale": 0.5,
+            "base_size_usd": 16.0,
+            "max_size_usd": 130.0,
+        },
+        aliases=["opportunity_flash_reversion"],
     ),
     SystemOpportunityStrategySeed(
         slug="tail_end_carry",
@@ -395,22 +431,37 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         sort_order=176,
         config_schema={
             "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "max_risk_score", "label": "Max Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "min_entry_price", "label": "Min Entry Price", "type": "number", "min": 0, "max": 1},
+                {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "min_probability", "label": "Min Probability", "type": "number", "min": 0.5, "max": 1},
                 {"key": "max_probability", "label": "Max Probability", "type": "number", "min": 0.5, "max": 1},
                 {"key": "min_days_to_resolution", "label": "Min Days To Resolution", "type": "number", "min": 0},
                 {"key": "max_days_to_resolution", "label": "Max Days To Resolution", "type": "number", "min": 0},
                 {"key": "min_liquidity", "label": "Min Liquidity", "type": "number", "min": 0},
                 {"key": "max_spread", "label": "Max Spread", "type": "number", "min": 0.005, "max": 0.2},
-                {
-                    "key": "min_repricing_buffer",
-                    "label": "Min Repricing Buffer",
-                    "type": "number",
-                    "min": 0.005,
-                    "max": 0.1,
-                },
+                {"key": "min_repricing_buffer", "label": "Min Repricing Buffer", "type": "number", "min": 0.005, "max": 0.1},
                 {"key": "repricing_weight", "label": "Repricing Weight", "type": "number", "min": 0.1, "max": 0.9},
+                {"key": "sizing_policy", "label": "Sizing Policy", "type": "enum", "options": ["fixed", "linear", "adaptive", "kelly"]},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 1.6,
+            "min_confidence": 0.35,
+            "max_risk_score": 0.78,
+            "min_entry_price": 0.85,
+            "max_entry_price": 0.985,
+            "min_days_to_resolution": 0.03,
+            "max_days_to_resolution": 7.0,
+            "sizing_policy": "adaptive",
+            "base_size_usd": 14.0,
+            "max_size_usd": 90.0,
+        },
+        aliases=["opportunity_tail_carry"],
     ),
     SystemOpportunityStrategySeed(
         slug="spread_dislocation",
@@ -442,6 +493,20 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.news_edge",
         class_name="NewsEdgeStrategy",
         sort_order=180,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
+            ]
+        },
+        default_config={
+            "min_edge_percent": 8.0,
+            "min_confidence": 0.55,
+            "base_size_usd": 20.0,
+        },
+        aliases=["news_reaction"],
     ),
     SystemOpportunityStrategySeed(
         slug="btc_eth_highfreq",
@@ -451,6 +516,66 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         import_module="services.strategies.btc_eth_highfreq",
         class_name="BtcEthHighFreqStrategy",
         sort_order=190,
+        config_schema={
+            "param_fields": [
+                {"key": "strategy_mode", "label": "Strategy Mode", "type": "enum", "options": ["auto", "5m", "15m", "1h", "4h"]},
+                {"key": "target_assets", "label": "Target Assets", "type": "list"},
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "direction_guardrail_enabled", "label": "Direction Guardrail Enabled", "type": "boolean"},
+                {"key": "direction_guardrail_prob_floor", "label": "Direction Guardrail Prob Floor", "type": "number", "min": 0, "max": 1},
+                {"key": "direction_guardrail_price_floor", "label": "Direction Guardrail Price Floor", "type": "number", "min": 0, "max": 1},
+                {"key": "direction_guardrail_regimes", "label": "Direction Guardrail Regimes", "type": "list"},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
+            ]
+        },
+        default_config={
+            "strategy_mode": "auto",
+            "target_assets": ["BTC", "ETH", "SOL", "XRP"],
+            "min_edge_percent": 3.0,
+            "min_confidence": 0.45,
+            "base_size_usd": 25.0,
+            "max_size_usd": 100.0,
+            "direction_guardrail_enabled": True,
+            "direction_guardrail_prob_floor": 0.55,
+            "direction_guardrail_price_floor": 0.8,
+            "direction_guardrail_regimes": ["mid", "closing"],
+        },
+        aliases=["crypto_5m", "crypto_15m", "crypto_1h", "crypto_4h"],
+    ),
+    SystemOpportunityStrategySeed(
+        slug="crypto_spike_reversion",
+        source_key="crypto",
+        name="Crypto Spike Reversion",
+        description="Spike-reversion execution using live 5m/30m/2h movement context.",
+        import_module="services.strategies.crypto_spike_reversion",
+        class_name="CryptoSpikeReversionStrategy",
+        sort_order=191,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "min_abs_move_5m", "label": "Min |5m Move| (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "max_abs_move_2h", "label": "Max |2h Move| (%)", "type": "number", "min": 0, "max": 100},
+                {"key": "require_reversion_shape", "label": "Require Reversion Shape", "type": "boolean"},
+                {"key": "sizing_policy", "label": "Sizing Policy", "type": "enum", "options": ["fixed", "linear", "adaptive", "kelly"]},
+                {"key": "kelly_fractional_scale", "label": "Kelly Fractional Scale", "type": "number", "min": 0.05, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
+            ]
+        },
+        default_config={
+            "min_edge_percent": 2.8,
+            "min_confidence": 0.44,
+            "min_abs_move_5m": 1.8,
+            "max_abs_move_2h": 14.0,
+            "require_reversion_shape": True,
+            "base_size_usd": 20.0,
+            "max_size_usd": 120.0,
+            "sizing_policy": "kelly",
+            "kelly_fractional_scale": 0.45,
+        },
     ),
     SystemOpportunityStrategySeed(
         slug="weather_edge",
@@ -470,8 +595,21 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "probability_scale_c", "label": "Sigmoid Scale (C)", "type": "number", "min": 0.5, "max": 5.0},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 6.0,
+            "min_confidence": 0.58,
+            "min_model_agreement": 0.62,
+            "min_source_count": 2,
+            "max_source_spread_c": 4.0,
+            "max_entry_price": 0.8,
+            "base_size_usd": 14.0,
+            "max_size_usd": 90.0,
+        },
+        aliases=["weather_consensus"],
     ),
     SystemOpportunityStrategySeed(
         slug="weather_ensemble_edge",
@@ -485,27 +623,10 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             "param_fields": [
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
                 {"key": "min_ensemble_members", "label": "Min Ensemble Members", "type": "integer", "min": 1},
-                {
-                    "key": "min_ensemble_agreement",
-                    "label": "Min Ensemble Agreement",
-                    "type": "number",
-                    "min": 0,
-                    "max": 1,
-                },
+                {"key": "min_ensemble_agreement", "label": "Min Ensemble Agreement", "type": "number", "min": 0, "max": 1},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
-                {
-                    "key": "deterministic_fallback",
-                    "label": "Deterministic Fallback",
-                    "type": "enum",
-                    "options": ["true", "false"],
-                },
-                {
-                    "key": "probability_scale_c",
-                    "label": "Fallback Sigmoid Scale (C)",
-                    "type": "number",
-                    "min": 0.5,
-                    "max": 5.0,
-                },
+                {"key": "deterministic_fallback", "label": "Deterministic Fallback", "type": "enum", "options": ["true", "false"]},
+                {"key": "probability_scale_c", "label": "Fallback Sigmoid Scale (C)", "type": "number", "min": 0.5, "max": 5.0},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
             ]
         },
@@ -524,16 +645,23 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "sigma_c", "label": "Sigma (C)", "type": "number", "min": 0.5, "max": 5.0},
                 {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
-                {
-                    "key": "max_buckets_per_event",
-                    "label": "Max Buckets per Event",
-                    "type": "integer",
-                    "min": 1,
-                    "max": 10,
-                },
+                {"key": "max_buckets_per_event", "label": "Max Buckets per Event", "type": "integer", "min": 1, "max": 10},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 8.0,
+            "min_confidence": 0.46,
+            "min_temp_dislocation_c": 1.5,
+            "min_source_count": 1,
+            "max_source_spread_c": 6.0,
+            "max_target_hours": 96.0,
+            "base_size_usd": 12.0,
+            "max_size_usd": 80.0,
+        },
+        aliases=["weather_alerts"],
     ),
     SystemOpportunityStrategySeed(
         slug="weather_conservative_no",
@@ -550,13 +678,7 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
                 {"key": "min_model_agreement", "label": "Min Model Agreement", "type": "number", "min": 0, "max": 1},
                 {"key": "max_source_spread_c", "label": "Max Source Spread (C)", "type": "number", "min": 0},
                 {"key": "min_source_count", "label": "Min Forecast Sources", "type": "integer", "min": 1},
-                {
-                    "key": "max_positions_per_event",
-                    "label": "Max Positions per Event",
-                    "type": "integer",
-                    "min": 1,
-                    "max": 10,
-                },
+                {"key": "max_positions_per_event", "label": "Max Positions per Event", "type": "integer", "min": 1, "max": 10},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
             ]
         },
@@ -575,34 +697,27 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
             "param_fields": [
                 {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
                 {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-                {
-                    "key": "min_confluence_strength",
-                    "label": "Min Confluence Strength",
-                    "type": "number",
-                    "min": 0,
-                    "max": 1,
-                },
-                {
-                    "key": "min_tier",
-                    "label": "Min Tier",
-                    "type": "enum",
-                    "options": ["low", "medium", "high", "extreme"],
-                },
+                {"key": "min_confluence_strength", "label": "Min Confluence Strength", "type": "number", "min": 0, "max": 1},
+                {"key": "min_tier", "label": "Min Tier", "type": "enum", "options": ["low", "medium", "high", "extreme"]},
                 {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1},
                 {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
                 {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
                 {"key": "firehose_require_tradable_market", "label": "Require Tradable Market", "type": "boolean"},
                 {"key": "firehose_exclude_crypto_markets", "label": "Exclude Crypto Markets", "type": "boolean"},
                 {"key": "firehose_require_qualified_source", "label": "Require Qualified Source", "type": "boolean"},
-                {
-                    "key": "firehose_max_age_minutes",
-                    "label": "Firehose Max Age (min)",
-                    "type": "integer",
-                    "min": 1,
-                    "max": 1440,
-                },
+                {"key": "firehose_max_age_minutes", "label": "Firehose Max Age (min)", "type": "integer", "min": 1, "max": 1440},
+                {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1, "max": 10000},
+                {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1, "max": 50000},
             ]
         },
+        default_config={
+            "min_edge_percent": 3.0,
+            "min_confidence": 0.48,
+            "min_confluence_strength": 0.55,
+            "base_size_usd": 18.0,
+            "max_size_usd": 120.0,
+        },
+        aliases=["traders_flow"],
     ),
 ]
 
@@ -624,9 +739,9 @@ def build_system_opportunity_strategy_rows(*, now: datetime | None = None) -> li
                 "enabled": True,
                 "status": "unloaded",
                 "error_message": None,
-                "config": {},
+                "config": dict(seed.default_config) if seed.default_config else {},
                 "config_schema": seed.config_schema or {},
-                "aliases": [],
+                "aliases": list(seed.aliases) if seed.aliases else [],
                 "version": 1,
                 "sort_order": seed.sort_order,
                 "created_at": ts,
@@ -658,7 +773,11 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
     existing = {
         plugin.slug: plugin
         for plugin in (
-            (await session.execute(select(Strategy).where(Strategy.slug.in_(list(seed_by_slug.keys())))))
+            (
+                await session.execute(
+                    select(Strategy).where(Strategy.slug.in_(list(seed_by_slug.keys())))
+                )
+            )
             .scalars()
             .all()
         )
@@ -676,10 +795,10 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
             inserted += 1
             continue
 
-        source_code = current.source_code or ""
-        class_name = (current.class_name or "").strip()
-        has_wrapper_marker = any(marker in source_code for marker in _LEGACY_WRAPPER_MARKERS)
-        if not has_wrapper_marker and not class_name.endswith("System"):
+        # Always refresh source code for system strategies so that newly added
+        # evaluate()/should_exit() methods are picked up without requiring a
+        # manual DB wipe.  Non-system rows (user plugins) are never touched.
+        if not bool(current.is_system):
             continue
 
         current.source_key = row["source_key"]
@@ -687,6 +806,10 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
         current.description = row["description"]
         current.source_code = row["source_code"]
         current.class_name = row["class_name"]
+        current.config_schema = row["config_schema"]
+        current.aliases = row["aliases"]
+        if row["config"] and not current.config:
+            current.config = row["config"]
         current.is_system = True
         current.sort_order = row["sort_order"]
         current.status = "unloaded"
@@ -695,17 +818,86 @@ async def ensure_system_opportunity_strategies_seeded(session: AsyncSession) -> 
         current.updated_at = datetime.utcnow()
         rewritten += 1
 
-    # Disable removed strategies that may still exist in DB.
-    _REMOVED_SLUGS = ["weather_bucket_edge"]
+    # Disable old execution-only duplicate slugs that are now aliases on
+    # unified entries, plus any previously removed strategies.
+    _REMOVED_SLUGS = [
+        "weather_bucket_edge",
+        # Old execution-only duplicates (now aliases on unified entries)
+        "crypto_5m", "crypto_15m", "crypto_1h", "crypto_4h",
+        "opportunity_general", "opportunity_structural",
+        "opportunity_flash_reversion", "opportunity_tail_carry",
+        "news_reaction", "traders_flow",
+        "weather_consensus", "weather_alerts",
+    ]
+    orphan_rows = {
+        row.slug: row
+        for row in (
+            (
+                await session.execute(
+                    select(Strategy).where(Strategy.slug.in_(_REMOVED_SLUGS))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
     for slug in _REMOVED_SLUGS:
-        removed = existing.get(slug)
-        if removed and removed.enabled:
-            removed.enabled = False
-            removed.status = "removed"
-            removed.updated_at = datetime.utcnow()
+        removed = orphan_rows.get(slug)
+        if removed:
+            await session.delete(removed)
             rewritten += 1
 
     if inserted == 0 and rewritten == 0:
         return 0
     await session.commit()
     return inserted + rewritten
+
+
+# ---------------------------------------------------------------------------
+# Helper functions — single catalog, single source of truth
+# ---------------------------------------------------------------------------
+
+def list_system_strategy_keys() -> list[str]:
+    """Return every strategy slug (including aliases)."""
+    keys: set[str] = set()
+    for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
+        keys.add(seed.slug)
+        if seed.aliases:
+            keys.update(seed.aliases)
+    return sorted(keys)
+
+
+def source_to_strategy_keys() -> dict[str, list[str]]:
+    """Map source_key → list of strategy slugs (including aliases)."""
+    grouped: dict[str, list[str]] = {}
+    for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
+        items = grouped.setdefault(seed.source_key, [])
+        items.append(seed.slug)
+        if seed.aliases:
+            items.extend(seed.aliases)
+    for key in grouped:
+        grouped[key] = sorted(set(grouped[key]))
+    return grouped
+
+
+def default_strategy_by_source() -> dict[str, str]:
+    """Return the first (default) strategy slug for each source."""
+    defaults: dict[str, str] = {}
+    for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
+        defaults.setdefault(seed.source_key, seed.slug)
+    return defaults
+
+
+# Backward-compat alias — old callers that used `build_system_strategy_rows`
+build_system_strategy_rows = build_system_opportunity_strategy_rows
+
+
+async def ensure_all_strategies_seeded(session: AsyncSession) -> dict:
+    """Seed all strategies from the single unified catalog."""
+    result = await ensure_system_opportunity_strategies_seeded(session)
+    return {"seeded": result}
+
+
+async def ensure_system_trader_strategies_seeded(session: AsyncSession) -> int:
+    """No-op — everything is seeded from the unified catalog."""
+    return 0

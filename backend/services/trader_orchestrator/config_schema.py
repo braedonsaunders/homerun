@@ -12,7 +12,7 @@ from services.trader_orchestrator.sources.registry import (
     list_source_adapters,
     list_source_aliases,
 )
-from services.trader_orchestrator.strategy_catalog import (
+from services.opportunity_strategy_catalog import (
     build_system_strategy_rows,
     ensure_system_trader_strategies_seeded,
 )

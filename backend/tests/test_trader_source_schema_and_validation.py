@@ -41,17 +41,15 @@ async def test_source_schema_excludes_world_intelligence_and_omni(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_crypto_schema_exposes_exact_timeframe_strategies(tmp_path):
+async def test_crypto_schema_exposes_unified_strategies(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:
         schema = await build_trader_config_schema(session)
     crypto_source = next(source for source in schema["sources"] if source["key"] == "crypto")
     crypto_strategies = {str(option["key"]) for option in crypto_source.get("strategy_options", [])}
+    # Canonical unified slugs — no more separate timeframe slugs.
     assert crypto_strategies >= {
-        "crypto_5m",
-        "crypto_15m",
-        "crypto_1h",
-        "crypto_4h",
+        "btc_eth_highfreq",
         "crypto_spike_reversion",
     }
     # __passthrough__ is an expected system option
@@ -70,13 +68,14 @@ async def test_scanner_and_weather_have_separate_strategy_sets(tmp_path):
     scanner_strategies = {str(option["key"]) for option in scanner_source.get("strategy_options", [])}
     weather_strategies = {str(option["key"]) for option in weather_source.get("strategy_options", [])}
 
+    # Canonical unified slugs.
     assert scanner_strategies >= {
-        "opportunity_general",
-        "opportunity_structural",
-        "opportunity_flash_reversion",
-        "opportunity_tail_carry",
+        "basic",
+        "negrisk",
+        "flash_crash_reversion",
+        "tail_end_carry",
     }
-    assert weather_strategies >= {"weather_consensus", "weather_alerts"}
+    assert weather_strategies >= {"weather_edge", "weather_distribution"}
     # __passthrough__ is an expected system option in all sources
     assert "__passthrough__" in scanner_strategies
     assert "__passthrough__" in weather_strategies
@@ -95,7 +94,7 @@ async def test_normalize_trader_payload_rejects_invalid_source_strategy_pair(tmp
                     "source_configs": [
                         {
                             "source_key": "news",
-                            "strategy_key": "crypto_15m",
+                            "strategy_key": "btc_eth_highfreq",
                             "strategy_params": {},
                         }
                     ],
@@ -116,7 +115,7 @@ async def test_normalize_trader_payload_rejects_scanner_strategy_on_weather_sour
                     "source_configs": [
                         {
                             "source_key": "weather",
-                            "strategy_key": "opportunity_general",
+                            "strategy_key": "basic",
                             "strategy_params": {},
                         }
                     ],
@@ -137,7 +136,7 @@ async def test_normalize_trader_payload_rejects_invalid_traders_scope(tmp_path):
                     "source_configs": [
                         {
                             "source_key": "traders",
-                            "strategy_key": "traders_flow",
+                            "strategy_key": "traders_confluence",
                             "strategy_params": {},
                             "traders_scope": {
                                 "modes": ["individual"],

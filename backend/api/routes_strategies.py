@@ -24,15 +24,13 @@ from models.database import (
 )
 from services.opportunity_strategy_catalog import (
     ensure_system_opportunity_strategies_seeded,
+    ensure_system_trader_strategies_seeded,
 )
 from services.plugin_loader import (
     PLUGIN_TEMPLATE,
     PluginValidationError,
     plugin_loader,
     validate_plugin_source,
-)
-from services.trader_orchestrator.strategy_catalog import (
-    ensure_system_trader_strategies_seeded,
 )
 from utils.logger import get_logger
 

@@ -33,7 +33,7 @@ from services.trader_orchestrator.sources.registry import (
     list_source_aliases,
     normalize_source_key,
 )
-from services.trader_orchestrator.strategy_catalog import (
+from services.opportunity_strategy_catalog import (
     ensure_system_trader_strategies_seeded,
 )
 from services.plugin_loader import plugin_loader
