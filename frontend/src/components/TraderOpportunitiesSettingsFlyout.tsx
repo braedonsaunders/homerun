@@ -14,6 +14,7 @@ import { Button } from './ui/button'
 import { Card } from './ui/card'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
+import StrategyConfigSections from './StrategyConfigSections'
 
 export type TraderOpportunitiesSettingsForm = {
   source_filter: 'all' | 'tracked' | 'pool'
@@ -262,6 +263,9 @@ export default function TraderOpportunitiesSettingsFlyout({
               />
             </div>
           </Card>
+
+          {/* Dynamic strategy config sections from config_schema */}
+          <StrategyConfigSections sourceKey="traders" enabled={isOpen} />
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
             <div className="flex items-center justify-between">

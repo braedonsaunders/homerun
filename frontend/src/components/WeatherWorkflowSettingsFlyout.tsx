@@ -22,6 +22,7 @@ import {
   updateWeatherWorkflowSettings,
   type WeatherWorkflowSettings,
 } from '../services/api'
+import StrategyConfigSections from './StrategyConfigSections'
 
 const DEFAULTS: WeatherWorkflowSettings = {
   enabled: true,
@@ -319,6 +320,9 @@ export default function WeatherWorkflowSettingsFlyout({
               </div>
             </div>
           </Card>
+
+          {/* Dynamic strategy config sections from config_schema */}
+          <StrategyConfigSections sourceKey="weather" enabled={isOpen} />
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
             <div className="flex items-center justify-between">

@@ -20,6 +20,7 @@ import {
   getSettings,
   updateSettings,
 } from '../services/api'
+import StrategyConfigSections from './StrategyConfigSections'
 
 const DEFAULTS = {
   btc_eth_hf_enabled: true,
@@ -464,6 +465,9 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
             </div>
           </SectionCard>
+
+          {/* Dynamic strategy config sections from config_schema */}
+          <StrategyConfigSections sourceKey="crypto" enabled={isOpen} />
 
           <Card className="bg-card/40 border-border/40 rounded-xl p-3">
             <div className="flex items-center justify-between">

@@ -33,6 +33,7 @@ import {
   getSettings,
   updateSettings,
 } from '../services/api'
+import StrategyConfigSections from './StrategyConfigSections'
 
 // ==================== TYPES ====================
 
@@ -682,6 +683,11 @@ export default function SearchFiltersFlyout({
               </div>
             </div>
           </CollapsibleSection>
+
+          {/* ============================================================ */}
+          {/* DYNAMIC STRATEGY CONFIG SECTIONS */}
+          {/* ============================================================ */}
+          <StrategyConfigSections sourceKey="scanner" />
 
           {/* ============================================================ */}
           {/* SECTION 9: STRATEGY MANAGEMENT */}
