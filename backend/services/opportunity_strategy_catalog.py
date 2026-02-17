@@ -32,6 +32,7 @@ class SystemOpportunityStrategySeed:
     import_module: str
     class_name: str
     sort_order: int
+    config_schema: dict | None = None  # param_fields for dynamic config UI
 
 
 @lru_cache(maxsize=None)
@@ -217,6 +218,46 @@ SYSTEM_OPPORTUNITY_STRATEGY_SEEDS: list[SystemOpportunityStrategySeed] = [
         class_name="BtcEthHighFreqStrategy",
         sort_order=190,
     ),
+    SystemOpportunityStrategySeed(
+        slug="weather_edge",
+        source_key="weather",
+        name="Weather Edge",
+        description="Weather-driven mispricings via multi-source forecast consensus.",
+        import_module="services.strategies.weather_edge",
+        class_name="WeatherEdgeStrategy",
+        sort_order=200,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "min_model_agreement", "label": "Min Model Agreement", "type": "number", "min": 0, "max": 1},
+                {"key": "min_source_count", "label": "Min Forecast Sources", "type": "integer", "min": 1},
+                {"key": "max_source_spread_c", "label": "Max Source Spread (C)", "type": "number", "min": 0},
+                {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
+                {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
+            ]
+        },
+    ),
+    SystemOpportunityStrategySeed(
+        slug="traders_confluence",
+        source_key="traders",
+        name="Traders Confluence",
+        description="Smart money convergence via tracked wallet confluence analysis.",
+        import_module="services.strategies.traders_confluence",
+        class_name="TradersConfluenceStrategy",
+        sort_order=210,
+        config_schema={
+            "param_fields": [
+                {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
+                {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
+                {"key": "min_confluence_strength", "label": "Min Confluence Strength", "type": "number", "min": 0, "max": 1},
+                {"key": "min_tier", "label": "Min Tier", "type": "enum", "options": ["low", "medium", "high", "extreme"]},
+                {"key": "min_wallet_count", "label": "Min Wallet Count", "type": "integer", "min": 1},
+                {"key": "max_entry_price", "label": "Max Entry Price", "type": "number", "min": 0, "max": 1},
+                {"key": "risk_base_score", "label": "Base Risk Score", "type": "number", "min": 0, "max": 1},
+            ]
+        },
+    ),
 ]
 
 
@@ -237,7 +278,7 @@ def build_system_opportunity_strategy_rows(*, now: datetime | None = None) -> li
                 "enabled": True,
                 "status": "unloaded",
                 "error_message": None,
-                "config": {},
+                "config": {"_schema": seed.config_schema} if seed.config_schema else {},
                 "version": 1,
                 "sort_order": seed.sort_order,
                 "created_at": ts,

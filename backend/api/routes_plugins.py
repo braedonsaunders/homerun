@@ -96,6 +96,7 @@ class PluginResponse(BaseModel):
     status: str  # unloaded, loaded, error
     error_message: Optional[str]
     config: dict
+    config_schema: Optional[dict] = None  # param_fields for dynamic config UI
     version: int
     sort_order: int
     created_at: Optional[str]
@@ -104,9 +105,25 @@ class PluginResponse(BaseModel):
     runtime: Optional[dict] = None
 
 
+def _extract_config_schema(p: StrategyPlugin) -> dict | None:
+    """Extract config_schema from the config._schema key or seed catalog."""
+    cfg = p.config or {}
+    if isinstance(cfg, dict) and "_schema" in cfg:
+        return cfg["_schema"]
+    # Fall back to seed catalog lookup
+    from services.opportunity_strategy_catalog import SYSTEM_OPPORTUNITY_STRATEGY_SEEDS
+    for seed in SYSTEM_OPPORTUNITY_STRATEGY_SEEDS:
+        if seed.slug == p.slug and seed.config_schema:
+            return seed.config_schema
+    return None
+
+
 def _plugin_to_response(p: StrategyPlugin) -> PluginResponse:
     """Convert a DB StrategyPlugin to a PluginResponse."""
     runtime = plugin_loader.get_status(p.slug)
+    # Strip internal _schema key from config before returning
+    config = dict(p.config or {})
+    config.pop("_schema", None)
     return PluginResponse(
         id=p.id,
         slug=p.slug,
@@ -119,7 +136,8 @@ def _plugin_to_response(p: StrategyPlugin) -> PluginResponse:
         enabled=p.enabled,
         status=p.status,
         error_message=p.error_message,
-        config=p.config or {},
+        config=config,
+        config_schema=_extract_config_schema(p),
         version=p.version,
         sort_order=p.sort_order,
         created_at=p.created_at.isoformat() if p.created_at else None,
