@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -23,7 +23,6 @@ from models.database import (
     get_db_session,
 )
 from services.opportunity_strategy_catalog import (
-    SYSTEM_OPPORTUNITY_STRATEGY_SEEDS,
     ensure_system_opportunity_strategies_seeded,
 )
 from services.plugin_loader import (

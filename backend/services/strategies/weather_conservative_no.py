@@ -29,7 +29,6 @@ from models import ArbitrageOpportunity, Event, Market
 from services.strategies.weather_base import BaseWeatherStrategy
 from services.weather.signal_engine import (
     compute_confidence,
-    compute_model_agreement,
     ensemble_bucket_probability,
 )
 

@@ -8,4 +8,5 @@ per-file-ignores = {
     "tests/**/*.py" = ["E402"],
     "workers/*.py" = ["E402"],
     "workers/**/*.py" = ["E402"],
+    "services/simulation/__init__.py" = ["E402"],
 }

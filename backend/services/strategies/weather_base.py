@@ -25,11 +25,7 @@ from models import ArbitrageOpportunity, Event, Market
 from models.opportunity import MispricingType
 from services.strategies.base import BaseStrategy
 from services.weather.signal_engine import (
-    clamp01,
     compute_confidence,
-    compute_model_agreement,
-    ensemble_bucket_probability,
-    temp_range_probability,
 )
 
 logger = logging.getLogger(__name__)

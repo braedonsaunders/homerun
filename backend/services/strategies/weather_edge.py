@@ -25,9 +25,7 @@ from typing import Optional
 
 from services.strategies.weather_base import BaseWeatherStrategy
 from services.weather.signal_engine import (
-    clamp01,
     compute_confidence,
-    compute_model_agreement,
     temp_range_probability,
 )
 

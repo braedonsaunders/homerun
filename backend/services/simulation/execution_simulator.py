@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 import uuid
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (

@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from services.opportunity_recorder import opportunity_recorder
 from services.param_optimizer import param_optimizer
 from services.plugin_loader import plugin_loader
-from services.scanner import scanner
 from services.validation_service import validation_service
 from utils.logger import get_logger
 

@@ -11,7 +11,6 @@ All methods are designed to be safe and handle missing data gracefully.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Optional
 
