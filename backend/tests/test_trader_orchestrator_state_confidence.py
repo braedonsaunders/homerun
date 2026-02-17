@@ -11,20 +11,28 @@ from services.trader_orchestrator_state import _normalize_trader_payload
 def test_normalize_trader_payload_converts_percent_min_confidence():
     payload = {
         "name": "Crypto HF Trader",
-        "strategy_key": "crypto_15m",
-        "sources": ["crypto"],
-        "params": {"min_confidence": 45, "min_edge_percent": 3.0},
+        "source_configs": [
+            {
+                "source_key": "crypto",
+                "strategy_key": "crypto_15m",
+                "strategy_params": {"min_confidence": 45, "min_edge_percent": 3.0},
+            }
+        ],
     }
     normalized = _normalize_trader_payload(payload)
-    assert normalized["params"]["min_confidence"] == 0.45
+    assert normalized["source_configs"][0]["strategy_params"]["min_confidence"] == 0.45
 
 
 def test_normalize_trader_payload_preserves_fraction_min_confidence():
     payload = {
         "name": "Crypto HF Trader",
-        "strategy_key": "crypto_15m",
-        "sources": ["crypto"],
-        "params": {"min_confidence": 0.45},
+        "source_configs": [
+            {
+                "source_key": "crypto",
+                "strategy_key": "crypto_15m",
+                "strategy_params": {"min_confidence": 0.45},
+            }
+        ],
     }
     normalized = _normalize_trader_payload(payload)
-    assert normalized["params"]["min_confidence"] == 0.45
+    assert normalized["source_configs"][0]["strategy_params"]["min_confidence"] == 0.45

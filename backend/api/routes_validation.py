@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from services.opportunity_recorder import opportunity_recorder
 from services.param_optimizer import param_optimizer
+from services.plugin_loader import plugin_loader
 from services.scanner import scanner
 from services.validation_service import validation_service
 from utils.logger import get_logger
@@ -46,8 +47,24 @@ class GuardrailConfigPatch(BaseModel):
     auto_promote: Optional[bool] = None
 
 
+class ExecutionSimulationRequest(BaseModel):
+    strategy_key: str = Field(min_length=2, max_length=128)
+    source_key: str = Field(min_length=2, max_length=64)
+    market_provider: str = Field(default="polymarket")
+    market_ref: Optional[str] = None
+    market_id: Optional[str] = None
+    timeframe: str = Field(default="15m")
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
+    market_scope: dict[str, Any] = Field(default_factory=dict)
+    default_notional_usd: float = Field(default=50.0, gt=0.0, le=1_000_000.0)
+    slippage_bps: float = Field(default=5.0, ge=0.0, le=5000.0)
+    fee_bps: float = Field(default=200.0, ge=0.0, le=10000.0)
+
+
 def _get_combinatorial_validation_stats() -> dict[str, Any]:
-    for strategy in scanner.strategies:
+    for strategy in plugin_loader.get_all_strategy_instances():
         st = getattr(strategy, "strategy_type", None)
         st_value = getattr(st, "value", st)
         if st_value == "combinatorial" and hasattr(strategy, "get_validation_stats"):
@@ -154,6 +171,44 @@ async def cancel_job(job_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "cancelled", "job_id": job_id}
+
+
+@router.post("/simulator/jobs")
+async def enqueue_execution_simulation(request: ExecutionSimulationRequest):
+    try:
+        job_id = await validation_service.enqueue_job(
+            "execution_simulation",
+            payload=request.model_dump(),
+        )
+        return {"status": "queued", "job_id": job_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/simulator/runs")
+async def list_execution_sim_runs(limit: int = 50):
+    return {"runs": await validation_service.list_execution_sim_runs(limit=limit)}
+
+
+@router.get("/simulator/runs/{run_id}")
+async def get_execution_sim_run(run_id: str):
+    item = await validation_service.get_execution_sim_run(run_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Execution simulation run not found")
+    return item
+
+
+@router.get("/simulator/runs/{run_id}/events")
+async def get_execution_sim_events(run_id: str, limit: int = 2000, offset: int = 0):
+    run = await validation_service.get_execution_sim_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Execution simulation run not found")
+    events = await validation_service.list_execution_sim_events(
+        run_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {"events": events}
 
 
 @router.get("/guardrails/config")

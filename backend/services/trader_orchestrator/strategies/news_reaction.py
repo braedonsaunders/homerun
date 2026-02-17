@@ -8,7 +8,7 @@ from .base import BaseTraderStrategy, DecisionCheck, StrategyDecision
 class NewsReactionStrategy(BaseTraderStrategy):
     key = "news_reaction"
 
-    NEWS_SOURCES = {"news", "insider", "world_intelligence"}
+    NEWS_SOURCES = {"news"}
 
     def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
         params = context.get("params") or {}
@@ -22,7 +22,7 @@ class NewsReactionStrategy(BaseTraderStrategy):
         confidence = float(getattr(signal, "confidence", 0.0) or 0.0)
 
         checks = [
-            DecisionCheck("source", "News-capable source", source_ok, detail="news/insider/world_intelligence"),
+            DecisionCheck("source", "News-capable source", source_ok, detail="news"),
             DecisionCheck("edge", "Edge threshold", edge >= min_edge, score=edge, detail=f"min={min_edge}"),
             DecisionCheck(
                 "confidence",

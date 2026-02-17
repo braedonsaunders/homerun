@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from utils.utcnow import utcnow
-from typing import Optional
+from typing import Any, Optional
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +50,13 @@ class SimulationService:
     SQLITE_LOCK_RETRY_ATTEMPTS = 8
     SQLITE_LOCK_RETRY_BASE_DELAY_SECONDS = 0.2
     SQLITE_LOCK_RETRY_MAX_DELAY_SECONDS = 1.5
+
+    @staticmethod
+    def _direction_to_position_side(direction: str) -> tuple[PositionSide, str]:
+        normalized = str(direction or "").strip().lower()
+        if normalized in {"buy_no", "no", "down", "short", "sell_yes"}:
+            return PositionSide.NO, "NO"
+        return PositionSide.YES, "YES"
 
     @staticmethod
     def is_sqlite_lock_error(exc: Exception) -> bool:
@@ -278,6 +285,235 @@ class SimulationService:
             )
 
             return trade
+
+    async def record_orchestrator_paper_fill(
+        self,
+        *,
+        account_id: str,
+        trader_id: str,
+        signal_id: str,
+        market_id: str,
+        market_question: Optional[str],
+        direction: str,
+        notional_usd: float,
+        entry_price: float,
+        strategy_type: Optional[str] = None,
+        token_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        session: AsyncSession = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """Record a paper autotrader fill into simulation account ledger."""
+        should_close = session is None
+        if session is None:
+            session = AsyncSessionLocal()
+
+        try:
+            normalized_notional = float(notional_usd or 0.0)
+            normalized_entry_price = float(entry_price or 0.0)
+            if normalized_notional <= 0:
+                raise ValueError("Paper fill notional must be greater than 0.")
+            if normalized_entry_price <= 0:
+                raise ValueError("Paper fill entry price must be greater than 0.")
+
+            account = await session.get(SimulationAccount, account_id)
+            if account is None:
+                raise ValueError(f"Paper account not found: {account_id}")
+
+            available_capital = float(account.current_capital or 0.0)
+            if normalized_notional > available_capital:
+                raise ValueError(
+                    (
+                        "Insufficient paper capital for autotrader fill: "
+                        f"required=${normalized_notional:.2f} available=${available_capital:.2f}"
+                    )
+                )
+
+            side, outcome = self._direction_to_position_side(direction)
+            quantity = normalized_notional / normalized_entry_price
+            now = utcnow()
+            trade_id = str(uuid.uuid4())
+            position_id = str(uuid.uuid4())
+            market_id_value = str(market_id or "").strip()
+            question_value = str(market_question or market_id_value or "Unknown market")
+
+            position_payload = {
+                "market_id": market_id_value,
+                "market_question": question_value,
+                "token_id": token_id,
+                "outcome": outcome,
+                "price": normalized_entry_price,
+                "quantity": quantity,
+                "notional_usd": normalized_notional,
+                "source": "trader_orchestrator",
+                "trader_id": str(trader_id or ""),
+                "signal_id": str(signal_id or ""),
+            }
+            if isinstance(payload, dict):
+                position_payload["payload"] = payload
+            edge_percent = 0.0
+            if isinstance(payload, dict):
+                try:
+                    edge_percent = float(payload.get("edge_percent") or 0.0)
+                except Exception:
+                    edge_percent = 0.0
+
+            trade = SimulationTrade(
+                id=trade_id,
+                account_id=account_id,
+                opportunity_id=str(signal_id or ""),
+                strategy_type=str(strategy_type or "trader_orchestrator"),
+                positions_data=[position_payload],
+                total_cost=normalized_notional,
+                expected_profit=normalized_notional * (edge_percent / 100.0),
+                slippage=0.0,
+                status=TradeStatus.OPEN,
+                copied_from_wallet=None,
+                executed_at=now,
+            )
+            session.add(trade)
+
+            position = SimulationPosition(
+                id=position_id,
+                account_id=account_id,
+                opportunity_id=str(signal_id or ""),
+                market_id=market_id_value,
+                market_question=question_value,
+                token_id=token_id,
+                side=side,
+                quantity=quantity,
+                entry_price=normalized_entry_price,
+                entry_cost=normalized_notional,
+                current_price=normalized_entry_price,
+                unrealized_pnl=0.0,
+                status=TradeStatus.OPEN,
+                opened_at=now,
+            )
+            session.add(position)
+
+            account.current_capital = float(account.current_capital or 0.0) - normalized_notional
+            account.total_trades = int(account.total_trades or 0) + 1
+
+            if commit:
+                await session.commit()
+            else:
+                await session.flush()
+
+            return {
+                "account_id": account_id,
+                "trade_id": trade_id,
+                "position_id": position_id,
+                "market_id": market_id_value,
+                "direction": str(direction or ""),
+                "entry_price": normalized_entry_price,
+                "entry_cost": normalized_notional,
+                "quantity": quantity,
+                "opened_at": now.isoformat() + "Z",
+            }
+        finally:
+            if should_close:
+                await session.close()
+
+    async def close_orchestrator_paper_fill(
+        self,
+        *,
+        account_id: str,
+        trade_id: str,
+        position_id: str,
+        close_price: float,
+        close_trigger: Optional[str] = None,
+        price_source: Optional[str] = None,
+        reason: Optional[str] = None,
+        session: AsyncSession = None,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """Resolve an orchestrator-paper simulation fill at a provided close mark."""
+        should_close = session is None
+        if session is None:
+            session = AsyncSessionLocal()
+
+        try:
+            normalized_close_price = max(0.0, float(close_price or 0.0))
+
+            account = await session.get(SimulationAccount, account_id)
+            if account is None:
+                raise ValueError(f"Paper account not found: {account_id}")
+
+            trade = await session.get(SimulationTrade, trade_id)
+            if trade is None or str(trade.account_id) != str(account_id):
+                raise ValueError(f"Simulation trade not found for account: {trade_id}")
+
+            position = await session.get(SimulationPosition, position_id)
+            if position is None or str(position.account_id) != str(account_id):
+                raise ValueError(f"Simulation position not found for account: {position_id}")
+
+            if trade.status != TradeStatus.OPEN:
+                return {
+                    "closed": False,
+                    "already_closed": True,
+                    "trade_status": trade.status.value,
+                    "actual_payout": float(trade.actual_payout or 0.0),
+                    "actual_pnl": float(trade.actual_pnl or 0.0),
+                    "resolved_at": trade.resolved_at.isoformat() + "Z" if trade.resolved_at else None,
+                }
+
+            proceeds = float(position.quantity or 0.0) * normalized_close_price
+            pnl = proceeds - float(position.entry_cost or 0.0)
+            resolved_status = TradeStatus.RESOLVED_WIN if pnl >= 0 else TradeStatus.RESOLVED_LOSS
+            now = utcnow()
+
+            trade.status = resolved_status
+            trade.actual_payout = proceeds
+            trade.actual_pnl = pnl
+            trade.fees_paid = 0.0
+            trade.resolved_at = now
+
+            positions_data = trade.positions_data if isinstance(trade.positions_data, list) else []
+            if positions_data and isinstance(positions_data[0], dict):
+                first_leg = dict(positions_data[0])
+                first_leg.update(
+                    {
+                        "close_price": normalized_close_price,
+                        "close_trigger": str(close_trigger or ""),
+                        "price_source": str(price_source or ""),
+                        "realized_pnl": pnl,
+                        "resolved_at": now.isoformat() + "Z",
+                    }
+                )
+                positions_data[0] = first_leg
+                trade.positions_data = positions_data
+
+            position.status = resolved_status
+            position.current_price = normalized_close_price
+            position.unrealized_pnl = 0.0
+
+            account.current_capital = float(account.current_capital or 0.0) + proceeds
+            account.total_pnl = float(account.total_pnl or 0.0) + pnl
+            if pnl >= 0:
+                account.winning_trades = int(account.winning_trades or 0) + 1
+            else:
+                account.losing_trades = int(account.losing_trades or 0) + 1
+
+            if commit:
+                await session.commit()
+            else:
+                await session.flush()
+
+            return {
+                "closed": True,
+                "already_closed": False,
+                "trade_status": resolved_status.value,
+                "actual_payout": proceeds,
+                "actual_pnl": pnl,
+                "close_price": normalized_close_price,
+                "close_trigger": str(close_trigger or ""),
+                "price_source": str(price_source or ""),
+                "reason": str(reason or ""),
+                "resolved_at": now.isoformat() + "Z",
+            }
+        finally:
+            if should_close:
+                await session.close()
 
     async def resolve_trade(
         self,

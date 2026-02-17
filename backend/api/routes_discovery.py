@@ -20,7 +20,6 @@ from models.database import (
     get_db_session,
 )
 from services import discovery_shared_state
-from services.insider_detector import insider_detector
 from services.live_price_snapshot import (
     append_live_binary_price_point,
     get_live_mid_prices,
@@ -283,7 +282,7 @@ def _attach_market_history_to_signal_rows(
     rows: list[dict],
     market_history: dict[str, list[dict]],
 ) -> None:
-    """Attach sparkline payload and latest YES/NO prices to confluence/insider rows."""
+    """Attach sparkline payload and latest YES/NO prices to trader signal rows."""
     if not rows:
         return
 
@@ -1108,7 +1107,7 @@ async def get_leaderboard(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     min_trades: int = Query(default=0, ge=0),
-    min_pnl: float = Query(default=0.0),
+    min_pnl: Optional[float] = Query(default=None),
     insider_only: bool = Query(default=False),
     min_insider_score: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     sort_by: str = Query(
@@ -1485,7 +1484,7 @@ async def get_smart_pool_stats(session: AsyncSession = Depends(get_db_session)):
         stats = worker.get("stats") or {}
         if isinstance(stats, dict):
             pool_stats = stats.get("pool_stats")
-            if isinstance(pool_stats, dict) and "active_1h" in pool_stats and "active_24h" in pool_stats:
+            if isinstance(pool_stats, dict):
                 # Worker owns tracked-traders runtime state; API canonical values
                 # are only authoritative for direct DB-count fields.
                 merged = {**pool_stats}
@@ -1551,6 +1550,7 @@ async def get_pool_members(
     limit: int = Query(default=300, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     pool_only: bool = Query(default=True),
+    tracked_only: bool = Query(default=False),
     include_blacklisted: bool = Query(default=True),
     tier: Optional[str] = Query(default=None, description="core or rising"),
     search: Optional[str] = Query(default=None),
@@ -1749,6 +1749,8 @@ async def get_pool_members(
             if flags["manual_exclude"]:
                 manual_excluded_count += 1
 
+            if tracked_only and not is_tracked:
+                continue
             if pool_only and not wallet.in_top_pool:
                 continue
             if not include_blacklisted and flags["blacklisted"]:
@@ -2211,7 +2213,7 @@ async def get_traders_overview(
 async def get_tracked_trader_opportunities(
     limit: int = Query(default=50, ge=1, le=200),
     min_tier: str = Query(default="WATCH", description="WATCH, HIGH, EXTREME"),
-    source_filter: Literal["all", "tracked", "pool", "confluence", "insider"] = Query(
+    source_filter: Literal["all", "tracked", "pool", "confluence"] = Query(
         default="all",
         description="Confluence source scope: tracked traders, pool traders, or both.",
     ),
@@ -2252,87 +2254,6 @@ async def get_tracked_trader_opportunities(
             source_filter,
         )
         return {"opportunities": opportunities, "total": len(opportunities)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@discovery_router.get("/opportunities/insider")
-async def get_insider_opportunities(
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
-    direction: Optional[str] = Query(default=None, description="buy_yes or buy_no"),
-    max_age_minutes: int = Query(default=180, ge=1, le=1440),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """List pending/submitted insider opportunities built from flagged-wallet behavior."""
-    if direction and direction not in {"buy_yes", "buy_no"}:
-        raise HTTPException(status_code=400, detail="direction must be buy_yes or buy_no")
-    try:
-        payload = await insider_detector.list_opportunities(
-            limit=limit,
-            offset=offset,
-            min_confidence=min_confidence,
-            direction=direction,
-            max_age_minutes=max_age_minutes,
-        )
-        market_history = await _load_scanner_market_history(session)
-        opportunities = payload.get("opportunities") if isinstance(payload, dict) else None
-        if isinstance(opportunities, list):
-            _attach_market_history_to_signal_rows(opportunities, market_history)
-            await _attach_signal_market_metadata(opportunities)
-            _attach_history_from_aliases(opportunities, market_history)
-            await _attach_activity_history_fallback(session, opportunities)
-            await _attach_live_mid_prices_to_signal_rows(opportunities)
-            await _annotate_trader_signal_rows(session, opportunities)
-        return payload
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@discovery_router.get("/insider/intents")
-async def get_insider_intents(
-    status_filter: Optional[str] = Query(
-        default=None,
-        description="pending, submitted, executed, skipped, expired",
-    ),
-    limit: int = Query(default=100, ge=1, le=1000),
-):
-    """List insider trade intents for the trader orchestrator pipeline."""
-    if status_filter and status_filter not in {
-        "pending",
-        "submitted",
-        "executed",
-        "skipped",
-        "expired",
-    }:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid status_filter. Must be pending|submitted|executed|skipped|expired",
-        )
-    try:
-        rows = await insider_detector.list_intents(status_filter=status_filter, limit=limit)
-        intents = [
-            {
-                "id": row.id,
-                "signal_key": row.signal_key,
-                "market_id": row.market_id,
-                "market_question": row.market_question,
-                "direction": row.direction,
-                "entry_price": row.entry_price,
-                "edge_percent": row.edge_percent,
-                "confidence": row.confidence,
-                "insider_score": row.insider_score,
-                "wallet_addresses": row.wallet_addresses_json or [],
-                "suggested_size_usd": row.suggested_size_usd,
-                "metadata": row.metadata_json or {},
-                "status": row.status,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-                "consumed_at": row.consumed_at.isoformat() if row.consumed_at else None,
-            }
-            for row in rows
-        ]
-        return {"total": len(intents), "intents": intents}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

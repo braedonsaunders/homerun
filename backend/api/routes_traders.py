@@ -37,13 +37,24 @@ from services.trader_orchestrator_state import (
 router = APIRouter(prefix="/traders", tags=["Traders"])
 
 
+class TraderTradersScopeRequest(BaseModel):
+    modes: list[str] = Field(default_factory=list)
+    individual_wallets: list[str] = Field(default_factory=list)
+    group_ids: list[str] = Field(default_factory=list)
+
+
+class TraderSourceConfigRequest(BaseModel):
+    source_key: str
+    strategy_key: str
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
+    traders_scope: Optional[TraderTradersScopeRequest] = None
+
+
 class TraderRequest(BaseModel):
     name: str
     description: Optional[str] = None
-    strategy_key: str
-    sources: list[str] = Field(default_factory=list)
+    source_configs: list[TraderSourceConfigRequest] = Field(default_factory=list)
     interval_seconds: int = Field(default=60, ge=1, le=86400)
-    params: dict[str, Any] = Field(default_factory=dict)
     risk_limits: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     is_enabled: bool = True
@@ -55,10 +66,8 @@ class TraderRequest(BaseModel):
 class TraderPatchRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    strategy_key: Optional[str] = None
-    sources: Optional[list[str]] = None
+    source_configs: Optional[list[TraderSourceConfigRequest]] = None
     interval_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
-    params: Optional[dict[str, Any]] = None
     risk_limits: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
     is_enabled: Optional[bool] = None

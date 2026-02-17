@@ -33,18 +33,23 @@ import {
   cancelValidationJob,
   clearValidationStrategyOverride,
   evaluateValidationGuardrails,
+  getExecutionSimulationEvents,
+  getExecutionSimulationRun,
+  getExecutionSimulationRuns,
   getOptimizationResults,
+  getTraderStrategies,
   getValidationGuardrailConfig,
   getValidationJobs,
   getValidationOverview,
   getValidationParameterSets,
   overrideValidationStrategy,
+  runExecutionSimulationJob,
   runValidationBacktest,
   runValidationOptimization,
   updateValidationGuardrailConfig,
 } from '../services/api'
 
-type ValidationSubTab = 'runs' | 'strategy' | 'guardrails' | 'sets'
+type ValidationSubTab = 'runs' | 'simulator' | 'strategy' | 'guardrails' | 'sets'
 type Notice = { type: 'success' | 'error'; text: string } | null
 
 function intOr(value: string, fallback: number): number {
@@ -144,6 +149,20 @@ export default function ValidationEnginePanel() {
   const [topK, setTopK] = useState(20)
   const [saveBest, setSaveBest] = useState(true)
   const [bestSetName, setBestSetName] = useState('')
+  const [simForm, setSimForm] = useState({
+    strategy_key: 'crypto_15m',
+    source_key: 'crypto',
+    market_provider: 'polymarket',
+    market_ref: '',
+    market_id: '',
+    timeframe: '15m',
+    start_at: '',
+    end_at: '',
+    default_notional_usd: 50,
+    slippage_bps: 5,
+    fee_bps: 200,
+  })
+  const [selectedSimRunId, setSelectedSimRunId] = useState<string | null>(null)
 
   const [guardrailsDirty, setGuardrailsDirty] = useState(false)
   const [guardrailsForm, setGuardrailsForm] = useState({
@@ -206,6 +225,45 @@ export default function ValidationEnginePanel() {
     refetchInterval: 45000,
   })
 
+  const {
+    data: traderStrategies,
+    isFetching: fetchingTraderStrategies,
+  } = useQuery({
+    queryKey: ['trader-strategies', 'validation-panel'],
+    queryFn: () => getTraderStrategies({ enabled: true }),
+    refetchInterval: 30000,
+  })
+
+  const {
+    data: simulatorRunsData,
+    isFetching: fetchingSimulatorRuns,
+    refetch: refetchSimulatorRuns,
+  } = useQuery({
+    queryKey: ['validation-simulator-runs'],
+    queryFn: () => getExecutionSimulationRuns(50),
+    refetchInterval: 5000,
+  })
+
+  const {
+    data: selectedSimulatorRun,
+    isFetching: fetchingSimulatorRunDetail,
+  } = useQuery({
+    queryKey: ['validation-simulator-run', selectedSimRunId],
+    queryFn: () => getExecutionSimulationRun(selectedSimRunId as string),
+    enabled: Boolean(selectedSimRunId),
+    refetchInterval: 5000,
+  })
+
+  const {
+    data: simulatorEventsData,
+    isFetching: fetchingSimulatorEvents,
+  } = useQuery({
+    queryKey: ['validation-simulator-events', selectedSimRunId],
+    queryFn: () => getExecutionSimulationEvents(selectedSimRunId as string, { limit: 1000 }),
+    enabled: Boolean(selectedSimRunId),
+    refetchInterval: 5000,
+  })
+
   useEffect(() => {
     if (guardrailsConfig && !guardrailsDirty) {
       setGuardrailsForm({
@@ -247,6 +305,18 @@ export default function ValidationEnginePanel() {
     },
     onError: (error) => {
       setNotice({ type: 'error', text: getErrorMessage(error, 'Failed to queue optimization') })
+    },
+  })
+
+  const executionSimMutation = useMutation({
+    mutationFn: runExecutionSimulationJob,
+    onSuccess: (data) => {
+      setNotice({ type: 'success', text: `Execution simulation queued (${data.job_id})` })
+      queryClient.invalidateQueries({ queryKey: ['validation-jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['validation-simulator-runs'] })
+    },
+    onError: (error) => {
+      setNotice({ type: 'error', text: getErrorMessage(error, 'Failed to queue execution simulation') })
     },
   })
 
@@ -328,7 +398,15 @@ export default function ValidationEnginePanel() {
   })
 
   const isRefreshing =
-    fetchingOverview || fetchingJobs || fetchingGuardrails || fetchingParameterSets || fetchingOptimizationResults
+    fetchingOverview ||
+    fetchingJobs ||
+    fetchingGuardrails ||
+    fetchingParameterSets ||
+    fetchingOptimizationResults ||
+    fetchingTraderStrategies ||
+    fetchingSimulatorRuns ||
+    fetchingSimulatorRunDetail ||
+    fetchingSimulatorEvents
 
   const calibration = overview?.calibration_90d?.overall
   const directionalAccuracy = toNumber(calibration?.directional_accuracy)
@@ -356,6 +434,8 @@ export default function ValidationEnginePanel() {
   const runningJobs = jobs.filter((job) => job.status === 'running').length
   const queuedJobs = jobs.filter((job) => job.status === 'queued').length
   const failedJobs = jobs.filter((job) => job.status === 'failed').length
+  const simulatorRuns = useMemo(() => simulatorRunsData?.runs || [], [simulatorRunsData?.runs])
+  const simulatorEvents = useMemo(() => simulatorEventsData?.events || [], [simulatorEventsData?.events])
 
   const executionFailureRate = toNumber(overview?.trader_orchestrator_execution_30d?.failure_rate)
   const resolverTradableRate = toNumber(overview?.world_intel_resolver_7d?.tradable_rate)
@@ -420,6 +500,7 @@ export default function ValidationEnginePanel() {
       refetchGuardrails(),
       refetchParameterSets(),
       refetchOptimizationResults(),
+      refetchSimulatorRuns(),
     ])
   }
 
@@ -440,7 +521,7 @@ export default function ValidationEnginePanel() {
               <p className="text-[10px] uppercase tracking-widest text-cyan-800 dark:text-cyan-200">Validation Engine</p>
               <h3 className="mt-1 text-base font-semibold">Model Quality Operations</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Manage backtests, optimization jobs, strategy guardrails, and deployment parameter sets.
+                Manage opportunity replay/optimization, execution simulation, strategy guardrails, and deployment parameter sets.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -519,9 +600,15 @@ export default function ValidationEnginePanel() {
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ValidationSubTab)} className="space-y-4">
         <TabsList className="h-auto w-full justify-start gap-2 rounded-xl border border-border/60 bg-card/70 p-1.5">
           <TabsTrigger value="runs" className="gap-1.5 data-[state=active]:bg-cyan-100 data-[state=active]:text-cyan-900 dark:data-[state=active]:bg-cyan-500/15 dark:data-[state=active]:text-cyan-100">
-            Runs & Queue
+            Opportunity Replay / Optimization
             <Badge variant="outline" className="ml-1 border-cyan-300 bg-cyan-100 text-[10px] text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-200">
               {queuedJobs + runningJobs}
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="simulator" className="gap-1.5 data-[state=active]:bg-sky-100 data-[state=active]:text-sky-900 dark:data-[state=active]:bg-sky-500/15 dark:data-[state=active]:text-sky-100">
+            Execution Simulator
+            <Badge variant="outline" className="ml-1 border-sky-300 bg-sky-100 text-[10px] text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+              {simulatorRuns.length}
             </Badge>
           </TabsTrigger>
           <TabsTrigger value="strategy" className="gap-1.5 data-[state=active]:bg-amber-100 data-[state=active]:text-amber-900 dark:data-[state=active]:bg-amber-500/15 dark:data-[state=active]:text-amber-100">
@@ -803,6 +890,285 @@ export default function ValidationEnginePanel() {
                     <p className="text-xs text-muted-foreground">
                       No optimization leaderboard yet.
                     </p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="simulator" className="mt-0 space-y-4">
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+            <Card className="xl:col-span-4 border-border/60 bg-card/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                  <Play className="h-4 w-4 text-sky-700 dark:text-sky-300" />
+                  Queue Execution Simulation
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Strategy</Label>
+                    <select
+                      value={simForm.strategy_key}
+                      onChange={(event) => {
+                        const key = event.target.value
+                        const strategy = (traderStrategies || []).find((item) => item.strategy_key === key)
+                        setSimForm((prev) => ({
+                          ...prev,
+                          strategy_key: key,
+                          source_key: strategy?.source_key || prev.source_key,
+                        }))
+                      }}
+                      className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+                    >
+                      {(traderStrategies || []).map((strategy) => (
+                        <option key={strategy.id} value={strategy.strategy_key}>
+                          {strategy.label} ({strategy.strategy_key})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Source</Label>
+                      <Input
+                        value={simForm.source_key}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, source_key: event.target.value }))}
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Provider</Label>
+                      <select
+                        value={simForm.market_provider}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, market_provider: event.target.value }))}
+                        className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm"
+                      >
+                        <option value="polymarket">Polymarket</option>
+                        <option value="kalshi">Kalshi</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Timeframe</Label>
+                      <Input
+                        value={simForm.timeframe}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, timeframe: event.target.value }))}
+                        placeholder="15m"
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Market Ref</Label>
+                      <Input
+                        value={simForm.market_ref}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, market_ref: event.target.value }))}
+                        placeholder="token id / ticker"
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Start (ISO)</Label>
+                      <Input
+                        value={simForm.start_at}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, start_at: event.target.value }))}
+                        placeholder="2026-01-01T00:00:00Z"
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">End (ISO)</Label>
+                      <Input
+                        value={simForm.end_at}
+                        onChange={(event) => setSimForm((prev) => ({ ...prev, end_at: event.target.value }))}
+                        placeholder="2026-01-31T00:00:00Z"
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Notional</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={simForm.default_notional_usd}
+                        onChange={(event) =>
+                          setSimForm((prev) => ({
+                            ...prev,
+                            default_notional_usd: floatOr(event.target.value, prev.default_notional_usd),
+                          }))
+                        }
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Slippage (bps)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={simForm.slippage_bps}
+                        onChange={(event) =>
+                          setSimForm((prev) => ({
+                            ...prev,
+                            slippage_bps: floatOr(event.target.value, prev.slippage_bps),
+                          }))
+                        }
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Fees (bps)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={simForm.fee_bps}
+                        onChange={(event) =>
+                          setSimForm((prev) => ({
+                            ...prev,
+                            fee_bps: floatOr(event.target.value, prev.fee_bps),
+                          }))
+                        }
+                        className="mt-1 h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <Button
+                  size="sm"
+                  className="w-full"
+                  disabled={executionSimMutation.isPending}
+                  onClick={() =>
+                    executionSimMutation.mutate({
+                      strategy_key: simForm.strategy_key,
+                      source_key: simForm.source_key,
+                      market_provider: simForm.market_provider,
+                      market_ref: simForm.market_ref || undefined,
+                      market_id: simForm.market_id || undefined,
+                      timeframe: simForm.timeframe,
+                      start_at: simForm.start_at || undefined,
+                      end_at: simForm.end_at || undefined,
+                      default_notional_usd: simForm.default_notional_usd,
+                      slippage_bps: simForm.slippage_bps,
+                      fee_bps: simForm.fee_bps,
+                    })
+                  }
+                >
+                  {executionSimMutation.isPending ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Play className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Queue Execution Simulation
+                </Button>
+              </CardContent>
+            </Card>
+
+            <div className="space-y-4 xl:col-span-8">
+              <Card className="border-border/60 bg-card/80">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center justify-between gap-2 text-sm font-medium">
+                    <span className="flex items-center gap-2">
+                      <Activity className="h-4 w-4 text-sky-700 dark:text-sky-300" />
+                      Execution Simulation Runs
+                    </span>
+                    <Badge variant="outline" className="border-sky-300 bg-sky-100 text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+                      {simulatorRuns.length} runs
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border/60 bg-background/25">
+                        <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Run</TableHead>
+                        <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Status</TableHead>
+                        <TableHead className="h-9 py-2 text-[11px] uppercase tracking-wide">Summary</TableHead>
+                        <TableHead className="h-9 py-2 text-right text-[11px] uppercase tracking-wide">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {simulatorRuns.slice(0, 20).map((run) => {
+                        const summary = run.summary || {}
+                        return (
+                          <TableRow key={run.id} className="border-border/45">
+                            <TableCell className="py-2">
+                              <p className="text-sm font-medium">{run.strategy_key}</p>
+                              <p className="text-[11px] text-muted-foreground">{run.source_key} • {formatDateTime(run.created_at)}</p>
+                            </TableCell>
+                            <TableCell className="py-2">
+                              <Badge className={cn('border text-[10px] uppercase', getJobStatusClass(run.status))}>
+                                {run.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="py-2 text-[11px] text-muted-foreground">
+                              selected {String((summary as Record<string, unknown>).signals_selected ?? 0)} • filled {String((summary as Record<string, unknown>).orders_filled ?? 0)} • pnl {formatCurrency(toNumber((summary as Record<string, unknown>).total_realized_pnl_usd))}
+                            </TableCell>
+                            <TableCell className="py-2 text-right">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7"
+                                onClick={() => setSelectedSimRunId(run.id)}
+                              >
+                                Inspect
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                      {simulatorRuns.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                            No execution simulation runs yet.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/60 bg-card/80">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                    <BarChart3 className="h-4 w-4 text-sky-700 dark:text-sky-300" />
+                    Simulator Event Stream
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0 space-y-2">
+                  {selectedSimulatorRun ? (
+                    <p className="text-xs text-muted-foreground">
+                      Run {selectedSimulatorRun.id} • events {simulatorEvents.length}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Select a run to inspect events.</p>
+                  )}
+                  {simulatorEvents.slice(0, 25).map((event) => (
+                    <div
+                      key={event.id}
+                      className="rounded-md border border-border/50 bg-background/25 px-2.5 py-2"
+                    >
+                      <p className="text-sm font-medium">
+                        #{event.sequence} {event.event_type}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {event.market_id || 'market:n/a'} • {event.direction || 'n/a'} • px {event.price ?? 'n/a'} • qty {event.quantity ?? 'n/a'} • pnl {event.realized_pnl_usd ?? 'n/a'}
+                      </p>
+                    </div>
+                  ))}
+                  {selectedSimRunId && simulatorEvents.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No events for this run yet.</p>
                   )}
                 </CardContent>
               </Card>

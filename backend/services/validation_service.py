@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -20,6 +20,8 @@ from sqlalchemy import and_, select
 from models.database import (
     AppSettings,
     AsyncSessionLocal,
+    ExecutionSimEvent,
+    ExecutionSimRun,
     OpportunityHistory,
     StrategyValidationProfile,
     TradeSignal,
@@ -28,9 +30,29 @@ from models.database import (
     WorldIntelligenceSignal,
 )
 from services.param_optimizer import param_optimizer
+from services.simulation.execution_simulator import execution_simulator
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
 
 
 class ValidationService:
@@ -92,6 +114,49 @@ class ValidationService:
         async with AsyncSessionLocal() as session:
             row = await session.get(ValidationJob, job_id)
             return self._job_to_dict(row) if row else None
+
+    async def list_execution_sim_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with AsyncSessionLocal() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ExecutionSimRun)
+                        .order_by(ExecutionSimRun.created_at.desc())
+                        .limit(max(1, min(limit, 500)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [self._execution_run_to_dict(row) for row in rows]
+
+    async def get_execution_sim_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        async with AsyncSessionLocal() as session:
+            row = await session.get(ExecutionSimRun, run_id)
+            return self._execution_run_to_dict(row) if row else None
+
+    async def list_execution_sim_events(
+        self,
+        run_id: str,
+        *,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        async with AsyncSessionLocal() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ExecutionSimEvent)
+                        .where(ExecutionSimEvent.run_id == run_id)
+                        .order_by(ExecutionSimEvent.sequence.asc())
+                        .offset(max(0, offset))
+                        .limit(max(1, min(limit, 5000)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [self._execution_event_to_dict(row) for row in rows]
 
     async def cancel_job(self, job_id: str) -> bool:
         async with AsyncSessionLocal() as session:
@@ -740,6 +805,59 @@ class ValidationService:
                     "top_results": top,
                     "best_saved_parameter_set_id": saved_set_id,
                 }
+            elif job_type == "execution_simulation":
+                await self._set_job_progress(job_id, 0.1, "Preparing execution simulation")
+                strategy_key = str(payload.get("strategy_key") or "").strip().lower()
+                source_key = str(payload.get("source_key") or "").strip().lower()
+                if not strategy_key:
+                    raise ValueError("execution_simulation requires payload.strategy_key")
+                if not source_key:
+                    raise ValueError("execution_simulation requires payload.source_key")
+
+                async with AsyncSessionLocal() as sim_session:
+                    run_row = ExecutionSimRun(
+                        id=str(uuid.uuid4()),
+                        job_id=job_id,
+                        strategy_key=strategy_key,
+                        source_key=source_key,
+                        status="queued",
+                        market_scope_json=dict(payload.get("market_scope") or {}),
+                        params_json=dict(payload),
+                        requested_start_at=_parse_datetime(payload.get("start_at")),
+                        requested_end_at=_parse_datetime(payload.get("end_at")),
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
+                    )
+                    sim_session.add(run_row)
+                    await sim_session.commit()
+                    await sim_session.refresh(run_row)
+
+                    await self._set_job_progress(job_id, 0.35, "Running execution simulation")
+                    try:
+                        summary = await execution_simulator.run(
+                            sim_session,
+                            run_row=run_row,
+                            payload=payload,
+                        )
+                        await sim_session.commit()
+                    except Exception as exc:
+                        run_row.status = "failed"
+                        run_row.error_message = str(exc)
+                        run_row.finished_at = utcnow()
+                        run_row.summary_json = {
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                        run_row.updated_at = utcnow()
+                        await sim_session.commit()
+                        raise
+
+                await self._set_job_progress(job_id, 0.9, "Execution simulation completed")
+                final_result = {
+                    "status": "success",
+                    "run_id": run_row.id,
+                    "summary": summary,
+                }
             else:
                 raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -785,6 +903,48 @@ class ValidationService:
                 await session.commit()
                 await session.refresh(row)
             return row
+
+    @staticmethod
+    def _execution_run_to_dict(row: ExecutionSimRun) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "job_id": row.job_id,
+            "strategy_key": row.strategy_key,
+            "source_key": row.source_key,
+            "status": row.status,
+            "market_scope": row.market_scope_json or {},
+            "params": row.params_json or {},
+            "requested_start_at": row.requested_start_at.isoformat() if row.requested_start_at else None,
+            "requested_end_at": row.requested_end_at.isoformat() if row.requested_end_at else None,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "summary": row.summary_json or {},
+            "error_message": row.error_message,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @staticmethod
+    def _execution_event_to_dict(row: ExecutionSimEvent) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "run_id": row.run_id,
+            "sequence": int(row.sequence or 0),
+            "event_type": row.event_type,
+            "event_at": row.event_at.isoformat() if row.event_at else None,
+            "signal_id": row.signal_id,
+            "market_id": row.market_id,
+            "direction": row.direction,
+            "price": row.price,
+            "quantity": row.quantity,
+            "notional_usd": row.notional_usd,
+            "fees_usd": row.fees_usd,
+            "slippage_bps": row.slippage_bps,
+            "realized_pnl_usd": row.realized_pnl_usd,
+            "unrealized_pnl_usd": row.unrealized_pnl_usd,
+            "payload": row.payload_json or {},
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
 
     @staticmethod
     def _job_to_dict(row: ValidationJob) -> dict[str, Any]:

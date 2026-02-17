@@ -23,7 +23,7 @@ if os.getcwd() != _BACKEND:
 from utils.utcnow import utcnow
 from models.database import AsyncSessionLocal, AppSettings, init_database
 from services.insider_detector import insider_detector
-from services.signal_bus import emit_insider_intent_signals, emit_tracked_trader_signals
+from services.signal_bus import emit_tracked_trader_signals
 from services.market_cache import market_cache_service
 from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_intelligence import wallet_intelligence
@@ -48,14 +48,14 @@ POOL_RECOMPUTE_INTERVAL = timedelta(minutes=1)
 FULL_INTELLIGENCE_INTERVAL = timedelta(minutes=20)
 INSIDER_RESCORING_INTERVAL = timedelta(minutes=10)
 TRADER_OPP_SIDE_MAP = {"all": "all", "buy": "buy", "sell": "sell"}
-# Legacy values are kept for compatibility; tracked/pool map to confluence
-# for worker emission purposes.
+# Legacy values are kept for compatibility so worker telemetry reflects
+# canonical UI filters without introducing separate insider channels.
 TRADER_OPP_SOURCE_MAP = {
     "all": "all",
-    "confluence": "confluence",
-    "insider": "insider",
-    "tracked": "confluence",
-    "pool": "confluence",
+    "confluence": "all",
+    "insider": "pool",
+    "tracked": "tracked",
+    "pool": "pool",
 }
 TRADER_OPP_MIN_TIER_MAP = {"WATCH": "WATCH", "HIGH": "HIGH", "EXTREME": "EXTREME"}
 POOL_RECOMPUTE_MODE_MAP = {"quality_only": "quality_only", "balanced": "balanced"}
@@ -130,9 +130,6 @@ async def _trader_opportunity_intent_settings() -> dict[str, Any]:
         "min_tier": "WATCH",
         "side_filter": "all",
         "confluence_limit": 50,
-        "insider_limit": 40,
-        "insider_min_confidence": 0.62,
-        "insider_max_age_minutes": 180,
     }
     try:
         async with AsyncSessionLocal() as session:
@@ -152,24 +149,6 @@ async def _trader_opportunity_intent_settings() -> dict[str, Any]:
                 default=50,
                 minimum=1,
                 maximum=400,
-            )
-            config["insider_limit"] = _clamp_int(
-                row.discovery_trader_opps_insider_limit,
-                default=40,
-                minimum=1,
-                maximum=1000,
-            )
-            config["insider_min_confidence"] = _clamp_float(
-                row.discovery_trader_opps_insider_min_confidence,
-                default=0.62,
-                minimum=0.0,
-                maximum=1.0,
-            )
-            config["insider_max_age_minutes"] = _clamp_int(
-                row.discovery_trader_opps_insider_max_age_minutes,
-                default=180,
-                minimum=1,
-                maximum=1440,
             )
     except Exception as exc:
         logger.warning("Failed to read trader opportunity intent settings: %s", exc)
@@ -368,70 +347,6 @@ def _filter_executable_confluence(
     return list(by_market.values())
 
 
-def _rank_insider_intent(intent: Any) -> tuple[float, float, float]:
-    confidence = float(getattr(intent, "confidence", 0.0) or 0.0)
-    if confidence > 1.0:
-        confidence = confidence / 100.0
-    edge = float(getattr(intent, "edge_percent", 0.0) or 0.0)
-    created_at = _to_utc_naive(getattr(intent, "created_at", None))
-    created_ts = created_at.timestamp() if created_at is not None else 0.0
-    return (confidence, edge, created_ts)
-
-
-def _filter_executable_insider_intents(
-    intents: list[Any],
-    *,
-    side_filter: str,
-    min_confidence: float,
-    max_age_minutes: int,
-    limit: int,
-    now: datetime,
-) -> list[Any]:
-    eligible: list[Any] = []
-    max_age_seconds = float(max_age_minutes) * 60.0
-
-    for intent in intents:
-        market_id = str(getattr(intent, "market_id", "") or "").strip()
-        if not market_id:
-            continue
-
-        direction = str(getattr(intent, "direction", "") or "").strip().lower()
-        if direction not in {"buy_yes", "buy_no"}:
-            continue
-        if not _matches_side(side_filter, direction):
-            continue
-
-        confidence = float(getattr(intent, "confidence", 0.0) or 0.0)
-        if confidence > 1.0:
-            confidence = confidence / 100.0
-        if confidence < min_confidence:
-            continue
-
-        created_at = _to_utc_naive(getattr(intent, "created_at", None))
-        if created_at is None:
-            continue
-        age_seconds = (now - created_at).total_seconds()
-        if age_seconds < 0:
-            age_seconds = 0
-        if age_seconds > max_age_seconds:
-            continue
-
-        eligible.append(intent)
-
-    eligible.sort(key=_rank_insider_intent, reverse=True)
-
-    by_market: dict[str, Any] = {}
-    for intent in eligible:
-        market_key = str(getattr(intent, "market_id", "") or "").strip().lower()
-        if not market_key or market_key in by_market:
-            continue
-        by_market[market_key] = intent
-        if len(by_market) >= limit:
-            break
-
-    return list(by_market.values())
-
-
 async def _market_cache_hygiene_settings() -> dict:
     config = {
         "enabled": True,
@@ -492,9 +407,6 @@ async def _run_loop() -> None:
                 "confluence_scanned": 0,
                 "confluence_executable": 0,
                 "insider_wallets_flagged": 0,
-                "insider_intents_pending": 0,
-                "insider_intents_executable": 0,
-                "insider_signals_emitted_last_run": 0,
             },
         )
 
@@ -525,9 +437,6 @@ async def _run_loop() -> None:
                         "confluence_scanned": 0,
                         "confluence_executable": 0,
                         "insider_wallets_flagged": 0,
-                        "insider_intents_pending": 0,
-                        "insider_intents_executable": 0,
-                        "insider_signals_emitted_last_run": 0,
                     },
                 )
             await asyncio.sleep(min(10, interval))
@@ -535,12 +444,9 @@ async def _run_loop() -> None:
 
         cycle_started = utcnow()
         emitted = 0
-        insider_emitted = 0
         confluence_count = 0
         confluence_scanned = 0
         insider_flagged = last_insider_flagged
-        insider_pending = 0
-        insider_executable = 0
 
         try:
             now = utcnow()
@@ -630,17 +536,10 @@ async def _run_loop() -> None:
                 last_insider_flagged = insider_flagged
                 next_insider_rescore = now + INSIDER_RESCORING_INTERVAL
 
-            activity_labels.append("insider_intents")
-            await insider_detector.generate_intents()
-
             trader_intent_settings = await _trader_opportunity_intent_settings()
 
-            source_filter = trader_intent_settings["source_filter"]
             side_filter = trader_intent_settings["side_filter"]
             confluence_limit = int(trader_intent_settings["confluence_limit"])
-            insider_limit = int(trader_intent_settings["insider_limit"])
-            insider_min_confidence = float(trader_intent_settings["insider_min_confidence"])
-            insider_max_age_minutes = int(trader_intent_settings["insider_max_age_minutes"])
 
             confluence_scan_limit = max(250, confluence_limit * 4)
             opportunities = await smart_wallet_pool.get_tracked_trader_opportunities(
@@ -648,44 +547,17 @@ async def _run_loop() -> None:
                 min_tier=str(trader_intent_settings["min_tier"]),
             )
             confluence_scanned = len(opportunities)
-            pending_insider_intents = await insider_detector.list_intents(
-                status_filter="pending",
-                limit=max(1000, insider_limit * 8),
-            )
-            insider_pending = len(pending_insider_intents)
 
-            executable_confluence = (
-                _filter_executable_confluence(
-                    opportunities,
-                    side_filter=side_filter,
-                    limit=confluence_limit,
-                )
-                if source_filter in {"all", "confluence"}
-                else []
-            )
-            executable_insider = (
-                _filter_executable_insider_intents(
-                    pending_insider_intents,
-                    side_filter=side_filter,
-                    min_confidence=insider_min_confidence,
-                    max_age_minutes=insider_max_age_minutes,
-                    limit=insider_limit,
-                    now=now,
-                )
-                if source_filter in {"all", "insider"}
-                else []
+            executable_confluence = _filter_executable_confluence(
+                opportunities,
+                side_filter=side_filter,
+                limit=confluence_limit,
             )
 
             confluence_count = len(executable_confluence)
-            insider_executable = len(executable_insider)
 
             async with AsyncSessionLocal() as session:
                 emitted = await emit_tracked_trader_signals(session, executable_confluence)
-                insider_emitted = await emit_insider_intent_signals(
-                    session,
-                    executable_insider,
-                    max_age_minutes=insider_max_age_minutes,
-                )
                 if requested:
                     await clear_worker_run_request(session, worker_name)
 
@@ -713,19 +585,15 @@ async def _run_loop() -> None:
                         "confluence_scanned": int(confluence_scanned),
                         "confluence_executable": int(confluence_count),
                         "insider_wallets_flagged": int(insider_flagged),
-                        "insider_intents_pending": int(insider_pending),
-                        "insider_intents_executable": int(insider_executable),
-                        "insider_signals_emitted_last_run": int(insider_emitted),
                         "intent_settings": trader_intent_settings,
                         "pool_stats": pool_stats,
                     },
                 )
 
             logger.info(
-                "Tracked-traders cycle complete: signals=%s emitted=%s insider_emitted=%s",
+                "Tracked-traders cycle complete: signals=%s emitted=%s",
                 confluence_count,
                 emitted,
-                insider_emitted,
             )
         except asyncio.CancelledError:
             raise
@@ -751,9 +619,6 @@ async def _run_loop() -> None:
                         "confluence_scanned": int(confluence_scanned),
                         "confluence_executable": int(confluence_count),
                         "insider_wallets_flagged": int(insider_flagged),
-                        "insider_intents_pending": int(insider_pending),
-                        "insider_intents_executable": int(insider_executable),
-                        "insider_signals_emitted_last_run": int(insider_emitted),
                     },
                 )
 

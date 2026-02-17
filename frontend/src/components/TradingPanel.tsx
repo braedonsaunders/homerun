@@ -29,6 +29,7 @@ import {
   getTraderSources,
   getSimulationAccounts,
   getTraders,
+  getWallets,
   pauseTrader,
   runTraderOnce,
   runTraderOrchestratorLivePreflight,
@@ -41,6 +42,7 @@ import {
   type Trader,
   type TraderConfigSchema,
   type TraderOrder,
+  type TraderSourceConfig,
   type TraderSource,
   updateTrader,
   getActiveCopyMode,
@@ -49,6 +51,7 @@ import {
   type CopySourceType,
   type DiscoverySettings,
 } from '../services/api'
+import { discoveryApi } from '../services/discoveryApi'
 import { cn } from '../lib/utils'
 import { selectedAccountIdAtom } from '../store/atoms'
 import { Badge } from './ui/badge'
@@ -96,10 +99,23 @@ type PositionBookRow = {
 
 const CRYPTO_STRATEGY_MODES = ['auto', 'directional', 'pure_arb', 'rebalance'] as const
 const CRYPTO_ASSET_OPTIONS = ['BTC', 'ETH', 'SOL', 'XRP'] as const
+const CRYPTO_STRATEGY_OPTIONS = [
+  { key: 'crypto_5m', label: 'Crypto 5m', timeframe: '5m' },
+  { key: 'crypto_15m', label: 'Crypto 15m', timeframe: '15m' },
+  { key: 'crypto_1h', label: 'Crypto 1h', timeframe: '1h' },
+  { key: 'crypto_4h', label: 'Crypto 4h', timeframe: '4h' },
+] as const
 const CRYPTO_TIMEFRAME_OPTIONS = ['5m', '15m', '1h', '4h'] as const
 const RESUME_POLICY_OPTIONS = ['resume_full', 'manage_only', 'flatten_then_start'] as const
 type CryptoStrategyMode = (typeof CRYPTO_STRATEGY_MODES)[number]
 type ResumePolicy = (typeof RESUME_POLICY_OPTIONS)[number]
+type TradersScopeMode = 'tracked' | 'pool' | 'individual' | 'group'
+const TRADERS_SCOPE_OPTIONS: Array<{ key: TradersScopeMode; label: string }> = [
+  { key: 'tracked', label: 'Tracked' },
+  { key: 'pool', label: 'Pool' },
+  { key: 'individual', label: 'Individual' },
+  { key: 'group', label: 'Group' },
+]
 
 type TraderAdvancedConfig = {
   cadenceProfile: string
@@ -163,9 +179,9 @@ type TraderSignalFilters = {
   min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
   side_filter: 'all' | 'BUY' | 'SELL'
   confluence_limit: number
-  insider_limit: number
-  insider_min_confidence: number
-  insider_max_age_minutes: number
+  individual_trade_limit: number
+  individual_trade_min_confidence: number
+  individual_trade_max_age_minutes: number
 }
 
 const DEFAULT_COPY_TRADING: CopyTradingFormState = {
@@ -188,9 +204,9 @@ const DEFAULT_SIGNAL_FILTERS: TraderSignalFilters = {
   min_tier: 'WATCH',
   side_filter: 'all',
   confluence_limit: 50,
-  insider_limit: 40,
-  insider_min_confidence: 0.62,
-  insider_max_age_minutes: 180,
+  individual_trade_limit: 40,
+  individual_trade_min_confidence: 0.62,
+  individual_trade_max_age_minutes: 180,
 }
 
 const OPEN_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
@@ -201,9 +217,16 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
   {
     key: 'crypto',
     label: 'Crypto Markets',
-    description: 'Crypto microstructure and 5m/15m market signals.',
+    description: 'Crypto microstructure signals.',
     domains: ['crypto'],
     signal_types: ['crypto_market'],
+    strategy_options: CRYPTO_STRATEGY_OPTIONS.map((item) => ({
+      key: item.key,
+      label: item.label,
+      description: `${item.label} strategy`,
+      default_params: {},
+      param_fields: [],
+    })),
   },
   {
     key: 'news',
@@ -211,6 +234,7 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     description: 'News-driven intents and event reactions.',
     domains: ['event_markets'],
     signal_types: ['news_intent'],
+    strategy_options: [{ key: 'news_reaction', label: 'News Reaction', description: '', default_params: {}, param_fields: [] }],
   },
   {
     key: 'scanner',
@@ -218,13 +242,18 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     description: 'Scanner-originated arbitrage opportunities.',
     domains: ['event_markets'],
     signal_types: ['opportunity'],
+    strategy_options: [
+      { key: 'opportunity_general', label: 'Opportunity General', description: '', default_params: {}, param_fields: [] },
+      { key: 'opportunity_structural', label: 'Opportunity Structural', description: '', default_params: {}, param_fields: [] },
+    ],
   },
   {
-    key: 'tracked_traders',
-    label: 'Tracked Traders',
-    description: 'Copy trades from your individually tracked wallets.',
+    key: 'traders',
+    label: 'Traders',
+    description: 'Tracked/pool/individual/group trader activity signals.',
     domains: ['event_markets'],
-    signal_types: ['tracked_trader'],
+    signal_types: ['confluence'],
+    strategy_options: [{ key: 'traders_flow', label: 'Traders Flow', description: '', default_params: {}, param_fields: [] }],
   },
   {
     key: 'weather',
@@ -232,34 +261,39 @@ const FALLBACK_TRADER_SOURCES: TraderSource[] = [
     description: 'Weather forecast probability dislocations.',
     domains: ['event_markets'],
     signal_types: ['weather_intent'],
-  },
-  {
-    key: 'world_intelligence',
-    label: 'World Intelligence',
-    description: 'Geopolitical conflict and tension opportunity signals.',
-    domains: ['event_markets'],
-    signal_types: ['world_intelligence'],
+    strategy_options: [
+      { key: 'weather_consensus', label: 'Weather Consensus', description: '', default_params: {}, param_fields: [] },
+      { key: 'weather_alerts', label: 'Weather Alerts', description: '', default_params: {}, param_fields: [] },
+    ],
   },
 ]
 
 const STRATEGY_LABELS: Record<string, string> = {
-  crypto_15m: 'Crypto HF Trader',
-  news_reaction: 'News Trader',
-  opportunity_weather: 'General + Weather Trader',
-  omni_aggressive: 'Omni Aggressive Trader',
+  crypto_5m: 'Crypto 5m',
+  crypto_15m: 'Crypto 15m',
+  crypto_1h: 'Crypto 1h',
+  crypto_4h: 'Crypto 4h',
+  news_reaction: 'News Reaction',
+  opportunity_general: 'Opportunity General',
+  opportunity_structural: 'Opportunity Structural',
+  weather_consensus: 'Weather Consensus',
+  weather_alerts: 'Weather Alerts',
+  traders_flow: 'Traders Flow',
 }
 
 const DEFAULT_STRATEGY_KEY = 'crypto_15m'
+const DEFAULT_STRATEGY_BY_SOURCE: Record<string, string> = {
+  crypto: 'crypto_15m',
+  scanner: 'opportunity_general',
+  news: 'news_reaction',
+  weather: 'weather_consensus',
+  traders: 'traders_flow',
+}
 
 type StrategyOption = {
   key: string
   label: string
 }
-
-const STRATEGY_OPTIONS: StrategyOption[] = Object.entries(STRATEGY_LABELS).map(([key, label]) => ({
-  key,
-  label,
-}))
 
 
 function toNumber(value: unknown): number {
@@ -269,7 +303,7 @@ function toNumber(value: unknown): number {
 
 function isCryptoStrategyKey(value: string): boolean {
   const key = String(value || '').trim().toLowerCase()
-  return key === 'crypto_15m' || key.includes('crypto') || key.includes('btc')
+  return CRYPTO_STRATEGY_OPTIONS.some((option) => option.key === key)
 }
 
 function normalizeCryptoStrategyMode(value: unknown): CryptoStrategyMode {
@@ -450,7 +484,9 @@ function csvToList(value: string): string[] {
 }
 
 function normalizeSourceKey(value: string): string {
-  return String(value || '').trim().toLowerCase()
+  const key = String(value || '').trim().toLowerCase()
+  if (key === 'tracked_traders' || key === 'pool_traders' || key === 'insider') return 'traders'
+  return key
 }
 
 function uniqueSourceList(values: string[]): string[] {
@@ -469,6 +505,16 @@ function uniqueSourceList(values: string[]): string[] {
 function normalizeStrategyKey(value: unknown): string {
   const key = String(value || '').trim().toLowerCase()
   return key || DEFAULT_STRATEGY_KEY
+}
+
+function normalizeStrategyKeyForSource(sourceKey: string, value: unknown): string {
+  const normalizedSource = normalizeSourceKey(sourceKey)
+  const key = normalizeStrategyKey(value)
+  if (key === 'opportunity_weather') {
+    if (normalizedSource === 'weather') return 'weather_consensus'
+    if (normalizedSource === 'scanner') return 'opportunity_general'
+  }
+  return key
 }
 
 function normalizeResumePolicy(value: unknown): ResumePolicy {
@@ -507,20 +553,71 @@ function signalFiltersFromDiscoverySettings(
     min_tier: discovery.trader_opps_min_tier || DEFAULT_SIGNAL_FILTERS.min_tier,
     side_filter: asSignalSideFilter(discovery.trader_opps_side_filter),
     confluence_limit: Math.round(clamp(Number(discovery.trader_opps_confluence_limit || 50), 1, 200)),
-    insider_limit: Math.round(clamp(Number(discovery.trader_opps_insider_limit || 40), 1, 500)),
-    insider_min_confidence: clamp(Number(discovery.trader_opps_insider_min_confidence || 0.62), 0, 1),
-    insider_max_age_minutes: Math.round(clamp(Number(discovery.trader_opps_insider_max_age_minutes || 180), 1, 1440)),
+    individual_trade_limit: Math.round(clamp(Number(discovery.trader_opps_insider_limit || 40), 1, 500)),
+    individual_trade_min_confidence: clamp(Number(discovery.trader_opps_insider_min_confidence || 0.62), 0, 1),
+    individual_trade_max_age_minutes: Math.round(clamp(Number(discovery.trader_opps_insider_max_age_minutes || 180), 1, 1440)),
   }
 }
 
 function isTraderSourceKey(key: string): boolean {
   const k = normalizeSourceKey(key)
-  return k.includes('tracked') || k.includes('pool') || k.includes('watch')
+  return k === 'traders'
 }
 
 function isCryptoSourceKey(key: string): boolean {
   const k = normalizeSourceKey(key)
-  return k === 'crypto' || k.includes('crypto')
+  return k === 'crypto'
+}
+
+function sourceStrategyOptions(source: TraderSource): StrategyOption[] {
+  const options = (source.strategy_options || [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      key: String(item.key || '').trim().toLowerCase(),
+      label: String(item.label || strategyLabelForKey(String(item.key || ''))),
+    }))
+    .filter((item) => item.key)
+  if (options.length > 0) return options
+  const fallback = DEFAULT_STRATEGY_BY_SOURCE[normalizeSourceKey(source.key)]
+  if (fallback) {
+    return [{ key: fallback, label: strategyLabelForKey(fallback) }]
+  }
+  return []
+}
+
+function defaultStrategyForSource(sourceKey: string, sourceCatalog: TraderSource[]): string {
+  const normalized = normalizeSourceKey(sourceKey)
+  const source = sourceCatalog.find((item) => normalizeSourceKey(item.key) === normalized)
+  const options = source ? sourceStrategyOptions(source) : []
+  if (options.length > 0) return options[0].key
+  return DEFAULT_STRATEGY_BY_SOURCE[normalized] || DEFAULT_STRATEGY_KEY
+}
+
+function cryptoTimeframeForStrategyKey(strategyKey: string): string {
+  const normalized = String(strategyKey || '').trim().toLowerCase()
+  return CRYPTO_STRATEGY_OPTIONS.find((item) => item.key === normalized)?.timeframe || '15m'
+}
+
+function traderSourceKeys(trader: Trader): string[] {
+  if (Array.isArray(trader.source_configs) && trader.source_configs.length > 0) {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const sourceConfig of trader.source_configs) {
+      const sourceKey = normalizeSourceKey(String(sourceConfig.source_key || ''))
+      if (!sourceKey || seen.has(sourceKey)) continue
+      seen.add(sourceKey)
+      out.push(sourceKey)
+    }
+    return out
+  }
+  return uniqueSourceList((trader.sources || []).map((source) => normalizeSourceKey(source)))
+}
+
+function traderPrimaryStrategyKey(trader: Trader): string {
+  if (Array.isArray(trader.source_configs) && trader.source_configs.length > 0) {
+    return normalizeStrategyKey(trader.source_configs[0]?.strategy_key || DEFAULT_STRATEGY_KEY)
+  }
+  return normalizeStrategyKey(trader.strategy_key || DEFAULT_STRATEGY_KEY)
 }
 
 function copyTradingFromActiveMode(active: ActiveCopyMode): CopyTradingFormState {
@@ -650,7 +747,6 @@ function withConfiguredParams(
   strategyKey: string
 ): Record<string, unknown> {
   const targetAssets = normalizeCryptoAssetList(config.cryptoAssetsCsv)
-  const targetTimeframes = normalizeCryptoTimeframeList(config.cryptoTimeframesCsv)
   const next: Record<string, unknown> = {
     ...raw,
     min_signal_score: config.minSignalScore,
@@ -666,7 +762,7 @@ function withConfiguredParams(
   if (isCryptoStrategyKey(strategyKey)) {
     next.strategy_mode = config.strategyMode
     next.target_assets = targetAssets.length > 0 ? targetAssets : [...CRYPTO_ASSET_OPTIONS]
-    next.target_timeframes = targetTimeframes.length > 0 ? targetTimeframes : [...CRYPTO_TIMEFRAME_OPTIONS]
+    next.target_timeframes = [cryptoTimeframeForStrategyKey(strategyKey)]
   } else {
     delete next.strategy_mode
     delete next.target_assets
@@ -892,11 +988,15 @@ export default function TradingPanel() {
   const [traderFlyoutMode, setTraderFlyoutMode] = useState<'create' | 'edit'>('create')
   const [draftName, setDraftName] = useState('')
   const [draftDescription, setDraftDescription] = useState('')
-  const [draftStrategyKey, setDraftStrategyKey] = useState(DEFAULT_STRATEGY_KEY)
+  const [, setDraftStrategyKey] = useState(DEFAULT_STRATEGY_KEY)
+  const [draftSourceStrategies, setDraftSourceStrategies] = useState<Record<string, string>>({})
   const [draftInterval, setDraftInterval] = useState('60')
   const [draftSources, setDraftSources] = useState('')
   const [draftEnabled, setDraftEnabled] = useState(true)
   const [draftPaused, setDraftPaused] = useState(false)
+  const [draftTradersScopeModes, setDraftTradersScopeModes] = useState<TradersScopeMode[]>(['tracked', 'pool'])
+  const [draftTradersIndividualWallets, setDraftTradersIndividualWallets] = useState<string[]>([])
+  const [draftTradersGroupIds, setDraftTradersGroupIds] = useState<string[]>([])
   const [draftParams, setDraftParams] = useState('{}')
   const [draftRisk, setDraftRisk] = useState('{}')
   const [draftMetadata, setDraftMetadata] = useState('{}')
@@ -949,9 +1049,23 @@ export default function TradingPanel() {
     staleTime: 15000,
   })
 
+  const walletsQuery = useQuery({
+    queryKey: ['tracked-wallets'],
+    queryFn: getWallets,
+    staleTime: 30000,
+  })
+
+  const traderGroupsQuery = useQuery({
+    queryKey: ['discovery-trader-groups'],
+    queryFn: () => discoveryApi.getTraderGroups(false, 200),
+    staleTime: 30000,
+  })
+
   const traderConfigSchema: TraderConfigSchema | null = traderConfigSchemaQuery.data ?? null
   const activeCopyMode = activeCopyModeQuery.data ?? null
   const traders = tradersQuery.data || []
+  const trackedWallets = walletsQuery.data || []
+  const traderGroups = traderGroupsQuery.data || []
   const sourceCatalog = traderConfigSchema?.sources?.length
     ? traderConfigSchema.sources
     : traderSourcesQuery.data?.length
@@ -1026,29 +1140,14 @@ export default function TradingPanel() {
   )
 
   const sourceCards = useMemo(() => {
-    const known = uniqueSourceList(sourceCatalog.map((source) => source.key))
+    return uniqueSourceList(sourceCatalog.map((source) => source.key))
       .map((key) => sourceCatalog.find((source) => normalizeSourceKey(source.key) === normalizeSourceKey(key)))
       .filter((source): source is TraderSource => Boolean(source))
       .map((source) => ({
         ...source,
         isLegacy: false,
       }))
-
-    const knownKeys = new Set(known.map((source) => normalizeSourceKey(source.key)))
-    const selected = csvToList(draftSources)
-    const legacy = selected
-      .filter((sourceKey) => !knownKeys.has(normalizeSourceKey(sourceKey)))
-      .map((sourceKey) => ({
-        key: sourceKey,
-        label: sourceKey,
-        description: 'Custom/legacy adapter key.',
-        domains: ['legacy'],
-        signal_types: [],
-        isLegacy: true,
-      }))
-
-    return [...known, ...legacy]
-  }, [draftSources, sourceCatalog])
+  }, [sourceCatalog])
 
   const selectedSourceKeySet = useMemo(
     () => new Set(csvToList(draftSources).map((sourceKey) => normalizeSourceKey(sourceKey))),
@@ -1061,57 +1160,62 @@ export default function TradingPanel() {
   )
 
   const effectiveDraftSources = useMemo(() => {
-    return uniqueSourceList(csvToList(draftSources))
+    const out: string[] = []
+    const seen = new Set<string>()
+    for (const sourceKey of csvToList(draftSources)) {
+      const normalized = normalizeSourceKey(sourceKey)
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      out.push(normalized)
+    }
+    return out
   }, [draftSources])
 
-  const strategyCatalog = useMemo<StrategyOption[]>(() => {
-    const schemaStrategies = traderConfigSchema?.strategies || []
-    if (schemaStrategies.length === 0) return STRATEGY_OPTIONS
-    return schemaStrategies.map((strategy) => ({
-      key: strategy.key,
-      label: strategy.label || strategyLabelForKey(strategy.key),
-    }))
-  }, [traderConfigSchema])
-
-  const effectiveStrategyKey = useMemo(
-    () => normalizeStrategyKey(draftStrategyKey),
-    [draftStrategyKey]
-  )
-  const strategyOptionsForDraft = useMemo(() => {
-    if (strategyCatalog.some((option) => option.key === effectiveStrategyKey)) {
-      return strategyCatalog
+  const sourceStrategyOptionsByKey = useMemo(() => {
+    const out: Record<string, StrategyOption[]> = {}
+    for (const source of sourceCards) {
+      out[normalizeSourceKey(source.key)] = sourceStrategyOptions(source)
     }
-    return [
-      ...strategyCatalog,
-      { key: effectiveStrategyKey, label: `${strategyLabelForKey(effectiveStrategyKey)} (Custom)` },
-    ]
-  }, [effectiveStrategyKey, strategyCatalog])
-  const selectedStrategySchema = useMemo(
-    () => traderConfigSchema?.strategies?.find((strategy) => strategy.key === effectiveStrategyKey) || null,
-    [effectiveStrategyKey, traderConfigSchema]
-  )
-  const incompatibleSourceKeys = useMemo(() => {
-    const supported = selectedStrategySchema?.supported_sources || []
-    if (supported.length === 0) return []
-    const allowed = new Set(supported.map((key) => normalizeSourceKey(key)))
-    return effectiveDraftSources.filter((sourceKey) => !allowed.has(normalizeSourceKey(sourceKey)))
-  }, [effectiveDraftSources, selectedStrategySchema])
-  const effectiveStrategyLabel = useMemo(
-    () => strategyLabelForKey(effectiveStrategyKey),
-    [effectiveStrategyKey]
+    return out
+  }, [sourceCards])
+
+  const effectiveSourceStrategies = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const sourceKey of effectiveDraftSources) {
+      const options = sourceStrategyOptionsByKey[sourceKey] || []
+      const configured = normalizeStrategyKey(draftSourceStrategies[sourceKey] || '')
+      const configuredExists = options.some((option) => option.key === configured)
+      out[sourceKey] = configuredExists
+        ? configured
+        : defaultStrategyForSource(sourceKey, sourceCards)
+    }
+    return out
+  }, [draftSourceStrategies, effectiveDraftSources, sourceCards, sourceStrategyOptionsByKey])
+
+  const cryptoStrategyKeyDraft = useMemo(
+    () => effectiveSourceStrategies.crypto || DEFAULT_STRATEGY_KEY,
+    [effectiveSourceStrategies]
   )
   const isCryptoStrategyDraft = useMemo(
-    () => isCryptoStrategyKey(effectiveStrategyKey),
-    [effectiveStrategyKey]
+    () => selectedSourceKeySet.has('crypto'),
+    [selectedSourceKeySet]
   )
   const selectedCryptoAssets = useMemo(
     () => new Set(normalizeCryptoAssetList(advancedConfig.cryptoAssetsCsv)),
     [advancedConfig.cryptoAssetsCsv]
   )
-  const selectedCryptoTimeframes = useMemo(
-    () => new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoTimeframesCsv)),
-    [advancedConfig.cryptoTimeframesCsv]
-  )
+
+  const setSourceStrategy = (sourceKey: string, strategyKey: string) => {
+    const normalizedSource = normalizeSourceKey(sourceKey)
+    const normalizedStrategy = normalizeStrategyKeyForSource(normalizedSource, strategyKey)
+    setDraftSourceStrategies((current) => ({
+      ...current,
+      [normalizedSource]: normalizedStrategy,
+    }))
+    if (normalizedSource === 'crypto') {
+      setDraftStrategyKey(normalizedStrategy)
+    }
+  }
 
   const toggleDraftSource = (sourceKey: string) => {
     setDraftSources((current) => {
@@ -1123,14 +1227,33 @@ export default function TradingPanel() {
         : [...currentList, sourceKey]
       return uniqueSourceList(next).join(', ')
     })
+    const normalizedTarget = normalizeSourceKey(sourceKey)
+    const hasTarget = effectiveDraftSources.includes(normalizedTarget)
+    if (hasTarget) {
+      setDraftSourceStrategies((current) => {
+        const next = { ...current }
+        delete next[normalizedTarget]
+        return next
+      })
+    } else {
+      const defaultStrategy = defaultStrategyForSource(normalizedTarget, sourceCards)
+      setDraftSourceStrategies((current) => ({ ...current, [normalizedTarget]: defaultStrategy }))
+    }
   }
 
   const enableAllSourceCards = () => {
     setDraftSources(uniqueSourceList(sourceCards.map((source) => source.key)).join(', '))
+    const next: Record<string, string> = {}
+    for (const source of sourceCards) {
+      const sourceKey = normalizeSourceKey(source.key)
+      next[sourceKey] = defaultStrategyForSource(sourceKey, sourceCards)
+    }
+    setDraftSourceStrategies(next)
   }
 
   const disableAllSourceCards = () => {
     setDraftSources('')
+    setDraftSourceStrategies({})
   }
 
   const toggleCryptoAssetTarget = (asset: (typeof CRYPTO_ASSET_OPTIONS)[number]) => {
@@ -1143,19 +1266,9 @@ export default function TradingPanel() {
     setAdvancedValue('cryptoAssetsCsv', CRYPTO_ASSET_OPTIONS.filter((item) => next.has(item)).join(', '))
   }
 
-  const toggleCryptoTimeframeTarget = (timeframe: (typeof CRYPTO_TIMEFRAME_OPTIONS)[number]) => {
-    const next = new Set(normalizeCryptoTimeframeList(advancedConfig.cryptoTimeframesCsv))
-    if (next.has(timeframe)) {
-      next.delete(timeframe)
-    } else {
-      next.add(timeframe)
-    }
-    setAdvancedValue('cryptoTimeframesCsv', CRYPTO_TIMEFRAME_OPTIONS.filter((item) => next.has(item)).join(', '))
-  }
-
   const enableAllCryptoTargets = () => {
     setAdvancedValue('cryptoAssetsCsv', CRYPTO_ASSET_OPTIONS.join(', '))
-    setAdvancedValue('cryptoTimeframesCsv', CRYPTO_TIMEFRAME_OPTIONS.join(', '))
+    setAdvancedValue('cryptoTimeframesCsv', cryptoTimeframeForStrategyKey(cryptoStrategyKeyDraft))
   }
 
   useEffect(() => {
@@ -1166,22 +1279,52 @@ export default function TradingPanel() {
 
   useEffect(() => {
     if (!selectedTrader) return
+    const traderSourceConfigs = Array.isArray(selectedTrader.source_configs) ? selectedTrader.source_configs : []
+    const normalizedSourceKeys = uniqueSourceList(
+      traderSourceConfigs.map((config) => normalizeSourceKey(String(config.source_key || '')))
+    )
+    const sourceStrategyMap: Record<string, string> = {}
+    for (const config of traderSourceConfigs) {
+      const sourceKey = normalizeSourceKey(String(config.source_key || ''))
+      if (!sourceKey) continue
+      sourceStrategyMap[sourceKey] = normalizeStrategyKeyForSource(
+        sourceKey,
+        config.strategy_key || defaultStrategyForSource(sourceKey, sourceCards)
+      )
+    }
+    const primaryParams = (traderSourceConfigs[0]?.strategy_params || {}) as Record<string, unknown>
+    const cryptoParams =
+      (traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'crypto')?.strategy_params ||
+        primaryParams) as Record<string, unknown>
+    const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')?.traders_scope
+
     setDraftName(selectedTrader.name)
     setDraftDescription(selectedTrader.description || '')
-    setDraftStrategyKey(normalizeStrategyKey(selectedTrader.strategy_key))
+    setDraftStrategyKey(normalizeStrategyKey(sourceStrategyMap.crypto || DEFAULT_STRATEGY_KEY))
+    setDraftSourceStrategies(sourceStrategyMap)
     setDraftInterval(String(selectedTrader.interval_seconds || 60))
-    setDraftSources(uniqueSourceList(selectedTrader.sources || []).join(', ') || defaultSourceCsv)
+    setDraftSources(normalizedSourceKeys.join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(selectedTrader.is_enabled))
     setDraftPaused(Boolean(selectedTrader.is_paused))
-    const params = selectedTrader.params || {}
     const risk = selectedTrader.risk_limits || {}
     const metadata = selectedTrader.metadata || {}
-    setDraftParams(JSON.stringify(params, null, 2))
+    setDraftParams(JSON.stringify(primaryParams, null, 2))
     setDraftRisk(JSON.stringify(risk, null, 2))
     setDraftMetadata(JSON.stringify(metadata, null, 2))
-    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
+    setAdvancedConfig(computeAdvancedConfig(cryptoParams, risk, metadata))
+    setDraftTradersScopeModes(
+      (tradersScope?.modes || ['tracked', 'pool'])
+        .map((mode) => String(mode || '').toLowerCase())
+        .filter((mode): mode is TradersScopeMode => TRADERS_SCOPE_OPTIONS.some((option) => option.key === mode))
+    )
+    setDraftTradersIndividualWallets(
+      (tradersScope?.individual_wallets || []).map((wallet) => String(wallet || '').trim().toLowerCase()).filter(Boolean)
+    )
+    setDraftTradersGroupIds(
+      (tradersScope?.group_ids || []).map((groupId) => String(groupId || '').trim()).filter(Boolean)
+    )
     setSaveError(null)
-  }, [defaultSourceCsv, selectedTrader])
+  }, [defaultSourceCsv, selectedTrader, sourceCards])
 
   useEffect(() => {
     if (selectedDecisions.length === 0) {
@@ -1214,14 +1357,22 @@ export default function TradingPanel() {
   }
 
   const openCreateTraderFlyout = () => {
+    const defaultSources = defaultSourceKeys.length > 0 ? defaultSourceKeys.map((key) => normalizeSourceKey(key)) : ['crypto']
+    const defaultStrategies = Object.fromEntries(
+      defaultSources.map((sourceKey) => [sourceKey, defaultStrategyForSource(sourceKey, sourceCards)])
+    ) as Record<string, string>
     setTraderFlyoutMode('create')
     setDraftName('')
     setDraftDescription('')
-    setDraftStrategyKey(normalizeStrategyKey(traderConfigSchema?.default_strategy_key || DEFAULT_STRATEGY_KEY))
+    setDraftStrategyKey(normalizeStrategyKey(defaultStrategies.crypto || DEFAULT_STRATEGY_KEY))
+    setDraftSourceStrategies(defaultStrategies)
     setDraftInterval('5')
-    setDraftSources(defaultSourceCsv)
+    setDraftSources(defaultSources.join(', '))
     setDraftEnabled(true)
     setDraftPaused(false)
+    setDraftTradersScopeModes(['tracked', 'pool'])
+    setDraftTradersIndividualWallets([])
+    setDraftTradersGroupIds([])
     setDraftParams('{}')
     setDraftRisk('{}')
     setDraftMetadata('{}')
@@ -1237,22 +1388,52 @@ export default function TradingPanel() {
   }
 
   const openEditTraderFlyout = (trader: Trader) => {
+    const traderSourceConfigs = Array.isArray(trader.source_configs) ? trader.source_configs : []
+    const normalizedSourceKeys = uniqueSourceList(
+      traderSourceConfigs.map((config) => normalizeSourceKey(String(config.source_key || '')))
+    )
+    const sourceStrategyMap: Record<string, string> = {}
+    for (const config of traderSourceConfigs) {
+      const sourceKey = normalizeSourceKey(String(config.source_key || ''))
+      if (!sourceKey) continue
+      sourceStrategyMap[sourceKey] = normalizeStrategyKeyForSource(
+        sourceKey,
+        config.strategy_key || defaultStrategyForSource(sourceKey, sourceCards)
+      )
+    }
+    const primaryParams = (traderSourceConfigs[0]?.strategy_params || {}) as Record<string, unknown>
+    const cryptoParams =
+      (traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'crypto')?.strategy_params ||
+        primaryParams) as Record<string, unknown>
+    const tradersScope = traderSourceConfigs.find((config) => normalizeSourceKey(String(config.source_key || '')) === 'traders')?.traders_scope
+
     setSelectedTraderId(trader.id)
     setTraderFlyoutMode('edit')
     setDraftName(trader.name)
     setDraftDescription(trader.description || '')
-    setDraftStrategyKey(normalizeStrategyKey(trader.strategy_key))
+    setDraftStrategyKey(normalizeStrategyKey(sourceStrategyMap.crypto || DEFAULT_STRATEGY_KEY))
+    setDraftSourceStrategies(sourceStrategyMap)
     setDraftInterval(String(trader.interval_seconds || 60))
-    setDraftSources(uniqueSourceList(trader.sources || []).join(', ') || defaultSourceCsv)
+    setDraftSources(normalizedSourceKeys.join(', ') || defaultSourceCsv)
     setDraftEnabled(Boolean(trader.is_enabled))
     setDraftPaused(Boolean(trader.is_paused))
-    const params = trader.params || {}
     const risk = trader.risk_limits || {}
     const metadata = trader.metadata || {}
-    setDraftParams(JSON.stringify(params, null, 2))
+    setDraftParams(JSON.stringify(primaryParams, null, 2))
     setDraftRisk(JSON.stringify(risk, null, 2))
     setDraftMetadata(JSON.stringify(metadata, null, 2))
-    setAdvancedConfig(computeAdvancedConfig(params, risk, metadata))
+    setAdvancedConfig(computeAdvancedConfig(cryptoParams, risk, metadata))
+    setDraftTradersScopeModes(
+      (tradersScope?.modes || ['tracked', 'pool'])
+        .map((mode) => String(mode || '').toLowerCase())
+        .filter((mode): mode is TradersScopeMode => TRADERS_SCOPE_OPTIONS.some((option) => option.key === mode))
+    )
+    setDraftTradersIndividualWallets(
+      (tradersScope?.individual_wallets || []).map((wallet) => String(wallet || '').trim().toLowerCase()).filter(Boolean)
+    )
+    setDraftTradersGroupIds(
+      (tradersScope?.group_ids || []).map((groupId) => String(groupId || '').trim()).filter(Boolean)
+    )
     setDeleteAction('disable')
     setDeleteConfirmName('')
     setSaveError(null)
@@ -1271,6 +1452,56 @@ export default function TradingPanel() {
 
   const setAdvancedValue = <K extends keyof TraderAdvancedConfig>(key: K, value: TraderAdvancedConfig[K]) => {
     setAdvancedConfig((current) => ({ ...current, [key]: value }))
+  }
+
+  const toggleTradersScopeMode = (mode: TradersScopeMode) => {
+    setDraftTradersScopeModes((current) => {
+      const hasMode = current.includes(mode)
+      const next = hasMode ? current.filter((item) => item !== mode) : [...current, mode]
+      return next.length > 0 ? next : ['tracked']
+    })
+  }
+
+  const toggleIndividualWallet = (wallet: string) => {
+    const normalized = String(wallet || '').trim().toLowerCase()
+    if (!normalized) return
+    setDraftTradersIndividualWallets((current) =>
+      current.includes(normalized) ? current.filter((item) => item !== normalized) : [...current, normalized]
+    )
+  }
+
+  const toggleTradersGroup = (groupId: string) => {
+    const normalized = String(groupId || '').trim()
+    if (!normalized) return
+    setDraftTradersGroupIds((current) =>
+      current.includes(normalized) ? current.filter((item) => item !== normalized) : [...current, normalized]
+    )
+  }
+
+  const buildDraftSourceConfigs = (rawStrategyParams: Record<string, unknown>): TraderSourceConfig[] => {
+    const configs: TraderSourceConfig[] = []
+    for (const sourceKey of effectiveDraftSources) {
+      const strategyKey = normalizeStrategyKey(
+        normalizeStrategyKeyForSource(
+          sourceKey,
+          effectiveSourceStrategies[sourceKey] || defaultStrategyForSource(sourceKey, sourceCards)
+        )
+      )
+      const nextConfig: TraderSourceConfig = {
+        source_key: sourceKey,
+        strategy_key: strategyKey,
+        strategy_params: withConfiguredParams(rawStrategyParams, advancedConfig, strategyKey),
+      }
+      if (sourceKey === 'traders') {
+        nextConfig.traders_scope = {
+          modes: draftTradersScopeModes,
+          individual_wallets: draftTradersIndividualWallets,
+          group_ids: draftTradersGroupIds,
+        }
+      }
+      configs.push(nextConfig)
+    }
+    return configs
   }
 
   const startBySelectedAccountMutation = useMutation({
@@ -1342,13 +1573,22 @@ export default function TradingPanel() {
         throw new Error(`Metadata JSON error: ${parsedMetadata.error || 'invalid object'}`)
       }
 
+      if (effectiveDraftSources.length === 0) {
+        throw new Error('Enable at least one source.')
+      }
+      const tradersEnabled = effectiveDraftSources.includes('traders')
+      if (tradersEnabled && draftTradersScopeModes.includes('individual') && draftTradersIndividualWallets.length === 0) {
+        throw new Error('Select at least one individual wallet for traders scope.')
+      }
+      if (tradersEnabled && draftTradersScopeModes.includes('group') && draftTradersGroupIds.length === 0) {
+        throw new Error('Select at least one group for traders scope.')
+      }
+
       return createTrader({
         name: draftName.trim(),
         description: draftDescription.trim() || null,
-        strategy_key: effectiveStrategyKey,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
-        sources: effectiveDraftSources,
-        params: withConfiguredParams(parsedParams.value, advancedConfig, effectiveStrategyKey),
+        source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
@@ -1383,13 +1623,22 @@ export default function TradingPanel() {
         throw new Error(`Metadata JSON error: ${parsedMetadata.error || 'invalid object'}`)
       }
 
+      if (effectiveDraftSources.length === 0) {
+        throw new Error('Enable at least one source.')
+      }
+      const tradersEnabled = effectiveDraftSources.includes('traders')
+      if (tradersEnabled && draftTradersScopeModes.includes('individual') && draftTradersIndividualWallets.length === 0) {
+        throw new Error('Select at least one individual wallet for traders scope.')
+      }
+      if (tradersEnabled && draftTradersScopeModes.includes('group') && draftTradersGroupIds.length === 0) {
+        throw new Error('Select at least one group for traders scope.')
+      }
+
       return updateTrader(traderId, {
         name: draftName.trim(),
         description: draftDescription.trim() || null,
-        strategy_key: effectiveStrategyKey,
         interval_seconds: Math.max(1, Math.trunc(toNumber(draftInterval || 60))),
-        sources: effectiveDraftSources,
-        params: withConfiguredParams(parsedParams.value, advancedConfig, effectiveStrategyKey),
+        source_configs: buildDraftSourceConfigs(parsedParams.value),
         risk_limits: withConfiguredRiskLimits(parsedRisk.value, advancedConfig),
         metadata: withConfiguredMetadata(parsedMetadata.value, advancedConfig),
         is_enabled: draftEnabled,
@@ -2318,11 +2567,11 @@ export default function TradingPanel() {
                                 {traderStatus}
                               </Badge>
                             </div>
-                            <p className="text-xs text-muted-foreground mt-1 truncate" title={trader.strategy_key}>
-                              {trader.strategy_key} • {trader.interval_seconds}s
+                            <p className="text-xs text-muted-foreground mt-1 truncate" title={traderPrimaryStrategyKey(trader)}>
+                              {traderPrimaryStrategyKey(trader)} • {trader.interval_seconds}s
                             </p>
                             <div className="mt-1 flex items-center justify-between text-[11px]">
-                              <span className="text-muted-foreground">{(trader.sources || []).join(', ') || 'No sources'}</span>
+                              <span className="text-muted-foreground">{traderSourceKeys(trader).join(', ') || 'No sources'}</span>
                               <span className={cn('font-mono', traderPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
                                 {formatCurrency(traderPnl)}
                               </span>
@@ -3055,7 +3304,7 @@ export default function TradingPanel() {
                 <FlyoutSection
                   title="Trader Profile"
                   icon={Sparkles}
-                  subtitle="Name this trader and select the execution strategy explicitly."
+                  subtitle="Name this trader and configure source-specific strategies below."
                 >
                   <div>
                     <Label>Name</Label>
@@ -3065,47 +3314,6 @@ export default function TradingPanel() {
                   <div>
                     <Label>Description</Label>
                     <Input value={draftDescription} onChange={(event) => setDraftDescription(event.target.value)} className="mt-1" />
-                  </div>
-
-                  <div>
-                    <Label>Strategy</Label>
-                    <Select
-                      value={effectiveStrategyKey}
-                      onValueChange={(value) => {
-                        const nextStrategyKey = normalizeStrategyKey(value)
-                        setDraftStrategyKey(nextStrategyKey)
-                        if (traderFlyoutMode !== 'create' || !traderConfigSchema) return
-                        const defaults = traderConfigSchema.strategies
-                          .find((strategy) => strategy.key === nextStrategyKey)
-                          ?.defaults
-                        if (!defaults) return
-                        setDraftInterval(String(defaults.interval_seconds || draftInterval))
-                        setDraftSources(
-                          uniqueSourceList(defaults.sources?.length ? defaults.sources : defaultSourceKeys).join(', ')
-                        )
-                        setDraftParams(JSON.stringify(defaults.params || {}, null, 2))
-                        setDraftRisk(JSON.stringify(defaults.risk_limits || {}, null, 2))
-                        setDraftMetadata(JSON.stringify(defaults.metadata || {}, null, 2))
-                        setAdvancedConfig(
-                          computeAdvancedConfig(
-                            defaults.params || {},
-                            defaults.risk_limits || {},
-                            defaults.metadata || {}
-                          )
-                        )
-                      }}
-                    >
-                      <SelectTrigger className="mt-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {strategyOptionsForDraft.map((option) => (
-                          <SelectItem key={option.key} value={option.key}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
                   </div>
                 </FlyoutSection>
 
@@ -3126,12 +3334,13 @@ export default function TradingPanel() {
 
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {sourceCards.map((source) => {
-                      const isEnabled = selectedSourceKeySet.has(normalizeSourceKey(source.key))
+                      const sourceKey = normalizeSourceKey(source.key)
+                      const isEnabled = selectedSourceKeySet.has(sourceKey)
+                      const strategyOptions = sourceStrategyOptionsByKey[sourceKey] || []
+                      const selectedStrategy = effectiveSourceStrategies[sourceKey] || defaultStrategyForSource(sourceKey, sourceCards)
                       return (
-                        <button
+                        <div
                           key={source.key}
-                          type="button"
-                          onClick={() => toggleDraftSource(source.key)}
                           className={cn(
                             'rounded-lg border px-2.5 py-2 text-left transition-colors',
                             isEnabled
@@ -3139,44 +3348,49 @@ export default function TradingPanel() {
                               : 'border-border/70 bg-background hover:border-emerald-500/30 hover:bg-muted/40'
                           )}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-xs font-medium leading-tight">{source.label}</p>
-                            <span
-                              className={cn(
-                                'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
-                                isEnabled ? 'bg-emerald-500/20 text-emerald-600' : 'bg-muted text-muted-foreground'
-                              )}
-                            >
-                              {isEnabled ? 'ON' : 'OFF'}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-[10px] leading-tight text-muted-foreground/75">
-                            {source.description}
-                          </p>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleDraftSource(source.key)}
+                            className="w-full text-left"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium leading-tight">{source.label}</p>
+                              <span
+                                className={cn(
+                                  'rounded-full px-1.5 py-0.5 text-[9px] font-semibold',
+                                  isEnabled ? 'bg-emerald-500/20 text-emerald-600' : 'bg-muted text-muted-foreground'
+                                )}
+                              >
+                                {isEnabled ? 'ON' : 'OFF'}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[10px] leading-tight text-muted-foreground/75">
+                              {source.description}
+                            </p>
+                          </button>
+                          {isEnabled && strategyOptions.length > 0 ? (
+                            <div className="mt-2">
+                              <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">Strategy</Label>
+                              <Select
+                                value={selectedStrategy}
+                                onValueChange={(value) => setSourceStrategy(sourceKey, value)}
+                              >
+                                <SelectTrigger className="mt-1 h-7 text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {strategyOptions.map((option) => (
+                                    <SelectItem key={option.key} value={option.key}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ) : null}
+                        </div>
                       )
                     })}
-                  </div>
-
-                  <div className="rounded-lg border border-border/70 bg-background/70 px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Selected Strategy</p>
-                      <span className="text-[11px] font-mono text-muted-foreground">{effectiveStrategyKey}</span>
-                    </div>
-                    <p className="mt-1 text-sm font-medium">{effectiveStrategyLabel}</p>
-                    {selectedStrategySchema?.description ? (
-                      <p className="mt-1 text-[11px] text-muted-foreground/80">{selectedStrategySchema.description}</p>
-                    ) : null}
-                    {selectedStrategySchema?.supported_sources?.length ? (
-                      <p className="mt-1 text-[11px] text-muted-foreground/80">
-                        Supports: {selectedStrategySchema.supported_sources.join(', ')}
-                      </p>
-                    ) : null}
-                    {incompatibleSourceKeys.length > 0 ? (
-                      <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-100">
-                        Incompatible enabled sources: {incompatibleSourceKeys.join(', ')}
-                      </p>
-                    ) : null}
                   </div>
 
                   {/* Crypto inline config — shown when any crypto source is enabled */}
@@ -3206,21 +3420,9 @@ export default function TradingPanel() {
                         </div>
                       </div>
                       <div className="space-y-1.5">
-                        <p className="text-[11px] text-muted-foreground/80">Timeframes</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {CRYPTO_TIMEFRAME_OPTIONS.map((tf) => (
-                            <Button
-                              key={tf}
-                              type="button"
-                              size="sm"
-                              variant={selectedCryptoTimeframes.has(tf) ? 'default' : 'outline'}
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => toggleCryptoTimeframeTarget(tf)}
-                            >
-                              {tf}
-                            </Button>
-                          ))}
-                        </div>
+                        <p className="text-[11px] text-muted-foreground/80">
+                          Timeframe is fixed by selected crypto strategy ({cryptoTimeframeForStrategyKey(cryptoStrategyKeyDraft)}).
+                        </p>
                       </div>
                       <div className="mt-1">
                         <Label className="text-[11px] text-muted-foreground">Strategy Mode</Label>
@@ -3241,9 +3443,77 @@ export default function TradingPanel() {
                     </div>
                   )}
 
-                  {/* Traders inline config — shown when tracked_traders or pool_traders is enabled */}
+                  {/* Traders inline config — shown when traders source is enabled */}
                   {sourceCards.some((s) => isTraderSourceKey(s.key) && selectedSourceKeySet.has(normalizeSourceKey(s.key))) && (
                     <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-2.5 space-y-3 mt-2">
+                      <div className="border border-orange-500/30 bg-background/60 rounded-md p-2.5 space-y-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Traders Scope</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {TRADERS_SCOPE_OPTIONS.map((option) => (
+                            <Button
+                              key={option.key}
+                              type="button"
+                              size="sm"
+                              variant={draftTradersScopeModes.includes(option.key) ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              onClick={() => toggleTradersScopeMode(option.key)}
+                            >
+                              {option.label}
+                            </Button>
+                          ))}
+                        </div>
+                        {draftTradersScopeModes.includes('individual') ? (
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] text-muted-foreground leading-tight">Individual Wallets</p>
+                            <div className="max-h-28 overflow-auto rounded border border-border/70 p-1.5 space-y-1">
+                              {trackedWallets.length === 0 ? (
+                                <p className="text-[10px] text-muted-foreground">No tracked wallets found.</p>
+                              ) : (
+                                trackedWallets.map((wallet) => {
+                                  const address = String(wallet.address || '').toLowerCase()
+                                  const selected = draftTradersIndividualWallets.includes(address)
+                                  return (
+                                    <label key={wallet.address} className="flex items-center gap-1.5 text-[10px]">
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() => toggleIndividualWallet(address)}
+                                        className="accent-orange-500"
+                                      />
+                                      <span className="font-mono">{wallet.label ? `${wallet.label} (${wallet.address})` : wallet.address}</span>
+                                    </label>
+                                  )
+                                })
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                        {draftTradersScopeModes.includes('group') ? (
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] text-muted-foreground leading-tight">Discovery Groups</p>
+                            <div className="max-h-28 overflow-auto rounded border border-border/70 p-1.5 space-y-1">
+                              {traderGroups.length === 0 ? (
+                                <p className="text-[10px] text-muted-foreground">No groups found.</p>
+                              ) : (
+                                traderGroups.map((group) => {
+                                  const selected = draftTradersGroupIds.includes(group.id)
+                                  return (
+                                    <label key={group.id} className="flex items-center gap-1.5 text-[10px]">
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() => toggleTradersGroup(group.id)}
+                                        className="accent-orange-500"
+                                      />
+                                      <span>{group.name}</span>
+                                    </label>
+                                  )
+                                })
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
                       <div className="flex items-center gap-1.5">
                         <Filter className="w-3.5 h-3.5 text-orange-400" />
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-orange-400">Trader Signal Filters (Global)</p>
@@ -3300,29 +3570,29 @@ export default function TradingPanel() {
                       </div>
                       <div className="grid grid-cols-3 gap-2.5">
                         <div>
-                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Limit</Label>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Individual Trade Limit</Label>
                           <Input
                             type="number"
-                            value={draftSignalFilters.insider_limit}
-                            onChange={(e) => setSf({ insider_limit: Math.round(clamp(Number(e.target.value) || 1, 1, 500)) })}
+                            value={draftSignalFilters.individual_trade_limit}
+                            onChange={(e) => setSf({ individual_trade_limit: Math.round(clamp(Number(e.target.value) || 1, 1, 500)) })}
                             min={1} max={500} className="mt-0.5 text-xs h-7"
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Min Conf</Label>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Min Conf</Label>
                           <Input
                             type="number"
-                            value={draftSignalFilters.insider_min_confidence}
-                            onChange={(e) => setSf({ insider_min_confidence: clamp(Number(e.target.value) || 0, 0, 1) })}
+                            value={draftSignalFilters.individual_trade_min_confidence}
+                            onChange={(e) => setSf({ individual_trade_min_confidence: clamp(Number(e.target.value) || 0, 0, 1) })}
                             min={0} max={1} step={0.01} className="mt-0.5 text-xs h-7"
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-muted-foreground leading-tight">Pool Max Age (min)</Label>
+                          <Label className="text-[11px] text-muted-foreground leading-tight">Max Age (min)</Label>
                           <Input
                             type="number"
-                            value={draftSignalFilters.insider_max_age_minutes}
-                            onChange={(e) => setSf({ insider_max_age_minutes: Math.round(clamp(Number(e.target.value) || 1, 1, 1440)) })}
+                            value={draftSignalFilters.individual_trade_max_age_minutes}
+                            onChange={(e) => setSf({ individual_trade_max_age_minutes: Math.round(clamp(Number(e.target.value) || 1, 1, 1440)) })}
                             min={1} max={1440} className="mt-0.5 text-xs h-7"
                           />
                         </div>
@@ -3466,15 +3736,6 @@ export default function TradingPanel() {
                     </div>
                   )}
 
-                  <details className="rounded-md border border-border/60 bg-muted/10 p-2.5 mt-2">
-                    <summary className="cursor-pointer text-xs font-medium">Custom source keys (optional)</summary>
-                    <div className="mt-2 space-y-1">
-                      <Input value={draftSources} onChange={(event) => setDraftSources(event.target.value)} className="h-8 font-mono text-xs" />
-                      <p className="text-[10px] text-muted-foreground/70">
-                        Comma-separated keys for legacy/custom source adapters.
-                      </p>
-                    </div>
-                  </details>
                 </FlyoutSection>
 
                 <FlyoutSection
@@ -3509,9 +3770,9 @@ export default function TradingPanel() {
                       </p>
                     </div>
                   </div>
-                  {isCryptoStrategyDraft && Number(draftInterval || 0) >= 60 ? (
+                  {isCryptoStrategyDraft && ['crypto_5m', 'crypto_15m'].includes(cryptoStrategyKeyDraft) && Number(draftInterval || 0) >= 60 ? (
                     <p className="text-xs text-amber-700 dark:text-amber-100">
-                      60s is too slow for most BTC 15m execution loops. Recommended cadence is 2s to 10s.
+                      60s is too slow for short-horizon crypto execution. Recommended cadence is 2s to 10s.
                     </p>
                   ) : null}
                 </FlyoutSection>
@@ -3846,7 +4107,7 @@ export default function TradingPanel() {
                 disabled={
                   traderFlyoutBusy ||
                   !draftName.trim() ||
-                  !effectiveStrategyKey.trim()
+                  effectiveDraftSources.length === 0
                 }
               >
                 {traderFlyoutMode === 'create' ? 'Create Trader' : 'Save Trader'}

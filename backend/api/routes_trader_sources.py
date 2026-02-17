@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.database import get_db_session
 from services.trader_orchestrator.sources.registry import list_source_adapters
 from services.trader_orchestrator.config_schema import build_trader_config_schema
 
@@ -27,5 +29,5 @@ async def get_trader_sources():
 
 
 @router.get("/schema")
-async def get_trader_config_schema():
-    return build_trader_config_schema()
+async def get_trader_config_schema(session: AsyncSession = Depends(get_db_session)):
+    return await build_trader_config_schema(session)

@@ -48,6 +48,19 @@ def _to_float(value: Any, default: float) -> float:
         return default
 
 
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _normalize_confidence(value: Any, default: float) -> float:
     parsed = _to_float(value, default)
     if parsed > 1.0:
@@ -109,6 +122,16 @@ def _normalize_scope(value: Any, normalizer: Callable[[Any], str]) -> list[str]:
     return out
 
 
+def _normalize_regime_scope(value: Any) -> set[str]:
+    allowed = set(_REGIMES)
+    normalized: set[str] = set()
+    for raw in _as_list(value):
+        regime = _normalize_regime(raw)
+        if regime in allowed:
+            normalized.add(regime)
+    return normalized
+
+
 def _first_present(*values: Any) -> Any:
     for value in values:
         if value is not None:
@@ -138,8 +161,13 @@ def _get_net_edge(payload: dict[str, Any], direction: str, fallback: float) -> f
     return _to_float(net_edges.get(direction), fallback)
 
 
-class Crypto15mStrategy(BaseTraderStrategy):
+class BaseCryptoTimeframeStrategy(BaseTraderStrategy):
     key = "crypto_15m"
+    expected_timeframe = "15m"
+    label = "15m"
+
+    def _normalized_expected_timeframe(self) -> str:
+        return _normalize_timeframe(self.expected_timeframe) or "15m"
 
     def evaluate(self, signal: Any, context: dict[str, Any]) -> StrategyDecision:
         params = context.get("params") or {}
@@ -147,6 +175,20 @@ class Crypto15mStrategy(BaseTraderStrategy):
         min_conf = _normalize_confidence(params.get("min_confidence", 0.45), 0.45)
         base_size = _to_float(params.get("base_size_usd", 25.0), 25.0)
         max_size = max(1.0, _to_float(params.get("max_size_usd", base_size * 3.0), base_size * 3.0))
+        guardrail_enabled = _to_bool(params.get("direction_guardrail_enabled"), True)
+        guardrail_prob_floor = max(
+            0.5,
+            min(1.0, _to_float(params.get("direction_guardrail_prob_floor", 0.55), 0.55)),
+        )
+        guardrail_price_floor = max(
+            0.5,
+            min(1.0, _to_float(params.get("direction_guardrail_price_floor", 0.80), 0.80)),
+        )
+        guardrail_regimes = _normalize_regime_scope(
+            params.get("direction_guardrail_regimes", ["mid", "closing"])
+        )
+        if not guardrail_regimes:
+            guardrail_regimes = {"mid", "closing"}
 
         requested_mode = _normalize_mode(params.get("strategy_mode") or params.get("mode"))
         payload = _payload_dict(signal)
@@ -179,6 +221,8 @@ class Crypto15mStrategy(BaseTraderStrategy):
         asset_scope_ok = (not target_assets) or (
             bool(signal_asset) and signal_asset in target_assets
         )
+        expected_timeframe = self._normalized_expected_timeframe()
+        strategy_timeframe_ok = (not signal_timeframe) or signal_timeframe == expected_timeframe
         timeframe_scope_ok = (not target_timeframes) or (
             bool(signal_timeframe) and signal_timeframe in target_timeframes
         )
@@ -197,6 +241,11 @@ class Crypto15mStrategy(BaseTraderStrategy):
         confidence = _normalize_confidence(getattr(signal, "confidence", 0.0), 0.0)
         mode_edge = _get_component_edge(payload, direction, active_mode)
         net_edge = _get_net_edge(payload, direction, edge)
+        model_prob_yes = max(0.0, min(1.0, _to_float(payload.get("model_prob_yes"), 0.5)))
+        model_prob_no = max(0.0, min(1.0, _to_float(payload.get("model_prob_no"), 0.5)))
+        up_price = max(0.0, min(1.0, _to_float(payload.get("up_price"), 0.5)))
+        down_price = max(0.0, min(1.0, _to_float(payload.get("down_price"), 0.5)))
+        oracle_available = bool(payload.get("oracle_available")) or payload.get("oracle_delta_pct") is not None
 
         required_edge = min_edge * _EDGE_MODE_FACTORS.get(regime, {}).get(active_mode, 1.0)
         required_conf = (
@@ -204,6 +253,30 @@ class Crypto15mStrategy(BaseTraderStrategy):
             * _CONF_MODE_FACTORS.get(active_mode, 1.0)
             * _REGIME_CONF_FACTORS.get(regime, 1.0)
         )
+
+        guardrail_blocked = False
+        guardrail_detail = "disabled"
+        if guardrail_enabled:
+            guardrail_detail = "guardrail conditions not met"
+            if oracle_available and regime in guardrail_regimes:
+                if (
+                    direction == "buy_no"
+                    and model_prob_yes >= guardrail_prob_floor
+                    and up_price >= guardrail_price_floor
+                ):
+                    guardrail_blocked = True
+                    guardrail_detail = (
+                        f"blocked contrarian buy_no: model_prob_yes={model_prob_yes:.3f} up_price={up_price:.3f}"
+                    )
+                elif (
+                    direction == "buy_yes"
+                    and model_prob_no >= guardrail_prob_floor
+                    and down_price >= guardrail_price_floor
+                ):
+                    guardrail_blocked = True
+                    guardrail_detail = (
+                        f"blocked contrarian buy_yes: model_prob_no={model_prob_no:.3f} down_price={down_price:.3f}"
+                    )
 
         edge_for_gate = min(edge, mode_edge) if mode_edge > 0.0 else edge
         checks = [
@@ -229,6 +302,22 @@ class Crypto15mStrategy(BaseTraderStrategy):
                 detail=(
                     f"timeframe={signal_timeframe or 'unknown'} targets={','.join(target_timeframes) or 'all'}"
                 ),
+            ),
+            DecisionCheck(
+                "strategy_timeframe",
+                "Strategy timeframe",
+                strategy_timeframe_ok,
+                detail=(
+                    f"required={expected_timeframe} observed={signal_timeframe}"
+                    if signal_timeframe
+                    else f"required={expected_timeframe} observed=unknown (treated as compatible)"
+                ),
+            ),
+            DecisionCheck(
+                "direction_guardrail",
+                "Direction guardrail",
+                not guardrail_blocked,
+                detail=guardrail_detail,
             ),
             DecisionCheck(
                 "edge",
@@ -282,6 +371,20 @@ class Crypto15mStrategy(BaseTraderStrategy):
                     "required_confidence": required_conf,
                     "asset": signal_asset,
                     "timeframe": signal_timeframe,
+                    "expected_timeframe": expected_timeframe,
+                    "direction_guardrail": {
+                        "enabled": guardrail_enabled,
+                        "blocked": guardrail_blocked,
+                        "oracle_available": oracle_available,
+                        "regime": regime,
+                        "regimes": sorted(guardrail_regimes),
+                        "prob_floor": guardrail_prob_floor,
+                        "price_floor": guardrail_price_floor,
+                        "model_prob_yes": model_prob_yes,
+                        "model_prob_no": model_prob_no,
+                        "up_price": up_price,
+                        "down_price": down_price,
+                    },
                     "target_assets": target_assets,
                     "target_timeframes": target_timeframes,
                 },
@@ -317,7 +420,45 @@ class Crypto15mStrategy(BaseTraderStrategy):
                 "required_confidence": required_conf,
                 "asset": signal_asset,
                 "timeframe": signal_timeframe,
+                "expected_timeframe": expected_timeframe,
+                "direction_guardrail": {
+                    "enabled": guardrail_enabled,
+                    "blocked": guardrail_blocked,
+                    "oracle_available": oracle_available,
+                    "regime": regime,
+                    "regimes": sorted(guardrail_regimes),
+                    "prob_floor": guardrail_prob_floor,
+                    "price_floor": guardrail_price_floor,
+                    "model_prob_yes": model_prob_yes,
+                    "model_prob_no": model_prob_no,
+                    "up_price": up_price,
+                    "down_price": down_price,
+                },
                 "target_assets": target_assets,
                 "target_timeframes": target_timeframes,
             },
         )
+
+
+class Crypto5mStrategy(BaseCryptoTimeframeStrategy):
+    key = "crypto_5m"
+    expected_timeframe = "5m"
+    label = "5m"
+
+
+class Crypto15mStrategy(BaseCryptoTimeframeStrategy):
+    key = "crypto_15m"
+    expected_timeframe = "15m"
+    label = "15m"
+
+
+class Crypto1hStrategy(BaseCryptoTimeframeStrategy):
+    key = "crypto_1h"
+    expected_timeframe = "1h"
+    label = "1h"
+
+
+class Crypto4hStrategy(BaseCryptoTimeframeStrategy):
+    key = "crypto_4h"
+    expected_timeframe = "4h"
+    label = "4h"

@@ -233,8 +233,6 @@ class DiscoverySettings(BaseModel):
         "all",
         "tracked",
         "pool",
-        "confluence",
-        "insider",
     ] = Field(
         default="all",
         description="Opportunities -> Traders source view filter",
@@ -257,19 +255,19 @@ class DiscoverySettings(BaseModel):
         default=40,
         ge=1,
         le=500,
-        description="Insider opportunities fetch limit",
+        description="Tracked/group individual-trade feed limit",
     )
     trader_opps_insider_min_confidence: float = Field(
         default=0.62,
         ge=0.0,
         le=1.0,
-        description="Minimum insider confidence threshold",
+        description="Legacy field retained for backward compatibility",
     )
     trader_opps_insider_max_age_minutes: int = Field(
         default=180,
         ge=1,
         le=1440,
-        description="Maximum insider opportunity freshness window in minutes",
+        description="Legacy field retained for backward compatibility",
     )
     pool_recompute_mode: Literal["quality_only", "balanced"] = Field(
         default="quality_only",

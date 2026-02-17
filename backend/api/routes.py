@@ -20,6 +20,7 @@ from services.smart_wallet_pool import smart_wallet_pool
 from services.wallet_discovery import wallet_discovery
 from services.kalshi_client import kalshi_client
 from services.plugin_loader import plugin_loader
+from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services import shared_state
 from services.pause_state import global_pause_state
 from utils.logger import get_logger
@@ -202,27 +203,32 @@ async def _resolve_strategy_to_filter(strategy_param: Optional[str]) -> list[str
         return []
     strategy_param = strategy_param.strip().lower()
 
-    # Plugin strategy: "plugin_<slug>"
+    # Backward compatibility for legacy prefixed plugin keys.
     if strategy_param.startswith("plugin_"):
-        slug = strategy_param[7:]  # len("plugin_")
-        # Verify plugin exists and is enabled
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(StrategyPlugin).where(StrategyPlugin.slug == slug, StrategyPlugin.enabled)
-            )
-            plugin = result.scalar_one_or_none()
-        if plugin:
-            return [slug]
-        return []
+        strategy_param = strategy_param[7:]  # len("plugin_")
 
     # Built-in strategy type
     try:
         return [StrategyType(strategy_param).value]
     except ValueError:
-        # Could be a plugin slug used directly (without prefix)
-        if plugin_loader.get_plugin(strategy_param):
-            return [strategy_param]
-        return []
+        pass
+
+    # DB strategy slug used directly (system or custom row).
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(StrategyPlugin.id).where(
+                StrategyPlugin.slug == strategy_param,
+                StrategyPlugin.enabled.is_(True),
+            )
+        )
+        plugin_id = result.scalar_one_or_none()
+    if plugin_id is not None:
+        return [strategy_param]
+
+    # Runtime fallback.
+    if plugin_loader.get_plugin(strategy_param):
+        return [strategy_param]
+    return []
 
 
 # ==================== OPPORTUNITIES ====================
@@ -236,7 +242,7 @@ async def get_opportunities(
     max_risk: float = Query(1.0, description="Maximum risk score (0-1)"),
     strategy: Optional[str] = Query(
         None,
-        description="Filter by strategy type (e.g. basic, negrisk) or plugin (plugin_<id>)",
+        description="Filter by strategy type/slug (e.g. basic, negrisk, my_custom_strategy)",
     ),
     min_liquidity: float = Query(0.0, description="Minimum liquidity in USD"),
     search: Optional[str] = Query(None, description="Search query for market titles"),
@@ -508,7 +514,7 @@ async def get_opportunity_counts(
     search: Optional[str] = Query(None, description="Search query for market titles"),
     strategy: Optional[str] = Query(
         None,
-        description="Optional strategy type filter (supports plugin_<slug>) for subfilter lookups",
+        description="Optional strategy type/slug filter for subfilter lookups",
     ),
     sub_strategy: Optional[str] = Query(
         None,
@@ -552,23 +558,12 @@ async def get_opportunity_counts(
             if _derive_opportunity_sub_strategy(opp) == normalized_sub
         ]
 
-    plugin_slugs = set(
-        (
-            await session.execute(
-                select(StrategyPlugin.slug).where(StrategyPlugin.enabled)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
     # Count by strategy
     strategy_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
     sub_strategy_counts: dict[str, int] = {}
     for opp in opportunities:
-        s = f"plugin_{opp.strategy}" if opp.strategy in plugin_slugs else opp.strategy
-        strategy_counts[s] = strategy_counts.get(s, 0) + 1
+        strategy_counts[opp.strategy] = strategy_counts.get(opp.strategy, 0) + 1
         if opp.category:
             cat = opp.category.lower()
             category_counts[cat] = category_counts.get(cat, 0) + 1
@@ -880,59 +875,36 @@ async def get_events(closed: bool = False, limit: int = 100, offset: int = 0):
 @router.get("/strategies")
 async def get_strategies():
     """Get information about available strategies and plugins."""
-    builtin = [
-        {
-            "type": s.strategy_type if isinstance(s.strategy_type, str) else s.strategy_type.value,
-            "name": s.name,
-            "description": s.description,
-            "is_plugin": False,
-        }
-        for s in scanner.strategies
-    ]
-
-    # Append enabled plugins as real strategies
+    # DB-native strategy rows (system + custom)
     async with AsyncSessionLocal() as session:
+        await ensure_system_opportunity_strategies_seeded(session)
         result = await session.execute(
             select(StrategyPlugin)
             .where(StrategyPlugin.enabled)
-            .order_by(StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc())
+            .order_by(
+                StrategyPlugin.is_system.desc(),
+                StrategyPlugin.sort_order.asc(),
+                StrategyPlugin.name.asc(),
+            )
         )
         plugins = result.scalars().all()
 
-    plugin_entries = [
+    db_entries: list[dict[str, object]] = [
         {
-            "type": f"plugin_{p.slug}",
+            "type": p.slug,
             "name": p.name,
-            "description": p.description or f"Plugin strategy: {p.slug}",
-            "is_plugin": True,
+            "description": p.description or f"Strategy: {p.slug}",
+            "is_plugin": not bool(p.is_system),
+            "is_system": bool(p.is_system),
             "plugin_id": p.id,
             "plugin_slug": p.slug,
+            "source_key": p.source_key or "scanner",
             "status": p.status,
+            "enabled": bool(p.enabled),
         }
         for p in plugins
     ]
-
-    synthetic = [
-        {
-            "type": StrategyType.NEWS_EDGE.value,
-            "name": "News Edge",
-            "description": "News workflow informational edge intents consumed by trader orchestrator",
-            "is_plugin": False,
-        },
-        {
-            "type": StrategyType.WEATHER_EDGE.value,
-            "name": "Weather Edge",
-            "description": "Weather workflow forecast-consensus intents consumed by trader orchestrator",
-            "is_plugin": False,
-        },
-        {
-            "type": StrategyType.BTC_ETH_HIGHFREQ.value,
-            "name": "BTC/ETH High-Frequency",
-            "description": "Crypto 5m/15m directional strategy emitted by the dedicated crypto worker",
-            "is_plugin": False,
-        },
-    ]
-    combined: list[dict[str, object]] = builtin + synthetic + plugin_entries
+    combined: list[dict[str, object]] = db_entries
 
     # Deduplicate by type while preserving first occurrence ordering.
     seen_types: set[str] = set()

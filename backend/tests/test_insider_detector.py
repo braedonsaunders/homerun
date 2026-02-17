@@ -9,8 +9,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from services.insider_detector import (
     InsiderDetectorService,
-    _floor_to_minutes,
-    _intent_signal_key,
 )
 
 
@@ -78,21 +76,6 @@ def test_brier_component_prefers_calibrated_entries():
     assert calibrated_score is not None
     assert miscalibrated_score is not None
     assert calibrated_score > miscalibrated_score
-
-
-def test_intent_signal_key_stable_for_same_input():
-    bucket = _floor_to_minutes(datetime(2026, 2, 10, 12, 34, 8), 10)
-    key_a = _intent_signal_key("m1", "buy_yes", bucket, ["0x1", "0x2"])
-    key_b = _intent_signal_key("m1", "buy_yes", bucket, ["0x2", "0x1"])
-    assert key_a == key_b
-
-
-def test_intent_signal_key_changes_for_wallet_cohort():
-    bucket = _floor_to_minutes(datetime(2026, 2, 10, 12, 34, 8), 10)
-    key_a = _intent_signal_key("m1", "buy_yes", bucket, ["0x1", "0x2"])
-    key_b = _intent_signal_key("m1", "buy_yes", bucket, ["0x1", "0x3"])
-    assert key_a != key_b
-
 
 def test_funding_overlap_proxy_component_uses_sync_and_cluster():
     svc = InsiderDetectorService()

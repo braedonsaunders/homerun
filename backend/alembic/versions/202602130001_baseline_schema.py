@@ -16,8 +16,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from models.database import Base
-from models.model_registry import register_all_models
+from models.database import Base  # noqa: E402
+from models.model_registry import register_all_models  # noqa: E402
 
 
 # revision identifiers, used by Alembic.

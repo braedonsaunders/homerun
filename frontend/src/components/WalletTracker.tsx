@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -23,11 +23,15 @@ import { Card } from './ui/card'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 import RecentTradesPanel from './RecentTradesPanel'
+import { discoveryApi, type PoolMember } from '../services/discoveryApi'
 import {
   getWallets,
   addWallet,
   removeWallet,
+  analyzeWalletPnL,
+  getWalletWinRate,
   Wallet as WalletType,
   discoverTopTraders,
   discoverByWinRate,
@@ -46,6 +50,247 @@ interface WalletTrackerProps {
   discoverMode?: 'leaderboard' | 'winrate'
   onNavigateToWallet?: (address: string) => void
   showManagementPanel?: boolean
+}
+
+type MetricTone = 'good' | 'warn' | 'bad' | 'neutral' | 'info'
+type WalletFallbackMetrics = {
+  totalPnl: number | null
+  winRate: number | null
+  totalTrades: number | null
+  openPositions: number | null
+}
+
+const SCORE_DELTA_HIDE_THRESHOLD = 0.0025
+
+const METRIC_TONE_CLASSES: Record<MetricTone, string> = {
+  good: 'border-sky-300 bg-sky-100 text-sky-900 dark:border-sky-400/35 dark:bg-sky-500/15 dark:text-sky-100',
+  warn: 'border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-400/40 dark:bg-amber-500/18 dark:text-amber-100',
+  bad: 'border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-400/45 dark:bg-rose-500/18 dark:text-rose-100',
+  neutral: 'border-slate-300 bg-slate-100 text-slate-800 dark:border-border/85 dark:bg-muted/55 dark:text-foreground/90',
+  info: 'border-indigo-300 bg-indigo-100 text-indigo-900 dark:border-indigo-400/40 dark:bg-indigo-500/16 dark:text-indigo-100',
+}
+
+const METRIC_BAR_CLASSES: Record<MetricTone, string> = {
+  good: 'bg-sky-600 dark:bg-sky-300/95',
+  warn: 'bg-amber-600 dark:bg-amber-300/95',
+  bad: 'bg-rose-600 dark:bg-rose-300/95',
+  neutral: 'bg-slate-500 dark:bg-muted-foreground/80',
+  info: 'bg-indigo-600 dark:bg-indigo-300/95',
+}
+
+function shortAddress(address: string): string {
+  if (!address) return 'unknown'
+  if (address.length <= 12) return address
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function walletDisplayName(wallet: WalletType): string {
+  return wallet.username || wallet.label || shortAddress(wallet.address)
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return clamp(value, 0, 1)
+}
+
+function normalizePercentRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.abs(value) <= 1 ? value * 100 : value
+}
+
+function formatScorePct(value: number): string {
+  return `${(clamp01(value) * 100).toFixed(1)}%`
+}
+
+function formatNumber(value: number): string {
+  if (value == null) return '0'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return value.toLocaleString()
+}
+
+function formatWinRate(value: number): string {
+  return `${normalizePercentRatio(value).toFixed(1)}%`
+}
+
+function formatPnl(value: number): string {
+  if (value == null) return '0.00'
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(2)}K`
+  return value.toFixed(2)
+}
+
+function timeAgo(dateStr: string | null): string {
+  if (!dateStr) return 'Never'
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+function scoreTone(value: number, goodThreshold: number, warnThreshold: number): MetricTone {
+  if (!Number.isFinite(value)) return 'neutral'
+  if (value >= goodThreshold) return 'good'
+  if (value >= warnThreshold) return 'warn'
+  return 'neutral'
+}
+
+function inverseScoreTone(value: number, badThreshold: number, warnThreshold: number): MetricTone {
+  if (!Number.isFinite(value)) return 'neutral'
+  if (value >= badThreshold) return 'bad'
+  if (value >= warnThreshold) return 'warn'
+  return 'good'
+}
+
+function selectionReasonTone(code: string): MetricTone {
+  const normalized = code.toLowerCase()
+  if (
+    normalized.includes('manual_include')
+    || normalized.includes('core')
+    || normalized.includes('quality')
+    || normalized.includes('active')
+    || normalized.includes('tracked')
+    || normalized.includes('elite')
+  ) {
+    return 'good'
+  }
+  if (
+    normalized.includes('exclude')
+    || normalized.includes('blacklist')
+    || normalized.includes('below')
+    || normalized.includes('blocked')
+    || normalized.includes('anomaly')
+  ) {
+    return 'bad'
+  }
+  if (
+    normalized.includes('rising')
+    || normalized.includes('churn')
+    || normalized.includes('tier')
+    || normalized.includes('pending')
+  ) {
+    return 'warn'
+  }
+  return 'neutral'
+}
+
+function reasonLabelFromCode(code: string): string {
+  const clean = String(code || '').trim()
+  if (!clean) return 'Selection detail'
+  return clean
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function selectionReasons(member: PoolMember): Array<{ code: string; label: string; detail?: string }> {
+  const raw = Array.isArray(member.selection_reasons) ? member.selection_reasons : []
+  const normalized: Array<{ code: string; label: string; detail?: string }> = []
+  for (const item of raw) {
+    const code = String(item?.code || '').trim()
+    const label = String(item?.label || '').trim()
+    const detail = typeof item?.detail === 'string' ? item.detail.trim() : undefined
+    if (!code && !label) continue
+    normalized.push({
+      code: code || `reason_${label.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+      label: label || reasonLabelFromCode(code),
+      detail,
+    })
+  }
+
+  if (normalized.length > 0) return normalized
+  if (member.pool_membership_reason) {
+    return [{
+      code: member.pool_membership_reason,
+      label: reasonLabelFromCode(member.pool_membership_reason),
+    }]
+  }
+  if (member.tracked_wallet) {
+    return [{
+      code: 'tracked_wallet',
+      label: 'Tracked wallet',
+      detail: 'Included from tracked-wallet workflows.',
+    }]
+  }
+  return [{
+    code: 'selection_reason_unknown',
+    label: 'Selection reason unavailable',
+  }]
+}
+
+function MetricPill({
+  label,
+  value,
+  tone = 'neutral',
+  className,
+  mono = true,
+}: {
+  label: string
+  value: string
+  tone?: MetricTone
+  className?: string
+  mono?: boolean
+}) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none',
+        METRIC_TONE_CLASSES[tone],
+        className,
+      )}
+    >
+      <span className="uppercase tracking-wide opacity-90">{label}</span>
+      <span className={cn('font-semibold', mono && 'font-mono')}>{value}</span>
+    </span>
+  )
+}
+
+function ScoreSparkline({
+  points,
+}: {
+  points: Array<{ key: string; label: string; value: number; tone?: MetricTone }>
+}) {
+  if (!points.length) return null
+  return (
+    <div className="inline-flex items-end gap-0.5 rounded-md border border-slate-300 bg-slate-100 px-1.5 py-0.5 dark:border-border/85 dark:bg-muted/45">
+      {points.map((point) => {
+        const normalized = clamp01(point.value)
+        const height = Math.max(3, Math.round(normalized * 13))
+        const tone = point.tone || 'neutral'
+        return (
+          <span
+            key={point.key}
+            title={`${point.label} ${(normalized * 100).toFixed(1)}%`}
+            className={cn('w-1.5 rounded-sm', METRIC_BAR_CLASSES[tone])}
+            style={{ height }}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function PnlDisplay({ value, className }: { value: number; className?: string }) {
+  const isPositive = value >= 0
+  return (
+    <span
+      className={cn(
+        'font-medium font-mono text-sm',
+        isPositive ? 'text-sky-700 dark:text-sky-300' : 'text-rose-700 dark:text-rose-300',
+        className,
+      )}
+    >
+      {isPositive ? '+' : ''}${formatPnl(value)}
+    </span>
+  )
 }
 
 export default function WalletTracker({
@@ -96,6 +341,48 @@ export default function WalletTracker({
     queryKey: ['wallets'],
     queryFn: getWallets,
     refetchInterval: 30000,
+  })
+
+  const trackedWalletAddressKey = useMemo(
+    () => wallets.map((wallet) => wallet.address.toLowerCase()).sort().join(','),
+    [wallets],
+  )
+
+  const {
+    data: trackedPoolMembers = [],
+    isLoading: trackedPoolMembersLoading,
+    isError: trackedPoolMembersError,
+  } = useQuery({
+    queryKey: ['tracked-wallet-pool-members', trackedWalletAddressKey],
+    enabled: currentSection === 'tracked' && wallets.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const pageSize = 500
+      let offset = 0
+      let total = 0
+      const members: PoolMember[] = []
+
+      do {
+        const page = await discoveryApi.getPoolMembers({
+          limit: pageSize,
+          offset,
+          pool_only: false,
+          tracked_only: true,
+          include_blacklisted: true,
+          sort_by: 'selection_score',
+          sort_dir: 'desc',
+        })
+
+        const pageMembers = Array.isArray(page.members) ? page.members : []
+        members.push(...pageMembers)
+        total = Number(page.total || members.length)
+        if (pageMembers.length === 0) break
+        offset += pageMembers.length
+        if (pageMembers.length < pageSize) break
+      } while (offset < total)
+
+      return members
+    },
   })
 
   // Leaderboard query
@@ -161,7 +448,9 @@ export default function WalletTracker({
   const handleAnalyze = (address: string, username?: string) => {
     if (onAnalyzeWallet) {
       onAnalyzeWallet(address, username)
+      return
     }
+    onNavigateToWallet?.(address)
   }
 
   const handleTrackOnly = (address: string) => {
@@ -218,6 +507,92 @@ export default function WalletTracker({
   const currentTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
   const isLoadingTraders = currentDiscoverMode === 'winrate' ? loadingWinRate : discoveringTraders
   const refreshCurrentTraders = currentDiscoverMode === 'winrate' ? refreshWinRate : refreshTraders
+  const trackedPoolMemberMap = useMemo(() => {
+    const map = new Map<string, PoolMember>()
+    for (const member of trackedPoolMembers) {
+      map.set(member.address.toLowerCase(), member)
+    }
+    return map
+  }, [trackedPoolMembers])
+
+  const missingPoolMetricAddresses = useMemo(
+    () =>
+      wallets
+        .map((wallet) => wallet.address.toLowerCase())
+        .filter((address) => !trackedPoolMemberMap.has(address)),
+    [wallets, trackedPoolMemberMap],
+  )
+  const missingPoolMetricKey = missingPoolMetricAddresses.join(',')
+
+  const {
+    data: fallbackWalletMetrics = {},
+    isLoading: fallbackWalletMetricsLoading,
+  } = useQuery({
+    queryKey: ['tracked-wallet-fallback-metrics', missingPoolMetricKey],
+    enabled: currentSection === 'tracked' && missingPoolMetricAddresses.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const entries = await Promise.all(
+        missingPoolMetricAddresses.map(async (address) => {
+          const [pnlResult, winRateResult] = await Promise.allSettled([
+            analyzeWalletPnL(address),
+            getWalletWinRate(address),
+          ])
+
+          const pnl = pnlResult.status === 'fulfilled' ? pnlResult.value : null
+          const winRate = winRateResult.status === 'fulfilled' ? winRateResult.value : null
+
+          const metrics: WalletFallbackMetrics = {
+            totalPnl: pnl?.total_pnl ?? null,
+            winRate: winRate?.win_rate ?? null,
+            totalTrades: pnl?.total_trades ?? winRate?.trade_count ?? null,
+            openPositions: pnl?.open_positions ?? null,
+          }
+          return [address, metrics] as const
+        }),
+      )
+      return Object.fromEntries(entries) as Record<string, WalletFallbackMetrics>
+    },
+  })
+
+  const fallbackMetricCount = useMemo(
+    () =>
+      Object.values(fallbackWalletMetrics).filter(
+        (metrics) =>
+          metrics.totalPnl != null
+          || metrics.winRate != null
+          || metrics.totalTrades != null
+          || metrics.openPositions != null,
+      ).length,
+    [fallbackWalletMetrics],
+  )
+
+  const trackedWalletRows = useMemo(() => {
+    const rows = wallets.map((wallet) => ({
+      wallet,
+      member: trackedPoolMemberMap.get(wallet.address.toLowerCase()),
+    }))
+
+    rows.sort((a, b) => {
+      const aHasMember = Boolean(a.member)
+      const bHasMember = Boolean(b.member)
+      if (aHasMember && bHasMember) {
+        const aSelection = Number(a.member?.selection_score ?? a.member?.composite_score ?? 0)
+        const bSelection = Number(b.member?.selection_score ?? b.member?.composite_score ?? 0)
+        if (aSelection !== bSelection) return bSelection - aSelection
+      } else if (aHasMember) {
+        return -1
+      } else if (bHasMember) {
+        return 1
+      }
+
+      return walletDisplayName(a.wallet).localeCompare(walletDisplayName(b.wallet), undefined, {
+        sensitivity: 'base',
+      })
+    })
+
+    return rows
+  }, [wallets, trackedPoolMemberMap])
 
   // Check if navigation is controlled by parent
   const isControlledByParent = propSection !== undefined
@@ -648,8 +1023,19 @@ export default function WalletTracker({
           </Card>
 
           {/* Tracked Wallets */}
-          <div>
-            <h3 className="text-lg font-medium mb-4">Tracked Wallets ({wallets.length})</h3>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium">Tracked Wallets ({wallets.length})</h3>
+              <p className="text-xs text-muted-foreground">
+                {fallbackWalletMetricsLoading
+                  ? 'Loading wallet stats...'
+                  : trackedPoolMembersLoading
+                    ? `Pool metrics still loading · Live stats ${fallbackMetricCount}`
+                  : trackedPoolMembersError
+                    ? 'Pool metrics unavailable'
+                    : `Pool metrics ${trackedPoolMembers.length}/${wallets.length} · Live stats ${fallbackMetricCount}`}
+              </p>
+            </div>
 
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -664,16 +1050,244 @@ export default function WalletTracker({
                 </p>
               </Card>
             ) : (
-              <div className="space-y-3">
-                {wallets.map((wallet) => (
-                  <WalletCard
-                    key={wallet.address}
-                    wallet={wallet}
-                    onRemove={() => removeMutation.mutate(wallet.address)}
-                    onAnalyze={() => handleAnalyze(wallet.address, wallet.username)}
-                  />
-                ))}
-              </div>
+              <Card className="border-border overflow-hidden">
+                <div className="max-h-[620px] overflow-auto bg-background/20">
+                  <Table className="text-[11px] leading-tight">
+                    <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
+                      <TableRow className="bg-muted/55 border-b border-border/80">
+                        <TableHead className="h-9 px-2 min-w-[210px]">Trader</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[220px]">Performance</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[190px]">Selection</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[220px]">Why Selected</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[130px]">Flags</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[140px]">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {trackedWalletRows.map(({ wallet, member }, rowIndex) => {
+                        const displayName = member?.display_name || walletDisplayName(wallet)
+                        const username = member?.username || wallet.username || null
+                        const fallbackMetrics = fallbackWalletMetrics[wallet.address.toLowerCase()]
+                        const hasFallbackMetrics = Boolean(
+                          fallbackMetrics
+                          && (
+                            fallbackMetrics.totalPnl != null
+                            || fallbackMetrics.winRate != null
+                            || fallbackMetrics.totalTrades != null
+                            || fallbackMetrics.openPositions != null
+                          ),
+                        )
+                        const reasons = member ? selectionReasons(member) : []
+                        const flags = member?.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
+                        const selectionValue = Number(member?.selection_score ?? member?.composite_score ?? 0)
+                        const compositeValue = Number(member?.composite_score ?? 0)
+                        const selectionDelta = Math.abs(selectionValue - compositeValue)
+                        const showCompositeScore = selectionDelta >= SCORE_DELTA_HIDE_THRESHOLD
+                        const percentile = member?.selection_percentile != null
+                          ? `${(Number(member.selection_percentile) * 100).toFixed(1)}%`
+                          : null
+                        const breakdown = (member?.selection_breakdown || {}) as Record<string, number>
+                        const qualityScore = Number(breakdown.quality_score ?? member?.quality_score ?? 0)
+                        const activityScore = Number(breakdown.activity_score ?? member?.activity_score ?? 0)
+                        const stabilityScore = Number(breakdown.stability_score ?? member?.stability_score ?? 0)
+                        const insiderScore = Number(breakdown.insider_score ?? 0)
+                        const selectionSparkline = [
+                          { key: 'quality', label: 'Quality', value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
+                          { key: 'activity', label: 'Activity', value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
+                          { key: 'stability', label: 'Stability', value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
+                          { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
+                        ]
+                        const hasSparkline = member ? selectionSparkline.some((point) => point.value > 0) : false
+                        const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
+
+                        return (
+                          <TableRow
+                            key={wallet.address}
+                            className={cn('border-border/70 transition-colors hover:bg-muted/40', rowHighlight)}
+                          >
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              <div className="min-w-0 space-y-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleAnalyze(wallet.address, username || undefined)}
+                                  className="max-w-full text-left hover:opacity-90"
+                                >
+                                  <p className="truncate text-[12px] font-semibold text-foreground">{displayName}</p>
+                                </button>
+                                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                                  {username && (
+                                    <span className="max-w-[120px] truncate" title={`@${username}`}>@{username}</span>
+                                  )}
+                                  <span className="font-mono">{shortAddress(wallet.address)}</span>
+                                </div>
+                                {wallet.label && wallet.label !== displayName && (
+                                  <div className="truncate text-[10px] text-muted-foreground" title={wallet.label}>
+                                    Label: {wallet.label}
+                                  </div>
+                                )}
+                              </div>
+                            </TableCell>
+
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              {member ? (
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <PnlDisplay value={member.total_pnl || 0} className="text-xs" />
+                                    <MetricPill
+                                      label="WR"
+                                      value={formatWinRate(member.win_rate || 0)}
+                                      tone={scoreTone(normalizePercentRatio(member.win_rate || 0) / 100, 0.6, 0.45)}
+                                    />
+                                    <MetricPill label="T" value={formatNumber(member.total_trades || 0)} />
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <MetricPill
+                                      label="24h"
+                                      value={formatNumber(member.trades_24h || 0)}
+                                      tone={scoreTone(clamp01((member.trades_24h || 0) / 12), 0.6, 0.25)}
+                                    />
+                                    <MetricPill
+                                      label="1h"
+                                      value={formatNumber(member.trades_1h || 0)}
+                                      tone={scoreTone(clamp01((member.trades_1h || 0) / 4), 0.55, 0.25)}
+                                    />
+                                    <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null)}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {fallbackMetrics?.totalPnl != null && (
+                                      <PnlDisplay value={fallbackMetrics.totalPnl} className="text-xs" />
+                                    )}
+                                    <MetricPill
+                                      label="WR"
+                                      value={fallbackMetrics?.winRate != null ? `${fallbackMetrics.winRate.toFixed(1)}%` : '--'}
+                                      tone={
+                                        fallbackMetrics?.winRate != null
+                                          ? scoreTone(clamp01(fallbackMetrics.winRate / 100), 0.6, 0.45)
+                                          : 'neutral'
+                                      }
+                                    />
+                                    <MetricPill
+                                      label="T"
+                                      value={fallbackMetrics?.totalTrades != null ? formatNumber(fallbackMetrics.totalTrades) : '--'}
+                                    />
+                                    <MetricPill
+                                      label="Pos"
+                                      value={fallbackMetrics?.openPositions != null ? formatNumber(fallbackMetrics.openPositions) : '--'}
+                                    />
+                                  </div>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {hasFallbackMetrics
+                                      ? 'Live wallet stats'
+                                      : 'Wallet stats unavailable right now'}
+                                  </span>
+                                </div>
+                              )}
+                            </TableCell>
+
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              {member ? (
+                                <div className="space-y-1">
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    <MetricPill
+                                      label={showCompositeScore ? 'Sel' : 'Sel/Cmp'}
+                                      value={formatScorePct(selectionValue)}
+                                      tone={scoreTone(selectionValue, 0.7, 0.5)}
+                                    />
+                                    {showCompositeScore && (
+                                      <MetricPill
+                                        label="Cmp"
+                                        value={formatScorePct(compositeValue)}
+                                        tone={scoreTone(compositeValue, 0.7, 0.5)}
+                                      />
+                                    )}
+                                    {percentile && <MetricPill label="Top" value={percentile} tone="info" />}
+                                  </div>
+                                  {hasSparkline && <ScoreSparkline points={selectionSparkline} />}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground">No selection score yet</span>
+                              )}
+                            </TableCell>
+
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              {member ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {reasons.slice(0, 2).map((reason) => (
+                                    <span
+                                      key={`${wallet.address}-${reason.code}`}
+                                      title={reason.detail}
+                                      className={cn(
+                                        'inline-flex max-w-[180px] items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-none truncate',
+                                        METRIC_TONE_CLASSES[selectionReasonTone(reason.code)],
+                                      )}
+                                    >
+                                      {reason.label}
+                                    </span>
+                                  ))}
+                                  {reasons.length > 2 && (
+                                    <span className="text-[10px] text-muted-foreground">+{reasons.length - 2}</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground">Awaiting analysis refresh</span>
+                              )}
+                            </TableCell>
+
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              <div className="flex flex-wrap gap-1">
+                                <MetricPill label="Tracked" value="Yes" tone="info" mono={false} />
+                                {member?.in_top_pool && (
+                                  <MetricPill
+                                    label="Pool"
+                                    value={member.pool_tier ? member.pool_tier.toUpperCase() : 'TOP'}
+                                    tone="good"
+                                    mono={false}
+                                  />
+                                )}
+                                {flags.manual_include && <MetricPill label="Manual+" value="On" tone="good" mono={false} />}
+                                {flags.manual_exclude && <MetricPill label="Manual-" value="On" tone="warn" mono={false} />}
+                                {flags.blacklisted && <MetricPill label="BL" value="On" tone="bad" mono={false} />}
+                              </div>
+                            </TableCell>
+
+                            <TableCell className="px-2 py-1.5 align-middle">
+                              <div className="flex flex-wrap gap-1">
+                                <button
+                                  onClick={() => handleAnalyze(wallet.address, username || undefined)}
+                                  className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+                                  title="Analyze wallet"
+                                >
+                                  <Activity className="w-3.5 h-3.5" />
+                                </button>
+                                <a
+                                  href={`https://polymarket.com/profile/${wallet.address}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
+                                  title="View on Polymarket"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                                <button
+                                  onClick={() => removeMutation.mutate(wallet.address)}
+                                  disabled={removeMutation.isPending}
+                                  className="p-1 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                  title="Remove wallet"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </Card>
             )}
           </div>
 
@@ -814,71 +1428,5 @@ export default function WalletTracker({
         </div>
       )}
     </div>
-  )
-}
-
-function WalletCard({ wallet, onRemove, onAnalyze }: { wallet: WalletType; onRemove: () => void; onAnalyze: () => void }) {
-  const displayName = wallet.username || wallet.label
-  const hasUsername = !!wallet.username
-  const posCount = wallet.positions?.length || 0
-  const tradeCount = wallet.recent_trades?.length || 0
-
-  return (
-    <Card className="p-4 hover:border-border transition-colors">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
-            <Wallet className="w-5 h-5 text-purple-500" />
-          </div>
-          <div>
-            <p className="font-medium text-foreground">{displayName}</p>
-            {hasUsername && wallet.label !== wallet.username && (
-              <p className="text-xs text-muted-foreground">{wallet.label}</p>
-            )}
-            <p className="text-xs text-muted-foreground font-mono">
-              {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-4 mr-2">
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Positions</p>
-              <p className="text-sm font-medium text-foreground">{posCount}</p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-muted-foreground">Trades</p>
-              <p className="text-sm font-medium text-foreground">{tradeCount}</p>
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={onAnalyze}
-            className="h-auto gap-1.5 px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-xs font-medium"
-          >
-            <Activity className="w-3.5 h-3.5" />
-            Analyze
-          </Button>
-          <a
-            href={`https://polymarket.com/profile/${wallet.address}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-2 hover:bg-accent rounded-lg transition-colors"
-            title="View on Polymarket"
-          >
-            <ExternalLink className="w-4 h-4 text-muted-foreground" />
-          </a>
-          <Button
-            variant="ghost"
-            onClick={onRemove}
-            className="h-auto p-2 hover:bg-red-500/10 rounded-lg text-red-400"
-            title="Remove wallet"
-          >
-            <Trash2 className="w-4 h-4" />
-          </Button>
-        </div>
-      </div>
-    </Card>
   )
 }

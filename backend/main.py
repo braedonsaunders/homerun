@@ -45,6 +45,7 @@ from api.routes_workers import router as workers_router
 from api.routes_validation import router as validation_router
 from api.routes_trader_orchestrator import router as trader_orchestrator_router
 from api.routes_trader_sources import router as trader_sources_router
+from api.routes_trader_strategies import router as trader_strategies_router
 from api.routes_traders import router as traders_router
 from services import wallet_tracker
 from services.copy_trader import copy_trader
@@ -102,6 +103,30 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Warm DB-native trader strategy registry at process startup.
+        try:
+            from services.opportunity_strategy_catalog import (
+                ensure_system_opportunity_strategies_seeded,
+            )
+            from services.trader_orchestrator.strategy_catalog import (
+                ensure_system_trader_strategies_seeded,
+            )
+            from services.trader_orchestrator.strategy_db_loader import (
+                strategy_db_loader,
+            )
+
+            async with AsyncSessionLocal() as session:
+                opportunity_seeded = await ensure_system_opportunity_strategies_seeded(session)
+                trader_seeded = await ensure_system_trader_strategies_seeded(session)
+                await strategy_db_loader.refresh_from_db(session=session)
+            logger.info(
+                "Strategy registries loaded",
+                opportunity_seeded=opportunity_seeded,
+                trader_seeded=trader_seeded,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to preload strategy registries: {e}")
 
         # Load persisted world-intelligence runtime config before any world
         # source modules are imported (they snapshot some settings on import).
@@ -510,6 +535,7 @@ app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(traders_router, prefix="/api", tags=["Traders"])
 app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
+app.include_router(trader_strategies_router, prefix="/api", tags=["Trader Strategies"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])

@@ -196,6 +196,15 @@ def _with_default(value: Any, default: Any) -> Any:
     return default if value is None else value
 
 
+def _normalize_trader_opps_source_filter(value: Any) -> str:
+    normalized = str(value or "all").strip().lower()
+    if normalized in {"tracked", "pool", "all"}:
+        return normalized
+    if normalized == "insider":
+        return "pool"
+    return "all"
+
+
 def _coerce_typed(value: Any, default: Any) -> Any:
     if value is None:
         return default
@@ -403,9 +412,11 @@ def discovery_payload(settings: AppSettings) -> dict[str, Any]:
             settings.discovery_max_wallets_per_market,
             DISCOVERY_SETTINGS_DEFAULTS["max_wallets_per_market"],
         ),
-        "trader_opps_source_filter": _with_default(
-            settings.discovery_trader_opps_source_filter,
-            DISCOVERY_SETTINGS_DEFAULTS["trader_opps_source_filter"],
+        "trader_opps_source_filter": _normalize_trader_opps_source_filter(
+            _with_default(
+                settings.discovery_trader_opps_source_filter,
+                DISCOVERY_SETTINGS_DEFAULTS["trader_opps_source_filter"],
+            )
         ),
         "trader_opps_min_tier": _with_default(
             settings.discovery_trader_opps_min_tier,
@@ -714,8 +725,8 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.discovery_delay_between_wallets = discovery.delay_between_wallets
         settings.discovery_max_markets_per_run = discovery.max_markets_per_run
         settings.discovery_max_wallets_per_market = discovery.max_wallets_per_market
-        settings.discovery_trader_opps_source_filter = (
-            str(discovery.trader_opps_source_filter or "all").strip().lower() or "all"
+        settings.discovery_trader_opps_source_filter = _normalize_trader_opps_source_filter(
+            discovery.trader_opps_source_filter
         )
         settings.discovery_trader_opps_min_tier = (
             str(discovery.trader_opps_min_tier or "WATCH").strip().upper() or "WATCH"

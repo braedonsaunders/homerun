@@ -8,12 +8,14 @@ not just a grouping of existing ones.
 
 import re
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 
 from sqlalchemy import select
-from models.database import AsyncSessionLocal, StrategyPlugin
+from models.database import AsyncSessionLocal, StrategyPlugin, StrategyPluginTombstone
+from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.plugin_loader import (
     plugin_loader,
     validate_plugin_source,
@@ -53,17 +55,22 @@ class PluginCreateRequest(BaseModel):
     """Request to create a new plugin."""
 
     slug: str = Field(..., min_length=3, max_length=50, description="Unique slug identifier")
+    source_key: str = Field(default="scanner", min_length=2, max_length=64, description="Owning source key")
     source_code: str = Field(..., min_length=10, description="Python source code")
     config: dict = Field(default_factory=dict, description="Config overrides for the plugin")
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
     enabled: bool = True
 
 
 class PluginUpdateRequest(BaseModel):
     """Request to update a plugin (partial)."""
 
+    slug: Optional[str] = Field(None, min_length=3, max_length=50)
     source_code: Optional[str] = Field(None, min_length=10)
     config: Optional[dict] = None
     enabled: Optional[bool] = None
+    source_key: Optional[str] = Field(default=None, min_length=2, max_length=64)
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=500)
 
@@ -79,10 +86,12 @@ class PluginResponse(BaseModel):
 
     id: str
     slug: str
+    source_key: str
     name: str
     description: Optional[str]
     source_code: str
     class_name: Optional[str]
+    is_system: bool
     enabled: bool
     status: str  # unloaded, loaded, error
     error_message: Optional[str]
@@ -101,10 +110,12 @@ def _plugin_to_response(p: StrategyPlugin) -> PluginResponse:
     return PluginResponse(
         id=p.id,
         slug=p.slug,
+        source_key=p.source_key or "scanner",
         name=p.name,
         description=p.description,
         source_code=p.source_code,
         class_name=p.class_name,
+        is_system=bool(p.is_system),
         enabled=p.enabled,
         status=p.status,
         error_message=p.error_message,
@@ -122,7 +133,7 @@ def _plugin_to_response(p: StrategyPlugin) -> PluginResponse:
 
 @router.get("/template")
 async def get_plugin_template():
-    """Get the starter template for writing a new plugin."""
+    """Get the starter template for writing a new opportunity strategy."""
     return {
         "template": PLUGIN_TEMPLATE,
         "instructions": (
@@ -135,9 +146,15 @@ async def get_plugin_template():
         "available_imports": [
             "models (Market, Event, ArbitrageOpportunity, StrategyType)",
             "services.strategies.base (BaseStrategy)",
+            "services.strategies.* (built-in strategy modules)",
+            "services.news.* (news strategy helpers)",
+            "services.optimization.*",
+            "services.ws_feeds",
+            "services.chainlink_feed",
             "services.fee_model (fee_model)",
             "config (settings)",
-            "math, statistics, collections, datetime, re, json, random, etc.",
+            "math, statistics, collections, datetime, re, json, random, threading, asyncio, calendar, pathlib, etc.",
+            "httpx",
             "numpy, scipy (if installed)",
         ],
     }
@@ -145,12 +162,12 @@ async def get_plugin_template():
 
 @router.get("/docs")
 async def get_plugin_docs():
-    """Get comprehensive API documentation for plugin authors."""
+    """Get comprehensive API documentation for opportunity strategy authors."""
     return {
         "overview": {
-            "title": "Plugin API Reference",
+            "title": "Opportunity Strategy API Reference",
             "description": (
-                "Each plugin is a Python class that extends BaseStrategy. "
+                "Each strategy is a Python class that extends BaseStrategy. "
                 "Your class must implement detect() which is called every scan cycle "
                 "with the full set of active markets, events, and live prices. "
                 "Return a list of ArbitrageOpportunity objects for any opportunities found."
@@ -166,7 +183,7 @@ async def get_plugin_docs():
                 "default_config": "dict — Default config values (users can override in the UI)",
             },
             "auto_set_attributes": {
-                "strategy_type": "str — Automatically set to your plugin's slug by the loader",
+                "strategy_type": "str — Set to the DB strategy key/slug by the loader",
             },
             "inherited_attributes": {
                 "self.fee": "float — Current Polymarket fee rate (e.g. 0.02 = 2%)",
@@ -335,8 +352,19 @@ async def get_plugin_docs():
         "allowed_imports": [
             {"module": "models", "items": "Market, Event, ArbitrageOpportunity, StrategyType"},
             {"module": "services.strategies.base", "items": "BaseStrategy"},
+            {"module": "services.strategies", "items": "Built-in strategy modules"},
+            {"module": "services.news", "items": "News ingestion/matching components"},
+            {"module": "services.optimization", "items": "Optimization strategy helpers"},
+            {"module": "services.ws_feeds", "items": "Realtime feed helpers"},
+            {"module": "services.chainlink_feed", "items": "Chainlink-derived helpers"},
             {"module": "services.fee_model", "items": "fee_model"},
             {"module": "config", "items": "settings (app configuration)"},
+            {"module": "httpx", "items": "HTTP client"},
+            {"module": "asyncio", "items": "Async orchestration"},
+            {"module": "threading", "items": "Thread locks/primitives"},
+            {"module": "concurrent.futures", "items": "ThreadPoolExecutor"},
+            {"module": "calendar", "items": "Calendar math/helpers"},
+            {"module": "pathlib", "items": "Path utilities"},
             {"module": "math", "items": "Standard math functions"},
             {"module": "statistics", "items": "Statistical functions (mean, stdev, etc.)"},
             {"module": "collections", "items": "defaultdict, Counter, deque, etc."},
@@ -354,9 +382,9 @@ async def get_plugin_docs():
         ],
         "blocked_imports": [
             "os, sys, subprocess, shutil — No filesystem or process access",
-            "socket, http, urllib, requests, httpx — No network access",
+            "socket, http, urllib, requests, aiohttp — Unsupported network/process primitives",
             "pickle, marshal — No serialization",
-            "threading, multiprocessing, asyncio — No concurrency primitives",
+            "multiprocessing — No process-based concurrency",
             "importlib, inspect, ast — No code introspection",
         ],
     }
@@ -373,8 +401,13 @@ async def validate_plugin(req: PluginValidateRequest):
 async def list_plugins():
     """List all strategy plugins with their current status."""
     async with AsyncSessionLocal() as session:
+        await ensure_system_opportunity_strategies_seeded(session)
         result = await session.execute(
-            select(StrategyPlugin).order_by(StrategyPlugin.sort_order.asc(), StrategyPlugin.name.asc())
+            select(StrategyPlugin).order_by(
+                StrategyPlugin.is_system.desc(),
+                StrategyPlugin.sort_order.asc(),
+                StrategyPlugin.name.asc(),
+            )
         )
         plugins = result.scalars().all()
         return [_plugin_to_response(p) for p in plugins]
@@ -384,6 +417,7 @@ async def list_plugins():
 async def create_plugin(req: PluginCreateRequest):
     """Create a new strategy plugin from source code."""
     slug = _validate_slug(req.slug)
+    source_key = str(req.source_key or "scanner").strip().lower()
 
     # Check slug uniqueness
     async with AsyncSessionLocal() as session:
@@ -406,8 +440,8 @@ async def create_plugin(req: PluginCreateRequest):
         )
 
     # Extract metadata from the source
-    strategy_name = validation["strategy_name"] or slug.replace("_", " ").title()
-    strategy_description = validation["strategy_description"]
+    strategy_name = (req.name or validation["strategy_name"] or slug.replace("_", " ").title()).strip()
+    strategy_description = req.description if req.description is not None else validation["strategy_description"]
     class_name = validation["class_name"]
 
     plugin_id = str(uuid.uuid4())
@@ -428,10 +462,12 @@ async def create_plugin(req: PluginCreateRequest):
         plugin = StrategyPlugin(
             id=plugin_id,
             slug=slug,
+            source_key=source_key,
             name=strategy_name,
             description=strategy_description,
             source_code=req.source_code,
             class_name=class_name,
+            is_system=False,
             enabled=req.enabled,
             status=status,
             error_message=error_message,
@@ -466,7 +502,26 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
 
+        original_slug = plugin.slug
         code_changed = False
+
+        slug_changed = False
+        if req.slug is not None:
+            next_slug = _validate_slug(req.slug)
+            if next_slug != plugin.slug:
+                existing_slug = await session.execute(
+                    select(StrategyPlugin.id).where(
+                        StrategyPlugin.slug == next_slug,
+                        StrategyPlugin.id != plugin.id,
+                    )
+                )
+                if existing_slug.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"A strategy with slug '{next_slug}' already exists.",
+                    )
+                plugin.slug = next_slug
+                slug_changed = True
 
         if req.source_code is not None and req.source_code != plugin.source_code:
             # Validate new source code
@@ -493,6 +548,9 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
             plugin.config = req.config
             code_changed = True  # Need reload for config changes too
 
+        if req.source_key is not None:
+            plugin.source_key = str(req.source_key or "scanner").strip().lower()
+
         if req.name is not None:
             plugin.name = req.name
         if req.description is not None:
@@ -504,7 +562,9 @@ async def update_plugin(plugin_id: str, req: PluginUpdateRequest):
             enabled_changed = True
 
         # Handle loading/unloading
-        if enabled_changed or code_changed:
+        if enabled_changed or code_changed or slug_changed:
+            if slug_changed:
+                plugin_loader.unload_plugin(original_slug)
             if plugin.enabled:
                 try:
                     plugin_loader.load_plugin(plugin.slug, plugin.source_code, plugin.config or None)
@@ -532,6 +592,20 @@ async def delete_plugin(plugin_id: str):
         plugin = result.scalar_one_or_none()
         if not plugin:
             raise HTTPException(status_code=404, detail="Plugin not found")
+
+        if bool(plugin.is_system):
+            tombstone = await session.get(StrategyPluginTombstone, plugin.slug)
+            if tombstone is None:
+                session.add(
+                    StrategyPluginTombstone(
+                        slug=plugin.slug,
+                        deleted_at=datetime.utcnow(),
+                        reason="user_deleted_system_strategy",
+                    )
+                )
+            else:
+                tombstone.deleted_at = datetime.utcnow()
+                tombstone.reason = "user_deleted_system_strategy"
 
         # Unload from runtime
         plugin_loader.unload_plugin(plugin.slug)

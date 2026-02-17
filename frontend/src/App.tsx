@@ -24,6 +24,7 @@ import {
   Briefcase,
   BarChart3,
   Users,
+  Layers3,
   Brain,
   Sparkles,
   Command,
@@ -81,6 +82,7 @@ import TradingPanel from './components/TradingPanel'
 import RecentTradesPanel from './components/RecentTradesPanel'
 import TrackedTradersPanel from './components/TrackedTradersPanel'
 import SettingsPanel from './components/SettingsPanel'
+import StrategiesPanel from './components/StrategiesPanel'
 import AIPanel from './components/AIPanel'
 import AICopilotPanel from './components/AICopilotPanel'
 import AICommandBar from './components/AICommandBar'
@@ -101,7 +103,7 @@ import WeatherOpportunitiesPanel from './components/WeatherOpportunitiesPanel'
 import WorldIntelligencePanel from './components/WorldIntelligencePanel'
 import OpportunityEmptyState from './components/OpportunityEmptyState'
 
-type Tab = 'opportunities' | 'trading' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
+type Tab = 'opportunities' | 'trading' | 'strategies' | 'accounts' | 'traders' | 'positions' | 'performance' | 'ai' | 'settings'
 type TradersSubTab = 'discovery' | 'pool' | 'tracked' | 'analysis'
 
 const ITEMS_PER_PAGE = 20
@@ -109,12 +111,13 @@ const ITEMS_PER_PAGE = 20
 const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: string }[] = [
   { id: 'opportunities', icon: Zap, label: 'Opportunities', shortcut: '1' },
   { id: 'trading', icon: Bot, label: 'Trading', shortcut: '2' },
-  { id: 'accounts', icon: Wallet, label: 'Accounts', shortcut: '3' },
-  { id: 'traders', icon: Users, label: 'Traders', shortcut: '4' },
-  { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '5' },
-  { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '6' },
-  { id: 'ai', icon: Brain, label: 'AI', shortcut: '7' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '8' },
+  { id: 'strategies', icon: Layers3, label: 'Strategies', shortcut: '3' },
+  { id: 'accounts', icon: Wallet, label: 'Accounts', shortcut: '4' },
+  { id: 'traders', icon: Users, label: 'Traders', shortcut: '5' },
+  { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '6' },
+  { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '7' },
+  { id: 'ai', icon: Brain, label: 'AI', shortcut: '8' },
+  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '9' },
 ]
 
 type WorkerHealthTone = 'green' | 'amber' | 'red'
@@ -251,7 +254,6 @@ function App() {
   const [walletToAnalyze, setWalletToAnalyze] = useState<string | null>(null)
   const [walletUsername, setWalletUsername] = useState<string | null>(null)
   const [opportunitiesView, setOpportunitiesView] = useState<'arbitrage' | 'recent_trades' | 'news' | 'weather' | 'crypto_markets' | 'world' | 'search'>('arbitrage')
-  const [tradersExecutableCountOverride, setTradersExecutableCountOverride] = useState<number | null>(null)
   const [newsSearchQuery, setNewsSearchQuery] = useState('')
   const [oppsViewMode, setOppsViewMode] = useState<'card' | 'list' | 'terminal'>('card')
   const [polymarketSearchSubmitted, setPolymarketSearchSubmitted] = useState('')
@@ -368,12 +370,6 @@ function App() {
   }, [opportunitiesView])
 
   useEffect(() => {
-    if (opportunitiesView !== 'recent_trades') {
-      setTradersExecutableCountOverride(null)
-    }
-  }, [opportunitiesView])
-
-  useEffect(() => {
     if (opportunitiesView !== 'crypto_markets') {
       setCryptoSettingsOpen(false)
     }
@@ -428,11 +424,9 @@ function App() {
     if (!stats || typeof stats !== 'object') return null
 
     const confluenceRaw = Number((stats as Record<string, unknown>).confluence_executable)
-    const insiderRaw = Number((stats as Record<string, unknown>).insider_intents_executable)
     const confluence = Number.isFinite(confluenceRaw) ? Math.max(0, Math.round(confluenceRaw)) : null
-    const insider = Number.isFinite(insiderRaw) ? Math.max(0, Math.round(insiderRaw)) : null
-    if (confluence == null && insider == null) return null
-    return (confluence ?? 0) + (insider ?? 0)
+    if (confluence == null) return null
+    return confluence
   }, [trackedTradersWorker])
 
   const workerHealth = useMemo(() => {
@@ -565,7 +559,6 @@ function App() {
   })
 
   const tradersCount = trackedTradersExecutableCount ?? 0
-  const tradersCountDisplay = tradersExecutableCountOverride ?? tradersCount
   const newsCount = newsWorkflowFindingsCount?.total || 0
   const weatherCount = weatherWorkflowExecutableCount?.total || 0
   const cryptoCount = cryptoMarketCounts?.length || 0
@@ -581,10 +574,9 @@ function App() {
   const polymarketResults = polymarketSearchData?.opportunities || []
   const polymarketTotal = polymarketSearchData?.total || 0
 
-  // Resolve strategy filter: plugins are their own strategy type
+  // Resolve strategy filter: DB-native rows can still expose plugin_slug for compatibility.
   const strategyFilterSet = useMemo(() => {
     if (!selectedStrategy) return null
-    // For plugins, the type is "plugin_<slug>" and the strategy on opportunities is the slug
     const plugin = strategies.find((s) => s.type === selectedStrategy && s.is_plugin)
     if (plugin?.plugin_slug) return new Set([plugin.plugin_slug])
     return new Set([selectedStrategy])
@@ -720,12 +712,13 @@ function App() {
   const shortcuts: Shortcut[] = useMemo(() => [
     { key: '1', description: 'Go to Opportunities', category: 'Navigation', action: () => setActiveTab('opportunities') },
     { key: '2', description: 'Go to Trading', category: 'Navigation', action: () => setActiveTab('trading') },
-    { key: '3', description: 'Go to Accounts', category: 'Navigation', action: () => setActiveTab('accounts') },
-    { key: '4', description: 'Go to Traders', category: 'Navigation', action: () => setActiveTab('traders') },
-    { key: '5', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
-    { key: '6', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
-    { key: '7', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
-    { key: '8', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
+    { key: '3', description: 'Go to Strategies', category: 'Navigation', action: () => setActiveTab('strategies') },
+    { key: '4', description: 'Go to Accounts', category: 'Navigation', action: () => setActiveTab('accounts') },
+    { key: '5', description: 'Go to Traders', category: 'Navigation', action: () => setActiveTab('traders') },
+    { key: '6', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
+    { key: '7', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
+    { key: '8', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
+    { key: '9', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
     { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
     { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => {
       if (!globallyPaused) {
@@ -1112,7 +1105,7 @@ function App() {
                       <Activity className="w-3.5 h-3.5" />
                       Traders
                       <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-orange-500/20 text-orange-400 text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5">
-                        <AnimatedNumber value={tradersCountDisplay} decimals={0} className="" />
+                        <AnimatedNumber value={tradersCount} decimals={0} className="" />
                       </span>
                     </Button>
                     <Button
@@ -1492,9 +1485,6 @@ function App() {
                       mode="opportunities"
                       viewMode={oppsViewMode}
                       onOpenCopilot={handleOpenCopilot}
-                      onSignalStatsChange={({ executableCount }) => {
-                        setTradersExecutableCountOverride(executableCount)
-                      }}
                       onNavigateToWallet={(address) => {
                         setWalletToAnalyze(address)
                         setActiveTab('traders')
@@ -1781,6 +1771,15 @@ function App() {
               </div>
             )}
 
+            {/* ==================== Strategies ==================== */}
+            {activeTab === 'strategies' && (
+              <div className="flex-1 overflow-hidden flex flex-col section-enter">
+                <div className="flex-1 overflow-hidden px-6 py-4 min-h-0">
+                  <StrategiesPanel />
+                </div>
+              </div>
+            )}
+
             {/* ==================== Accounts ==================== */}
             {activeTab === 'accounts' && (
               <div className="flex-1 overflow-hidden flex flex-col section-enter">
@@ -1983,10 +1982,10 @@ function App() {
         <SearchFiltersFlyout
           isOpen={searchFiltersOpen}
           onClose={() => setSearchFiltersOpen(false)}
-          onManagePlugins={() => {
+          onManageStrategies={() => {
             setSearchFiltersOpen(false)
-            setActiveTab('settings')
-            window.dispatchEvent(new CustomEvent('navigate-settings-section', { detail: 'plugins' }))
+            setActiveTab('strategies')
+            window.dispatchEvent(new CustomEvent('navigate-strategies-subtab', { detail: 'opportunity' }))
           }}
         />
 

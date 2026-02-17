@@ -23,6 +23,9 @@ from models.database import (
     AsyncSessionLocal,
     DiscoveredWallet,
     MarketConfluenceSignal,
+    TrackedWallet,
+    TraderGroup,
+    TraderGroupMember,
     WalletActivityRollup,
 )
 from services.pause_state import global_pause_state
@@ -687,6 +690,10 @@ class SmartWalletPoolService:
                     session=session,
                     signals=signals,
                 )
+            signals = await self._filter_signals_to_known_trader_sources(
+                session=session,
+                signals=signals,
+            )
             signals = signals[:limit]
 
             await self._refresh_signal_market_metadata(session=session, signals=signals)
@@ -769,6 +776,95 @@ class SmartWalletPoolService:
                 )
 
         return output
+
+    async def _filter_signals_to_known_trader_sources(
+        self,
+        *,
+        session,
+        signals: list[MarketConfluenceSignal],
+    ) -> list[MarketConfluenceSignal]:
+        """
+        Keep only confluence rows sourced from:
+        - pool wallets
+        - tracked wallets
+        - active trader-group members
+        """
+        if not signals:
+            return []
+
+        addresses = {
+            str(raw).strip().lower()
+            for signal in signals
+            for raw in (signal.wallets or [])
+            if isinstance(raw, str) and str(raw).strip()
+        }
+        if not addresses:
+            return []
+
+        address_list = list(addresses)
+
+        pool_result = await session.execute(
+            select(func.lower(DiscoveredWallet.address)).where(
+                DiscoveredWallet.in_top_pool == True,  # noqa: E712
+                func.lower(DiscoveredWallet.address).in_(address_list),
+            )
+        )
+        pool_addresses = {
+            str(address).strip().lower()
+            for (address,) in pool_result.all()
+            if address
+        }
+
+        tracked_result = await session.execute(
+            select(func.lower(TrackedWallet.address)).where(
+                func.lower(TrackedWallet.address).in_(address_list)
+            )
+        )
+        tracked_addresses = {
+            str(address).strip().lower()
+            for (address,) in tracked_result.all()
+            if address
+        }
+
+        group_result = await session.execute(
+            select(func.lower(TraderGroupMember.wallet_address))
+            .join(TraderGroup, TraderGroupMember.group_id == TraderGroup.id)
+            .where(
+                TraderGroup.is_active == True,  # noqa: E712
+                func.lower(TraderGroupMember.wallet_address).in_(address_list),
+            )
+        )
+        group_addresses = {
+            str(address).strip().lower()
+            for (address,) in group_result.all()
+            if address
+        }
+
+        qualified_addresses = pool_addresses | tracked_addresses | group_addresses
+        if not qualified_addresses:
+            return []
+
+        kept: list[MarketConfluenceSignal] = []
+        dropped = 0
+        for signal in signals:
+            signal_wallets = {
+                str(raw).strip().lower()
+                for raw in (signal.wallets or [])
+                if isinstance(raw, str) and str(raw).strip()
+            }
+            if signal_wallets and signal_wallets.intersection(qualified_addresses):
+                kept.append(signal)
+            else:
+                dropped += 1
+
+        if dropped:
+            logger.info(
+                "Filtered confluence rows without pool/tracked/group wallets",
+                dropped=dropped,
+                kept=len(kept),
+            )
+
+        return kept
 
     async def _prune_non_tradable_signals(
         self,
@@ -1568,9 +1664,7 @@ class SmartWalletPoolService:
             current_pool = [
                 w.address
                 for w in wallets
-                if w.in_top_pool
-                and not self._is_pool_blocked(w)
-                and (w.address in eligible_addresses or self._is_pool_manually_included(w))
+                if w.in_top_pool and not self._is_pool_blocked(w)
             ]
             final_pool, churn_rate = self._apply_churn_guard(
                 desired=desired,
@@ -2207,7 +2301,11 @@ class SmartWalletPoolService:
             final_set = set(final)
             if not current_set:
                 return final, 0.0
-            churn = len(current_set.symmetric_difference(final_set)) / max(len(current_set), 1)
+            removed = len(current_set - final_set)
+            added = len(final_set - current_set)
+            # Track slot turnover (not add+remove double-count), so 1 replacement
+            # in a 500-wallet pool is reported as 0.2%, not 0.4%.
+            churn = max(removed, added) / max(len(current_set), 1)
             return final, churn
 
         # If no existing pool, initialize directly from desired.

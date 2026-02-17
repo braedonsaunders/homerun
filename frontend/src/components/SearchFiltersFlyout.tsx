@@ -21,7 +21,6 @@ import {
   ChevronDown,
   ChevronRight,
   Puzzle,
-  Settings,
   ExternalLink,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
@@ -33,9 +32,6 @@ import { Switch } from './ui/switch'
 import {
   getSettings,
   updateSettings,
-  getPlugins,
-  updatePlugin,
-  type StrategyPlugin,
 } from '../services/api'
 
 // ==================== TYPES ====================
@@ -224,11 +220,11 @@ function CollapsibleSection({
 export default function SearchFiltersFlyout({
   isOpen,
   onClose,
-  onManagePlugins,
+  onManageStrategies,
 }: {
   isOpen: boolean
   onClose: () => void
-  onManagePlugins?: () => void
+  onManageStrategies?: () => void
 }) {
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [form, setForm] = useState(DEFAULTS)
@@ -239,25 +235,6 @@ export default function SearchFiltersFlyout({
     queryKey: ['settings'],
     queryFn: getSettings,
   })
-
-  const { data: plugins = [] } = useQuery({
-    queryKey: ['plugins'],
-    queryFn: getPlugins,
-    enabled: isOpen,
-  })
-
-  const updatePluginMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      updatePlugin(id, { enabled }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['plugins'] })
-      queryClient.invalidateQueries({ queryKey: ['strategies'] })
-    },
-  })
-
-  const togglePlugin = (plugin: StrategyPlugin) => {
-    updatePluginMutation.mutate({ id: plugin.id, enabled: !plugin.enabled })
-  }
 
   useEffect(() => {
     if (settings?.search_filters) {
@@ -315,7 +292,7 @@ export default function SearchFiltersFlyout({
             <SlidersHorizontal className="w-4 h-4 text-orange-500" />
             <h3 className="text-sm font-semibold">Market Settings</h3>
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-              {17 + plugins.length} strategies
+              17 strategy filters
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -707,77 +684,31 @@ export default function SearchFiltersFlyout({
           </CollapsibleSection>
 
           {/* ============================================================ */}
-          {/* SECTION 9: STRATEGY PLUGINS */}
+          {/* SECTION 9: STRATEGY MANAGEMENT */}
           {/* ============================================================ */}
           <CollapsibleSection
-            title="Strategy Plugins"
+            title="Strategy Management"
             icon={Puzzle}
             color="text-violet-500"
-            count={plugins.length}
-            defaultOpen={plugins.length > 0}
+            defaultOpen={false}
           >
             <p className="text-[10px] text-muted-foreground/60 -mt-1">
-              User-defined strategy groups appear in the Strategy filter on the Opportunities page. Enable plugins to combine multiple strategies into one filter.
+              Strategy code and enable/disable controls now live in the dedicated Strategies tab.
             </p>
-            {plugins.length === 0 ? (
-              <div className="rounded-lg bg-muted/20 p-4 text-center">
-                <Puzzle className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
-                <p className="text-xs text-muted-foreground">No plugins yet</p>
-                <p className="text-[10px] text-muted-foreground/70 mt-1">Create strategy groups in Settings</p>
-                {onManagePlugins && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onManagePlugins}
-                    className="mt-3 gap-1.5 text-[10px]"
-                  >
-                    <Settings className="w-3 h-3" />
-                    Manage Plugins
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {plugins.map((plugin) => (
-                  <div
-                    key={plugin.id}
-                    className="rounded-lg bg-muted/20 p-2.5 flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <Puzzle className="w-3.5 h-3.5 text-violet-400 shrink-0" />
-                        <span className="text-[11px] font-medium truncate">{plugin.name}</span>
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/10 text-violet-400 shrink-0">
-                          {plugin.slug}
-                        </span>
-                      </div>
-                      {plugin.description && (
-                        <p className="text-[10px] text-muted-foreground/60 mt-0.5 line-clamp-2">
-                          {plugin.description}
-                        </p>
-                      )}
-                    </div>
-                    <Switch
-                      checked={plugin.enabled}
-                      onCheckedChange={() => togglePlugin(plugin)}
-                      className="scale-75 shrink-0"
-                      disabled={updatePluginMutation.isPending}
-                    />
-                  </div>
-                ))}
-                {onManagePlugins && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={onManagePlugins}
-                    className="w-full gap-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    Manage Plugins in Settings
-                  </Button>
-                )}
-              </div>
-            )}
+            <div className="rounded-lg bg-muted/20 p-3 text-center">
+              <p className="text-xs text-muted-foreground">Open Strategies to manage all opportunity and autotrader strategy code.</p>
+              {onManageStrategies ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onManageStrategies}
+                  className="mt-3 gap-1.5 text-[10px]"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Open Strategies
+                </Button>
+              ) : null}
+            </div>
           </CollapsibleSection>
 
         </div>

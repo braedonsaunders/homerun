@@ -21,7 +21,7 @@ import {
 } from '../lib/priceHistory'
 import { Badge } from './ui/badge'
 import Sparkline from './Sparkline'
-import type { InsiderOpportunity, TrackedTraderOpportunity } from '../services/discoveryApi'
+import type { TrackedTraderOpportunity } from '../services/discoveryApi'
 
 // ─── Unified Type ──────────────────────────────────────────
 
@@ -241,50 +241,6 @@ export function normalizeConfluenceSignal(signal: TrackedTraderOpportunity): Uni
     market_url: buildPolymarketMarketUrl({ eventSlug: signal.market_slug }) || '',
     source_flags: quality.sourceFlags,
     source_breakdown: signal.source_breakdown ?? null,
-    validation: quality.validation,
-    is_valid: quality.isValid,
-    is_actionable: quality.isActionable,
-    is_tradeable: quality.isTradeable,
-    validation_reasons: quality.reasons,
-    source_coverage_score: quality.sourceCoverageScore,
-  }
-}
-
-export function normalizeInsiderSignal(opp: InsiderOpportunity): UnifiedTraderSignal {
-  const isYes = (opp.direction || '').toLowerCase() === 'buy_yes'
-  const quality = normalizeSignalQualityFlags(opp)
-  return {
-    id: opp.id,
-    source: 'insider',
-    market_id: opp.market_id,
-    market_question: opp.market_question || opp.market_id,
-    market_slug: opp.market_slug,
-    yes_price: opp.yes_price,
-    no_price: opp.no_price,
-    current_yes_price: opp.current_yes_price ?? opp.yes_price ?? null,
-    current_no_price: opp.current_no_price ?? opp.no_price ?? null,
-    outcome_labels: opp.outcome_labels,
-    outcome_prices: opp.outcome_prices,
-    yes_label: opp.yes_label ?? opp.outcome_labels?.[0] ?? null,
-    no_label: opp.no_label ?? opp.outcome_labels?.[1] ?? null,
-    price_history: opp.price_history,
-    direction: isYes ? 'BUY' : 'SELL',
-    confidence: Math.round((opp.confidence || 0) * 100),
-    wallet_count: opp.wallet_count,
-    tier: 'INSIDER' as const,
-    insider_score: opp.insider_score,
-    edge_percent: opp.edge_percent,
-    cluster_count: opp.cluster_count,
-    pre_news_lead_minutes: opp.pre_news_lead_minutes,
-    freshness_minutes: opp.freshness_minutes,
-    suggested_size_usd: opp.suggested_size_usd,
-    market_liquidity: opp.market_liquidity,
-    top_wallet: opp.top_wallet,
-    wallets: opp.wallets,
-    detected_at: opp.created_at || new Date().toISOString(),
-    market_url: buildPolymarketMarketUrl({ marketId: opp.market_id }) || '',
-    source_flags: quality.sourceFlags,
-    source_breakdown: opp.source_breakdown ?? null,
     validation: quality.validation,
     is_valid: quality.isValid,
     is_actionable: quality.isActionable,
@@ -1359,7 +1315,7 @@ export function TraderSignalTerminal({
         {/* Boot sequence */}
         <div className="text-green-500/30 mb-3 space-y-0.5">
           <p>{'>'} Initializing trader signal feed...</p>
-          <p>{'>'} Connected to confluence + insider pipelines</p>
+          <p>{'>'} Connected to pool confluence + tracked/group trade pipelines</p>
           <p>{'>'} {signals.length} signals loaded</p>
           <p className="text-green-500/15">{'\u2500'.repeat(72)}</p>
         </div>

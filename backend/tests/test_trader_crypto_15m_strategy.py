@@ -185,3 +185,96 @@ def test_crypto_15m_strategy_allows_matching_target_scope():
     )
 
     assert decision.decision == "selected"
+
+
+def test_crypto_15m_strategy_blocks_contrarian_buy_no_when_up_is_extreme():
+    strategy = Crypto15mStrategy()
+    payload = _base_payload()
+    payload["regime"] = "closing"
+    payload["oracle_available"] = True
+    payload["model_prob_yes"] = 0.62
+    payload["model_prob_no"] = 0.38
+    payload["up_price"] = 0.91
+    payload["down_price"] = 0.09
+    payload["component_edges"]["buy_no"]["directional"] = 12.0
+    payload["net_edges"]["buy_no"] = 12.0
+
+    signal = SimpleNamespace(
+        source="crypto",
+        signal_type="crypto_worker_multistrat",
+        edge_percent=12.0,
+        confidence=0.7,
+        direction="buy_no",
+        payload_json=payload,
+    )
+
+    decision = strategy.evaluate(signal, {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}})
+
+    assert decision.decision == "skipped"
+    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
+    assert guardrail_check.passed is False
+
+
+def test_crypto_15m_strategy_blocks_contrarian_buy_yes_when_down_is_extreme():
+    strategy = Crypto15mStrategy()
+    payload = _base_payload()
+    payload["regime"] = "mid"
+    payload["oracle_available"] = True
+    payload["model_prob_yes"] = 0.40
+    payload["model_prob_no"] = 0.60
+    payload["up_price"] = 0.08
+    payload["down_price"] = 0.92
+    payload["component_edges"]["buy_yes"]["directional"] = 10.0
+    payload["net_edges"]["buy_yes"] = 10.0
+
+    signal = SimpleNamespace(
+        source="crypto",
+        signal_type="crypto_worker_multistrat",
+        edge_percent=10.0,
+        confidence=0.7,
+        direction="buy_yes",
+        payload_json=payload,
+    )
+
+    decision = strategy.evaluate(signal, {"params": {"min_edge_percent": 3.0, "min_confidence": 0.45}})
+
+    assert decision.decision == "skipped"
+    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
+    assert guardrail_check.passed is False
+
+
+def test_crypto_15m_strategy_allows_override_when_direction_guardrail_disabled():
+    strategy = Crypto15mStrategy()
+    payload = _base_payload()
+    payload["regime"] = "closing"
+    payload["oracle_available"] = True
+    payload["model_prob_yes"] = 0.60
+    payload["model_prob_no"] = 0.40
+    payload["up_price"] = 0.90
+    payload["down_price"] = 0.10
+    payload["component_edges"]["buy_no"]["directional"] = 9.0
+    payload["net_edges"]["buy_no"] = 9.0
+
+    signal = SimpleNamespace(
+        source="crypto",
+        signal_type="crypto_worker_multistrat",
+        edge_percent=9.0,
+        confidence=0.7,
+        direction="buy_no",
+        payload_json=payload,
+    )
+
+    decision = strategy.evaluate(
+        signal,
+        {
+            "params": {
+                "min_edge_percent": 3.0,
+                "min_confidence": 0.45,
+                "direction_guardrail_enabled": False,
+            }
+        },
+    )
+
+    assert decision.decision == "selected"
+    guardrail_check = next(check for check in decision.checks if check.key == "direction_guardrail")
+    assert guardrail_check.passed is True

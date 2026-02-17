@@ -9,27 +9,9 @@ from interfaces import MarketDataProvider
 from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
-from services.strategies import (
-    BasicArbStrategy,
-    NegRiskStrategy,
-    MutuallyExclusiveStrategy,
-    ContradictionStrategy,
-    MustHappenStrategy,
-    MiracleStrategy,
-    CombinatorialStrategy,
-    SettlementLagStrategy,
-    NewsEdgeStrategy,
-    CrossPlatformStrategy,
-    BayesianCascadeStrategy,
-    LiquidityVacuumStrategy,
-    EntropyArbStrategy,
-    EventDrivenStrategy,
-    TemporalDecayStrategy,
-    CorrelationArbStrategy,
-    MarketMakingStrategy,
-    StatArbStrategy,
-)
+from services.strategies.news_edge import NewsEdgeStrategy
 from services.plugin_loader import plugin_loader, PluginValidationError
+from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
 from services.pause_state import global_pause_state
 from services.market_prioritizer import market_prioritizer, MarketTier
@@ -59,28 +41,9 @@ class ArbitrageScanner:
 
     def __init__(self, data_provider: Optional[MarketDataProvider] = None):
         self.market_data = data_provider or market_data_provider
-        self.strategies = [
-            BasicArbStrategy(),
-            NegRiskStrategy(),  # Most profitable historically
-            MutuallyExclusiveStrategy(),
-            ContradictionStrategy(),
-            MustHappenStrategy(),
-            MiracleStrategy(),  # Swisstony's garbage collection strategy
-            CombinatorialStrategy(),  # Cross-market arbitrage via integer programming
-            SettlementLagStrategy(),  # Exploit delayed price adjustments (article Part IV)
-            CrossPlatformStrategy(),  # Cross-platform arb (Polymarket vs Kalshi)
-            BayesianCascadeStrategy(),  # Probability graph belief propagation
-            LiquidityVacuumStrategy(),  # Order book imbalance exploitation
-            EntropyArbStrategy(),  # Information-theoretic mispricing detection
-            EventDrivenStrategy(),  # Price lag after catalyst moves
-            TemporalDecayStrategy(),  # Time-decay mispricing in deadline markets
-            CorrelationArbStrategy(),  # Mean-reversion on correlated pair spreads
-            MarketMakingStrategy(),  # Earn bid-ask spread as liquidity provider
-            StatArbStrategy(),  # Statistical edge from ensemble probability signals
-        ]
-
-        # Async strategies (require network I/O or LLM calls, run separately)
-        self._news_edge_strategy = NewsEdgeStrategy()
+        # News edge helper is still used by prefetch utilities; runtime execution
+        # should use DB-loaded strategy instances via plugin_loader.
+        self._news_edge_strategy_fallback = NewsEdgeStrategy()
 
         # Mispricing type mapping for strategies that don't set it themselves
         self._strategy_mispricing_map = {
@@ -755,8 +718,21 @@ class ArbitrageScanner:
         try:
             from models.database import StrategyPlugin as StrategyPluginModel
 
+            # DB is the source of truth; clear any stale in-memory strategies.
+            for slug in list(plugin_loader.loaded_plugins.keys()):
+                plugin_loader.unload_plugin(slug)
+
             async with AsyncSessionLocal() as session:
-                result = await session.execute(select(StrategyPluginModel).where(StrategyPluginModel.enabled))
+                await ensure_system_opportunity_strategies_seeded(session)
+                result = await session.execute(
+                    select(StrategyPluginModel)
+                    .where(StrategyPluginModel.enabled)
+                    .order_by(
+                        StrategyPluginModel.is_system.desc(),
+                        StrategyPluginModel.sort_order.asc(),
+                        StrategyPluginModel.name.asc(),
+                    )
+                )
                 plugins = result.scalars().all()
 
             loaded_count = 0
@@ -794,12 +770,23 @@ class ArbitrageScanner:
         except Exception as e:
             print(f"Error loading plugins: {e}")
 
+    async def _ensure_runtime_strategies_loaded(self) -> None:
+        if plugin_loader.loaded_plugins:
+            return
+        await self.load_plugins()
+
     def _get_all_strategies(self) -> list:
-        """Return built-in strategies + loaded plugin strategies."""
+        """Return DB-loaded strategy instances used for scanner execution."""
         plugin_strategies = plugin_loader.get_all_strategy_instances()
         # BTC 15-minute high-frequency logic is isolated to crypto-worker.
         # Scanner strategy set must not run btc_eth_highfreq.
-        return [s for s in (self.strategies + plugin_strategies) if self._strategy_key(s) != "btc_eth_highfreq"]
+        return [s for s in plugin_strategies if self._strategy_key(s) != "btc_eth_highfreq"]
+
+    def _get_news_edge_helper(self):
+        loaded = plugin_loader.get_plugin("news_edge")
+        if loaded and hasattr(loaded.instance, "_build_market_infos"):
+            return loaded.instance
+        return self._news_edge_strategy_fallback
 
     @staticmethod
     def _strategy_key(strategy) -> str:
@@ -976,14 +963,15 @@ class ArbitrageScanner:
             # on the event loop blocks all async handlers (including
             # GET /api/opportunities) causing the UI to hang during scans.
             all_opportunities = []
+            await self._ensure_runtime_strategies_loaded()
             loop = asyncio.get_running_loop()
-            await self._set_activity(f"Running {len(self.strategies)} strategies...")
+            all_strategies = await self._get_effective_strategies()
+            await self._set_activity(f"Running {len(all_strategies)} strategies...")
 
             async def _run_strategy(strategy):
                 """Run a single strategy in the default thread-pool executor."""
                 return strategy, await loop.run_in_executor(None, strategy.detect, events, markets_to_evaluate, prices)
 
-            all_strategies = await self._get_effective_strategies()
             results = await asyncio.gather(
                 *[_run_strategy(s) for s in all_strategies],
                 return_exceptions=True,
@@ -1215,6 +1203,7 @@ class ArbitrageScanner:
                     merged_prices,
                 )
 
+            await self._ensure_runtime_strategies_loaded()
             all_strategies = await self._get_effective_strategies()
             results = await asyncio.gather(
                 *[_run_strategy(s) for s in all_strategies],
@@ -1309,7 +1298,7 @@ class ArbitrageScanner:
                 return
 
             # Step 2: Build market index
-            market_infos = self._news_edge_strategy._build_market_infos(events, markets, prices)
+            market_infos = self._get_news_edge_helper()._build_market_infos(events, markets, prices)
             if not market_infos:
                 return
 
@@ -1799,6 +1788,7 @@ class ArbitrageScanner:
 
     def get_status(self) -> dict:
         """Get current scanner status"""
+        loaded_strategies = self._get_all_strategies()
         status = {
             "running": self._running,
             "enabled": self._enabled,
@@ -1812,13 +1802,7 @@ class ArbitrageScanner:
                     "name": getattr(s, "name", self._strategy_key(s) or "Unknown"),
                     "type": self._strategy_key(s),
                 }
-                for s in self.strategies
-            ]
-            + [
-                {
-                    "name": self._news_edge_strategy.name,
-                    "type": self._strategy_key(self._news_edge_strategy),
-                }
+                for s in loaded_strategies
             ],
         }
 

@@ -49,7 +49,6 @@ export function useDisplayedOpportunityRefresh({
       if (opportunitiesView === 'recent_trades') {
         invalidateQueryKeys(queryClient, [
           ['tracked-trader-opportunities'],
-          ['insider-opportunities'],
           ['workers-status'],
         ])
         return

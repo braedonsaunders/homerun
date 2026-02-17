@@ -143,13 +143,6 @@ function inverseScoreTone(value: number, badThreshold: number, warnThreshold: nu
   return 'good'
 }
 
-function poolTierTone(tier: string | null | undefined): MetricTone {
-  const normalized = (tier || '').toLowerCase()
-  if (normalized === 'core') return 'good'
-  if (normalized === 'rising') return 'info'
-  return 'neutral'
-}
-
 function selectionReasonTone(code: string): MetricTone {
   const normalized = code.toLowerCase()
   if (
@@ -596,6 +589,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [currentPage, setCurrentPage] = useState(0)
+  const [poolCurrentPage, setPoolCurrentPage] = useState(0)
   const [minTrades, setMinTrades] = useState(0)
   const [minPnl, setMinPnl] = useState(0)
   const [recommendationFilter, setRecommendationFilter] = useState<RecommendationFilter>('')
@@ -641,6 +635,17 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     minInsiderScore,
   ])
 
+  useEffect(() => {
+    setPoolCurrentPage(0)
+  }, [
+    poolSearch,
+    poolTierFilter,
+    minPoolWinRate,
+    poolSortBy,
+    poolSortDir,
+    includeBlacklisted,
+  ])
+
   const { data: stats } = useQuery<DiscoveryStats>({
     queryKey: ['discovery-stats'],
     queryFn: discoveryApi.getDiscoveryStats,
@@ -657,6 +662,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const { data: poolMembersData, isLoading: poolMembersLoading, error: poolMembersError } = useQuery<PoolMembersResponse>({
     queryKey: [
       'discovery-pool-members',
+      poolCurrentPage,
       poolSearch,
       poolTierFilter,
       minPoolWinRate,
@@ -666,8 +672,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     ],
     queryFn: async () => {
       const params = {
-        limit: 300,
-        offset: 0,
+        limit: ITEMS_PER_PAGE,
+        offset: poolCurrentPage * ITEMS_PER_PAGE,
         pool_only: true,
         include_blacklisted: includeBlacklisted,
         tier: poolTierFilter === 'all' ? undefined : poolTierFilter,
@@ -899,84 +905,8 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     })
   }, [tags, tagSearch])
 
-  const poolMembersRaw: PoolMember[] = poolMembersData?.members || []
-  const poolMembers: PoolMember[] = useMemo(() => {
-    const query = poolSearch.trim().toLowerCase()
-    const minWr = Math.max(0, minPoolWinRate)
-    const filtered = poolMembersRaw.filter(member => {
-      const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
-      if (!includeBlacklisted && flags.blacklisted) return false
-      if (poolTierFilter !== 'all' && (member.pool_tier || '').toLowerCase() !== poolTierFilter) return false
-      if (minWr > 0 && normalizePercentRatio(member.win_rate || 0) < minWr) return false
-      if (!query) return true
-
-      const haystack = [
-        member.address,
-        member.username || '',
-        member.display_name || '',
-        member.tracked_label || '',
-        member.cluster_label || '',
-        member.pool_tier || '',
-        ...(member.tags || []),
-        ...(member.strategies_detected || []),
-        ...(member.market_categories || []),
-      ]
-        .join(' ')
-        .toLowerCase()
-
-      return haystack.includes(query)
-    })
-
-    const sorted = [...filtered].sort((a, b) => {
-      const valueOf = (member: PoolMember): number => {
-        switch (poolSortBy) {
-          case 'selection_score':
-            return Number(member.selection_score ?? member.composite_score ?? 0)
-          case 'composite_score':
-            return Number(member.composite_score ?? 0)
-          case 'activity_score':
-            return Number(member.activity_score ?? 0)
-          case 'quality_score':
-            return Number(member.quality_score ?? 0)
-          case 'win_rate':
-            return normalizePercentRatio(member.win_rate || 0)
-          case 'total_pnl':
-            return Number(member.total_pnl ?? 0)
-          case 'total_trades':
-            return Number(member.total_trades ?? 0)
-          case 'trades_24h':
-            return Number(member.trades_24h ?? 0)
-          case 'trades_1h':
-            return Number(member.trades_1h ?? 0)
-          case 'last_trade_at':
-            return member.last_trade_at ? new Date(member.last_trade_at).getTime() : 0
-          default:
-            return Number(member.composite_score ?? 0)
-        }
-      }
-
-      const av = valueOf(a)
-      const bv = valueOf(b)
-      if (av !== bv) {
-        return poolSortDir === 'asc' ? av - bv : bv - av
-      }
-
-      const aTie = Number(a.composite_score ?? 0)
-      const bTie = Number(b.composite_score ?? 0)
-      if (aTie !== bTie) return bTie - aTie
-      return String(a.address).localeCompare(String(b.address))
-    })
-
-    return sorted
-  }, [
-    poolMembersRaw,
-    poolSearch,
-    poolTierFilter,
-    minPoolWinRate,
-    poolSortBy,
-    poolSortDir,
-    includeBlacklisted,
-  ])
+  const poolMembers: PoolMember[] = poolMembersData?.members || []
+  const poolTotalMembers = poolMembersData?.total || 0
   const poolMemberStats = poolMembersData?.stats
   const poolMembersErrorMessage = useMemo(() => {
     if (!poolMembersError) return null
@@ -986,6 +916,20 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   }, [poolMembersError])
 
   const totalPages = Math.ceil(totalWallets / ITEMS_PER_PAGE)
+  const poolTotalPages = Math.ceil(poolTotalMembers / ITEMS_PER_PAGE)
+
+  useEffect(() => {
+    if (poolTotalPages <= 0) {
+      if (poolCurrentPage !== 0) {
+        setPoolCurrentPage(0)
+      }
+      return
+    }
+    if (poolCurrentPage > poolTotalPages - 1) {
+      setPoolCurrentPage(poolTotalPages - 1)
+    }
+  }, [poolCurrentPage, poolTotalPages])
+
   const poolActionBusy =
     trackWalletMutation.isPending ||
     manualIncludeMutation.isPending ||
@@ -1040,7 +984,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       </div>
 
       {isPoolView ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
           <Card className="border-border">
             <CardContent className="flex items-center gap-3 p-3">
               <div className="p-2 bg-cyan-500/10 rounded-lg">
@@ -1091,22 +1035,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               <div>
                 <p className="text-xs text-muted-foreground">Hourly Churn</p>
                 <p className="text-sm font-semibold">{((poolStats?.churn_rate || 0) * 100).toFixed(2)}%</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="border-border">
-            <CardContent className="flex items-center gap-3 p-3">
-              <div className="p-2 bg-violet-500/10 rounded-lg">
-                <Target className="w-5 h-5 text-violet-400" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Members</p>
-                <p className="text-sm font-semibold">
-                  <span>{poolMemberStats?.pool_members ?? 0}</span>
-                  <span className="ml-1 text-[11px] text-muted-foreground">
-                    Tracked {poolMemberStats?.tracked_in_pool ?? 0}/{poolMemberStats?.tracked_total ?? 0}
-                  </span>
-                </p>
               </div>
             </CardContent>
           </Card>
@@ -1279,6 +1207,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                   setPoolSortBy('composite_score')
                   setPoolSortDir('desc')
                   setIncludeBlacklisted(true)
+                  setPoolCurrentPage(0)
                 }}
               >
                 Reset
@@ -1299,12 +1228,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               No pool members match current filters.
             </div>
           ) : (
-            <div className="overflow-auto rounded border border-border bg-background/20 grow min-h-[72vh]">
-              <Table className="text-[11px] leading-tight">
+            <>
+              <div className="overflow-auto rounded border border-border bg-background/20 grow min-h-[72vh]">
+                <Table className="text-[11px] leading-tight">
                 <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
                   <TableRow className="bg-muted/55 border-b border-border/80">
                     <TableHead className="h-9 px-2 min-w-[210px]">Trader</TableHead>
-                    <TableHead className="h-9 px-2">Tier</TableHead>
                     <TableHead className="h-9 px-2 min-w-[220px]">Performance</TableHead>
                     <TableHead className="h-9 px-2 min-w-[190px]">Selection</TableHead>
                     <TableHead className="h-9 px-2 min-w-[220px]">Why Selected</TableHead>
@@ -1359,15 +1288,6 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                               </div>
                             )}
                           </div>
-                        </TableCell>
-
-                        <TableCell className="px-2 py-1.5 align-middle">
-                          <MetricPill
-                            label="Tier"
-                            value={(member.pool_tier || 'out').toUpperCase()}
-                            tone={poolTierTone(member.pool_tier)}
-                            mono={false}
-                          />
                         </TableCell>
 
                         <TableCell className="px-2 py-1.5 align-middle">
@@ -1615,8 +1535,37 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     )
                   })}
                 </TableBody>
-              </Table>
-            </div>
+                </Table>
+              </div>
+              {poolTotalPages > 1 && (
+                <div className="flex items-center justify-between pt-2">
+                  <div className="text-sm text-muted-foreground">
+                    Showing {poolCurrentPage * ITEMS_PER_PAGE + 1} - {Math.min((poolCurrentPage + 1) * ITEMS_PER_PAGE, poolTotalMembers)} of {poolTotalMembers}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPoolCurrentPage(p => Math.max(0, p - 1))}
+                      disabled={poolCurrentPage === 0}
+                    >
+                      Previous
+                    </Button>
+                    <span className="px-3 py-1.5 bg-card rounded-lg text-sm border border-border">
+                      Page {poolCurrentPage + 1} of {poolTotalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPoolCurrentPage(p => p + 1)}
+                      disabled={poolCurrentPage >= poolTotalPages - 1}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

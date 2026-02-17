@@ -196,93 +196,6 @@ export interface TrackedTraderOpportunity extends ConfluenceSignal {
   validation_reasons?: string[]
 }
 
-export interface InsiderOpportunity {
-  id: string
-  signal_key?: string | null
-  market_id: string
-  market_question: string
-  market_slug?: string | null
-  yes_price?: number | null
-  no_price?: number | null
-  price_history?: Array<Record<string, unknown> | unknown[]>
-  direction: 'buy_yes' | 'buy_no' | string
-  entry_price?: number | null
-  edge_percent?: number | null
-  confidence: number
-  insider_score?: number | null
-  wallet_addresses: string[]
-  wallet_count: number
-  cluster_count: number
-  pre_news_lead_minutes?: number
-  timing_alpha_short?: number
-  market_liquidity?: number
-  suggested_size_usd?: number | null
-  status?: string
-  freshness_minutes?: number
-  top_wallet?: {
-    address: string
-    username?: string | null
-    insider_score?: number
-    insider_confidence?: number
-  } | null
-  wallets?: Array<{
-    address: string
-    username?: string | null
-    insider_score?: number
-    insider_confidence?: number
-  }>
-  created_at?: string | null
-  outcome_labels?: string[]
-  outcome_prices?: number[]
-  yes_label?: string | null
-  no_label?: string | null
-  current_yes_price?: number | null
-  current_no_price?: number | null
-  source_flags?: {
-    from_pool?: boolean
-    from_tracked_traders?: boolean
-    from_trader_groups?: boolean
-    qualified?: boolean
-  }
-  source_breakdown?: {
-    wallets_considered?: number
-    pool_wallets?: number
-    tracked_wallets?: number
-    group_wallets?: number
-    group_count?: number
-    group_ids?: string[]
-  }
-  validation?: {
-    is_valid?: boolean
-    is_actionable?: boolean
-    is_tradeable?: boolean
-    checks?: Record<string, boolean>
-    reasons?: string[]
-  }
-  is_valid?: boolean
-  is_actionable?: boolean
-  is_tradeable?: boolean
-  validation_reasons?: string[]
-}
-
-export interface InsiderIntent {
-  id: string
-  signal_key?: string | null
-  market_id: string
-  market_question: string
-  direction: string
-  entry_price?: number | null
-  edge_percent?: number | null
-  confidence?: number | null
-  insider_score?: number | null
-  wallet_addresses?: string[]
-  suggested_size_usd?: number | null
-  metadata?: Record<string, unknown>
-  status: 'pending' | 'submitted' | 'executed' | 'skipped' | 'expired' | string
-  created_at?: string | null
-  consumed_at?: string | null
-}
-
 export interface TraderGroupMember {
   id: string
   wallet_address: string
@@ -489,6 +402,7 @@ export const discoveryApi = {
     limit?: number
     offset?: number
     pool_only?: boolean
+    tracked_only?: boolean
     include_blacklisted?: boolean
     tier?: 'core' | 'rising'
     search?: string
@@ -557,32 +471,6 @@ export const discoveryApi = {
       },
     })
     return data.opportunities || []
-  },
-
-  getInsiderOpportunities: async (params: {
-    limit?: number
-    offset?: number
-    min_confidence?: number
-    direction?: 'buy_yes' | 'buy_no'
-    max_age_minutes?: number
-  } = {}): Promise<{ total: number; offset: number; limit: number; opportunities: InsiderOpportunity[] }> => {
-    const { data } = await discoveryHttp.get(`${API_BASE}/opportunities/insider`, { params })
-    return {
-      total: data.total || 0,
-      offset: data.offset || 0,
-      limit: data.limit || params.limit || 50,
-      opportunities: data.opportunities || [],
-    }
-  },
-
-  getInsiderIntents: async (
-    status_filter?: InsiderIntent['status'],
-    limit = 100,
-  ): Promise<InsiderIntent[]> => {
-    const { data } = await discoveryHttp.get(`${API_BASE}/insider/intents`, {
-      params: { status_filter, limit },
-    })
-    return data.intents || []
   },
 
   getTradersOverview: async (params: {

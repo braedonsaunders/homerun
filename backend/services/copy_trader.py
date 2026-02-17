@@ -1353,7 +1353,8 @@ class CopyTradingService:
 
         Returns order ID on success, None on failure.
         """
-        from services.trading import trading_service, OrderSide
+        from services.live_execution_adapter import execute_live_order
+        from services.trading import trading_service
 
         if not trading_service.is_ready():
             logger.warning("Live trading not initialized, falling back to simulation")
@@ -1381,19 +1382,19 @@ class CopyTradingService:
         if copy_size <= 0:
             return None
 
-        order = await trading_service.place_order(
+        execution = await execute_live_order(
             token_id=token_id,
-            side=OrderSide.BUY,
-            price=current_price,
+            side="BUY",
             size=copy_size,
+            fallback_price=current_price,
             market_question=trade.get("title", ""),
         )
 
-        if order.status.value == "failed":
-            logger.error("Live copy order failed", error=order.error_message)
+        if execution.status == "failed":
+            logger.error("Live copy order failed", error=execution.error_message)
             return None
 
-        return order.id
+        return execution.order_id
 
     async def _execute_live_sell(
         self,
@@ -1401,7 +1402,8 @@ class CopyTradingService:
         config: CopyTradingConfig,
     ) -> Optional[str]:
         """Execute a copy SELL via the live trading service."""
-        from services.trading import trading_service, OrderSide
+        from services.live_execution_adapter import execute_live_order
+        from services.trading import trading_service
 
         if not trading_service.is_ready():
             return None
@@ -1419,18 +1421,18 @@ class CopyTradingService:
 
         source_size = float(trade.get("size", 0) or trade.get("amount", 0) or 0)
 
-        order = await trading_service.place_order(
+        execution = await execute_live_order(
             token_id=token_id,
-            side=OrderSide.SELL,
-            price=current_price,
+            side="SELL",
             size=source_size,
+            fallback_price=current_price,
         )
 
-        if order.status.value == "failed":
-            logger.error("Live sell order failed", error=order.error_message)
+        if execution.status == "failed":
+            logger.error("Live sell order failed", error=execution.error_message)
             return None
 
-        return order.id
+        return execution.order_id
 
     # ==================== RECORD KEEPING ====================
 

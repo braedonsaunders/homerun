@@ -13,6 +13,7 @@ from config import settings
 from models.database import (
     AppSettings,
     TradeSignal,
+    TraderStrategyDefinition,
     Trader,
     TraderConfigRevision,
     TraderDecision,
@@ -22,10 +23,17 @@ from models.database import (
     TraderPosition,
     TraderOrchestratorControl,
     TraderOrchestratorSnapshot,
+    TraderSignalCursor,
     TraderSignalConsumption,
 )
-from services.trader_orchestrator.sources.registry import normalize_sources
-from services.trader_orchestrator.strategies import list_strategy_keys
+from services.simulation import simulation_service
+from services.trader_orchestrator.sources.registry import normalize_source_key
+from services.trader_orchestrator.strategy_catalog import (
+    build_system_strategy_rows,
+    default_strategy_by_source,
+    list_system_strategy_keys,
+    source_to_strategy_keys,
+)
 from services.trader_orchestrator.templates import (
     DEFAULT_GLOBAL_RISK,
     TRADER_TEMPLATES,
@@ -48,6 +56,18 @@ _STRATEGY_KEY_ALIASES = {
     "default": "crypto_15m",
 }
 _RESUME_POLICY_VALUES = {"resume_full", "manage_only", "flatten_then_start"}
+_TRADER_SCOPE_MODES = {"tracked", "pool", "individual", "group"}
+_SOURCE_STRATEGY_MATRIX_FALLBACK: dict[str, set[str]] = {
+    key: set(values) for key, values in source_to_strategy_keys().items()
+}
+_SOURCE_DEFAULT_STRATEGY: dict[str, str] = default_strategy_by_source()
+_LEGACY_OMNI_STRATEGY_BY_SOURCE: dict[str, str] = {
+    "crypto": "crypto_15m",
+    "scanner": "opportunity_general",
+    "news": "news_reaction",
+    "weather": "weather_consensus",
+    "traders": "traders_flow",
+}
 
 
 def _now() -> datetime:
@@ -140,8 +160,53 @@ def _normalize_strategy_key(value: Any) -> str:
     return _STRATEGY_KEY_ALIASES.get(key, key)
 
 
-def _validate_strategy_key(strategy_key: str) -> None:
-    valid_keys = set(list_strategy_keys())
+def _normalize_strategy_for_source(source_key: str, strategy_key: str) -> str:
+    if strategy_key == "opportunity_weather":
+        if source_key == "weather":
+            return "weather_consensus"
+        if source_key == "scanner":
+            return "opportunity_general"
+    return strategy_key
+
+
+async def _fetch_enabled_strategy_catalog(
+    session: AsyncSession,
+) -> tuple[set[str], dict[str, set[str]]]:
+    rows = list(
+        (
+            await session.execute(
+                select(
+                    TraderStrategyDefinition.strategy_key,
+                    TraderStrategyDefinition.source_key,
+                ).where(TraderStrategyDefinition.enabled == True)  # noqa: E712
+            )
+        )
+        .all()
+    )
+    if not rows:
+        fallback_rows = build_system_strategy_rows()
+        valid_keys = {
+            str(row.get("strategy_key") or "").strip().lower()
+            for row in fallback_rows
+            if str(row.get("strategy_key") or "").strip()
+        }
+        by_source = dict(_SOURCE_STRATEGY_MATRIX_FALLBACK)
+        return valid_keys, by_source
+
+    valid_keys: set[str] = set()
+    by_source: dict[str, set[str]] = {}
+    for strategy_key, source_key in rows:
+        skey = str(strategy_key or "").strip().lower()
+        src = str(source_key or "").strip().lower()
+        if not skey or not src:
+            continue
+        valid_keys.add(skey)
+        by_source.setdefault(src, set()).add(skey)
+    return valid_keys, by_source
+
+
+async def _validate_strategy_key(session: AsyncSession, strategy_key: str) -> None:
+    valid_keys, _ = await _fetch_enabled_strategy_catalog(session)
     if not strategy_key:
         raise ValueError("strategy_key is required")
     if strategy_key not in valid_keys:
@@ -149,11 +214,224 @@ def _validate_strategy_key(strategy_key: str) -> None:
         raise ValueError(f"Unknown strategy_key '{strategy_key}'. Valid strategy keys: {allowed}")
 
 
+def _normalize_strategy_params(value: Any) -> dict[str, Any]:
+    params = value if isinstance(value, dict) else {}
+    out = dict(params)
+    if "min_confidence" in out:
+        out["min_confidence"] = _normalize_confidence_fraction(out.get("min_confidence"), 0.0)
+    return out
+
+
+def _normalize_traders_scope(value: Any) -> dict[str, Any]:
+    scope = value if isinstance(value, dict) else {}
+
+    modes: list[str] = []
+    seen_modes: set[str] = set()
+    for raw_mode in scope.get("modes") or []:
+        mode = str(raw_mode or "").strip().lower()
+        if not mode or mode in seen_modes:
+            continue
+        seen_modes.add(mode)
+        modes.append(mode)
+
+    individual_wallets: list[str] = []
+    seen_wallets: set[str] = set()
+    for raw_wallet in scope.get("individual_wallets") or []:
+        wallet = str(raw_wallet or "").strip().lower()
+        if not wallet or wallet in seen_wallets:
+            continue
+        seen_wallets.add(wallet)
+        individual_wallets.append(wallet)
+
+    group_ids: list[str] = []
+    seen_group_ids: set[str] = set()
+    for raw_group_id in scope.get("group_ids") or []:
+        group_id = str(raw_group_id or "").strip()
+        if not group_id or group_id in seen_group_ids:
+            continue
+        seen_group_ids.add(group_id)
+        group_ids.append(group_id)
+
+    return {
+        "modes": modes,
+        "individual_wallets": individual_wallets,
+        "group_ids": group_ids,
+    }
+
+
+def _validate_traders_scope(scope: dict[str, Any]) -> None:
+    modes = list(scope.get("modes") or [])
+    if not modes:
+        raise ValueError("traders_scope.modes must include at least one mode")
+    invalid = [mode for mode in modes if mode not in _TRADER_SCOPE_MODES]
+    if invalid:
+        raise ValueError(
+            f"Invalid traders_scope.modes: {', '.join(invalid)}. "
+            f"Allowed: {', '.join(sorted(_TRADER_SCOPE_MODES))}"
+        )
+    if "individual" in modes and not list(scope.get("individual_wallets") or []):
+        raise ValueError("traders_scope.individual_wallets is required when mode 'individual' is selected")
+    if "group" in modes and not list(scope.get("group_ids") or []):
+        raise ValueError("traders_scope.group_ids is required when mode 'group' is selected")
+
+
+def _normalize_source_config(raw: Any) -> dict[str, Any]:
+    item = raw if isinstance(raw, dict) else {}
+    source_key = normalize_source_key(item.get("source_key"))
+    strategy_key = _normalize_strategy_for_source(
+        source_key,
+        _normalize_strategy_key(item.get("strategy_key")),
+    )
+    strategy_params = _normalize_strategy_params(item.get("strategy_params"))
+    normalized: dict[str, Any] = {
+        "source_key": source_key,
+        "strategy_key": strategy_key,
+        "strategy_params": strategy_params,
+    }
+    if source_key == "traders":
+        normalized["traders_scope"] = _normalize_traders_scope(item.get("traders_scope"))
+    return normalized
+
+
+def _normalize_source_configs(value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, list) else []
+    out: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+    for raw_item in items:
+        source_config = _normalize_source_config(raw_item)
+        source_key = source_config.get("source_key", "")
+        if not source_key:
+            continue
+        if source_key in seen_sources:
+            raise ValueError(f"Duplicate source_key '{source_key}' in source_configs")
+        seen_sources.add(source_key)
+        out.append(source_config)
+    return out
+
+
+async def _validate_source_strategy_pair(
+    session: AsyncSession,
+    source_key: str,
+    strategy_key: str,
+) -> None:
+    _, by_source = await _fetch_enabled_strategy_catalog(session)
+    valid_strategies = by_source.get(source_key)
+    if not valid_strategies:
+        allowed_sources = ", ".join(sorted(by_source.keys()))
+        raise ValueError(f"Unknown source_key '{source_key}'. Allowed source keys: {allowed_sources}")
+    await _validate_strategy_key(session, strategy_key)
+    if strategy_key not in valid_strategies:
+        allowed = ", ".join(sorted(valid_strategies))
+        raise ValueError(
+            f"Invalid strategy_key '{strategy_key}' for source_key '{source_key}'. "
+            f"Allowed strategies: {allowed}"
+        )
+
+
+async def _validate_source_configs(
+    session: AsyncSession,
+    source_configs: list[dict[str, Any]],
+) -> None:
+    if not source_configs:
+        raise ValueError("source_configs must include at least one source")
+    for source_config in source_configs:
+        source_key = str(source_config.get("source_key") or "").strip().lower()
+        strategy_key = _normalize_strategy_key(source_config.get("strategy_key"))
+        await _validate_source_strategy_pair(session, source_key, strategy_key)
+        if source_key == "traders":
+            _validate_traders_scope(
+                _normalize_traders_scope(source_config.get("traders_scope"))
+            )
+
+
+def _legacy_source_configs_from_fields(
+    strategy_key: Any,
+    sources_value: Any,
+    params_value: Any,
+) -> list[dict[str, Any]]:
+    old_strategy_key = _normalize_strategy_key(strategy_key)
+    raw_sources = sources_value if isinstance(sources_value, list) else []
+    normalized_sources: list[str] = []
+    seen_sources: set[str] = set()
+    for raw_source in raw_sources:
+        source_key = normalize_source_key(raw_source)
+        if source_key == "world_intelligence":
+            continue
+        if source_key not in _SOURCE_STRATEGY_MATRIX_FALLBACK:
+            continue
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        normalized_sources.append(source_key)
+
+    if not normalized_sources:
+        fallback_source = "crypto" if old_strategy_key.startswith("crypto_") else "scanner"
+        normalized_sources = [fallback_source]
+
+    legacy_params = params_value if isinstance(params_value, dict) else {}
+    source_configs: list[dict[str, Any]] = []
+    for source_key in normalized_sources:
+        if old_strategy_key == "omni_aggressive":
+            mapped_strategy = _LEGACY_OMNI_STRATEGY_BY_SOURCE.get(
+                source_key,
+                _SOURCE_DEFAULT_STRATEGY[source_key],
+            )
+        else:
+            mapped_strategy = (
+                old_strategy_key
+                if old_strategy_key in _SOURCE_STRATEGY_MATRIX_FALLBACK[source_key]
+                else _SOURCE_DEFAULT_STRATEGY[source_key]
+            )
+        source_config: dict[str, Any] = {
+            "source_key": source_key,
+            "strategy_key": mapped_strategy,
+            "strategy_params": _normalize_strategy_params(legacy_params),
+        }
+        if source_key == "traders":
+            source_config["traders_scope"] = {
+                "modes": ["tracked", "pool"],
+                "individual_wallets": [],
+                "group_ids": [],
+            }
+        source_configs.append(source_config)
+
+    return source_configs
+
+
+def _normalize_or_backfill_source_configs(
+    source_configs_value: Any,
+    *,
+    fallback_strategy_key: Any = None,
+    fallback_sources: Any = None,
+    fallback_params: Any = None,
+) -> list[dict[str, Any]]:
+    normalized = _normalize_source_configs(source_configs_value)
+    if normalized:
+        return normalized
+    return _legacy_source_configs_from_fields(
+        fallback_strategy_key,
+        fallback_sources,
+        fallback_params,
+    )
+
+
+def _derive_legacy_fields_from_source_configs(
+    source_configs: list[dict[str, Any]],
+) -> tuple[str, list[str], dict[str, Any]]:
+    if not source_configs:
+        return "crypto_15m", [], {}
+    first = source_configs[0]
+    strategy_key = str(first.get("strategy_key") or "crypto_15m")
+    sources = [str(item.get("source_key") or "").strip().lower() for item in source_configs if item.get("source_key")]
+    params = dict(first.get("strategy_params") or {})
+    return strategy_key, sources, params
+
+
 def _default_control_settings() -> dict[str, Any]:
     return {
         "global_risk": dict(DEFAULT_GLOBAL_RISK),
         "trading_domains": ["event_markets", "crypto"],
-        "enabled_strategies": [t["strategy_key"] for t in TRADER_TEMPLATES],
+        "enabled_strategies": list_system_strategy_keys(),
         "llm_verify_trades": False,
         "paper_account_id": None,
     }
@@ -197,14 +475,18 @@ def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
 def _serialize_trader(row: Trader) -> dict[str, Any]:
     metadata = dict(row.metadata_json or {})
     metadata["resume_policy"] = _normalize_resume_policy(metadata.get("resume_policy"))
+    source_configs = _normalize_or_backfill_source_configs(
+        row.source_configs_json,
+        fallback_strategy_key=row.strategy_key,
+        fallback_sources=row.sources_json,
+        fallback_params=row.params_json,
+    )
     return {
         "id": row.id,
         "name": row.name,
         "description": row.description,
-        "strategy_key": row.strategy_key,
         "strategy_version": row.strategy_version,
-        "sources": list(row.sources_json or []),
-        "params": row.params_json or {},
+        "source_configs": source_configs,
         "risk_limits": row.risk_limits_json or {},
         "metadata": metadata,
         "is_enabled": bool(row.is_enabled),
@@ -387,26 +669,29 @@ def list_trader_templates() -> list[dict[str, Any]]:
             "id": template["id"],
             "name": template["name"],
             "description": template.get("description"),
-            "strategy_key": template["strategy_key"],
-            "sources": template.get("sources", []),
+            "source_configs": list(template.get("source_configs") or []),
             "interval_seconds": int(template.get("interval_seconds", 60) or 60),
-            "params": template.get("params", {}),
             "risk_limits": template.get("risk_limits", {}),
         }
         for template in TRADER_TEMPLATES
     ]
 
 
-def _normalize_trader_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    params = payload.get("params") or {}
-    if not isinstance(params, dict):
-        params = {}
-    if "min_confidence" in params:
-        params = dict(params)
-        params["min_confidence"] = _normalize_confidence_fraction(
-            params.get("min_confidence"),
-            0.0,
-        )
+async def _normalize_trader_payload(
+    session: AsyncSession,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    source_configs = _normalize_or_backfill_source_configs(
+        payload.get("source_configs"),
+        fallback_strategy_key=payload.get("strategy_key"),
+        fallback_sources=payload.get("sources"),
+        fallback_params=payload.get("params"),
+    )
+    await _validate_source_configs(session, source_configs)
+
+    risk_limits = payload.get("risk_limits") or {}
+    if not isinstance(risk_limits, dict):
+        risk_limits = {}
     metadata = payload.get("metadata") or {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -416,10 +701,8 @@ def _normalize_trader_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": str(payload.get("name") or "").strip(),
         "description": payload.get("description"),
-        "strategy_key": _normalize_strategy_key(payload.get("strategy_key")),
-        "sources": normalize_sources(payload.get("sources")),
-        "params": params,
-        "risk_limits": payload.get("risk_limits") or {},
+        "source_configs": source_configs,
+        "risk_limits": risk_limits,
         "metadata": metadata,
         "is_enabled": bool(payload.get("is_enabled", True)),
         "is_paused": bool(payload.get("is_paused", False)),
@@ -443,15 +726,23 @@ async def seed_default_traders(session: AsyncSession) -> None:
         return
 
     for template in TRADER_TEMPLATES:
+        source_configs = _normalize_or_backfill_source_configs(
+            template.get("source_configs"),
+            fallback_strategy_key=template.get("strategy_key"),
+            fallback_sources=template.get("sources"),
+            fallback_params=template.get("params"),
+        )
+        strategy_key, sources, params = _derive_legacy_fields_from_source_configs(source_configs)
         session.add(
             Trader(
                 id=_new_id(),
                 name=template["name"],
                 description=template.get("description"),
-                strategy_key=template["strategy_key"],
+                strategy_key=strategy_key,
                 strategy_version="v1",
-                sources_json=normalize_sources(template.get("sources") or []),
-                params_json=template.get("params") or {},
+                sources_json=sources,
+                params_json=params,
+                source_configs_json=source_configs,
                 risk_limits_json=template.get("risk_limits") or {},
                 metadata_json={"template_id": template["id"]},
                 is_enabled=True,
@@ -465,10 +756,9 @@ async def seed_default_traders(session: AsyncSession) -> None:
 
 
 async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = _normalize_trader_payload(payload)
+    normalized = await _normalize_trader_payload(session, payload)
     if not normalized["name"]:
         raise ValueError("Trader name is required")
-    _validate_strategy_key(normalized["strategy_key"])
 
     existing = (
         (await session.execute(select(Trader).where(func.lower(Trader.name) == normalized["name"].lower())))
@@ -478,14 +768,16 @@ async def create_trader(session: AsyncSession, payload: dict[str, Any]) -> dict[
     if existing is not None:
         raise ValueError("Trader name already exists")
 
+    strategy_key, sources, params = _derive_legacy_fields_from_source_configs(normalized["source_configs"])
     row = Trader(
         id=_new_id(),
         name=normalized["name"],
         description=normalized["description"],
-        strategy_key=normalized["strategy_key"],
+        strategy_key=strategy_key,
         strategy_version="v1",
-        sources_json=normalized["sources"],
-        params_json=normalized["params"],
+        sources_json=sources,
+        params_json=params,
+        source_configs_json=normalized["source_configs"],
         risk_limits_json=normalized["risk_limits"],
         metadata_json=normalized["metadata"],
         is_enabled=normalized["is_enabled"],
@@ -512,10 +804,8 @@ async def create_trader_from_template(
     payload: dict[str, Any] = {
         "name": template["name"],
         "description": template.get("description"),
-        "strategy_key": template["strategy_key"],
-        "sources": template.get("sources", []),
+        "source_configs": template.get("source_configs", []),
         "interval_seconds": template.get("interval_seconds", 60),
-        "params": template.get("params", {}),
         "risk_limits": template.get("risk_limits", {}),
         "metadata": {"template_id": template_id},
         "is_enabled": True,
@@ -535,18 +825,17 @@ async def update_trader(
     if row is None:
         return None
 
-    normalized = _normalize_trader_payload({**_serialize_trader(row), **payload})
+    normalized = await _normalize_trader_payload(session, {**_serialize_trader(row), **payload})
+    strategy_key, sources, params = _derive_legacy_fields_from_source_configs(normalized["source_configs"])
     if "name" in payload:
         row.name = normalized["name"]
     if "description" in payload:
         row.description = normalized["description"]
-    if "strategy_key" in payload:
-        _validate_strategy_key(normalized["strategy_key"])
-        row.strategy_key = normalized["strategy_key"]
-    if "sources" in payload:
-        row.sources_json = normalized["sources"]
-    if "params" in payload:
-        row.params_json = normalized["params"]
+    if "source_configs" in payload:
+        row.source_configs_json = normalized["source_configs"]
+        row.strategy_key = strategy_key
+        row.sources_json = sources
+        row.params_json = params
     if "risk_limits" in payload:
         row.risk_limits_json = normalized["risk_limits"]
     if "metadata" in payload:
@@ -642,6 +931,7 @@ async def create_trader_event(
     message: Optional[str] = None,
     trace_id: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
+    commit: bool = True,
 ) -> TraderEvent:
     row = TraderEvent(
         id=_new_id(),
@@ -656,8 +946,11 @@ async def create_trader_event(
         created_at=_now(),
     )
     session.add(row)
-    await session.commit()
-    await session.refresh(row)
+    if commit:
+        await session.commit()
+        await session.refresh(row)
+    else:
+        await session.flush()
     return row
 
 
@@ -782,6 +1075,7 @@ async def create_trader_decision(
     risk_snapshot: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
     trace_id: Optional[str] = None,
+    commit: bool = True,
 ) -> TraderDecision:
     row = TraderDecision(
         id=_new_id(),
@@ -799,8 +1093,11 @@ async def create_trader_decision(
         created_at=_now(),
     )
     session.add(row)
-    await session.commit()
-    await session.refresh(row)
+    if commit:
+        await session.commit()
+        await session.refresh(row)
+    else:
+        await session.flush()
     return row
 
 
@@ -809,6 +1106,7 @@ async def create_trader_decision_checks(
     *,
     decision_id: str,
     checks: list[dict[str, Any]],
+    commit: bool = True,
 ) -> None:
     if not checks:
         return
@@ -826,7 +1124,10 @@ async def create_trader_decision_checks(
                 created_at=_now(),
             )
         )
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
 
 
 async def create_trader_order(
@@ -843,6 +1144,7 @@ async def create_trader_order(
     payload: Optional[dict[str, Any]],
     error_message: Optional[str] = None,
     trace_id: Optional[str] = None,
+    commit: bool = True,
 ) -> TraderOrder:
     row = TraderOrder(
         id=_new_id(),
@@ -869,14 +1171,17 @@ async def create_trader_order(
         updated_at=_now(),
     )
     session.add(row)
-    await session.commit()
-    await session.refresh(row)
+    await session.flush()
     if _is_active_order_status(mode, status):
         await sync_trader_position_inventory(
             session,
             trader_id=trader_id,
             mode=str(mode),
+            commit=False,
         )
+    if commit:
+        await session.commit()
+        await session.refresh(row)
     return row
 
 
@@ -889,6 +1194,7 @@ async def record_signal_consumption(
     reason: Optional[str] = None,
     decision_id: Optional[str] = None,
     payload: Optional[dict[str, Any]] = None,
+    commit: bool = True,
 ) -> None:
     existing = (
         (
@@ -917,7 +1223,10 @@ async def record_signal_consumption(
             consumed_at=_now(),
         )
     )
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
 
 
 async def list_unconsumed_trade_signals(
@@ -925,6 +1234,9 @@ async def list_unconsumed_trade_signals(
     *,
     trader_id: str,
     sources: Optional[list[str]] = None,
+    statuses: Optional[list[str]] = None,
+    cursor_created_at: Optional[datetime] = None,
+    cursor_signal_id: Optional[str] = None,
     limit: int = 200,
 ) -> list[TradeSignal]:
     now = _now()
@@ -935,9 +1247,34 @@ async def list_unconsumed_trade_signals(
         select(TradeSignal)
         .where(~TradeSignal.id.in_(select(consumed.c.signal_id)))
         .where(or_(TradeSignal.expires_at.is_(None), TradeSignal.expires_at >= now))
-        .order_by(TradeSignal.created_at.asc())
+        .order_by(TradeSignal.created_at.asc(), TradeSignal.id.asc())
         .limit(max(1, min(limit, 1000)))
     )
+    normalized_statuses = (
+        [str(status or "").strip().lower() for status in statuses if str(status or "").strip()]
+        if statuses is not None
+        else ["pending"]
+    )
+    if normalized_statuses:
+        query = query.where(func.lower(func.coalesce(TradeSignal.status, "")).in_(normalized_statuses))
+    else:
+        return []
+
+    if cursor_created_at is not None:
+        cursor_id = str(cursor_signal_id or "").strip()
+        if cursor_id:
+            query = query.where(
+                or_(
+                    TradeSignal.created_at > cursor_created_at,
+                    and_(
+                        TradeSignal.created_at == cursor_created_at,
+                        TradeSignal.id > cursor_id,
+                    ),
+                )
+            )
+        else:
+            query = query.where(TradeSignal.created_at > cursor_created_at)
+
     if sources is not None:
         normalized_sources = [str(source).strip().lower() for source in sources if str(source).strip()]
         if not normalized_sources:
@@ -946,11 +1283,51 @@ async def list_unconsumed_trade_signals(
     return list((await session.execute(query)).scalars().all())
 
 
+async def get_trader_signal_cursor(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+) -> tuple[Optional[datetime], Optional[str]]:
+    row = await session.get(TraderSignalCursor, trader_id)
+    if row is None:
+        return None, None
+    return row.last_signal_created_at, row.last_signal_id
+
+
+async def upsert_trader_signal_cursor(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    last_signal_created_at: Optional[datetime],
+    last_signal_id: Optional[str],
+    commit: bool = True,
+) -> None:
+    row = await session.get(TraderSignalCursor, trader_id)
+    if row is None:
+        row = TraderSignalCursor(
+            trader_id=trader_id,
+            last_signal_created_at=last_signal_created_at,
+            last_signal_id=last_signal_id,
+            updated_at=_now(),
+        )
+        session.add(row)
+    else:
+        row.last_signal_created_at = last_signal_created_at
+        row.last_signal_id = str(last_signal_id or "") or None
+        row.updated_at = _now()
+
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
+
+
 async def sync_trader_position_inventory(
     session: AsyncSession,
     *,
     trader_id: str,
     mode: Optional[str] = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     query = select(TraderOrder).where(TraderOrder.trader_id == trader_id)
     if mode is not None:
@@ -1072,7 +1449,7 @@ async def sync_trader_position_inventory(
         row.updated_at = now
         closures += 1
 
-    if inserts > 0 or updates > 0 or closures > 0:
+    if commit and (inserts > 0 or updates > 0 or closures > 0):
         await session.commit()
 
     return {
@@ -1102,6 +1479,32 @@ async def get_open_position_count_for_trader(
         else:
             query = query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
     return int((await session.execute(query)).scalar() or 0)
+
+
+async def get_open_market_ids_for_trader(
+    session: AsyncSession,
+    trader_id: str,
+    mode: Optional[str] = None,
+) -> set[str]:
+    query = (
+        select(TraderPosition.market_id)
+        .where(TraderPosition.trader_id == trader_id)
+        .where(func.lower(func.coalesce(TraderPosition.status, "")) == ACTIVE_POSITION_STATUS)
+    )
+    if mode is not None:
+        mode_key = _normalize_mode_key(mode)
+        if mode_key == "other":
+            query = query.where(func.lower(func.coalesce(TraderPosition.mode, "")).not_in(["paper", "live"]))
+        else:
+            query = query.where(func.lower(func.coalesce(TraderPosition.mode, "")) == mode_key)
+
+    rows = (await session.execute(query)).all()
+    open_market_ids: set[str] = set()
+    for row in rows:
+        market_id = str(row.market_id or "").strip()
+        if market_id:
+            open_market_ids.add(market_id)
+    return open_market_ids
 
 
 async def get_open_position_summary_for_trader(session: AsyncSession, trader_id: str) -> dict[str, int]:
@@ -1244,10 +1647,43 @@ async def cleanup_trader_open_orders(
         now = _now()
         note_reason = str(reason or "manual_position_cleanup").strip()
         for row in candidates:
+            mode_key = _normalize_mode_key(row.mode)
             previous_status = str(row.status or "")
+            existing_payload = dict(row.payload_json or {})
+
+            if mode_key == "paper" and not _is_active_order_status(mode_key, target_status):
+                simulation_ledger = existing_payload.get("simulation_ledger")
+                if isinstance(simulation_ledger, dict):
+                    sim_account_id = str(simulation_ledger.get("account_id") or "").strip()
+                    sim_trade_id = str(simulation_ledger.get("trade_id") or "").strip()
+                    sim_position_id = str(simulation_ledger.get("position_id") or "").strip()
+                    if sim_account_id and sim_trade_id and sim_position_id:
+                        mark_price = None
+                        position_state = existing_payload.get("position_state")
+                        if isinstance(position_state, dict):
+                            mark_price = _safe_float(position_state.get("last_mark_price"), 0.0)
+                        if not mark_price:
+                            mark_price = _safe_float(row.effective_price, 0.0) or _safe_float(row.entry_price, 0.0)
+                        try:
+                            simulation_cleanup = await simulation_service.close_orchestrator_paper_fill(
+                                account_id=sim_account_id,
+                                trade_id=sim_trade_id,
+                                position_id=sim_position_id,
+                                close_price=float(max(0.0, mark_price or 0.0)),
+                                close_trigger="manual_cleanup",
+                                price_source="cleanup_mark",
+                                reason=note_reason,
+                                session=session,
+                                commit=False,
+                            )
+                            existing_payload["simulation_cleanup"] = simulation_cleanup
+                        except Exception as exc:
+                            raise ValueError(
+                                f"Failed to close linked simulation ledger for order {row.id}: {exc}"
+                            ) from exc
+
             row.status = target_status
             row.updated_at = now
-            existing_payload = dict(row.payload_json or {})
             existing_payload["cleanup"] = {
                 "previous_status": previous_status,
                 "target_status": target_status,

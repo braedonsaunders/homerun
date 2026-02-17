@@ -560,14 +560,16 @@ async def _build_context_pack(
                     opportunity = o
                     break
     elif context_type == "trader_signal" and context_id:
-        # Context_id format: "<source>:<id>" where source is "confluence" or "insider".
-        # If source is omitted, search both domains.
+        # Context_id format: "<source>:<id>" where source is "confluence".
+        # Legacy "insider" prefixes are normalized to "confluence".
         source_hint: Optional[str] = None
         signal_id = str(context_id)
         if ":" in signal_id:
             maybe_source, maybe_id = signal_id.split(":", 1)
             source_hint = (maybe_source or "").strip().lower() or None
             signal_id = maybe_id
+        if source_hint == "insider":
+            source_hint = "confluence"
 
         trader_signal: Optional[dict[str, Any]] = None
 
@@ -585,24 +587,6 @@ async def _build_context_pack(
             if match:
                 trader_signal = {"source": "confluence", **match}
 
-        if trader_signal is None and source_hint in {None, "insider"}:
-            from services.insider_detector import insider_detector
-
-            insider_payload = await insider_detector.list_opportunities(
-                limit=250,
-                offset=0,
-                min_confidence=0.0,
-                direction=None,
-                max_age_minutes=24 * 60,
-            )
-            insider_rows = insider_payload.get("opportunities", []) if isinstance(insider_payload, dict) else []
-            match = next(
-                (row for row in insider_rows if str(row.get("id") or "") == signal_id),
-                None,
-            )
-            if match:
-                trader_signal = {"source": "insider", **match}
-
         if trader_signal:
             market_id = str(trader_signal.get("market_id") or "").strip()
             if market_id:
@@ -619,7 +603,6 @@ async def _build_context_pack(
                 "confidence": trader_signal.get("confidence") or trader_signal.get("conviction_score"),
                 "wallet_count": trader_signal.get("wallet_count"),
                 "edge_percent": trader_signal.get("edge_percent"),
-                "insider_score": trader_signal.get("insider_score"),
                 "cluster_count": trader_signal.get("cluster_count"),
                 "signal_type": trader_signal.get("signal_type"),
                 "detected_at": trader_signal.get("detected_at"),

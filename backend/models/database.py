@@ -602,7 +602,7 @@ class ValidationJob(Base):
     __tablename__ = "validation_jobs"
 
     id = Column(String, primary_key=True)
-    job_type = Column(String, nullable=False)  # backtest | optimize
+    job_type = Column(String, nullable=False)  # backtest | optimize | execution_simulation
     status = Column(
         String, nullable=False, default="queued"
     )  # queued | running | completed | failed | cancelled
@@ -1018,10 +1018,12 @@ class StrategyPlugin(Base):
 
     id = Column(String, primary_key=True)  # UUID
     slug = Column(String, unique=True, nullable=False)  # Unique identifier e.g. "whale_follower"
+    source_key = Column(String, nullable=False, default="scanner")  # scanner, news, crypto, weather
     name = Column(String, nullable=False)  # Display name (extracted from class or user-set)
     description = Column(Text, nullable=True)  # Strategy description
     source_code = Column(Text, nullable=False)  # Full Python source code
     class_name = Column(String, nullable=True)  # Extracted strategy class name
+    is_system = Column(Boolean, default=False, nullable=False)  # Seeded built-in strategy row
     enabled = Column(Boolean, default=True)
     status = Column(String, default="unloaded")  # unloaded, loaded, error
     error_message = Column(Text, nullable=True)  # Last load/validation error
@@ -1034,6 +1036,25 @@ class StrategyPlugin(Base):
     __table_args__ = (
         Index("idx_strategy_plugin_enabled", "enabled"),
         Index("idx_strategy_plugin_slug", "slug"),
+        Index("idx_strategy_plugin_source_key", "source_key"),
+        Index("idx_strategy_plugin_is_system", "is_system"),
+    )
+
+
+class StrategyPluginTombstone(Base):
+    """Permanent suppression records for seeded system opportunity strategies.
+
+    If a system strategy slug is tombstoned, seed routines will not recreate it.
+    """
+
+    __tablename__ = "strategy_plugin_tombstones"
+
+    slug = Column(String, primary_key=True)  # Tombstoned system strategy slug
+    deleted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reason = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("idx_strategy_plugin_tombstones_deleted_at", "deleted_at"),
     )
 
 
@@ -1913,37 +1934,6 @@ class WeatherTradeIntent(Base):
     )
 
 
-class InsiderTradeIntent(Base):
-    """Execution-oriented insider trade intent generated from wallet behavior signals."""
-
-    __tablename__ = "insider_trade_intents"
-
-    id = Column(String, primary_key=True)
-    market_id = Column(String, nullable=False, index=True)
-    market_question = Column(Text, nullable=False)
-    direction = Column(String, nullable=False)  # buy_yes | buy_no
-    entry_price = Column(Float, nullable=True)
-    edge_percent = Column(Float, nullable=True)
-    confidence = Column(Float, nullable=True)
-    insider_score = Column(Float, nullable=True)
-    wallet_addresses_json = Column(JSON, default=list)
-    suggested_size_usd = Column(Float, nullable=True)
-    metadata_json = Column(JSON, nullable=True)
-    signal_key = Column(String, nullable=True, index=True)
-    status = Column(
-        String, default="pending", nullable=False
-    )  # pending | submitted | executed | skipped | expired
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    consumed_at = Column(DateTime, nullable=True)
-
-    __table_args__ = (
-        Index("idx_insider_intent_created", "created_at"),
-        Index("idx_insider_intent_status", "status"),
-        Index("idx_insider_intent_market", "market_id"),
-        Index("idx_insider_intent_signal", "signal_key", unique=True),
-    )
-
-
 # ==================== NORMALIZED TRADE SIGNAL BUS ====================
 
 
@@ -2000,6 +1990,138 @@ class TradeSignalSnapshot(Base):
     freshness_seconds = Column(Float, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     stats_json = Column(JSON, default=dict)
+
+
+# ==================== DB-NATIVE TRADER STRATEGIES ====================
+
+
+class TraderStrategyDefinition(Base):
+    """Executable trader strategy source definitions stored in database."""
+
+    __tablename__ = "trader_strategy_definitions"
+
+    id = Column(String, primary_key=True)
+    strategy_key = Column(String, nullable=False, unique=True, index=True)
+    source_key = Column(String, nullable=False, index=True)
+    label = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    class_name = Column(String, nullable=False)
+    source_code = Column(Text, nullable=False)
+    default_params_json = Column(JSON, default=dict)
+    param_schema_json = Column(JSON, default=dict)
+    aliases_json = Column(JSON, default=list)
+    is_system = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    status = Column(String, nullable=False, default="unloaded")
+    error_message = Column(Text, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_trader_strategy_definitions_strategy_key", "strategy_key"),
+        Index("idx_trader_strategy_definitions_source_key", "source_key"),
+        Index("idx_trader_strategy_definitions_enabled", "enabled"),
+        Index("idx_trader_strategy_definitions_status", "status"),
+    )
+
+
+class TradeSignalEmission(Base):
+    """Immutable history snapshots of signal upserts and status transitions."""
+
+    __tablename__ = "trade_signal_emissions"
+
+    id = Column(String, primary_key=True)
+    signal_id = Column(
+        String,
+        ForeignKey("trade_signals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source = Column(String, nullable=False, index=True)
+    source_item_id = Column(String, nullable=True)
+    signal_type = Column(String, nullable=False)
+    strategy_type = Column(String, nullable=True)
+    market_id = Column(String, nullable=False, index=True)
+    direction = Column(String, nullable=True)
+    entry_price = Column(Float, nullable=True)
+    effective_price = Column(Float, nullable=True)
+    edge_percent = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    liquidity = Column(Float, nullable=True)
+    status = Column(String, nullable=False)
+    dedupe_key = Column(String, nullable=False)
+    event_type = Column(String, nullable=False, index=True)
+    reason = Column(Text, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    snapshot_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("idx_trade_signal_emissions_source_created", "source", "created_at"),
+        Index("idx_trade_signal_emissions_signal_created", "signal_id", "created_at"),
+    )
+
+
+class ExecutionSimRun(Base):
+    """Execution simulator run metadata and aggregate results."""
+
+    __tablename__ = "execution_sim_runs"
+
+    id = Column(String, primary_key=True)
+    job_id = Column(String, ForeignKey("validation_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    strategy_key = Column(String, nullable=False, index=True)
+    source_key = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="queued")
+    market_scope_json = Column(JSON, default=dict)
+    params_json = Column(JSON, default=dict)
+    requested_start_at = Column(DateTime, nullable=True)
+    requested_end_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    summary_json = Column(JSON, default=dict)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_execution_sim_runs_status", "status"),
+        Index("idx_execution_sim_runs_created", "created_at"),
+    )
+
+
+class ExecutionSimEvent(Base):
+    """Ordered event stream generated by an execution simulator run."""
+
+    __tablename__ = "execution_sim_events"
+
+    id = Column(String, primary_key=True)
+    run_id = Column(
+        String,
+        ForeignKey("execution_sim_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String, nullable=False, index=True)
+    event_at = Column(DateTime, nullable=False, index=True)
+    signal_id = Column(String, nullable=True, index=True)
+    market_id = Column(String, nullable=True, index=True)
+    direction = Column(String, nullable=True)
+    price = Column(Float, nullable=True)
+    quantity = Column(Float, nullable=True)
+    notional_usd = Column(Float, nullable=True)
+    fees_usd = Column(Float, nullable=True)
+    slippage_bps = Column(Float, nullable=True)
+    realized_pnl_usd = Column(Float, nullable=True)
+    unrealized_pnl_usd = Column(Float, nullable=True)
+    payload_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_execution_sim_events_run_sequence"),
+        Index("idx_execution_sim_events_run_event_at", "run_id", "event_at"),
+    )
 
 
 # ==================== WORKER RUNTIME STATE ====================
@@ -2089,6 +2211,7 @@ class Trader(Base):
     strategy_version = Column(String, nullable=False, default="v1")
     sources_json = Column(JSON, default=list)
     params_json = Column(JSON, default=dict)
+    source_configs_json = Column(JSON, default=list)
     risk_limits_json = Column(JSON, default=dict)
     metadata_json = Column(JSON, default=dict)
     is_enabled = Column(Boolean, default=True)

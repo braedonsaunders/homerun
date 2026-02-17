@@ -175,8 +175,11 @@ export interface Strategy {
   name: string
   description: string
   is_plugin?: boolean
+  is_system?: boolean
   plugin_id?: string
   plugin_slug?: string
+  source_key?: string
+  enabled?: boolean
   status?: string  // For plugins: loaded, error, unloaded
   domain?: 'event_markets' | 'crypto' | string
   timeframe?: string
@@ -660,10 +663,12 @@ export interface PluginRuntime {
 export interface StrategyPlugin {
   id: string
   slug: string
+  source_key: string
   name: string
   description: string | null
   source_code: string
   class_name: string | null
+  is_system: boolean
   enabled: boolean
   status: 'unloaded' | 'loaded' | 'error'
   error_message: string | null
@@ -691,8 +696,11 @@ export const getPlugins = async (): Promise<StrategyPlugin[]> => {
 
 export const createPlugin = async (plugin: {
   slug: string
+  source_key?: string
   source_code: string
   config?: Record<string, unknown>
+  name?: string
+  description?: string
   enabled?: boolean
 }): Promise<StrategyPlugin> => {
   const { data } = await api.post('/plugins', plugin)
@@ -702,9 +710,11 @@ export const createPlugin = async (plugin: {
 export const updatePlugin = async (
   id: string,
   updates: Partial<{
+    slug: string
     source_code: string
     config: Record<string, unknown>
     enabled: boolean
+    source_key: string
     name: string
     description: string
   }>
@@ -743,6 +753,61 @@ export const reloadPlugin = async (id: string): Promise<{
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const getPluginDocs = async (): Promise<Record<string, any>> => {
   const { data } = await api.get('/plugins/docs')
+  return data
+}
+
+export type OpportunityStrategyDefinition = StrategyPlugin
+
+export const getOpportunityStrategies = async (): Promise<OpportunityStrategyDefinition[]> => {
+  return getPlugins()
+}
+
+export const createOpportunityStrategy = async (payload: {
+  slug: string
+  source_key: string
+  source_code: string
+  config?: Record<string, unknown>
+  name?: string
+  description?: string
+  enabled?: boolean
+}): Promise<OpportunityStrategyDefinition> => {
+  return createPlugin(payload)
+}
+
+export const updateOpportunityStrategy = async (
+  id: string,
+  payload: Partial<{
+    slug: string
+    source_code: string
+    config: Record<string, unknown>
+    enabled: boolean
+    source_key: string
+    name: string
+    description: string
+  }>
+): Promise<OpportunityStrategyDefinition> => {
+  return updatePlugin(id, payload)
+}
+
+export const validateOpportunityStrategy = async (source_code: string): Promise<PluginValidation> => {
+  return validatePlugin(source_code)
+}
+
+export const reloadOpportunityStrategy = async (id: string): Promise<{
+  status: string
+  message: string
+  runtime: PluginRuntime | null
+}> => {
+  return reloadPlugin(id)
+}
+
+export const deleteOpportunityStrategy = async (id: string): Promise<void> => {
+  return deletePlugin(id)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const getTraderStrategyDocs = async (): Promise<Record<string, any>> => {
+  const { data } = await api.get('/trader-strategies/docs')
   return data
 }
 
@@ -1624,14 +1689,30 @@ export const setTraderOrchestratorLiveKillSwitch = async (enabled: boolean, requ
   return data
 }
 
+export type TraderSourceKey = 'scanner' | 'crypto' | 'news' | 'weather' | 'traders'
+
+export interface TraderTradersScope {
+  modes: string[]
+  individual_wallets: string[]
+  group_ids: string[]
+}
+
+export interface TraderSourceConfig {
+  source_key: TraderSourceKey | string
+  strategy_key: string
+  strategy_params: Record<string, any>
+  traders_scope?: TraderTradersScope
+}
+
 export interface Trader {
   id: string
   name: string
   description?: string | null
-  strategy_key: string
   strategy_version: string
-  sources: string[]
-  params: Record<string, any>
+  source_configs: TraderSourceConfig[]
+  strategy_key?: string
+  sources?: string[]
+  params?: Record<string, any>
   risk_limits: Record<string, any>
   metadata: Record<string, any>
   is_enabled: boolean
@@ -1648,10 +1729,11 @@ export interface TraderTemplate {
   id: string
   name: string
   description?: string | null
-  strategy_key: string
-  sources: string[]
+  source_configs: TraderSourceConfig[]
+  strategy_key?: string
+  sources?: string[]
+  params?: Record<string, any>
   interval_seconds: number
-  params: Record<string, any>
   risk_limits: Record<string, any>
 }
 
@@ -1725,53 +1807,147 @@ export interface TraderSource {
   domains: string[]
   signal_types: string[]
   aliases?: string[]
+  default_strategy_key?: string
+  strategy_options?: TraderSourceStrategyOption[]
+  default_config?: TraderSourceConfig
+  scope_fields?: Array<Record<string, any>>
 }
 
-export interface TraderStrategySchema {
+export interface TraderSourceStrategyOption {
   key: string
   label: string
   description: string
-  supported_sources: string[]
-  defaults: {
-    interval_seconds: number
-    sources: string[]
-    params: Record<string, any>
-    risk_limits: Record<string, any>
-    metadata: Record<string, any>
-  }
+  default_params: Record<string, any>
   param_fields: Array<Record<string, any>>
-  risk_fields: Array<Record<string, any>>
-  metadata_fields: Array<Record<string, any>>
 }
 
 export interface TraderConfigSchema {
   version: string
-  default_strategy_key: string
   sources: TraderSource[]
   source_aliases: Record<string, string>
-  strategies: TraderStrategySchema[]
+  default_strategy_key?: string
+  strategies?: Array<Record<string, any>>
   shared_risk_fields: Array<Record<string, any>>
   runtime_fields: Array<Record<string, any>>
+  default_runtime_metadata?: Record<string, any>
+}
+
+export interface TraderStrategyDefinition {
+  id: string
+  strategy_key: string
+  source_key: string
+  label: string
+  description: string | null
+  class_name: string
+  source_code: string
+  default_params_json: Record<string, any>
+  param_schema_json: Record<string, any>
+  aliases_json: string[]
+  is_system: boolean
+  enabled: boolean
+  status: string
+  error_message: string | null
+  version: number
+  created_at: string | null
+  updated_at: string | null
+  runtime?: Record<string, any> | null
+}
+
+export interface TraderStrategyValidationResult {
+  valid: boolean
+  class_name: string | null
+  errors: string[]
+  warnings: string[]
+}
+
+const TRADER_SOURCE_ALIASES: Record<string, string> = {
+  tracked_traders: 'traders',
+  pool_traders: 'traders',
+  insider: 'traders',
+}
+
+const LEGACY_STRATEGY_FALLBACK_BY_SOURCE: Record<string, string> = {
+  scanner: 'opportunity_general',
+  crypto: 'crypto_15m',
+  news: 'news_reaction',
+  weather: 'weather_consensus',
+  traders: 'traders_flow',
+}
+
+function normalizeTraderSourceKey(value: unknown): string {
+  const key = String(value || '').trim().toLowerCase()
+  return TRADER_SOURCE_ALIASES[key] || key
+}
+
+function normalizeTraderStrategyKeyForSource(sourceKey: string, value: unknown): string {
+  const key = String(value || '').trim().toLowerCase()
+  if (key === 'opportunity_weather') {
+    if (sourceKey === 'weather') return 'weather_consensus'
+    if (sourceKey === 'scanner') return 'opportunity_general'
+  }
+  return key
+}
+
+function withLegacyTraderFields(raw: any): Trader {
+  const sourceConfigs = Array.isArray(raw?.source_configs) ? raw.source_configs : []
+  const normalizedSourceConfigs = sourceConfigs
+    .filter((item: any) => item && typeof item === 'object')
+    .map((item: any) => {
+      const sourceKey = normalizeTraderSourceKey(item.source_key)
+      const strategyKey = normalizeTraderStrategyKeyForSource(sourceKey, item.strategy_key)
+      return {
+        source_key: sourceKey,
+        strategy_key: String(strategyKey || LEGACY_STRATEGY_FALLBACK_BY_SOURCE[sourceKey] || ''),
+        strategy_params: item.strategy_params && typeof item.strategy_params === 'object' ? item.strategy_params : {},
+        traders_scope: item.traders_scope && typeof item.traders_scope === 'object'
+          ? {
+              modes: Array.isArray(item.traders_scope.modes) ? item.traders_scope.modes : [],
+              individual_wallets: Array.isArray(item.traders_scope.individual_wallets) ? item.traders_scope.individual_wallets : [],
+              group_ids: Array.isArray(item.traders_scope.group_ids) ? item.traders_scope.group_ids : [],
+            }
+          : undefined,
+      }
+    })
+
+  const first = normalizedSourceConfigs[0]
+  const legacyStrategyKey = String(
+    raw?.strategy_key ||
+      first?.strategy_key ||
+      LEGACY_STRATEGY_FALLBACK_BY_SOURCE[first?.source_key || 'crypto'] ||
+      'crypto_15m'
+  )
+  const legacySources = Array.from(
+    new Set(normalizedSourceConfigs.map((config: any) => String(config.source_key || '').trim()).filter(Boolean))
+  )
+  const legacyParams = first?.strategy_params && typeof first.strategy_params === 'object' ? first.strategy_params : {}
+
+  return {
+    ...raw,
+    source_configs: normalizedSourceConfigs,
+    strategy_key: legacyStrategyKey,
+    sources: legacySources,
+    params: legacyParams,
+  }
 }
 
 export const getTraders = async (): Promise<Trader[]> => {
   const { data } = await api.get('/traders')
-  return data.traders || []
+  return (data.traders || []).map(withLegacyTraderFields)
 }
 
 export const createTrader = async (payload: Record<string, any>): Promise<Trader> => {
   const { data } = await api.post('/traders', payload)
-  return data
+  return withLegacyTraderFields(data)
 }
 
 export const getTrader = async (traderId: string): Promise<Trader> => {
   const { data } = await api.get(`/traders/${traderId}`)
-  return data
+  return withLegacyTraderFields(data)
 }
 
 export const updateTrader = async (traderId: string, payload: Record<string, any>): Promise<Trader> => {
   const { data } = await api.put(`/traders/${traderId}`, payload)
-  return data
+  return withLegacyTraderFields(data)
 }
 
 export type TraderDeleteAction = 'block' | 'disable' | 'force_delete'
@@ -1880,6 +2056,89 @@ export const getTraderSources = async (): Promise<TraderSource[]> => {
 
 export const getTraderConfigSchema = async (): Promise<TraderConfigSchema> => {
   const { data } = await api.get('/trader-sources/schema')
+  return data
+}
+
+export const getTraderStrategies = async (params?: {
+  source_key?: string
+  enabled?: boolean
+  status?: string
+}): Promise<TraderStrategyDefinition[]> => {
+  const { data } = await api.get('/trader-strategies', { params })
+  return data.items || []
+}
+
+export const getTraderStrategy = async (id: string): Promise<TraderStrategyDefinition> => {
+  const { data } = await api.get(`/trader-strategies/${id}`)
+  return data
+}
+
+export const createTraderStrategy = async (payload: {
+  strategy_key: string
+  source_key: string
+  label: string
+  description?: string | null
+  class_name: string
+  source_code: string
+  default_params_json?: Record<string, any>
+  param_schema_json?: Record<string, any>
+  aliases_json?: string[]
+  enabled?: boolean
+}): Promise<TraderStrategyDefinition> => {
+  const { data } = await api.post('/trader-strategies', payload)
+  return data
+}
+
+export const updateTraderStrategy = async (
+  id: string,
+  payload: Partial<{
+    strategy_key: string
+    source_key: string
+    label: string
+    description: string | null
+    class_name: string
+    source_code: string
+    default_params_json: Record<string, any>
+    param_schema_json: Record<string, any>
+    aliases_json: string[]
+    enabled: boolean
+    unlock_system: boolean
+  }>
+): Promise<TraderStrategyDefinition> => {
+  const { data } = await api.put(`/trader-strategies/${id}`, payload)
+  return data
+}
+
+export const validateTraderStrategy = async (
+  id: string,
+  payload?: {
+    source_code?: string
+    class_name?: string
+  }
+): Promise<TraderStrategyValidationResult> => {
+  const { data } = await api.post(`/trader-strategies/${id}/validate`, payload || {})
+  return {
+    valid: Boolean(data.valid),
+    class_name: data.class_name || null,
+    errors: Array.isArray(data.errors) ? data.errors : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+  }
+}
+
+export const reloadTraderStrategy = async (id: string): Promise<{
+  status: string
+  reload: Record<string, any>
+  strategy: TraderStrategyDefinition
+}> => {
+  const { data } = await api.post(`/trader-strategies/${id}/reload`)
+  return data
+}
+
+export const cloneTraderStrategy = async (
+  id: string,
+  payload?: { strategy_key?: string; label?: string; enabled?: boolean }
+): Promise<TraderStrategyDefinition> => {
+  const { data } = await api.post(`/trader-strategies/${id}/clone`, payload || {})
   return data
 }
 
@@ -2044,7 +2303,7 @@ export interface DiscoverySettings {
   delay_between_wallets: number
   max_markets_per_run: number
   max_wallets_per_market: number
-  trader_opps_source_filter: 'all' | 'tracked' | 'pool' | 'confluence' | 'insider'
+  trader_opps_source_filter: 'all' | 'tracked' | 'pool'
   trader_opps_min_tier: 'WATCH' | 'HIGH' | 'EXTREME'
   trader_opps_side_filter: 'all' | 'buy' | 'sell'
   trader_opps_confluence_limit: number
@@ -2464,7 +2723,7 @@ export interface OptimizationRequest {
 
 export interface ValidationJob {
   id: string
-  job_type: 'backtest' | 'optimize' | string
+  job_type: 'backtest' | 'optimize' | 'execution_simulation' | string
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | string
   payload?: Record<string, unknown>
   result?: Record<string, unknown>
@@ -2519,6 +2778,85 @@ export const runValidationOptimization = async (payload?: OptimizationRequest): 
   job_id: string
 }> => {
   const { data } = await api.post('/validation/jobs/optimize', payload || {})
+  return data
+}
+
+export interface ExecutionSimulationRequest {
+  strategy_key: string
+  source_key: string
+  market_provider?: 'polymarket' | 'kalshi' | string
+  market_ref?: string
+  market_id?: string
+  timeframe?: string
+  start_at?: string
+  end_at?: string
+  strategy_params?: Record<string, unknown>
+  market_scope?: Record<string, unknown>
+  default_notional_usd?: number
+  slippage_bps?: number
+  fee_bps?: number
+}
+
+export interface ExecutionSimRun {
+  id: string
+  job_id: string | null
+  strategy_key: string
+  source_key: string
+  status: string
+  market_scope: Record<string, unknown>
+  params: Record<string, unknown>
+  requested_start_at: string | null
+  requested_end_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  summary: Record<string, unknown>
+  error_message: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ExecutionSimEvent {
+  id: string
+  run_id: string
+  sequence: number
+  event_type: string
+  event_at: string | null
+  signal_id: string | null
+  market_id: string | null
+  direction: string | null
+  price: number | null
+  quantity: number | null
+  notional_usd: number | null
+  fees_usd: number | null
+  slippage_bps: number | null
+  realized_pnl_usd: number | null
+  unrealized_pnl_usd: number | null
+  payload: Record<string, unknown>
+  created_at: string | null
+}
+
+export const runExecutionSimulationJob = async (
+  payload: ExecutionSimulationRequest
+): Promise<{ status: string; job_id: string }> => {
+  const { data } = await api.post('/validation/simulator/jobs', payload)
+  return data
+}
+
+export const getExecutionSimulationRuns = async (limit = 50): Promise<{ runs: ExecutionSimRun[] }> => {
+  const { data } = await api.get('/validation/simulator/runs', { params: { limit } })
+  return data
+}
+
+export const getExecutionSimulationRun = async (runId: string): Promise<ExecutionSimRun> => {
+  const { data } = await api.get(`/validation/simulator/runs/${runId}`)
+  return data
+}
+
+export const getExecutionSimulationEvents = async (
+  runId: string,
+  params?: { limit?: number; offset?: number }
+): Promise<{ events: ExecutionSimEvent[] }> => {
+  const { data } = await api.get(`/validation/simulator/runs/${runId}/events`, { params })
   return data
 }
 

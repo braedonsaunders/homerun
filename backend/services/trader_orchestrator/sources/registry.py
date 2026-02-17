@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -41,36 +42,24 @@ _SOURCE_ADAPTERS: dict[str, SourceAdapter] = {
         domains=["event_markets"],
         signal_types=["weather_intent"],
     ),
-    "world_intelligence": SourceAdapter(
-        key="world_intelligence",
-        label="World Intelligence",
-        description="Geopolitical conflict/tension opportunity signals.",
+    "traders": SourceAdapter(
+        key="traders",
+        label="Traders",
+        description="Tracked/pool/individual/group trader activity signals.",
         domains=["event_markets"],
-        signal_types=["world_intelligence"],
-    ),
-    "insider": SourceAdapter(
-        key="insider",
-        label="Insider Signals",
-        description="Insider/tracked wallet behavior intents.",
-        domains=["event_markets"],
-        signal_types=["insider_intent"],
-    ),
-    "tracked_traders": SourceAdapter(
-        key="tracked_traders",
-        label="Tracked Traders",
-        description="Signals synthesized from tracked trader activity.",
-        domains=["event_markets"],
-        signal_types=["tracked_trader"],
+        signal_types=["confluence"],
     ),
 }
 
 _SOURCE_ALIASES: dict[str, str] = {
     # Legacy UI/source keys mapped to canonical adapters.
-    "pool_traders": "tracked_traders",
+    "pool_traders": "traders",
+    "tracked_traders": "traders",
+    "insider": "traders",
 }
 
 
-def _normalize_source_key(value: str) -> str:
+def normalize_source_key(value: Any) -> str:
     key = str(value or "").strip().lower()
     return _SOURCE_ALIASES.get(key, key)
 
@@ -84,7 +73,7 @@ def list_source_aliases() -> dict[str, str]:
 
 
 def get_source_adapter(source_key: str) -> SourceAdapter | None:
-    return _SOURCE_ADAPTERS.get(_normalize_source_key(source_key))
+    return _SOURCE_ADAPTERS.get(normalize_source_key(source_key))
 
 
 def normalize_sources(raw_sources: list[str] | None) -> list[str]:
@@ -93,7 +82,7 @@ def normalize_sources(raw_sources: list[str] | None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for raw in raw_sources:
-        key = _normalize_source_key(str(raw or ""))
+        key = normalize_source_key(raw)
         if not key or key in seen:
             continue
         if key not in _SOURCE_ADAPTERS:
@@ -101,3 +90,7 @@ def normalize_sources(raw_sources: list[str] | None) -> list[str]:
         seen.add(key)
         out.append(key)
     return out
+
+
+def list_source_keys() -> list[str]:
+    return [adapter.key for adapter in list_source_adapters()]

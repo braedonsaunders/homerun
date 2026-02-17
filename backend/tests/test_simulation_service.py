@@ -65,10 +65,10 @@ def test_create_account_retries_sqlite_lock_and_succeeds(monkeypatch):
         return _SessionContext(_Session())
 
     sleep_mock = AsyncMock()
-    monkeypatch.setattr("services.simulation.AsyncSessionLocal", _session_factory)
-    monkeypatch.setattr("services.simulation.asyncio.sleep", sleep_mock)
+    monkeypatch.setattr("services.simulation._legacy.AsyncSessionLocal", _session_factory)
+    monkeypatch.setattr("services.simulation._legacy.asyncio.sleep", sleep_mock)
     monkeypatch.setattr(
-        "services.simulation.settings.DATABASE_URL",
+        "services.simulation._legacy.settings.DATABASE_URL",
         "sqlite+aiosqlite:////tmp/test.db",
         raising=False,
     )
@@ -120,10 +120,10 @@ def test_create_account_raises_after_retry_budget(monkeypatch):
         return _SessionContext(_Session())
 
     sleep_mock = AsyncMock()
-    monkeypatch.setattr("services.simulation.AsyncSessionLocal", _session_factory)
-    monkeypatch.setattr("services.simulation.asyncio.sleep", sleep_mock)
+    monkeypatch.setattr("services.simulation._legacy.AsyncSessionLocal", _session_factory)
+    monkeypatch.setattr("services.simulation._legacy.asyncio.sleep", sleep_mock)
     monkeypatch.setattr(
-        "services.simulation.settings.DATABASE_URL",
+        "services.simulation._legacy.settings.DATABASE_URL",
         "sqlite+aiosqlite:////tmp/test.db",
         raising=False,
     )

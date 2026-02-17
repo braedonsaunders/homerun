@@ -5,6 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from datetime import timedelta
 from typing import Optional
+from unittest.mock import AsyncMock
+
+import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -23,6 +26,14 @@ from services.smart_wallet_pool import (  # noqa: E402
     POOL_FLAG_MANUAL_INCLUDE,
 )
 from services.wallet_intelligence import ConfluenceDetector  # noqa: E402
+
+
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
 
 
 def _wallet(
@@ -228,6 +239,22 @@ class TestSmartWalletPoolChurnGuard:
         assert len(final_pool) == len(desired)
         assert set(final_pool) == set(desired)
 
+    def test_quality_only_churn_counts_slot_turnover_without_double_count(self):
+        svc = SmartWalletPoolService()
+        current = [f"cur_{i}" for i in range(100)]
+        desired = [f"cur_{i}" for i in range(99)] + ["new_0"]
+        scores = {address: 0.5 for address in current + desired}
+
+        _, churn_rate = svc._apply_churn_guard(
+            desired=desired,
+            current=current,
+            scores=scores,
+            quality_only_mode=True,
+        )
+
+        # One replacement over a 100-wallet baseline should be 1%.
+        assert abs(churn_rate - 0.01) < 1e-9
+
     def test_replacements_capped_when_score_delta_is_small(self):
         svc = SmartWalletPoolService()
         current = [f"cur_{i}" for i in range(TARGET_POOL_SIZE)]
@@ -347,3 +374,35 @@ class TestConfluenceDetectorThresholds:
         assert 0.0 <= best_case <= 100.0
         assert 0.0 <= worst_case <= 100.0
         assert best_case > worst_case
+
+
+@pytest.mark.asyncio
+async def test_trader_opportunities_filter_excludes_discovered_only_signals():
+    svc = SmartWalletPoolService()
+    signals = [
+        SimpleNamespace(id="sig-pool", wallets=["0xpool", "0xother"]),
+        SimpleNamespace(id="sig-tracked", wallets=["0xtracked"]),
+        SimpleNamespace(id="sig-group", wallets=["0xgroup"]),
+        SimpleNamespace(id="sig-unqualified", wallets=["0xother"]),
+        SimpleNamespace(id="sig-empty", wallets=[]),
+    ]
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                _RowsResult([("0xpool",)]),
+                _RowsResult([("0xtracked",)]),
+                _RowsResult([("0xgroup",)]),
+            ]
+        )
+    )
+
+    filtered = await svc._filter_signals_to_known_trader_sources(
+        session=session,
+        signals=signals,
+    )
+
+    assert [signal.id for signal in filtered] == [
+        "sig-pool",
+        "sig-tracked",
+        "sig-group",
+    ]

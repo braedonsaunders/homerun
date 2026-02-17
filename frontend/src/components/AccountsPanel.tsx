@@ -23,10 +23,12 @@ import { Button } from './ui/button'
 import SimulationPanel from './SimulationPanel'
 import LiveAccountPanel from './LiveAccountPanel'
 import {
+  getAllTraderOrders,
   getKalshiBalance,
   getKalshiPositions,
   getKalshiStatus,
   getSimulationAccounts,
+  getTraderOrchestratorOverview,
   getTradingBalance,
   getTradingPositions,
   getTradingStatus,
@@ -34,6 +36,7 @@ import {
 
 type AccountsWorkspaceTab = 'overview' | 'sandbox' | 'live'
 type LiveVenue = 'polymarket' | 'kalshi'
+const OPEN_PAPER_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
 
 const WORKSPACE_TAB_CONFIG: { id: AccountsWorkspaceTab; label: string; description: string; icon: React.ElementType }[] = [
   {
@@ -82,6 +85,14 @@ function formatSignedUsd(value: number): string {
 
 function formatSignedPct(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function normalizeDirection(raw: string | null | undefined): string {
+  const direction = String(raw || '').trim().toUpperCase()
+  if (!direction) return 'N/A'
+  if (direction === 'BUY' || direction === 'LONG' || direction === 'UP') return 'YES'
+  if (direction === 'SELL' || direction === 'SHORT' || direction === 'DOWN') return 'NO'
+  return direction
 }
 
 export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
@@ -141,6 +152,84 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     retry: false,
   })
 
+  const { data: orchestratorOverview } = useQuery({
+    queryKey: ['trader-orchestrator-overview'],
+    queryFn: getTraderOrchestratorOverview,
+    refetchInterval: 10000,
+    retry: false,
+  })
+
+  const paperModeActive = Boolean(orchestratorOverview?.control?.is_enabled)
+    && String(orchestratorOverview?.control?.mode || '').toLowerCase() === 'paper'
+
+  const { data: traderOrders = [] } = useQuery({
+    queryKey: ['accounts-panel', 'trader-orders'],
+    queryFn: async () => {
+      try {
+        return await getAllTraderOrders(300)
+      } catch {
+        return []
+      }
+    },
+    enabled: paperModeActive,
+    refetchInterval: 10000,
+    retry: false,
+  })
+
+  const autotraderPaperMetrics = useMemo(() => {
+    const paperAccountId = String(
+      orchestratorOverview?.config?.paper_account_id
+      || orchestratorOverview?.control?.settings?.paper_account_id
+      || ''
+    ).trim() || null
+
+    const openPaperOrders = traderOrders.filter((order) => {
+      const mode = String(order.mode || '').toLowerCase()
+      const status = String(order.status || '').toLowerCase()
+      return mode === 'paper' && OPEN_PAPER_ORDER_STATUSES.has(status)
+    })
+
+    const positionKeys = new Set<string>()
+    let exposureUsd = 0
+
+    for (const order of openPaperOrders) {
+      const marketId = String(order.market_id || '').trim()
+      if (!marketId) continue
+      const side = normalizeDirection(order.direction)
+      positionKeys.add(`${marketId}:${side}`)
+      exposureUsd += Math.abs(Number(order.notional_usd || 0))
+    }
+
+    const fallbackExposure = Number(orchestratorOverview?.metrics?.gross_exposure_usd || 0)
+
+    return {
+      active: paperModeActive,
+      paperAccountId,
+      openOrders: openPaperOrders.length,
+      openPositions: positionKeys.size,
+      exposureUsd: exposureUsd > 0 ? exposureUsd : fallbackExposure,
+    }
+  }, [paperModeActive, orchestratorOverview, traderOrders])
+
+  const autotraderOverlay = useMemo(() => {
+    const linkedAccount = autotraderPaperMetrics.paperAccountId
+      ? sandboxAccounts.find((account) => account.id === autotraderPaperMetrics.paperAccountId)
+      : undefined
+
+    const shouldOverlay = Boolean(
+      linkedAccount
+      && autotraderPaperMetrics.openPositions > 0
+      && (linkedAccount.open_positions || 0) === 0
+    )
+
+    return {
+      accountId: shouldOverlay ? autotraderPaperMetrics.paperAccountId : null,
+      openPositions: shouldOverlay ? autotraderPaperMetrics.openPositions : 0,
+      openOrders: shouldOverlay ? autotraderPaperMetrics.openOrders : 0,
+      exposureUsd: shouldOverlay ? autotraderPaperMetrics.exposureUsd : 0,
+    }
+  }, [autotraderPaperMetrics, sandboxAccounts])
+
   const sandboxMetrics = useMemo(() => {
     const totalInitial = sandboxAccounts.reduce((sum, account) => sum + (account.initial_capital || 0), 0)
     const totalCapital = sandboxAccounts.reduce((sum, account) => sum + (account.current_capital || 0), 0)
@@ -149,18 +238,22 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     const totalPnl = realizedPnl + unrealizedPnl
     const totalTrades = sandboxAccounts.reduce((sum, account) => sum + (account.total_trades || 0), 0)
     const totalOpenPositions = sandboxAccounts.reduce((sum, account) => sum + (account.open_positions || 0), 0)
+      + autotraderOverlay.openPositions
     const roi = totalInitial > 0 ? (totalPnl / totalInitial) * 100 : 0
+    const deployableCapital = Math.max(0, totalCapital - autotraderOverlay.exposureUsd)
 
     return {
       count: sandboxAccounts.length,
       totalInitial,
       totalCapital,
+      deployableCapital,
       totalPnl,
       roi,
       totalTrades,
       totalOpenPositions,
+      autotraderOverlay,
     }
-  }, [sandboxAccounts])
+  }, [sandboxAccounts, autotraderOverlay])
 
   const polymarketSnapshot = useMemo<LiveVenueSnapshot>(() => {
     const exposure = tradingPositions.reduce((sum, pos) => sum + pos.size * pos.current_price, 0)
@@ -292,8 +385,21 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
           : 'Position count in normal range',
         tone: sandboxMetrics.totalOpenPositions + liveMetrics.totalOpenPositions > 40 ? 'amber' : 'green',
       },
+      {
+        label: sandboxMetrics.autotraderOverlay.openPositions > 0
+          ? `Autotrader paper active (${sandboxMetrics.autotraderOverlay.openPositions} positions)`
+          : 'No autotrader paper overlay',
+        tone: sandboxMetrics.autotraderOverlay.openPositions > 0 ? 'amber' : 'green',
+      },
     ] as const
-  }, [sandboxMetrics.count, sandboxMetrics.totalOpenPositions, liveMetrics.connectedVenues, liveMetrics.totalOpenPositions, liveMetrics.totalUnrealizedPnl])
+  }, [
+    sandboxMetrics.count,
+    sandboxMetrics.totalOpenPositions,
+    sandboxMetrics.autotraderOverlay.openPositions,
+    liveMetrics.connectedVenues,
+    liveMetrics.totalOpenPositions,
+    liveMetrics.totalUnrealizedPnl,
+  ])
 
   const openSandboxDesk = (accountId?: string) => {
     if (accountId) {
@@ -370,8 +476,12 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
           <div className="grid grid-cols-2 gap-2 p-2.5 md:grid-cols-4 xl:grid-cols-8">
             <DenseMetric
               label="Simulation Equity"
-              value={formatUsd(sandboxMetrics.totalCapital)}
-              hint={`${sandboxMetrics.count} accounts`}
+              value={formatUsd(sandboxMetrics.deployableCapital)}
+              hint={
+                sandboxMetrics.autotraderOverlay.exposureUsd > 0
+                  ? `Ledger ${formatUsd(sandboxMetrics.totalCapital)} • ${formatUsd(sandboxMetrics.autotraderOverlay.exposureUsd)} deployed`
+                  : `${sandboxMetrics.count} accounts`
+              }
               icon={Wallet}
             />
             <DenseMetric
@@ -391,7 +501,11 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             <DenseMetric
               label="Simulation Positions"
               value={sandboxMetrics.totalOpenPositions.toString()}
-              hint="Open"
+              hint={
+                sandboxMetrics.autotraderOverlay.openPositions > 0
+                  ? `Open (${sandboxMetrics.autotraderOverlay.openPositions} autotrader)`
+                  : 'Open'
+              }
               icon={Briefcase}
             />
             <DenseMetric
@@ -496,6 +610,13 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                       </thead>
                       <tbody>
                         {sandboxAccounts.map((account) => {
+                          const autotraderOpenPositions = sandboxMetrics.autotraderOverlay.accountId === account.id
+                            ? sandboxMetrics.autotraderOverlay.openPositions
+                            : 0
+                          const autotraderExposure = sandboxMetrics.autotraderOverlay.accountId === account.id
+                            ? sandboxMetrics.autotraderOverlay.exposureUsd
+                            : 0
+                          const totalOpenPositions = (account.open_positions || 0) + autotraderOpenPositions
                           const totalPnl = (account.total_pnl || 0) + (account.unrealized_pnl || 0)
                           const isSelected = selectedAccountId === account.id
                           return (
@@ -533,7 +654,14 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                 </span>
                               </td>
                               <td className="px-3 py-2 text-right font-mono">{account.total_trades || 0}</td>
-                              <td className="px-3 py-2 text-right font-mono">{account.open_positions || 0}</td>
+                              <td className="px-3 py-2 text-right font-mono">
+                                <p>{totalOpenPositions}</p>
+                                {autotraderOpenPositions > 0 && (
+                                  <p className="text-[10px] font-medium text-cyan-300">
+                                    +{autotraderOpenPositions} auto · {formatUsd(autotraderExposure)}
+                                  </p>
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-right">
                                 <Button
                                   variant="ghost"

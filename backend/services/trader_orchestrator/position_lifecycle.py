@@ -4,11 +4,12 @@ import asyncio
 from datetime import timedelta
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import TradeSignal, TraderOrder
 from services.polymarket import polymarket_client
+from services.simulation import simulation_service
 from utils.utcnow import utcnow
 
 PAPER_ACTIVE_STATUSES = {"submitted", "executed", "open"}
@@ -119,6 +120,52 @@ def _extract_winning_outcome_index(market_info: Optional[dict[str, Any]]) -> Opt
     return None
 
 
+def _extract_winning_outcome_index_from_prices(
+    market_info: Optional[dict[str, Any]],
+    *,
+    market_tradable: bool,
+    settle_floor: float,
+) -> Optional[int]:
+    if not isinstance(market_info, dict):
+        return None
+    if market_tradable:
+        return None
+
+    settle_floor = min(1.0, max(0.5, settle_floor))
+    settle_ceiling = max(0.0, 1.0 - settle_floor)
+
+    yes_price = _safe_float(market_info.get("yes_price"))
+    no_price = _safe_float(market_info.get("no_price"))
+    if yes_price is None or no_price is None:
+        prices = market_info.get("outcome_prices")
+        if isinstance(prices, list) and len(prices) >= 2:
+            outcomes = market_info.get("outcomes")
+            if isinstance(outcomes, list) and len(outcomes) == len(prices):
+                for idx, raw_label in enumerate(outcomes):
+                    label = str(raw_label or "").strip().lower()
+                    parsed = _safe_float(prices[idx])
+                    if parsed is None:
+                        continue
+                    if yes_price is None and label in {"yes", "up", "true"}:
+                        yes_price = parsed
+                    if no_price is None and label in {"no", "down", "false"}:
+                        no_price = parsed
+            if yes_price is None:
+                yes_price = _safe_float(prices[0])
+            if no_price is None:
+                no_price = _safe_float(prices[1])
+
+    yes_price = _state_price_floor(yes_price)
+    no_price = _state_price_floor(no_price)
+    if yes_price is None or no_price is None:
+        return None
+    if yes_price >= settle_floor and no_price <= settle_ceiling:
+        return 0
+    if no_price >= settle_floor and yes_price <= settle_ceiling:
+        return 1
+    return None
+
+
 def _state_price_floor(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
@@ -175,14 +222,19 @@ async def reconcile_paper_positions(
     trailing_stop_pct = _safe_float(params.get("paper_trailing_stop_pct"))
     resolve_only = _safe_bool(params.get("paper_resolve_only"), False)
     close_on_inactive_market = _safe_bool(params.get("paper_close_on_inactive_market"), False)
+    resolution_infer_from_prices = _safe_bool(params.get("paper_resolution_infer_from_prices"), True)
+    resolution_settle_floor = min(
+        1.0,
+        max(0.5, _safe_float(params.get("paper_resolution_settle_floor")) or 0.98),
+    )
 
     candidates = list(
         (
             await session.execute(
                 select(TraderOrder).where(
                     TraderOrder.trader_id == trader_id,
-                    TraderOrder.mode == "paper",
-                    TraderOrder.status.in_(tuple(PAPER_ACTIVE_STATUSES)),
+                    func.lower(func.coalesce(TraderOrder.mode, "")) == "paper",
+                    func.lower(func.coalesce(TraderOrder.status, "")).in_(tuple(PAPER_ACTIVE_STATUSES)),
                 )
             )
         )
@@ -238,8 +290,18 @@ async def reconcile_paper_positions(
 
         signal_payload = signal_payloads.get(str(row.signal_id), {})
         market_info = market_info_by_id.get(str(row.market_id or ""))
-        winning_idx = _extract_winning_outcome_index(market_info)
         market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
+        winning_idx = _extract_winning_outcome_index(market_info)
+        winning_idx_inferred = False
+        if winning_idx is None and resolution_infer_from_prices:
+            inferred_idx = _extract_winning_outcome_index_from_prices(
+                market_info,
+                market_tradable=market_tradable,
+                settle_floor=resolution_settle_floor,
+            )
+            if inferred_idx is not None:
+                winning_idx = inferred_idx
+                winning_idx_inferred = True
         market_side_price = _extract_market_side_price(market_info, outcome_idx)
         snapshot_side_price = _extract_signal_side_price(signal_payload, outcome_idx)
 
@@ -290,7 +352,7 @@ async def reconcile_paper_positions(
 
         if winning_idx is not None:
             close_price = 1.0 if winning_idx == outcome_idx else 0.0
-            close_trigger = "resolution"
+            close_trigger = "resolution_inferred" if winning_idx_inferred else "resolution"
             price_source = "resolved_settlement"
         else:
             pnl_pct = None
@@ -379,6 +441,53 @@ async def reconcile_paper_positions(
         proceeds = quantity * close_price
         pnl = proceeds - notional
         next_status = "resolved_win" if pnl >= 0 else "resolved_loss"
+
+        simulation_close: dict[str, Any] | None = None
+        simulation_ledger = payload.get("simulation_ledger")
+        if not dry_run and isinstance(simulation_ledger, dict):
+            sim_account_id = str(simulation_ledger.get("account_id") or "").strip()
+            sim_trade_id = str(simulation_ledger.get("trade_id") or "").strip()
+            sim_position_id = str(simulation_ledger.get("position_id") or "").strip()
+            if sim_account_id and sim_trade_id and sim_position_id:
+                try:
+                    simulation_close = await simulation_service.close_orchestrator_paper_fill(
+                        account_id=sim_account_id,
+                        trade_id=sim_trade_id,
+                        position_id=sim_position_id,
+                        close_price=float(close_price),
+                        close_trigger=close_trigger,
+                        price_source=price_source,
+                        reason=reason,
+                        session=session,
+                        commit=False,
+                    )
+                    if simulation_close.get("closed"):
+                        proceeds = float(simulation_close.get("actual_payout", proceeds))
+                        pnl = float(simulation_close.get("actual_pnl", pnl))
+                        next_status = str(simulation_close.get("trade_status") or next_status)
+                    elif simulation_close.get("already_closed"):
+                        existing_status = str(simulation_close.get("trade_status") or "")
+                        if existing_status:
+                            next_status = existing_status
+                        pnl = float(simulation_close.get("actual_pnl", pnl))
+                        proceeds = float(simulation_close.get("actual_payout", proceeds))
+                except Exception as exc:
+                    skipped += 1
+                    skipped_reasons["simulation_close_error"] = int(
+                        skipped_reasons.get("simulation_close_error", 0)
+                    ) + 1
+                    details.append(
+                        {
+                            "order_id": row.id,
+                            "market_id": row.market_id,
+                            "direction": row.direction,
+                            "close_trigger": close_trigger,
+                            "reason": "simulation_close_error",
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+
         total_realized_pnl += pnl
         by_status[next_status] = int(by_status.get(next_status, 0)) + 1
 
@@ -400,6 +509,7 @@ async def reconcile_paper_positions(
             "trailing_stop_trigger_price": trailing_trigger_price,
             "highest_price_seen": _state_price_floor(highest_price),
             "lowest_price_seen": _state_price_floor(lowest_price),
+            "simulation_close": simulation_close,
         }
         details.append(detail)
         would_close += 1
@@ -421,6 +531,8 @@ async def reconcile_paper_positions(
             "closed_at": now.isoformat() + "Z",
             "reason": reason,
         }
+        if simulation_close is not None:
+            payload["position_close"]["simulation_close"] = simulation_close
         row.payload_json = payload
         if reason:
             if row.reason:

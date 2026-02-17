@@ -17,7 +17,7 @@ from typing import Any, Optional
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import TradeSignal, TradeSignalSnapshot
+from models.database import TradeSignal, TradeSignalEmission, TradeSignalSnapshot
 from models.opportunity import ArbitrageOpportunity
 from services.market_tradability import get_market_tradability_map
 
@@ -49,23 +49,73 @@ def _safe_json(value: Any) -> Any:
         return {"raw": str(value)}
 
 
+async def _record_signal_emission(
+    session: AsyncSession,
+    row: TradeSignal,
+    *,
+    event_type: str,
+    reason: str | None = None,
+) -> None:
+    snapshot = {
+        "signal_id": row.id,
+        "source": row.source,
+        "source_item_id": row.source_item_id,
+        "signal_type": row.signal_type,
+        "strategy_type": row.strategy_type,
+        "market_id": row.market_id,
+        "direction": row.direction,
+        "entry_price": row.entry_price,
+        "effective_price": row.effective_price,
+        "edge_percent": row.edge_percent,
+        "confidence": row.confidence,
+        "liquidity": row.liquidity,
+        "status": row.status,
+        "dedupe_key": row.dedupe_key,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+    session.add(
+        TradeSignalEmission(
+            id=uuid.uuid4().hex,
+            signal_id=row.id,
+            source=str(row.source or ""),
+            source_item_id=row.source_item_id,
+            signal_type=str(row.signal_type or ""),
+            strategy_type=row.strategy_type,
+            market_id=str(row.market_id or ""),
+            direction=row.direction,
+            entry_price=row.entry_price,
+            effective_price=row.effective_price,
+            edge_percent=row.edge_percent,
+            confidence=row.confidence,
+            liquidity=row.liquidity,
+            status=str(row.status or ""),
+            dedupe_key=str(row.dedupe_key or ""),
+            event_type=str(event_type),
+            reason=reason,
+            payload_json=_safe_json(row.payload_json),
+            snapshot_json=snapshot,
+            created_at=_utc_now(),
+        )
+    )
+
+
 def make_dedupe_key(*parts: Any) -> str:
     packed = "|".join(str(p or "") for p in parts)
     return hashlib.sha256(packed.encode("utf-8")).hexdigest()[:32]
 
 
+def traders_signal_dedupe_key(channel: str, market_id: str) -> str:
+    normalized_channel = str(channel or "").strip().lower() or "confluence"
+    return make_dedupe_key(
+        "traders",
+        normalized_channel,
+        str(market_id or "").strip().lower(),
+    )
+
+
 def tracked_trader_signal_dedupe_key(market_id: str) -> str:
-    return make_dedupe_key(
-        "tracked_traders",
-        str(market_id or "").strip().lower(),
-    )
-
-
-def insider_signal_dedupe_key(market_id: str) -> str:
-    return make_dedupe_key(
-        "insider",
-        str(market_id or "").strip().lower(),
-    )
+    return traders_signal_dedupe_key("confluence", market_id)
 
 
 async def upsert_trade_signal(
@@ -131,6 +181,11 @@ async def upsert_trade_signal(
             updated_at=_utc_now(),
         )
         session.add(row)
+        await _record_signal_emission(
+            session,
+            row,
+            event_type="upsert_insert",
+        )
     else:
         # Terminal rows remain immutable to preserve auditability.
         if row.status in SIGNAL_ACTIVE_STATUSES:
@@ -147,6 +202,18 @@ async def upsert_trade_signal(
             row.expires_at = _to_utc_naive(expires_at)
             row.payload_json = _safe_json(payload_json)
             row.updated_at = _utc_now()
+            await _record_signal_emission(
+                session,
+                row,
+                event_type="upsert_update",
+            )
+        else:
+            await _record_signal_emission(
+                session,
+                row,
+                event_type="upsert_ignored_terminal",
+                reason=f"terminal_status:{row.status}",
+            )
 
     if commit:
         await session.commit()
@@ -170,6 +237,12 @@ async def set_trade_signal_status(
     row.updated_at = _utc_now()
     if effective_price is not None:
         row.effective_price = effective_price
+    await _record_signal_emission(
+        session,
+        row,
+        event_type="status_update",
+        reason=f"status:{status}",
+    )
     if commit:
         await session.commit()
         await refresh_trade_signal_snapshots(session)
@@ -189,6 +262,12 @@ async def expire_stale_signals(session: AsyncSession, *, commit: bool = True) ->
     for row in rows:
         row.status = "expired"
         row.updated_at = now
+        await _record_signal_emission(
+            session,
+            row,
+            event_type="status_expired",
+            reason="expires_at_passed",
+        )
     if rows and commit:
         await session.commit()
         await refresh_trade_signal_snapshots(session)
@@ -202,6 +281,7 @@ async def expire_source_signals_except(
     *,
     source: str,
     keep_dedupe_keys: set[str],
+    signal_types: Optional[list[str]] = None,
     commit: bool = True,
 ) -> int:
     """Expire active source signals not present in the current emission set."""
@@ -212,6 +292,10 @@ async def expire_source_signals_except(
         TradeSignal.source == str(source),
         TradeSignal.status.in_(tuple(SIGNAL_ACTIVE_STATUSES)),
     )
+    if signal_types:
+        normalized_signal_types = [str(value or "").strip().lower() for value in signal_types if str(value or "").strip()]
+        if normalized_signal_types:
+            query = query.where(func.lower(func.coalesce(TradeSignal.signal_type, "")).in_(normalized_signal_types))
     if keep:
         query = query.where(~TradeSignal.dedupe_key.in_(list(keep)))
 
@@ -220,6 +304,12 @@ async def expire_source_signals_except(
         row.status = "expired"
         row.expires_at = now
         row.updated_at = now
+        await _record_signal_emission(
+            session,
+            row,
+            event_type="status_expired",
+            reason="source_sweep",
+        )
 
     if rows and commit:
         await session.commit()
@@ -298,6 +388,12 @@ async def _expire_non_tradable_pending_signals(
             continue
         row.status = "expired"
         row.updated_at = now
+        await _record_signal_emission(
+            session,
+            row,
+            event_type="status_expired",
+            reason="market_not_tradable",
+        )
         changed = True
 
     if changed:
@@ -605,64 +701,6 @@ async def emit_weather_intent_signals(
     return emitted
 
 
-async def emit_insider_intent_signals(
-    session: AsyncSession,
-    intents: list[Any],
-    *,
-    max_age_minutes: int = 180,
-) -> int:
-    emitted = 0
-    active_dedupe_keys: set[str] = set()
-    ttl = timedelta(minutes=max(1, max_age_minutes))
-    for intent in intents:
-        market_id = str(getattr(intent, "market_id", "") or "").strip()
-        direction = str(getattr(intent, "direction", "") or "").strip().lower()
-        if not market_id or direction not in {"buy_yes", "buy_no"}:
-            continue
-
-        created_at = _to_utc_naive(getattr(intent, "created_at", None)) or _utc_now()
-        expires = created_at + ttl
-        dedupe_key = insider_signal_dedupe_key(market_id)
-        metadata = getattr(intent, "metadata_json", {}) or {}
-        wallet_addresses = getattr(intent, "wallet_addresses_json", None) or []
-        active_dedupe_keys.add(dedupe_key)
-
-        await upsert_trade_signal(
-            session,
-            source="insider",
-            source_item_id=str(intent.id),
-            signal_type="insider_intent",
-            strategy_type="insider_edge",
-            market_id=market_id,
-            market_question=intent.market_question,
-            direction=direction,
-            entry_price=getattr(intent, "entry_price", None),
-            edge_percent=getattr(intent, "edge_percent", None),
-            confidence=getattr(intent, "confidence", None),
-            liquidity=metadata.get("market_liquidity"),
-            expires_at=expires,
-            payload_json={
-                "intent_id": intent.id,
-                "insider_score": getattr(intent, "insider_score", None),
-                "wallet_addresses": wallet_addresses,
-                "metadata": metadata,
-            },
-            dedupe_key=dedupe_key,
-            commit=False,
-        )
-        emitted += 1
-
-    await expire_source_signals_except(
-        session,
-        source="insider",
-        keep_dedupe_keys=active_dedupe_keys,
-        commit=False,
-    )
-    await session.commit()
-    await refresh_trade_signal_snapshots(session)
-    return emitted
-
-
 async def emit_tracked_trader_signals(
     session: AsyncSession,
     confluence_signals: list[dict[str, Any]],
@@ -717,10 +755,10 @@ async def emit_tracked_trader_signals(
 
         await upsert_trade_signal(
             session,
-            source="tracked_traders",
+            source="traders",
             source_item_id=str(sig.get("id") or ""),
             signal_type="confluence",
-            strategy_type="tracked_trader_confluence",
+            strategy_type="traders_flow_confluence",
             market_id=market_id,
             market_question=sig.get("market_question"),
             direction=direction,
@@ -729,7 +767,7 @@ async def emit_tracked_trader_signals(
             confidence=confidence,
             liquidity=sig.get("market_liquidity"),
             expires_at=expires_at,
-            payload_json=sig,
+            payload_json={**sig, "traders_channel": "confluence"},
             dedupe_key=dedupe_key,
             commit=False,
         )
@@ -737,8 +775,9 @@ async def emit_tracked_trader_signals(
 
     await expire_source_signals_except(
         session,
-        source="tracked_traders",
+        source="traders",
         keep_dedupe_keys=active_dedupe_keys,
+        signal_types=["confluence"],
         commit=False,
     )
     await session.commit()

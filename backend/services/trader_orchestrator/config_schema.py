@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.database import TraderStrategyDefinition
 from services.trader_orchestrator.sources.registry import (
     list_source_adapters,
     list_source_aliases,
 )
-from services.trader_orchestrator.strategies import list_strategy_keys
+from services.trader_orchestrator.strategy_catalog import (
+    build_system_strategy_rows,
+    ensure_system_trader_strategies_seeded,
+)
 from services.trader_orchestrator.templates import TRADER_TEMPLATES
 
 
@@ -62,115 +69,163 @@ _RUNTIME_FIELDS: list[dict[str, Any]] = [
     },
 ]
 
-_STRATEGY_METADATA: dict[str, dict[str, Any]] = {
-    "crypto_15m": {
-        "label": "Crypto HF Trader",
-        "description": "Dedicated crypto execution for short-horizon up/down markets.",
-        "supported_sources": ["crypto"],
-        "param_fields": [
-            {"key": "strategy_mode", "label": "Strategy Mode", "type": "enum", "options": ["auto", "directional", "pure_arb", "rebalance"]},
-            {"key": "target_assets", "label": "Target Assets", "type": "array[string]"},
-            {"key": "target_timeframes", "label": "Target Timeframes", "type": "array[string]"},
-            {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-            {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-            {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
-            {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
+_TRADERS_SCOPE_FIELDS = [
+    {
+        "key": "traders_scope",
+        "label": "Traders Scope",
+        "type": "object",
+        "properties": [
+            {
+                "key": "modes",
+                "label": "Modes",
+                "type": "array[string]",
+                "options": ["tracked", "pool", "individual", "group"],
+                "required": True,
+            },
+            {
+                "key": "individual_wallets",
+                "label": "Individual Wallets",
+                "type": "array[string]",
+                "required_if_mode": "individual",
+            },
+            {
+                "key": "group_ids",
+                "label": "Group IDs",
+                "type": "array[string]",
+                "required_if_mode": "group",
+            },
         ],
-    },
-    "news_reaction": {
-        "label": "News Trader",
-        "description": "Executes high-conviction news/intelligence signals.",
-        "supported_sources": ["news", "insider", "world_intelligence"],
-        "param_fields": [
-            {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-            {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-            {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
-        ],
-    },
-    "opportunity_weather": {
-        "label": "General + Weather Trader",
-        "description": "Executes scanner/weather opportunity signals with conservative thresholds.",
-        "supported_sources": ["scanner", "weather", "news", "world_intelligence"],
-        "param_fields": [
-            {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-            {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-            {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
-        ],
-    },
-    "omni_aggressive": {
-        "label": "Omni Aggressive Trader",
-        "description": "Cross-source high-frequency strategy with configurable aggressiveness.",
-        "supported_sources": ["scanner", "crypto", "news", "weather", "world_intelligence", "insider", "tracked_traders"],
-        "param_fields": [
-            {"key": "aggressiveness", "label": "Aggressiveness", "type": "number", "min": 0.1},
-            {"key": "min_edge_percent", "label": "Min Edge (%)", "type": "number", "min": 0},
-            {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
-            {"key": "base_size_usd", "label": "Base Size (USD)", "type": "number", "min": 1},
-            {"key": "max_size_usd", "label": "Max Size (USD)", "type": "number", "min": 1},
-        ],
-    },
-}
+    }
+]
 
 
-def _template_by_strategy_key() -> dict[str, dict[str, Any]]:
+def _template_source_defaults() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for template in TRADER_TEMPLATES:
-        key = str(template.get("strategy_key") or "").strip().lower()
-        if key:
-            out[key] = template
+        for source_config in list(template.get("source_configs") or []):
+            source_key = str(source_config.get("source_key") or "").strip().lower()
+            if not source_key:
+                continue
+            if source_key not in out:
+                out[source_key] = source_config
     return out
 
 
-def build_trader_config_schema() -> dict[str, Any]:
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key)
+
+
+def _strategy_param_fields(row: Any) -> list[dict[str, Any]]:
+    schema = _row_value(row, "param_schema_json")
+    if not isinstance(schema, dict):
+        return []
+    fields = schema.get("param_fields")
+    if isinstance(fields, list):
+        return [field for field in fields if isinstance(field, dict)]
+    return []
+
+
+async def _list_enabled_strategy_rows(session: AsyncSession) -> list[Any]:
+    await ensure_system_trader_strategies_seeded(session)
+    rows = list(
+        (
+            await session.execute(
+                select(TraderStrategyDefinition)
+                .where(TraderStrategyDefinition.enabled == True)  # noqa: E712
+                .order_by(
+                    TraderStrategyDefinition.source_key.asc(),
+                    TraderStrategyDefinition.strategy_key.asc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if rows:
+        return rows
+    # Cold-start fallback for environments that have not migrated/seeded yet.
+    return build_system_strategy_rows()
+
+
+async def build_trader_config_schema(session: AsyncSession) -> dict[str, Any]:
     adapters = list_source_adapters()
     source_aliases = list_source_aliases()
     aliases_by_canonical: dict[str, list[str]] = {}
     for alias, canonical in source_aliases.items():
         aliases_by_canonical.setdefault(canonical, []).append(alias)
 
-    sources: list[dict[str, Any]] = [
-        {
-            "key": adapter.key,
-            "label": adapter.label,
-            "description": adapter.description,
-            "domains": adapter.domains,
-            "signal_types": adapter.signal_types,
-            "aliases": sorted(aliases_by_canonical.get(adapter.key, [])),
-        }
-        for adapter in adapters
-    ]
+    source_defaults = _template_source_defaults()
+    strategy_rows = await _list_enabled_strategy_rows(session)
+    strategies_by_source: dict[str, list[Any]] = {}
+    for row in strategy_rows:
+        source_key = str(_row_value(row, "source_key") or "").strip().lower()
+        if not source_key:
+            continue
+        strategies_by_source.setdefault(source_key, []).append(row)
 
-    templates_by_strategy = _template_by_strategy_key()
-    strategy_items: list[dict[str, Any]] = []
-    for strategy_key in list_strategy_keys():
-        metadata = _STRATEGY_METADATA.get(strategy_key, {})
-        template = templates_by_strategy.get(strategy_key, {})
-        defaults = {
-            "interval_seconds": int(template.get("interval_seconds") or 60),
-            "sources": list(template.get("sources") or []),
-            "params": dict(template.get("params") or {}),
-            "risk_limits": dict(template.get("risk_limits") or {}),
-            "metadata": dict(_DEFAULT_METADATA),
+    sources: list[dict[str, Any]] = []
+    for adapter in adapters:
+        rows = strategies_by_source.get(adapter.key, [])
+        strategy_options: list[dict[str, Any]] = []
+        template_defaults = source_defaults.get(adapter.key, {})
+        template_default_params = dict(template_defaults.get("strategy_params") or {})
+
+        for row in rows:
+            key = str(_row_value(row, "strategy_key") or "").strip().lower()
+            if not key:
+                continue
+            row_defaults = _row_value(row, "default_params_json")
+            default_params = dict(row_defaults or {}) if isinstance(row_defaults, dict) else {}
+            if not default_params and template_default_params:
+                default_params = dict(template_default_params)
+            strategy_options.append(
+                {
+                    "key": key,
+                    "label": str(_row_value(row, "label") or key),
+                    "description": str(_row_value(row, "description") or ""),
+                    "default_params": default_params,
+                    "param_fields": _strategy_param_fields(row),
+                    "status": str(_row_value(row, "status") or "unknown"),
+                    "version": int(_row_value(row, "version") or 1),
+                    "is_system": bool(_row_value(row, "is_system")),
+                }
+            )
+
+        default_strategy_key = strategy_options[0]["key"] if strategy_options else ""
+        default_strategy_defaults = strategy_options[0]["default_params"] if strategy_options else {}
+        default_config: dict[str, Any] = {
+            "source_key": adapter.key,
+            "strategy_key": default_strategy_key,
+            "strategy_params": dict(template_default_params or default_strategy_defaults),
         }
-        strategy_items.append(
+        if adapter.key == "traders":
+            default_config["traders_scope"] = dict(
+                (source_defaults.get("traders") or {}).get("traders_scope")
+                or {"modes": ["tracked", "pool"], "individual_wallets": [], "group_ids": []}
+            )
+
+        sources.append(
             {
-                "key": strategy_key,
-                "label": metadata.get("label") or strategy_key,
-                "description": metadata.get("description") or "",
-                "supported_sources": list(metadata.get("supported_sources") or template.get("sources") or []),
-                "defaults": defaults,
-                "param_fields": list(metadata.get("param_fields") or []),
-                "risk_fields": list(_SHARED_RISK_FIELDS),
-                "metadata_fields": list(_RUNTIME_FIELDS),
+                "key": adapter.key,
+                "label": adapter.label,
+                "description": adapter.description,
+                "domains": adapter.domains,
+                "signal_types": adapter.signal_types,
+                "aliases": sorted(aliases_by_canonical.get(adapter.key, [])),
+                "default_strategy_key": default_strategy_key,
+                "strategy_options": strategy_options,
+                "default_config": default_config,
+                "scope_fields": list(_TRADERS_SCOPE_FIELDS if adapter.key == "traders" else []),
             }
         )
 
     return {
-        "version": "2026-02-14",
-        "default_strategy_key": "crypto_15m",
-        "sources": sources,
+        "version": "2026-02-16",
         "source_aliases": source_aliases,
-        "strategies": strategy_items,
+        "sources": sources,
         "shared_risk_fields": list(_SHARED_RISK_FIELDS),
         "runtime_fields": list(_RUNTIME_FIELDS),
+        "default_runtime_metadata": dict(_DEFAULT_METADATA),
     }

@@ -1996,7 +1996,7 @@ class WalletDiscoveryEngine:
         limit: int = 100,
         offset: int = 0,
         min_trades: int = 0,
-        min_pnl: float = 0.0,
+        min_pnl: float | None = None,
         insider_only: bool = False,
         min_insider_score: float | None = None,
         sort_by: str = "rank_score",
@@ -2037,8 +2037,9 @@ class WalletDiscoveryEngine:
             normalized_tags = [t.strip().lower() for t in (tags or []) if isinstance(t, str) and t.strip()]
             base_filter = [
                 DiscoveredWallet.total_trades >= min_trades,
-                DiscoveredWallet.total_pnl >= min_pnl,
             ]
+            if min_pnl is not None:
+                base_filter.append(DiscoveredWallet.total_pnl >= min_pnl)
             if insider_only:
                 base_filter.append(DiscoveredWallet.insider_score >= 0.60)
                 base_filter.append(DiscoveredWallet.insider_confidence >= 0.50)

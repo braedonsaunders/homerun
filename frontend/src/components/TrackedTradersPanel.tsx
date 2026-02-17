@@ -54,6 +54,7 @@ export default function TrackedTradersPanel({ onAnalyzeWallet, onNavigateToWalle
         <TabsContent value="groups" className="mt-4">
           <RecentTradesPanel
             mode="management"
+            managementVariant="groups"
             onNavigateToWallet={(address) => navigateWallet(address)}
           />
         </TabsContent>

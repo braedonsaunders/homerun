@@ -55,8 +55,13 @@ async def test_overview_stays_empty_after_deleting_last_trader(tmp_path):
                 session,
                 {
                     "name": "One-Off Trader",
-                    "strategy_key": "crypto_15m",
-                    "sources": ["crypto"],
+                    "source_configs": [
+                        {
+                            "source_key": "crypto",
+                            "strategy_key": "crypto_15m",
+                            "strategy_params": {},
+                        }
+                    ],
                 },
             )
             deleted = await delete_trader(session, trader["id"])
@@ -115,12 +120,17 @@ async def test_create_trader_normalizes_legacy_default_strategy_key(tmp_path):
                 session,
                 {
                     "name": "Legacy Default Trader",
-                    "strategy_key": "strategy.default",
-                    "sources": ["crypto"],
+                    "source_configs": [
+                        {
+                            "source_key": "crypto",
+                            "strategy_key": "strategy.default",
+                            "strategy_params": {},
+                        }
+                    ],
                 },
             )
 
-        assert trader["strategy_key"] == "crypto_15m"
+        assert trader["source_configs"][0]["strategy_key"] == "crypto_15m"
     finally:
         await engine.dispose()
 
@@ -134,8 +144,13 @@ async def test_update_trader_rejects_unknown_strategy_key(tmp_path):
                 session,
                 {
                     "name": "Strict Strategy Trader",
-                    "strategy_key": "crypto_15m",
-                    "sources": ["crypto"],
+                    "source_configs": [
+                        {
+                            "source_key": "crypto",
+                            "strategy_key": "crypto_15m",
+                            "strategy_params": {},
+                        }
+                    ],
                 },
             )
 
@@ -144,7 +159,13 @@ async def test_update_trader_rejects_unknown_strategy_key(tmp_path):
                     session,
                     trader["id"],
                     {
-                        "strategy_key": "not_a_real_strategy",
+                        "source_configs": [
+                            {
+                                "source_key": "crypto",
+                                "strategy_key": "not_a_real_strategy",
+                                "strategy_params": {},
+                            }
+                        ],
                     },
                 )
     finally:
