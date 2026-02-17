@@ -15,7 +15,7 @@ from models.database import (
 )
 from services.simulation.fill_models import FillConfig, FillModel
 from services.simulation.historical_data_provider import HistoricalDataProvider
-from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
+from services.strategy_loader import strategy_loader as strategy_db_loader
 
 
 class ExecutionSimulator:
@@ -179,8 +179,8 @@ class ExecutionSimulator:
         run_row.params_json = dict(payload)
         await session.flush()
 
-        reload_result = await strategy_db_loader.reload_strategy(strategy_key, session=session)
-        strategy = strategy_db_loader.get_strategy(strategy_key)
+        reload_result = await strategy_db_loader.reload_from_db(strategy_key, session=session)
+        strategy = strategy_db_loader.get_instance(strategy_key)
         if strategy is None:
             reason = f"strategy_unavailable:{strategy_key}"
             run_row.status = "failed"

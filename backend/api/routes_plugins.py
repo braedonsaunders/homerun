@@ -21,11 +21,11 @@ from typing import Optional
 from sqlalchemy import select
 from models.database import AsyncSessionLocal, Strategy, StrategyTombstone
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
-from services.plugin_loader import (
-    plugin_loader,
-    validate_plugin_source,
-    PLUGIN_TEMPLATE,
-    PluginValidationError,
+from services.strategy_loader import (
+    strategy_loader as plugin_loader,
+    validate_strategy_source as validate_plugin_source,
+    STRATEGY_TEMPLATE as PLUGIN_TEMPLATE,
+    StrategyValidationError as PluginValidationError,
 )
 from utils.logger import get_logger
 

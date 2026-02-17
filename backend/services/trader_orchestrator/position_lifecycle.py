@@ -366,23 +366,14 @@ async def reconcile_paper_positions(
                 # If the strategy that opened this position has a
                 # should_exit() method, call it first and respect its
                 # decision before falling through to default TP/SL/etc.
-                # Tries plugin_loader first, then DB-loaded unified strategies.
                 strategy_slug = (payload.get("strategy_type") or "").strip().lower()
                 strategy_exit = None
                 _exit_instance = None
                 if strategy_slug:
-                    from services.plugin_loader import plugin_loader
-                    plugin = plugin_loader.get_plugin(strategy_slug)
-                    if plugin and hasattr(plugin.instance, "should_exit"):
-                        _exit_instance = plugin.instance
-                    if _exit_instance is None:
-                        try:
-                            from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
-                            db_strat = strategy_db_loader.get_strategy(strategy_slug)
-                            if db_strat and hasattr(db_strat, "should_exit"):
-                                _exit_instance = db_strat
-                        except Exception:
-                            pass
+                    from services.strategy_loader import strategy_loader
+                    loaded = strategy_loader.get_strategy(strategy_slug)
+                    if loaded and hasattr(loaded.instance, "should_exit"):
+                        _exit_instance = loaded.instance
                 if _exit_instance is not None:
                     try:
                         class _PaperPositionView:
@@ -794,9 +785,9 @@ async def reconcile_live_positions(
                 strategy_slug = (payload.get("strategy_type") or "").strip().lower()
                 strategy_exit = None
                 if strategy_slug:
-                    from services.plugin_loader import plugin_loader
-                    plugin = plugin_loader.get_plugin(strategy_slug)
-                    if plugin and hasattr(plugin.instance, "should_exit"):
+                    from services.strategy_loader import strategy_loader
+                    loaded = strategy_loader.get_strategy(strategy_slug)
+                    if loaded and hasattr(loaded.instance, "should_exit"):
                         try:
                             class _LivePositionView:
                                 pass
@@ -818,7 +809,7 @@ async def reconcile_live_positions(
                                 "winning_outcome": None,
                             }
 
-                            exit_decision = plugin.instance.should_exit(pos_view, market_state_dict)
+                            exit_decision = loaded.instance.should_exit(pos_view, market_state_dict)
                             if exit_decision is not None and getattr(exit_decision, "action", None) == "close":
                                 strategy_exit = exit_decision
                         except Exception as exc:

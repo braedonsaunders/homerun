@@ -121,30 +121,28 @@ const SOURCE_LABELS: Record<string, string> = {
   traders: 'Traders tab',
 }
 
-/** Detect which lifecycle methods a strategy source code implements */
-function detectCapabilities(sourceCode: string): { hasDetect: boolean; hasEvaluate: boolean; hasShouldExit: boolean } {
-  return {
-    hasDetect: /def\s+(detect|detect_async)\s*\(/.test(sourceCode),
-    hasEvaluate: /def\s+evaluate\s*\(/.test(sourceCode),
-    hasShouldExit: /def\s+should_exit\s*\(/.test(sourceCode),
-  }
+interface Capabilities {
+  has_detect: boolean
+  has_detect_async: boolean
+  has_evaluate: boolean
+  has_should_exit: boolean
 }
 
-function CapabilityBadges({ sourceCode }: { sourceCode: string }) {
-  const caps = detectCapabilities(sourceCode || '')
+function CapabilityBadges({ capabilities }: { capabilities?: Capabilities }) {
+  const caps = capabilities || { has_detect: false, has_detect_async: false, has_evaluate: false, has_should_exit: false }
   return (
     <div className="flex items-center gap-1 mt-1">
-      {caps.hasDetect && (
+      {(caps.has_detect || caps.has_detect_async) && (
         <span className="text-[8px] font-semibold uppercase tracking-wider px-1.5 py-0 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">
           Detect
         </span>
       )}
-      {caps.hasEvaluate && (
+      {caps.has_evaluate && (
         <span className="text-[8px] font-semibold uppercase tracking-wider px-1.5 py-0 rounded bg-violet-500/15 text-violet-400 border border-violet-500/25">
           Evaluate
         </span>
       )}
-      {caps.hasShouldExit && (
+      {caps.has_should_exit && (
         <span className="text-[8px] font-semibold uppercase tracking-wider px-1.5 py-0 rounded bg-rose-500/15 text-rose-400 border border-rose-500/25">
           Exit
         </span>
@@ -529,7 +527,7 @@ export default function OpportunityStrategiesManager({ initialSourceFilter, sear
                                 <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
                                   {strategy.slug}
                                 </p>
-                                {strategy.source_code && <CapabilityBadges sourceCode={strategy.source_code} />}
+                                {strategy.capabilities && <CapabilityBadges capabilities={strategy.capabilities} />}
                               </button>
                             )
                           })}
@@ -576,9 +574,9 @@ export default function OpportunityStrategiesManager({ initialSourceFilter, sear
                                 <p className="text-[10px] text-muted-foreground mt-1 truncate pl-[18px]">
                                   → {tabLabel}
                                 </p>
-                                {strategy.source_code && (
+                                {strategy.capabilities && (
                                   <div className="pl-[18px]">
-                                    <CapabilityBadges sourceCode={strategy.source_code} />
+                                    <CapabilityBadges capabilities={strategy.capabilities} />
                                   </div>
                                 )}
                               </button>

@@ -45,7 +45,6 @@ from api.routes_workers import router as workers_router
 from api.routes_validation import router as validation_router
 from api.routes_trader_orchestrator import router as trader_orchestrator_router
 from api.routes_trader_sources import router as trader_sources_router
-from api.routes_trader_strategies import router as trader_strategies_router
 from api.routes_strategies import router as strategies_router
 from api.routes_traders import router as traders_router
 from services import wallet_tracker
@@ -105,16 +104,14 @@ async def lifespan(app: FastAPI):
         await init_database()
         logger.info("Database initialized")
 
-        # Warm DB-native trader strategy registry at process startup.
+        # Warm unified strategy loader at process startup.
         try:
             from services.opportunity_strategy_catalog import ensure_all_strategies_seeded
-            from services.trader_orchestrator.strategy_db_loader import (
-                strategy_db_loader,
-            )
+            from services.strategy_loader import strategy_loader as _loader
 
             async with AsyncSessionLocal() as session:
                 seeded = await ensure_all_strategies_seeded(session)
-                loaded = await strategy_db_loader.refresh_from_db(session=session)
+                loaded = await _loader.refresh_all_from_db(session=session)
             logger.info(
                 "Strategy registries loaded",
                 seeded=seeded.get("seeded", 0),
@@ -529,7 +526,6 @@ app.include_router(trading_router, prefix="/api", tags=["Trading"])
 app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orchestrator"])
 app.include_router(traders_router, prefix="/api", tags=["Traders"])
 app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
-app.include_router(trader_strategies_router, prefix="/api", tags=["Trader Strategies"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ai_router, prefix="/api", tags=["AI Intelligence"])

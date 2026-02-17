@@ -36,8 +36,7 @@ from services.trader_orchestrator.sources.registry import (
 from services.opportunity_strategy_catalog import (
     ensure_system_trader_strategies_seeded,
 )
-from services.plugin_loader import plugin_loader
-from services.trader_orchestrator.strategy_db_loader import strategy_db_loader
+from services.strategy_loader import strategy_loader
 from services.trader_orchestrator_state import (
     cleanup_trader_open_orders,
     compute_orchestrator_metrics,
@@ -823,7 +822,7 @@ async def _run_trader_once(
 
                     strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
                     strategy_params = dict(source_config.get("strategy_params") or {})
-                    strategy_status = strategy_db_loader.get_availability(strategy_key)
+                    strategy_status = strategy_loader.get_availability(strategy_key)
                     resolved_strategy_key = (
                         strategy_status.resolved_key or strategy_key
                     )
@@ -832,30 +831,30 @@ async def _run_trader_once(
                     runtime_signal.source = signal_source
                     traders_scope_payload: dict[str, Any] | None = None
 
-                    # ── Strategy resolution ──────────────────────────────
-                    # 1. Try the trader strategy DB loader (existing behavior)
+                    # ── Strategy resolution (unified loader) ─────────────
                     strategy = None
-                    if strategy_status.available:
-                        strategy = strategy_db_loader.get_strategy(resolved_strategy_key)
 
-                    # 2. Fallback: try the plugin loader (unified strategies)
-                    #    The signal's strategy_type may match a plugin slug when
-                    #    the trader uses a generic strategy_key like "opportunity_general"
-                    #    but the signal originated from a specific plugin strategy.
+                    # 1. Try the configured strategy_key
+                    if strategy_status.available:
+                        loaded = strategy_loader.get_strategy(resolved_strategy_key)
+                        if loaded:
+                            strategy = loaded.instance
+
+                    # 2. Fallback: try the signal's strategy_type slug
                     if strategy is None:
                         signal_strategy_type = str(
                             getattr(signal, "strategy_type", "") or ""
                         ).strip().lower()
                         if signal_strategy_type:
-                            plugin = plugin_loader.get_plugin(signal_strategy_type)
-                            if plugin and hasattr(plugin.instance, "evaluate"):
-                                strategy = plugin.instance
+                            loaded = strategy_loader.get_strategy(signal_strategy_type)
+                            if loaded and hasattr(loaded.instance, "evaluate"):
+                                strategy = loaded.instance
 
-                    # 3. Final fallback: try plugin loader with source key
+                    # 3. Final fallback: try source key as slug
                     if strategy is None:
-                        plugin = plugin_loader.get_plugin(signal_source)
-                        if plugin and hasattr(plugin.instance, "evaluate"):
-                            strategy = plugin.instance
+                        loaded = strategy_loader.get_strategy(signal_source)
+                        if loaded and hasattr(loaded.instance, "evaluate"):
+                            strategy = loaded.instance
 
                     if strategy is None:
                         blocked_reason = f"strategy_unavailable:{resolved_strategy_key}"
@@ -1634,7 +1633,7 @@ async def run_worker_loop() -> None:
                 async with AsyncSessionLocal() as session:
                     await expire_stale_signals(session)
                     try:
-                        await strategy_db_loader.refresh_from_db(session=session)
+                        await strategy_loader.refresh_all_from_db(session=session)
                     except Exception as exc:
                         logger.warning("Failed to refresh DB strategy registry: %s", exc)
 

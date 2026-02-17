@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from services.opportunity_recorder import opportunity_recorder
 from services.param_optimizer import param_optimizer
-from services.plugin_loader import plugin_loader
+from services.strategy_loader import strategy_loader as plugin_loader
 from services.validation_service import validation_service
 from utils.logger import get_logger
 
@@ -227,6 +227,40 @@ async def run_code_backtest(req: CodeBacktestRequest):
     from services.strategy_backtester import run_strategy_backtest
 
     result = await run_strategy_backtest(
+        source_code=req.source_code,
+        slug=req.slug,
+        config=req.config,
+    )
+    return result.to_dict()
+
+
+@router.post("/code-backtest/evaluate")
+async def run_evaluate_backtest_endpoint(req: CodeBacktestRequest):
+    """Run a strategy's evaluate() against recent trade signals.
+
+    Compiles the strategy, loads it in a sandbox, fetches recent signals,
+    and runs evaluate() on each to show which would be selected/skipped.
+    """
+    from services.strategy_backtester import run_evaluate_backtest
+
+    result = await run_evaluate_backtest(
+        source_code=req.source_code,
+        slug=req.slug,
+        config=req.config,
+    )
+    return result.to_dict()
+
+
+@router.post("/code-backtest/exit")
+async def run_exit_backtest_endpoint(req: CodeBacktestRequest):
+    """Run a strategy's should_exit() against current open positions.
+
+    Compiles the strategy, loads it in a sandbox, fetches open positions,
+    and runs should_exit() on each to show which would be closed.
+    """
+    from services.strategy_backtester import run_exit_backtest
+
+    result = await run_exit_backtest(
         source_code=req.source_code,
         slug=req.slug,
         config=req.config,

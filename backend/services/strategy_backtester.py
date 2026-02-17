@@ -1,14 +1,12 @@
 """
 Strategy Backtester
 
-Provides true code-level backtesting for opportunity detection strategies.
-Takes a strategy's Python source code, compiles and loads it via the existing
-PluginLoader mechanism, then runs it against LIVE current market data (from
-the scanner's cache or fetched fresh from the API) to see what opportunities
-it would detect RIGHT NOW.
+Provides code-level backtesting for all three strategy phases:
+  - DETECT: What opportunities would this code find on the current market snapshot?
+  - EVALUATE: Given recent trade signals, which would this strategy accept/reject?
+  - EXIT: Given current open positions, which would this strategy close?
 
-This is NOT about replaying historical data.  It answers the question:
-"If I deploy this code, what would it find on the current market snapshot?"
+Uses live/cached data — not historical replay.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ import traceback
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
-from services.plugin_loader import PluginLoader, validate_plugin_source
+from services.strategy_loader import StrategyLoader, validate_strategy_source
 from services.scanner import scanner
 from utils.logger import get_logger
 
@@ -92,7 +90,7 @@ async def run_strategy_backtest(
     total_start = time.monotonic()
 
     # ---- 1. Validate source code ----
-    validation = validate_plugin_source(source_code)
+    validation = validate_strategy_source(source_code)
     result.validation_errors = validation.get("errors", [])
     result.validation_warnings = validation.get("warnings", [])
     result.class_name = validation.get("class_name") or ""
@@ -101,12 +99,12 @@ async def run_strategy_backtest(
         result.total_time_ms = (time.monotonic() - total_start) * 1000
         return result
 
-    # ---- 2. Load strategy via plugin loader ----
-    loader = PluginLoader()  # Fresh isolated loader for backtest
+    # ---- 2. Load strategy via unified loader ----
+    loader = StrategyLoader()  # Fresh isolated loader for backtest
     bt_slug = f"_bt_{slug}_{int(time.time())}"
     load_start = time.monotonic()
     try:
-        loaded = loader.load_plugin(bt_slug, source_code, config)
+        loaded = loader.load(bt_slug, source_code, config)
         strategy = loaded.instance
         result.strategy_name = getattr(strategy, "name", bt_slug)
     except Exception as e:
@@ -216,7 +214,338 @@ async def run_strategy_backtest(
 
     # ---- 5. Cleanup ----
     try:
-        loader.unload_plugin(bt_slug)
+        loader.unload(bt_slug)
+    except Exception:
+        pass
+
+    result.total_time_ms = (time.monotonic() - total_start) * 1000
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Evaluate backtest
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EvaluateBacktestResult:
+    """Result of running a strategy's evaluate() against recent trade signals."""
+
+    success: bool = False
+    strategy_slug: str = ""
+    strategy_name: str = ""
+    class_name: str = ""
+    num_signals: int = 0
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    selected: int = 0
+    skipped: int = 0
+    blocked: int = 0
+    load_time_ms: float = 0
+    data_fetch_time_ms: float = 0
+    evaluate_time_ms: float = 0
+    total_time_ms: float = 0
+    validation_errors: list[str] = field(default_factory=list)
+    validation_warnings: list[str] = field(default_factory=list)
+    runtime_error: Optional[str] = None
+    runtime_traceback: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+async def run_evaluate_backtest(
+    source_code: str,
+    slug: str = "_backtest_evaluate",
+    config: Optional[dict[str, Any]] = None,
+    max_signals: int = 50,
+) -> EvaluateBacktestResult:
+    """Run a strategy's evaluate() against recent unconsumed trade signals.
+
+    Loads the strategy, fetches recent signals from the DB, and runs evaluate()
+    on each to show which would be selected/skipped and why.
+    """
+    result = EvaluateBacktestResult(strategy_slug=slug)
+    total_start = time.monotonic()
+
+    # 1. Validate
+    validation = validate_strategy_source(source_code)
+    result.validation_errors = validation.get("errors", [])
+    result.validation_warnings = validation.get("warnings", [])
+    result.class_name = validation.get("class_name") or ""
+    if not validation["valid"]:
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+
+    # 2. Load
+    loader = StrategyLoader()
+    bt_slug = f"_bt_eval_{slug}_{int(time.time())}"
+    load_start = time.monotonic()
+    try:
+        loaded = loader.load(bt_slug, source_code, config)
+        strategy = loaded.instance
+        result.strategy_name = getattr(strategy, "name", bt_slug)
+    except Exception as e:
+        result.runtime_error = f"Failed to load strategy: {e}"
+        result.runtime_traceback = traceback.format_exc()
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+    finally:
+        result.load_time_ms = (time.monotonic() - load_start) * 1000
+
+    if not hasattr(strategy, "evaluate"):
+        result.runtime_error = "Strategy does not implement evaluate()"
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+
+    # 3. Fetch recent trade signals
+    data_start = time.monotonic()
+    try:
+        from models.database import AsyncSessionLocal
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as session:
+            from models.database import TradeSignalEmission
+            query = (
+                select(TradeSignalEmission)
+                .order_by(TradeSignalEmission.created_at.desc())
+                .limit(max_signals)
+            )
+            signals = list((await session.execute(query)).scalars().all())
+        result.num_signals = len(signals)
+    except Exception as e:
+        result.runtime_error = f"Failed to fetch signals: {e}"
+        result.runtime_traceback = traceback.format_exc()
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+    finally:
+        result.data_fetch_time_ms = (time.monotonic() - data_start) * 1000
+
+    # 4. Run evaluate() on each signal
+    eval_start = time.monotonic()
+    try:
+        params = dict(config or {})
+        for sig in signals:
+            try:
+                context = {
+                    "params": params,
+                    "mode": "backtest",
+                    "source_config": {},
+                }
+                decision = strategy.evaluate(sig, context)
+                decision_str = getattr(decision, "decision", str(decision))
+                reason_str = getattr(decision, "reason", "")
+                checks = []
+                if hasattr(decision, "checks"):
+                    for c in (decision.checks or []):
+                        checks.append({
+                            "check_key": getattr(c, "check_key", ""),
+                            "check_label": getattr(c, "check_label", ""),
+                            "passed": getattr(c, "passed", False),
+                            "score": getattr(c, "score", None),
+                            "detail": getattr(c, "detail", ""),
+                        })
+
+                result.decisions.append({
+                    "signal_id": getattr(sig, "id", None),
+                    "source": getattr(sig, "source", ""),
+                    "strategy_type": getattr(sig, "strategy_type", ""),
+                    "decision": decision_str,
+                    "reason": reason_str,
+                    "size_usd": getattr(decision, "size_usd", None),
+                    "checks": checks,
+                })
+
+                if decision_str == "selected":
+                    result.selected += 1
+                elif decision_str == "blocked":
+                    result.blocked += 1
+                else:
+                    result.skipped += 1
+            except Exception as exc:
+                result.decisions.append({
+                    "signal_id": getattr(sig, "id", None),
+                    "decision": "error",
+                    "reason": str(exc),
+                    "checks": [],
+                })
+
+        result.success = True
+    except Exception as e:
+        result.runtime_error = f"Evaluate backtest error: {e}"
+        result.runtime_traceback = traceback.format_exc()
+    finally:
+        result.evaluate_time_ms = (time.monotonic() - eval_start) * 1000
+
+    try:
+        loader.unload(bt_slug)
+    except Exception:
+        pass
+
+    result.total_time_ms = (time.monotonic() - total_start) * 1000
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Exit backtest
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExitBacktestResult:
+    """Result of running a strategy's should_exit() against open positions."""
+
+    success: bool = False
+    strategy_slug: str = ""
+    strategy_name: str = ""
+    class_name: str = ""
+    num_positions: int = 0
+    exit_decisions: list[dict[str, Any]] = field(default_factory=list)
+    would_close: int = 0
+    would_hold: int = 0
+    load_time_ms: float = 0
+    data_fetch_time_ms: float = 0
+    exit_time_ms: float = 0
+    total_time_ms: float = 0
+    validation_errors: list[str] = field(default_factory=list)
+    validation_warnings: list[str] = field(default_factory=list)
+    runtime_error: Optional[str] = None
+    runtime_traceback: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+async def run_exit_backtest(
+    source_code: str,
+    slug: str = "_backtest_exit",
+    config: Optional[dict[str, Any]] = None,
+    max_positions: int = 50,
+) -> ExitBacktestResult:
+    """Run a strategy's should_exit() against current open positions.
+
+    Loads the strategy, fetches open paper positions, and runs should_exit()
+    on each to show which would be closed and why.
+    """
+    result = ExitBacktestResult(strategy_slug=slug)
+    total_start = time.monotonic()
+
+    # 1. Validate
+    validation = validate_strategy_source(source_code)
+    result.validation_errors = validation.get("errors", [])
+    result.validation_warnings = validation.get("warnings", [])
+    result.class_name = validation.get("class_name") or ""
+    if not validation["valid"]:
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+
+    # 2. Load
+    loader = StrategyLoader()
+    bt_slug = f"_bt_exit_{slug}_{int(time.time())}"
+    load_start = time.monotonic()
+    try:
+        loaded = loader.load(bt_slug, source_code, config)
+        strategy = loaded.instance
+        result.strategy_name = getattr(strategy, "name", bt_slug)
+    except Exception as e:
+        result.runtime_error = f"Failed to load strategy: {e}"
+        result.runtime_traceback = traceback.format_exc()
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+    finally:
+        result.load_time_ms = (time.monotonic() - load_start) * 1000
+
+    if not hasattr(strategy, "should_exit"):
+        result.runtime_error = "Strategy does not implement should_exit()"
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+
+    # 3. Fetch open paper positions
+    data_start = time.monotonic()
+    try:
+        from models.database import AsyncSessionLocal, TraderPosition
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as session:
+            query = (
+                select(TraderPosition)
+                .where(TraderPosition.status == "open")
+                .order_by(TraderPosition.opened_at.desc())
+                .limit(max_positions)
+            )
+            positions = list((await session.execute(query)).scalars().all())
+        result.num_positions = len(positions)
+    except Exception as e:
+        result.runtime_error = f"Failed to fetch positions: {e}"
+        result.runtime_traceback = traceback.format_exc()
+        result.total_time_ms = (time.monotonic() - total_start) * 1000
+        return result
+    finally:
+        result.data_fetch_time_ms = (time.monotonic() - data_start) * 1000
+
+    # 4. Run should_exit() on each position
+    exit_start = time.monotonic()
+    try:
+        for pos in positions:
+            try:
+                payload = pos.payload_json if isinstance(pos.payload_json, dict) else {}
+                entry_price = float(payload.get("entry_price", 0) or 0)
+                current_price = float(payload.get("last_price", entry_price) or entry_price)
+                pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+
+                class _PositionView:
+                    pass
+                pos_view = _PositionView()
+                pos_view.entry_price = entry_price
+                pos_view.current_price = current_price
+                pos_view.highest_price = float(payload.get("highest_price", current_price) or current_price)
+                pos_view.lowest_price = float(payload.get("lowest_price", current_price) or current_price)
+                pos_view.age_minutes = 0
+                pos_view.pnl_percent = pnl_pct
+                pos_view.strategy_context = payload.get("strategy_context", {})
+                pos_view.config = config or {}
+                pos_view.outcome_idx = payload.get("outcome_idx", 0)
+
+                market_state = {
+                    "current_price": current_price,
+                    "market_tradable": True,
+                    "is_resolved": False,
+                    "winning_outcome": None,
+                }
+
+                exit_decision = strategy.should_exit(pos_view, market_state)
+                action = getattr(exit_decision, "action", "hold") if exit_decision else "hold"
+                reason = getattr(exit_decision, "reason", "") if exit_decision else ""
+
+                result.exit_decisions.append({
+                    "position_id": pos.id,
+                    "market_id": getattr(pos, "market_id", None),
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "pnl_pct": round(pnl_pct, 2),
+                    "action": action,
+                    "reason": reason,
+                })
+
+                if action == "close":
+                    result.would_close += 1
+                else:
+                    result.would_hold += 1
+            except Exception as exc:
+                result.exit_decisions.append({
+                    "position_id": pos.id,
+                    "action": "error",
+                    "reason": str(exc),
+                })
+
+        result.success = True
+    except Exception as e:
+        result.runtime_error = f"Exit backtest error: {e}"
+        result.runtime_traceback = traceback.format_exc()
+    finally:
+        result.exit_time_ms = (time.monotonic() - exit_start) * 1000
+
+    try:
+        loader.unload(bt_slug)
     except Exception:
         pass
 

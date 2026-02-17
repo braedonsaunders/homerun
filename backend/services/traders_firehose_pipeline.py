@@ -23,7 +23,7 @@ from models.database import (
 )
 from services.market_tradability import get_market_tradability_map
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
-from services.plugin_loader import PluginLoader, PluginValidationError
+from services.strategy_loader import StrategyLoader as PluginLoader, StrategyValidationError as PluginValidationError
 from services.smart_wallet_pool import _looks_like_crypto_market, smart_wallet_pool
 from services.strategies.traders_confluence import TradersConfluenceStrategy
 from utils.logger import get_logger

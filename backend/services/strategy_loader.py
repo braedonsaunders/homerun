@@ -1,11 +1,7 @@
 """
 Unified Strategy Loader
 
-Dynamically loads user-written and system strategies from source code stored
-in the ``strategies`` DB table (model: ``Strategy``).  Merges the functionality
-of the legacy ``plugin_loader.py`` (scanner-side detect plugins) and
-``strategy_db_loader.py`` (trader-side evaluate/exit strategies) into a
-single loader.
+The ONE loader for all strategies. Handles detect, evaluate, and exit phases.
 
 Each strategy is a Python file defining a class that extends ``BaseStrategy``
 and implements one or more of:
@@ -20,11 +16,12 @@ in an isolated module, and exposes runtime status tracking for dashboards.
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import sys
 import traceback
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -465,6 +462,15 @@ def validate_strategy_source(
 
 
 @dataclass
+class StrategyAvailability:
+    """Whether a strategy is available for use."""
+    available: bool
+    strategy_key: str
+    resolved_key: str
+    reason: Optional[str] = None
+
+
+@dataclass
 class LoadedStrategy:
     """Runtime state for a loaded strategy."""
 
@@ -486,11 +492,29 @@ class LoadedStrategy:
 
 
 class StrategyLoader:
-    """Manages loading, validation, and lifecycle of strategies from source code."""
+    """Manages loading, validation, and lifecycle of strategies from source code.
+
+    This is the SINGLE loader for all strategies — detection, evaluation, and exit.
+    """
 
     def __init__(self) -> None:
         self._loaded: dict[str, LoadedStrategy] = {}
+        self._errors: dict[str, str] = {}
         self._module_counter: int = 0
+        self._refresh_lock: Optional[asyncio.Lock] = None
+
+    @property
+    def refresh_lock(self) -> asyncio.Lock:
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+        return self._refresh_lock
+
+    # ── Compatibility shims (ease migration from plugin_loader) ──
+
+    @property
+    def loaded_plugins(self) -> dict[str, LoadedStrategy]:
+        """Backward-compat alias for scanner code that checks ``loaded_plugins``."""
+        return dict(self._loaded)
 
     # ── Load / Unload ────────────────────────────────────────
 
@@ -694,10 +718,96 @@ class StrategyLoader:
                 "error": error_msg,
             }
 
+    async def refresh_all_from_db(
+        self,
+        *,
+        session: "AsyncSession",
+        strategy_keys: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Bulk-load all enabled strategies from the DB.
+
+        Replaces the in-memory cache with fresh data. Disabled strategies
+        are unloaded. Rows are updated with ``status`` and ``error_message``.
+
+        Args:
+            session: SQLAlchemy async session (caller manages commit/close).
+            strategy_keys: Optional subset of slugs to refresh. If None,
+                refreshes all rows.
+
+        Returns:
+            Dict with ``"loaded"``, ``"errors"`` keys.
+        """
+        from models.database import Strategy
+        from sqlalchemy import select
+        from utils.utcnow import utcnow
+
+        keys_filter = {
+            str(key or "").strip().lower()
+            for key in (strategy_keys or [])
+            if str(key or "").strip()
+        }
+
+        async with self.refresh_lock:
+            query = select(Strategy).order_by(Strategy.slug.asc())
+            if keys_filter:
+                query = query.where(Strategy.slug.in_(tuple(sorted(keys_filter))))
+            rows = list((await session.execute(query)).scalars().all())
+
+            next_loaded = dict(self._loaded)
+            next_errors = dict(self._errors)
+
+            for row in rows:
+                slug = str(row.slug or "").strip().lower()
+
+                # Clear previous state for this slug
+                if slug in next_loaded:
+                    self.unload(slug)
+                    next_loaded.pop(slug, None)
+                next_errors.pop(slug, None)
+
+                if not bool(row.enabled):
+                    row.status = "disabled"
+                    row.error_message = None
+                    row.updated_at = utcnow()
+                    continue
+
+                try:
+                    config = row.config if isinstance(row.config, dict) else {}
+                    loaded = self.load(
+                        slug=slug,
+                        source_code=row.source_code or "",
+                        config=config,
+                    )
+                    next_loaded[slug] = loaded
+                    row.status = "loaded"
+                    row.error_message = None
+                    row.updated_at = utcnow()
+                except Exception as exc:
+                    error_message = str(exc)
+                    tb = traceback.format_exc()
+                    next_errors[slug] = error_message
+                    row.status = "error"
+                    row.error_message = f"{error_message}\n{tb}"
+                    row.updated_at = utcnow()
+
+            self._loaded = next_loaded
+            self._errors = next_errors
+
+            await session.commit()
+
+            return {
+                "loaded": sorted(self._loaded.keys()),
+                "errors": dict(self._errors),
+            }
+
     # ── Accessors ────────────────────────────────────────────
 
     def get_strategy(self, slug: str) -> Optional[LoadedStrategy]:
         """Return the LoadedStrategy for *slug*, or None."""
+        return self._loaded.get(slug)
+
+    def get_plugin(self, slug: str) -> Optional[LoadedStrategy]:
+        """Backward-compat alias for ``get_strategy()``."""
         return self._loaded.get(slug)
 
     def get_instance(self, slug: str) -> Any:
@@ -709,9 +819,47 @@ class StrategyLoader:
         """Return all loaded strategy instances (e.g. for the scanner)."""
         return [ls.instance for ls in self._loaded.values()]
 
+    # Alias used by scanner
+    get_all_strategy_instances = get_all_instances
+
     def is_loaded(self, slug: str) -> bool:
         """Check whether a strategy is currently loaded."""
         return slug in self._loaded
+
+    def get_availability(self, strategy_key: str) -> StrategyAvailability:
+        """Check if a strategy is loaded and available for use."""
+        slug = str(strategy_key or "").strip().lower()
+        if slug in self._loaded:
+            return StrategyAvailability(
+                available=True, strategy_key=strategy_key, resolved_key=slug
+            )
+        reason = self._errors.get(slug)
+        return StrategyAvailability(
+            available=False,
+            strategy_key=strategy_key,
+            resolved_key=slug,
+            reason=reason or f"strategy_unavailable:{slug}",
+        )
+
+    def get_runtime_status(self, slug: str) -> Optional[dict]:
+        """Return full runtime status for a loaded strategy (used by serializers)."""
+        loaded = self._loaded.get(slug)
+        if loaded is not None:
+            return {
+                "strategy_key": loaded.slug,
+                "class_name": loaded.class_name,
+                "source_hash": loaded.source_hash,
+                "status": "loaded",
+                "error_message": None,
+                "loaded_at": loaded.loaded_at.isoformat(),
+            }
+        if slug in self._errors:
+            return {
+                "strategy_key": slug,
+                "status": "error",
+                "error_message": self._errors[slug],
+            }
+        return None
 
     # ── Run tracking ─────────────────────────────────────────
 
@@ -763,8 +911,84 @@ class StrategyLoader:
         ]
 
 
+    async def reload_strategy(
+        self,
+        strategy_key: str,
+        *,
+        session: "AsyncSession",
+    ) -> dict:
+        """Reload a single strategy from DB (compat with old strategy_db_loader)."""
+        return await self.reload_from_db(strategy_key, session)
+
+    # ── Compat shims for plugin_loader API ─────────────────────
+
+    def load_plugin(
+        self,
+        slug: str,
+        source_code: str,
+        config: Optional[dict] = None,
+    ) -> LoadedStrategy:
+        """Backward-compat alias for ``load()``."""
+        return self.load(slug, source_code, config)
+
+    def unload_plugin(self, slug: str) -> bool:
+        """Backward-compat alias for ``unload()``."""
+        was_loaded = slug in self._loaded
+        self.unload(slug)
+        return was_loaded
+
+    def reload_plugin(
+        self,
+        slug: str,
+        source_code: str,
+        config: Optional[dict] = None,
+    ) -> LoadedStrategy:
+        """Backward-compat alias for ``load()``."""
+        return self.load(slug, source_code, config)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
 strategy_loader = StrategyLoader()
+
+# Backward-compat aliases so existing imports keep working during migration.
+# ``from services.strategy_loader import plugin_loader`` etc.
+plugin_loader = strategy_loader
+
+# Re-export exception as PluginValidationError for backward compat
+PluginValidationError = StrategyValidationError
+
+# Re-export the template under the old name
+PLUGIN_TEMPLATE = STRATEGY_TEMPLATE
+
+
+# ---------------------------------------------------------------------------
+# Serialization helper (replaces strategy_db_loader.serialize_strategy_definition)
+# ---------------------------------------------------------------------------
+
+
+def serialize_strategy_definition(row: Any) -> dict[str, Any]:
+    """Serialize a Strategy ORM row to a dict for API responses."""
+    runtime = strategy_loader.get_runtime_status(str(row.slug or ""))
+    return {
+        "id": row.id,
+        "strategy_key": row.slug,
+        "source_key": row.source_key,
+        "label": row.name,
+        "description": row.description,
+        "class_name": row.class_name,
+        "source_code": row.source_code,
+        "default_params_json": row.config or {},
+        "param_schema_json": row.config_schema or {},
+        "aliases_json": [],  # Deprecated — aliases system removed
+        "is_system": bool(row.is_system),
+        "enabled": bool(row.enabled),
+        "status": row.status,
+        "error_message": row.error_message,
+        "version": int(row.version or 1),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "runtime": runtime,
+    }

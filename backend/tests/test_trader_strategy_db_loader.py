@@ -16,8 +16,8 @@ from services.opportunity_strategy_catalog import (
     build_system_opportunity_strategy_rows,
     ensure_system_opportunity_strategies_seeded,
 )
-from services.trader_orchestrator.strategy_db_loader import (
-    StrategyDBLoader,
+from services.strategy_loader import (
+    StrategyLoader as StrategyDBLoader,
     validate_strategy_source,
 )
 

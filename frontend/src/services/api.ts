@@ -753,7 +753,7 @@ export const reloadPlugin = async (id: string): Promise<{
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const getPluginDocs = async (): Promise<Record<string, any>> => {
-  const { data } = await api.get('/plugins/docs')
+  const { data } = await api.get('/strategy-manager/docs')
   return data
 }
 
@@ -808,7 +808,7 @@ export const deleteOpportunityStrategy = async (id: string): Promise<void> => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const getTraderStrategyDocs = async (): Promise<Record<string, any>> => {
-  const { data } = await api.get('/trader-strategies/docs')
+  const { data } = await api.get('/strategy-manager/docs')
   return data
 }
 
@@ -2070,18 +2070,36 @@ export const getTraderConfigSchema = async (): Promise<TraderConfigSchema> => {
   return data
 }
 
+// Trader strategy functions now proxy to the unified /strategy-manager API.
+
 export const getTraderStrategies = async (params?: {
   source_key?: string
   enabled?: boolean
   status?: string
 }): Promise<TraderStrategyDefinition[]> => {
-  const { data } = await api.get('/trader-strategies', { params })
-  return data.items || []
+  const { data } = await api.get('/strategy-manager', { params })
+  // Map unified response shape to legacy TraderStrategyDefinition shape
+  const items = data.items || data || []
+  return items.map((s: any) => ({
+    ...s,
+    strategy_key: s.strategy_key || s.slug,
+    label: s.label || s.name,
+    default_params_json: s.default_params_json || s.config || {},
+    param_schema_json: s.param_schema_json || s.config_schema || {},
+    aliases_json: [],
+  }))
 }
 
 export const getTraderStrategy = async (id: string): Promise<TraderStrategyDefinition> => {
-  const { data } = await api.get(`/trader-strategies/${id}`)
-  return data
+  const { data } = await api.get(`/strategy-manager/${id}`)
+  return {
+    ...data,
+    strategy_key: data.strategy_key || data.slug,
+    label: data.label || data.name,
+    default_params_json: data.default_params_json || data.config || {},
+    param_schema_json: data.param_schema_json || data.config_schema || {},
+    aliases_json: [],
+  }
 }
 
 export const createTraderStrategy = async (payload: {
@@ -2089,14 +2107,21 @@ export const createTraderStrategy = async (payload: {
   source_key: string
   label: string
   description?: string | null
-  class_name: string
   source_code: string
   default_params_json?: Record<string, any>
   param_schema_json?: Record<string, any>
-  aliases_json?: string[]
   enabled?: boolean
 }): Promise<TraderStrategyDefinition> => {
-  const { data } = await api.post('/trader-strategies', payload)
+  const { data } = await api.post('/strategy-manager', {
+    slug: payload.strategy_key,
+    source_key: payload.source_key,
+    name: payload.label,
+    description: payload.description,
+    source_code: payload.source_code,
+    config: payload.default_params_json || {},
+    config_schema: payload.param_schema_json || {},
+    enabled: payload.enabled ?? true,
+  })
   return data
 }
 
@@ -2107,27 +2132,36 @@ export const updateTraderStrategy = async (
     source_key: string
     label: string
     description: string | null
-    class_name: string
     source_code: string
     default_params_json: Record<string, any>
     param_schema_json: Record<string, any>
-    aliases_json: string[]
     enabled: boolean
     unlock_system: boolean
   }>
 ): Promise<TraderStrategyDefinition> => {
-  const { data } = await api.put(`/trader-strategies/${id}`, payload)
+  const unified: Record<string, any> = {}
+  if (payload.strategy_key !== undefined) unified.slug = payload.strategy_key
+  if (payload.source_key !== undefined) unified.source_key = payload.source_key
+  if (payload.label !== undefined) unified.name = payload.label
+  if (payload.description !== undefined) unified.description = payload.description
+  if (payload.source_code !== undefined) unified.source_code = payload.source_code
+  if (payload.default_params_json !== undefined) unified.config = payload.default_params_json
+  if (payload.param_schema_json !== undefined) unified.config_schema = payload.param_schema_json
+  if (payload.enabled !== undefined) unified.enabled = payload.enabled
+  if (payload.unlock_system !== undefined) unified.unlock_system = payload.unlock_system
+  const { data } = await api.put(`/strategy-manager/${id}`, unified)
   return data
 }
 
 export const validateTraderStrategy = async (
-  id: string,
+  _id: string,
   payload?: {
     source_code?: string
-    class_name?: string
   }
 ): Promise<TraderStrategyValidationResult> => {
-  const { data } = await api.post(`/trader-strategies/${id}/validate`, payload || {})
+  const { data } = await api.post('/strategy-manager/validate', {
+    source_code: payload?.source_code || '',
+  })
   return {
     valid: Boolean(data.valid),
     class_name: data.class_name || null,
@@ -2141,7 +2175,7 @@ export const reloadTraderStrategy = async (id: string): Promise<{
   reload: Record<string, any>
   strategy: TraderStrategyDefinition
 }> => {
-  const { data } = await api.post(`/trader-strategies/${id}/reload`)
+  const { data } = await api.post(`/strategy-manager/${id}/reload`)
   return data
 }
 
@@ -2149,8 +2183,20 @@ export const cloneTraderStrategy = async (
   id: string,
   payload?: { strategy_key?: string; label?: string; enabled?: boolean }
 ): Promise<TraderStrategyDefinition> => {
-  const { data } = await api.post(`/trader-strategies/${id}/clone`, payload || {})
-  return data
+  // Clone: create a new strategy based on the existing one
+  const original = await getTraderStrategy(id)
+  const newSlug = payload?.strategy_key || `${original.strategy_key || original.slug}_clone`
+  const newLabel = payload?.label || `${original.label || original.name} (Clone)`
+  return createTraderStrategy({
+    strategy_key: newSlug,
+    source_key: original.source_key,
+    label: newLabel,
+    description: original.description,
+    source_code: original.source_code,
+    default_params_json: original.default_params_json || original.config || {},
+    param_schema_json: original.param_schema_json || original.config_schema || {},
+    enabled: payload?.enabled ?? false,
+  })
 }
 
 export const getTraderOrchestratorStats = async (): Promise<TraderOrchestratorStatus['stats']> => {

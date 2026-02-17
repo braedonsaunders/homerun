@@ -159,6 +159,20 @@ function Stat({ label, value, icon: Icon, tone = 'neutral' }: {
 
 // ==================== MAIN FLYOUT ====================
 
+type BacktestMode = 'detect' | 'evaluate' | 'exit'
+
+const MODE_ENDPOINTS: Record<BacktestMode, string> = {
+  detect: '/validation/code-backtest',
+  evaluate: '/validation/code-backtest/evaluate',
+  exit: '/validation/code-backtest/exit',
+}
+
+const MODE_LABELS: Record<BacktestMode, { label: string; desc: string; running: string }> = {
+  detect: { label: 'Detect', desc: 'Find opportunities in current market data', running: 'Running detection...' },
+  evaluate: { label: 'Evaluate', desc: 'Test signal gating against recent trade signals', running: 'Evaluating signals...' },
+  exit: { label: 'Exit', desc: 'Test exit logic against current open positions', running: 'Testing exit logic...' },
+}
+
 export default function StrategyBacktestFlyout({
   open,
   onOpenChange,
@@ -175,10 +189,12 @@ export default function StrategyBacktestFlyout({
   variant: 'opportunity' | 'trader'
 }) {
   const [result, setResult] = useState<BacktestResult | null>(null)
+  const [mode, setMode] = useState<BacktestMode>('detect')
 
   const backtestMutation = useMutation({
     mutationFn: async () => {
-      const { data } = await api.post('/validation/code-backtest', {
+      const endpoint = MODE_ENDPOINTS[mode]
+      const { data } = await api.post(endpoint, {
         source_code: sourceCode,
         slug,
         config: config || {},
@@ -204,9 +220,27 @@ export default function StrategyBacktestFlyout({
                 <Badge variant="outline" className="text-[9px] h-4 font-normal">Live</Badge>
               </SheetTitle>
               <SheetDescription>
-                Run your {variant === 'opportunity' ? 'detection' : 'evaluation'} code against current market data to see what it finds.
+                {MODE_LABELS[mode].desc}
               </SheetDescription>
             </SheetHeader>
+
+            {/* Mode selector */}
+            <div className="flex gap-1 rounded-md bg-muted/50 p-0.5">
+              {(['detect', 'evaluate', 'exit'] as BacktestMode[]).map((m) => (
+                <button
+                  key={m}
+                  className={cn(
+                    'flex-1 text-[10px] font-medium py-1 px-2 rounded transition-colors',
+                    mode === m
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  onClick={() => { setMode(m); setResult(null) }}
+                >
+                  {MODE_LABELS[m].label}
+                </button>
+              ))}
+            </div>
 
             <Button
               size="sm"
@@ -217,12 +251,12 @@ export default function StrategyBacktestFlyout({
               {backtestMutation.isPending ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Running detection...
+                  {MODE_LABELS[mode].running}
                 </>
               ) : (
                 <>
                   <Play className="w-3.5 h-3.5" />
-                  Run Backtest
+                  Run {MODE_LABELS[mode].label} Backtest
                 </>
               )}
             </Button>
@@ -292,29 +326,32 @@ export default function StrategyBacktestFlyout({
                   </div>
                 )}
 
-                {/* Summary stats */}
+                {/* Summary stats — adaptive to mode */}
                 <div className="grid grid-cols-2 gap-2">
-                  <Stat
-                    label="Opportunities"
-                    value={fmt(result.num_opportunities)}
-                    icon={Target}
-                    tone={result.num_opportunities > 0 ? 'good' : 'neutral'}
-                  />
-                  <Stat
-                    label="Markets Scanned"
-                    value={fmt(result.num_markets)}
-                    icon={BarChart3}
-                  />
-                  <Stat
-                    label="Events"
-                    value={fmt(result.num_events)}
-                    icon={TrendingUp}
-                  />
-                  <Stat
-                    label="Data Source"
-                    value={result.data_source || 'N/A'}
-                    icon={DollarSign}
-                  />
+                  {mode === 'detect' && (
+                    <>
+                      <Stat label="Opportunities" value={fmt(result.num_opportunities || 0)} icon={Target} tone={(result.num_opportunities || 0) > 0 ? 'good' : 'neutral'} />
+                      <Stat label="Markets Scanned" value={fmt(result.num_markets || 0)} icon={BarChart3} />
+                      <Stat label="Events" value={fmt(result.num_events || 0)} icon={TrendingUp} />
+                      <Stat label="Data Source" value={result.data_source || 'N/A'} icon={DollarSign} />
+                    </>
+                  )}
+                  {mode === 'evaluate' && (
+                    <>
+                      <Stat label="Signals Tested" value={fmt((result as any).num_signals || 0)} icon={Target} />
+                      <Stat label="Selected" value={fmt((result as any).selected || 0)} icon={CheckCircle2} tone={(result as any).selected > 0 ? 'good' : 'neutral'} />
+                      <Stat label="Skipped" value={fmt((result as any).skipped || 0)} icon={XCircle} />
+                      <Stat label="Blocked" value={fmt((result as any).blocked || 0)} icon={AlertTriangle} />
+                    </>
+                  )}
+                  {mode === 'exit' && (
+                    <>
+                      <Stat label="Positions Tested" value={fmt((result as any).num_positions || 0)} icon={Target} />
+                      <Stat label="Would Close" value={fmt((result as any).would_close || 0)} icon={XCircle} tone={(result as any).would_close > 0 ? 'good' : 'neutral'} />
+                      <Stat label="Would Hold" value={fmt((result as any).would_hold || 0)} icon={CheckCircle2} />
+                      <Stat label="" value="" icon={DollarSign} />
+                    </>
+                  )}
                 </div>
 
                 {/* Timing breakdown */}
@@ -381,23 +418,86 @@ export default function StrategyBacktestFlyout({
                   </div>
                 )}
 
-                {/* Opportunities list */}
-                {result.opportunities.length > 0 && (
+                {/* DETECT: Opportunities list */}
+                {mode === 'detect' && (result.opportunities || []).length > 0 && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-xs font-medium">
                       <Target className="w-3.5 h-3.5 text-emerald-400" />
                       Detected Opportunities ({result.num_opportunities})
                     </div>
                     <div className="space-y-1.5">
-                      {result.opportunities.map((opp, i) => (
+                      {(result.opportunities || []).map((opp, i) => (
                         <OpportunityCard key={opp.id || i} opp={opp} index={i} />
                       ))}
                     </div>
                   </div>
                 )}
 
-                {/* No opportunities */}
-                {result.success && result.num_opportunities === 0 && (
+                {/* EVALUATE: Decisions list */}
+                {mode === 'evaluate' && ((result as any).decisions || []).length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-medium">
+                      <Target className="w-3.5 h-3.5 text-blue-400" />
+                      Evaluate Decisions ({(result as any).decisions?.length || 0})
+                    </div>
+                    <div className="space-y-1.5">
+                      {((result as any).decisions || []).map((d: any, i: number) => (
+                        <div key={i} className="border border-border/40 rounded-lg p-2 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-muted-foreground font-mono truncate">{d.source || d.strategy_type || `Signal #${i+1}`}</span>
+                            <Badge variant="outline" className={cn('text-[9px] h-4', d.decision === 'selected' ? 'border-emerald-500/30 text-emerald-400' : d.decision === 'blocked' ? 'border-red-500/30 text-red-400' : 'border-amber-500/30 text-amber-400')}>
+                              {d.decision}
+                            </Badge>
+                          </div>
+                          {d.reason && <p className="text-[10px] text-muted-foreground">{d.reason}</p>}
+                          {d.size_usd && <p className="text-[10px] font-mono text-emerald-400">${d.size_usd.toFixed(2)}</p>}
+                          {(d.checks || []).length > 0 && (
+                            <div className="space-y-0.5 mt-1">
+                              {d.checks.map((c: any, j: number) => (
+                                <div key={j} className="flex items-center gap-1 text-[9px]">
+                                  {c.passed ? <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" /> : <XCircle className="w-2.5 h-2.5 text-red-400" />}
+                                  <span className="text-muted-foreground">{c.check_label || c.check_key}</span>
+                                  {c.score != null && <span className="font-mono ml-auto">{c.score.toFixed(2)}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* EXIT: Exit decisions list */}
+                {mode === 'exit' && ((result as any).exit_decisions || []).length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-medium">
+                      <Target className="w-3.5 h-3.5 text-orange-400" />
+                      Exit Decisions ({(result as any).exit_decisions?.length || 0})
+                    </div>
+                    <div className="space-y-1.5">
+                      {((result as any).exit_decisions || []).map((d: any, i: number) => (
+                        <div key={i} className="border border-border/40 rounded-lg p-2 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-muted-foreground font-mono truncate">{d.market_id || `Position #${i+1}`}</span>
+                            <Badge variant="outline" className={cn('text-[9px] h-4', d.action === 'close' ? 'border-red-500/30 text-red-400' : 'border-emerald-500/30 text-emerald-400')}>
+                              {d.action}
+                            </Badge>
+                          </div>
+                          {d.reason && <p className="text-[10px] text-muted-foreground">{d.reason}</p>}
+                          <div className="flex gap-3 text-[10px] font-mono">
+                            <span>Entry: ${d.entry_price?.toFixed(3)}</span>
+                            <span>Now: ${d.current_price?.toFixed(3)}</span>
+                            <span className={d.pnl_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}>{d.pnl_pct >= 0 ? '+' : ''}{d.pnl_pct}%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* No results for detect mode */}
+                {mode === 'detect' && result.success && (result.num_opportunities || 0) === 0 && (
                   <div className="text-center py-6 space-y-2">
                     <Target className="w-6 h-6 mx-auto text-muted-foreground/30" />
                     <p className="text-xs text-muted-foreground">
@@ -406,6 +506,22 @@ export default function StrategyBacktestFlyout({
                     <p className="text-[10px] text-muted-foreground/60">
                       This is normal — your strategy may have strict filters or current markets may not match its criteria.
                     </p>
+                  </div>
+                )}
+
+                {/* No results for evaluate mode */}
+                {mode === 'evaluate' && result.success && ((result as any).decisions || []).length === 0 && (
+                  <div className="text-center py-6 space-y-2">
+                    <Target className="w-6 h-6 mx-auto text-muted-foreground/30" />
+                    <p className="text-xs text-muted-foreground">No recent signals to evaluate.</p>
+                  </div>
+                )}
+
+                {/* No results for exit mode */}
+                {mode === 'exit' && result.success && ((result as any).exit_decisions || []).length === 0 && (
+                  <div className="text-center py-6 space-y-2">
+                    <Target className="w-6 h-6 mx-auto text-muted-foreground/30" />
+                    <p className="text-xs text-muted-foreground">No open positions to test exit logic against.</p>
                   </div>
                 )}
               </div>

@@ -10,7 +10,7 @@ from models import ArbitrageOpportunity, OpportunityFilter
 from models.opportunity import AIAnalysis, MispricingType
 from models.database import AsyncSessionLocal, ScannerSettings, OpportunityJudgment
 from services.strategies.news_edge import NewsEdgeStrategy
-from services.plugin_loader import plugin_loader, PluginValidationError
+from services.strategy_loader import strategy_loader as plugin_loader, StrategyValidationError as PluginValidationError
 from services.opportunity_strategy_catalog import ensure_system_opportunity_strategies_seeded
 from services.providers import market_data_provider
 from services.pause_state import global_pause_state
@@ -734,57 +734,18 @@ class ArbitrageScanner:
             print(f"Error saving scanner settings: {e}")
 
     async def load_plugins(self):
-        """Load all enabled plugins from the database into the plugin loader."""
+        """Load all enabled strategies from the database via unified loader."""
         try:
-            from models.database import Strategy as StrategyModel
-
-            # DB is the source of truth; clear any stale in-memory strategies.
-            for slug in list(plugin_loader.loaded_plugins.keys()):
-                plugin_loader.unload_plugin(slug)
-
             async with AsyncSessionLocal() as session:
                 await ensure_system_opportunity_strategies_seeded(session)
-                result = await session.execute(
-                    select(StrategyModel)
-                    .where(StrategyModel.enabled)
-                    .order_by(
-                        StrategyModel.is_system.desc(),
-                        StrategyModel.sort_order.asc(),
-                        StrategyModel.name.asc(),
-                    )
-                )
-                plugins = result.scalars().all()
+                result = await plugin_loader.refresh_all_from_db(session=session)
 
-            loaded_count = 0
-            for p in plugins:
-                try:
-                    plugin_loader.load_plugin(p.slug, p.source_code, p.config or None)
-                    # Update status in DB
-                    async with AsyncSessionLocal() as session:
-                        result = await session.execute(select(StrategyModel).where(StrategyModel.id == p.id))
-                        db_plugin = result.scalar_one_or_none()
-                        if db_plugin:
-                            db_plugin.status = "loaded"
-                            db_plugin.error_message = None
-                            await session.commit()
-                    loaded_count += 1
-                except PluginValidationError as e:
-                    print(f"  Plugin '{p.slug}' failed to load: {e}")
-                    # Update error status in DB
-                    async with AsyncSessionLocal() as session:
-                        result = await session.execute(select(StrategyModel).where(StrategyModel.id == p.id))
-                        db_plugin = result.scalar_one_or_none()
-                        if db_plugin:
-                            db_plugin.status = "error"
-                            db_plugin.error_message = str(e)
-                            await session.commit()
-                except Exception as e:
-                    print(f"  Plugin '{p.slug}' failed to load (unexpected): {e}")
-
+            loaded_count = len(result.get("loaded", []))
+            error_count = len(result.get("errors", {}))
             if loaded_count > 0:
-                print(f"Loaded {loaded_count} strategy plugin(s)")
+                print(f"Loaded {loaded_count} strategies ({error_count} errors)")
         except Exception as e:
-            print(f"Error loading plugins: {e}")
+            print(f"Error loading strategies: {e}")
 
     async def _ensure_runtime_strategies_loaded(self) -> None:
         if plugin_loader.loaded_plugins:
@@ -865,12 +826,12 @@ class ArbitrageScanner:
             if targeted_condition_ids:
                 _target_set = {cid.lower() for cid in targeted_condition_ids}
                 markets = [
-                    m for m in markets if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
+                    m for m in markets
+                    if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
                 ]
                 for event in events:
                     event.markets = [
-                        m
-                        for m in event.markets
+                        m for m in event.markets
                         if getattr(m, "condition_id", getattr(m, "id", "")).lower() in _target_set
                     ]
                 # Drop events with no remaining markets
@@ -966,10 +927,8 @@ class ArbitrageScanner:
                 token_sample = sorted_token_ids[:PRICE_BATCH_CAP]
                 await self._set_activity(f"Fetching prices for {len(token_sample)} tokens...")
                 prices = await self.market_data.get_prices_batch(token_sample)
-                print(
-                    f"  Fetched prices for {len(prices)}/{len(all_token_ids)} tokens "
-                    f"({len(priority_token_ids)} prioritized)"
-                )
+                print(f"  Fetched prices for {len(prices)}/{len(all_token_ids)} tokens "
+                      f"({len(priority_token_ids)} prioritized)")
 
             # Overlay WebSocket real-time prices where available
             prices = self._merge_ws_prices(prices, sorted_token_ids[:PRICE_BATCH_CAP])
@@ -1531,7 +1490,10 @@ class ArbitrageScanner:
             opp
             for opp in existing_map.values()
             if (opp.resolution_date is None or _make_aware(opp.resolution_date) > now)
-            and (opp.last_seen_at is None or _make_aware(opp.last_seen_at) >= stale_cutoff)
+            and (
+                opp.last_seen_at is None
+                or _make_aware(opp.last_seen_at) >= stale_cutoff
+            )
             and opp.strategy != "btc_eth_highfreq"
         ]
 
