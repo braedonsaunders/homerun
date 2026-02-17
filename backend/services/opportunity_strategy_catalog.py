@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 import re
 import uuid
@@ -35,7 +34,6 @@ class SystemOpportunityStrategySeed:
     config_schema: dict | None = None  # param_fields for dynamic config UI
 
 
-@lru_cache(maxsize=None)
 def _seed_source_code(seed: SystemOpportunityStrategySeed) -> str:
     module_rel_path = seed.import_module.replace(".", "/") + ".py"
     source_path = _BACKEND_ROOT / module_rel_path
