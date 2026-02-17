@@ -12,6 +12,7 @@ from typing import Any
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import column_names, table_names
 
 
 # revision identifiers, used by Alembic.
@@ -47,18 +48,6 @@ _SOURCE_ALIASES: dict[str, str] = {
     "pool_traders": "traders",
     "insider": "traders",
 }
-
-
-def _table_names() -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    return set(inspector.get_table_names())
-
-
-def _column_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    if table_name not in set(inspector.get_table_names()):
-        return set()
-    return {column["name"] for column in inspector.get_columns(table_name)}
 
 
 def _normalize_strategy_key(value: Any) -> str:
@@ -337,11 +326,11 @@ def _rebuild_trade_signal_snapshots() -> None:
 
 
 def upgrade() -> None:
-    table_names = _table_names()
-    if "traders" not in table_names:
+    tables = table_names()
+    if "traders" not in tables:
         return
 
-    trader_columns = _column_names("traders")
+    trader_columns = column_names("traders")
     if "source_configs_json" not in trader_columns:
         op.add_column(
             "traders",
@@ -355,9 +344,9 @@ def upgrade() -> None:
 
     _backfill_traders_source_configs()
 
-    if "trade_signals" in table_names:
+    if "trade_signals" in tables:
         _canonicalize_trade_signal_sources()
-    if "trade_signal_snapshots" in table_names and "trade_signals" in table_names:
+    if "trade_signal_snapshots" in tables and "trade_signals" in tables:
         _rebuild_trade_signal_snapshots()
 
 

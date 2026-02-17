@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import column_names
 
 
 # revision identifiers, used by Alembic.
@@ -22,17 +23,9 @@ branch_labels = None
 depends_on = None
 
 
-def _column_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    table_names = set(inspector.get_table_names())
-    if table_name not in table_names:
-        return set()
-    return {col["name"] for col in inspector.get_columns(table_name)}
-
-
 def upgrade() -> None:
     table_name = "app_settings"
-    existing = _column_names(table_name)
+    existing = column_names(table_name)
 
     additions: list[sa.Column] = [
         sa.Column("discovery_pool_target_size", sa.Integer(), nullable=True, server_default=sa.text("500")),

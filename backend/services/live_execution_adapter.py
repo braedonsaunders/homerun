@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from services.polymarket import polymarket_client
 from services.trading import OrderSide, trading_service

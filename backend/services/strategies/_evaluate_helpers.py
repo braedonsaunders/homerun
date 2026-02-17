@@ -13,15 +13,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from utils.converters import (
-    clamp,
+    clamp,  # noqa: F401 – re-exported
     safe_float,
-    to_confidence,
+    to_confidence,  # noqa: F401 – re-exported
 )
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
     """Parse any value to float, returning *default* on failure."""
-    return safe_float(value, default=default) or default
+    result = safe_float(value, default=default)
+    return default if result is None else result
 
 
 def to_bool(value: Any, default: bool = False) -> bool:

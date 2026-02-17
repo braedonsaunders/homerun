@@ -13,6 +13,7 @@ from pathlib import Path
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import column_names, table_names, index_names
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
@@ -28,32 +29,11 @@ branch_labels = None
 depends_on = None
 
 
-def _table_names() -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    return set(inspector.get_table_names())
-
-
-def _column_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    tables = set(inspector.get_table_names())
-    if table_name not in tables:
-        return set()
-    return {col["name"] for col in inspector.get_columns(table_name)}
-
-
-def _index_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    tables = set(inspector.get_table_names())
-    if table_name not in tables:
-        return set()
-    return {idx["name"] for idx in inspector.get_indexes(table_name)}
-
-
 def _ensure_columns() -> None:
-    if "strategy_plugins" not in _table_names():
+    if "strategy_plugins" not in table_names():
         return
 
-    cols = _column_names("strategy_plugins")
+    cols = column_names("strategy_plugins")
     if "source_key" not in cols:
         op.add_column(
             "strategy_plugins",
@@ -69,7 +49,7 @@ def _ensure_columns() -> None:
     bind.execute(sa.text("UPDATE strategy_plugins SET source_key='scanner' WHERE source_key IS NULL OR source_key=''"))
     bind.execute(sa.text("UPDATE strategy_plugins SET is_system=0 WHERE is_system IS NULL"))
 
-    indexes = _index_names("strategy_plugins")
+    indexes = index_names("strategy_plugins")
     if "idx_strategy_plugin_source_key" not in indexes:
         op.create_index(
             "idx_strategy_plugin_source_key",
@@ -87,7 +67,7 @@ def _ensure_columns() -> None:
 
 
 def _seed_system_rows() -> None:
-    if "strategy_plugins" not in _table_names():
+    if "strategy_plugins" not in table_names():
         return
 
     bind = op.get_bind()
@@ -124,7 +104,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if "strategy_plugins" not in _table_names():
+    if "strategy_plugins" not in table_names():
         return
 
     bind = op.get_bind()
@@ -136,13 +116,13 @@ def downgrade() -> None:
         )
         bind.execute(sa.delete(strategy_table).where(strategy_table.c.slug.in_(slugs)))
 
-    indexes = _index_names("strategy_plugins")
+    indexes = index_names("strategy_plugins")
     if "idx_strategy_plugin_is_system" in indexes:
         op.drop_index("idx_strategy_plugin_is_system", table_name="strategy_plugins")
     if "idx_strategy_plugin_source_key" in indexes:
         op.drop_index("idx_strategy_plugin_source_key", table_name="strategy_plugins")
 
-    cols = _column_names("strategy_plugins")
+    cols = column_names("strategy_plugins")
     if "is_system" in cols:
         op.drop_column("strategy_plugins", "is_system")
     if "source_key" in cols:

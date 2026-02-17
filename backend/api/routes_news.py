@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query

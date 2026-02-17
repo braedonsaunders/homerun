@@ -11,8 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from functools import partial
 from utils.converters import normalize_market_id, safe_float
 
-_safe_float = partial(safe_float, reject_nan_inf=True)
-
 from models.database import (
     AsyncSessionLocal,
     DiscoveredWallet,
@@ -46,6 +44,8 @@ from services.worker_state import read_worker_snapshot
 from services.polymarket import polymarket_client
 from services.traders_firehose_pipeline import get_strategy_filtered_trader_opportunities
 from utils.validation import validate_eth_address
+
+_safe_float = partial(safe_float, reject_nan_inf=True)
 
 # Maps time_period query values to rolling window keys stored in the DB
 TIME_PERIOD_TO_WINDOW_KEY = {

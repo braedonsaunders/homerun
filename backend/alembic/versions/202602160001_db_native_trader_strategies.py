@@ -13,6 +13,7 @@ from pathlib import Path
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import table_names, index_names
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
@@ -28,21 +29,8 @@ branch_labels = None
 depends_on = None
 
 
-def _table_names() -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    return set(inspector.get_table_names())
-
-
-def _index_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    tables = set(inspector.get_table_names())
-    if table_name not in tables:
-        return set()
-    return {idx["name"] for idx in inspector.get_indexes(table_name)}
-
-
 def _create_trader_strategy_definitions() -> None:
-    if "trader_strategy_definitions" in _table_names():
+    if "trader_strategy_definitions" in table_names():
         return
 
     op.create_table(
@@ -95,7 +83,7 @@ def _create_trader_strategy_definitions() -> None:
 
 
 def _create_trade_signal_emissions() -> None:
-    if "trade_signal_emissions" in _table_names():
+    if "trade_signal_emissions" in table_names():
         return
 
     op.create_table(
@@ -169,7 +157,7 @@ def _create_trade_signal_emissions() -> None:
 
 
 def _create_execution_sim_runs() -> None:
-    if "execution_sim_runs" in _table_names():
+    if "execution_sim_runs" in table_names():
         return
 
     op.create_table(
@@ -201,7 +189,7 @@ def _create_execution_sim_runs() -> None:
 
 
 def _create_execution_sim_events() -> None:
-    if "execution_sim_events" in _table_names():
+    if "execution_sim_events" in table_names():
         return
 
     op.create_table(
@@ -323,7 +311,7 @@ def upgrade() -> None:
     _create_trader_strategy_definitions()
 
     # Backfill missing indexes if table already exists.
-    existing_indexes = _index_names("trader_strategy_definitions")
+    existing_indexes = index_names("trader_strategy_definitions")
     if "idx_trader_strategy_definitions_strategy_key" not in existing_indexes:
         op.create_index(
             "idx_trader_strategy_definitions_strategy_key",
@@ -360,11 +348,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if "execution_sim_events" in _table_names():
+    if "execution_sim_events" in table_names():
         op.drop_table("execution_sim_events")
-    if "execution_sim_runs" in _table_names():
+    if "execution_sim_runs" in table_names():
         op.drop_table("execution_sim_runs")
-    if "trade_signal_emissions" in _table_names():
+    if "trade_signal_emissions" in table_names():
         op.drop_table("trade_signal_emissions")
-    if "trader_strategy_definitions" in _table_names():
+    if "trader_strategy_definitions" in table_names():
         op.drop_table("trader_strategy_definitions")

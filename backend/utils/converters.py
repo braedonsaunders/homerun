@@ -50,7 +50,8 @@ def to_confidence(value: Any, default: float = 0.0) -> float:
 
     Values > 1.0 are treated as percentages and divided by 100.
     """
-    parsed = safe_float(value, default=default) or default
+    result = safe_float(value, default=default)
+    parsed = default if result is None else result
     if parsed > 1.0:
         parsed = parsed / 100.0
     return clamp(parsed, 0.0, 1.0)

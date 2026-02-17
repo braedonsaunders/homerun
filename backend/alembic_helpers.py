@@ -9,6 +9,7 @@ can import these because ``backend/`` is on ``sys.path`` via
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import table_names, index_names
 
 
 # revision identifiers, used by Alembic.
@@ -16,18 +17,6 @@ revision = "202602140003"
 down_revision = "202602140002"
 branch_labels = None
 depends_on = None
-
-
-def _table_names() -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    return set(inspector.get_table_names())
-
-
-def _index_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    if table_name not in set(inspector.get_table_names()):
-        return set()
-    return {idx.get("name") for idx in inspector.get_indexes(table_name) if idx.get("name")}
 
 
 def _unique_constraint_names(table_name: str) -> set[str]:
@@ -41,7 +30,7 @@ def _unique_constraint_names(table_name: str) -> set[str]:
 
 def upgrade() -> None:
     table_name = "trader_positions"
-    tables = _table_names()
+    tables = table_names()
 
     if table_name not in tables:
         op.create_table(
@@ -73,9 +62,9 @@ def upgrade() -> None:
             ),
         )
 
-    index_names = _index_names(table_name)
+    idx_names = index_names(table_name)
     unique_names = _unique_constraint_names(table_name)
-    if "uq_trader_position_identity" not in unique_names and "uq_trader_position_identity" not in index_names:
+    if "uq_trader_position_identity" not in unique_names and "uq_trader_position_identity" not in idx_names:
         op.create_index(
             "uq_trader_position_identity",
             table_name,
@@ -83,13 +72,13 @@ def upgrade() -> None:
             unique=True,
         )
 
-    if "idx_trader_positions_status" not in index_names:
+    if "idx_trader_positions_status" not in idx_names:
         op.create_index("idx_trader_positions_status", table_name, ["status"])
-    if "idx_trader_positions_trader_status" not in index_names:
+    if "idx_trader_positions_trader_status" not in idx_names:
         op.create_index("idx_trader_positions_trader_status", table_name, ["trader_id", "status"])
-    if "ix_trader_positions_trader_id" not in index_names:
+    if "ix_trader_positions_trader_id" not in idx_names:
         op.create_index("ix_trader_positions_trader_id", table_name, ["trader_id"])
-    if "ix_trader_positions_market_id" not in index_names:
+    if "ix_trader_positions_market_id" not in idx_names:
         op.create_index("ix_trader_positions_market_id", table_name, ["market_id"])
 
 

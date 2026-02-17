@@ -13,6 +13,7 @@ from pathlib import Path
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import table_names
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
@@ -34,18 +35,13 @@ _LEGACY_WRAPPER_MARKERS = (
 )
 
 
-def _table_names() -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    return set(inspector.get_table_names())
-
-
 def _is_legacy_wrapper_source(source_code: str | None) -> bool:
     text = str(source_code or "")
     return any(marker in text for marker in _LEGACY_WRAPPER_MARKERS)
 
 
 def upgrade() -> None:
-    if "trader_strategy_definitions" not in _table_names():
+    if "trader_strategy_definitions" not in table_names():
         return
 
     bind = op.get_bind()

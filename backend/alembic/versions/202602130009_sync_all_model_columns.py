@@ -2,7 +2,7 @@
 
 This is a catch-all migration that inspects the ORM model at runtime and adds
 every column that the database table is missing.  It uses the same idempotent
-``_column_names()`` guard used by earlier migrations, so it is safe to re-run
+``column_names()`` guard used by earlier migrations, so it is safe to re-run
 even if some columns already exist.
 
 Revision ID: 202602130009
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from alembic import op
 import sqlalchemy as sa
+from alembic_helpers import column_names
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
@@ -30,14 +31,6 @@ branch_labels = None
 depends_on = None
 
 
-def _column_names(table_name: str) -> set[str]:
-    inspector = sa.inspect(op.get_bind())
-    table_names = set(inspector.get_table_names())
-    if table_name not in table_names:
-        return set()
-    return {col["name"] for col in inspector.get_columns(table_name)}
-
-
 def upgrade() -> None:
     from models.database import AppSettings
     from models.model_registry import register_all_models
@@ -45,7 +38,7 @@ def upgrade() -> None:
     register_all_models()
 
     table_name = AppSettings.__tablename__
-    existing = _column_names(table_name)
+    existing = column_names(table_name)
 
     if not existing:
         # Table doesn't exist yet — baseline create_all will handle it.
