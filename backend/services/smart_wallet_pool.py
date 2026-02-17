@@ -909,6 +909,8 @@ class SmartWalletPoolService:
             if info:
                 tags = [t.lower() for t in (info.get("tags") or []) if isinstance(t, str)]
                 if "crypto" in tags:
+                    signal.is_active = False
+                    signal.expired_at = now
                     crypto_excluded += 1
                     continue
 
