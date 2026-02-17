@@ -47,7 +47,7 @@ from services.trader_orchestrator.strategy_db_loader import (
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/strategies", tags=["Strategies (Unified)"])
+router = APIRouter(prefix="/strategy-manager", tags=["Strategies (Unified)"])
 
 # ---------------------------------------------------------------------------
 # Slug / key validation
@@ -378,15 +378,15 @@ async def get_unified_docs():
             "multiprocessing — No process-based concurrency",
         ],
         "endpoints": {
-            "GET /strategies": "List all strategies from both tables with type/source_key/enabled filters",
-            "GET /strategies/template": "Starter template for writing a new strategy",
-            "GET /strategies/docs": "This documentation",
-            "GET /strategies/{id}": "Get one strategy by ID (searches both tables)",
-            "POST /strategies": "Create — auto-detects type from source code",
-            "PUT /strategies/{id}": "Update (partial)",
-            "DELETE /strategies/{id}": "Delete with tombstone for system strategies",
-            "POST /strategies/{id}/reload": "Force reload from stored source",
-            "POST /strategies/validate": "Validate source code without saving",
+            "GET /strategy-manager": "List all strategies from both tables with type/source_key/enabled filters",
+            "GET /strategy-manager/template": "Starter template for writing a new strategy",
+            "GET /strategy-manager/docs": "This documentation",
+            "GET /strategy-manager/{id}": "Get one strategy by ID (searches both tables)",
+            "POST /strategy-manager": "Create — auto-detects type from source code",
+            "PUT /strategy-manager/{id}": "Update (partial)",
+            "DELETE /strategy-manager/{id}": "Delete with tombstone for system strategies",
+            "POST /strategy-manager/{id}/reload": "Force reload from stored source",
+            "POST /strategy-manager/validate": "Validate source code without saving",
         },
     }
 

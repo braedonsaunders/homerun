@@ -522,8 +522,7 @@ app.add_middleware(
 
 
 # API routes
-# Unified strategies router registered first so /api/strategies/* takes priority
-# over the legacy GET /strategies endpoint in the main router.
+# Unified strategies management router at /api/strategy-manager/*
 app.include_router(strategies_router, prefix="/api", tags=["Strategies (Unified)"])
 app.include_router(router, prefix="/api")
 app.include_router(simulation_router, prefix="/api/simulation", tags=["Simulation"])
